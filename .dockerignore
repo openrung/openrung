@@ -8,13 +8,11 @@
 .DS_Store
 **/.DS_Store
 
-# Docs and mobile clients are not needed to build the relay.
+# Docs are not needed to build the relay.
 *.md
 # ...but the third-party notices must ship inside the image (license compliance).
 !THIRD_PARTY_NOTICES.md
 docs
-ios
-android
 scripts
 
 # Build outputs / caches.

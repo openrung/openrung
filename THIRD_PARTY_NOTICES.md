@@ -7,27 +7,29 @@ information those components require us to carry when we distribute them.
 It is the single source of truth for attribution. Every distribution channel
 must surface it:
 
-- **Android app / iOS app** — render these notices in an in-app
-  "Open Source Licenses" screen.
 - **`openrung-volunteer` / `openrung-relayhub` Docker images** — the file is
   copied to `/usr/local/share/openrung/THIRD_PARTY_NOTICES.md` in each image.
 - **Server binaries on the host** — ship this file alongside the binary.
 
-> Maintenance: regenerate the Go and Android sections from tooling so the
-> transitive set stays accurate as dependencies drift:
-> `go-licenses report ./cmd/volunteer ./cmd/relayhub` for the server side, and an
-> Android license plugin (e.g. AboutLibraries) for the app. The sing-box /
-> Libbox transitive set (below) should be captured from the **exact sing-box
-> commit** the release was built against — see "Corresponding source," below.
+The OpenRung mobile app is developed and distributed from its own repository
+and must carry its own third-party notices (in-app "Open Source Licenses"
+screen), including the sing-box / Libbox transitive set for the exact engine
+commit each release is built against.
+
+> Maintenance: regenerate the Go sections from tooling so the transitive set
+> stays accurate as dependencies drift:
+> `go-licenses report ./cmd/volunteer ./cmd/relayhub` for the server side.
 
 ---
 
-## 1. Strong copyleft (GPL) — controls the mobile clients
+## 1. Strong copyleft (GPL) — controls the project license
 
 ### sing-box (libbox) — GPL-3.0-or-later
 
-- **Component:** `github.com/SagerNet/sing-box` (the `libbox` mobile library:
-  `android/app/libs/libbox.aar`, `ios/ThirdParty/Libbox.xcframework`)
+- **Component:** `github.com/SagerNet/sing-box` (the `libbox` mobile library,
+  statically linked into the OpenRung mobile app — developed in its own
+  repository; this repository generates sing-box *configuration* but does not
+  link or redistribute the engine)
 - **License:** GNU General Public License v3.0 or later (**GPL-3.0-or-later**),
   with an additional permitted term.
 - **Upstream:** https://github.com/SagerNet/sing-box
@@ -37,27 +39,18 @@ must surface it:
   *"In addition, no derivative work may use the name or imply association with
   this application without prior consent."*
 
-sing-box is **statically linked** into the OpenRung Android APK and iOS app.
-Under GPL-3.0 §5, the resulting combined work — including OpenRung's own
-first-party code in those apps — is licensed to recipients under
-**GPL-3.0-or-later**. OpenRung as a whole is licensed under GPL-3.0-or-later
-(see `LICENSE`).
+sing-box is **statically linked** into the OpenRung mobile app. Under
+GPL-3.0 §5, the resulting combined work — including OpenRung's own first-party
+code in that app — is licensed to recipients under **GPL-3.0-or-later**.
+OpenRung as a whole is licensed under GPL-3.0-or-later (see `LICENSE`).
+
+The mobile app's repository must carry the full sing-box notices, including
+the libbox transitive set (`gvisor`, `quic-go`, `wireguard-go`, `utls`,
+`sagernet/*`, …) captured from the exact sing-box commit each release is
+built against.
 
 OpenRung is **not affiliated with or endorsed by** sing-box or SagerNet; the
 sing-box name is used only descriptively.
-
-#### sing-box transitive components (compiled into the apps)
-
-The `libbox` build statically links additional libraries that are therefore
-distributed inside the apps. This list must be completed from the exact build
-(`go-licenses` against the sing-box module); the notable ones include:
-
-- `gvisor.dev/gvisor` — Apache-2.0 (ships a NOTICE file that must be reproduced)
-- `github.com/quic-go/quic-go` — MIT
-- `golang.zx2c4.com/wireguard` (wireguard-go) — MIT
-- `github.com/refraction-networking/utls` — BSD-3-Clause
-- `github.com/sagernet/sing`, `sing-quic`, `sing-shadowsocks*`, and related
-  `sagernet/*` modules — GPL-3.0 / mixed (reinforces the GPL-3.0 result above)
 
 ---
 
@@ -145,7 +138,7 @@ into the `openrung-volunteer` image.
 
 ### BSD-3-Clause
 
-Statically linked into the Go server binaries (and, via libbox, into the apps):
+Statically linked into the Go server binaries:
 
 - `golang.org/x/crypto` v0.17.0 — Copyright (c) The Go Authors
 - `golang.org/x/sync` v0.1.0 — Copyright (c) The Go Authors
@@ -155,6 +148,8 @@ Statically linked into the Go server binaries (and, via libbox, into the apps):
 
 ### MIT
 
+- `github.com/quic-go/quic-go` v0.60.0 — Copyright (c) 2016 the quic-go authors
+  & Google, Inc. (statically linked into the server binaries via `internal/punch`)
 - `github.com/jackc/pgx/v5` v5.6.0 — Copyright (c) 2013-2021 Jack Christensen
 - `github.com/jackc/pgpassfile` v1.0.0 — Copyright (c) 2019 Jack Christensen
 - `github.com/jackc/pgservicefile` — Copyright (c) 2020 Jack Christensen
@@ -162,30 +157,9 @@ Statically linked into the Go server binaries (and, via libbox, into the apps):
 - `musl` libc (Alpine) — Copyright (c) the musl contributors
 - `alpine-keys` (Alpine) — MIT
 
-### BSD-2-Clause
-
-- `org.maplibre.gl:android-sdk` 11.8.0 (MapLibre Native) — Copyright (c)
-  MapLibre contributors (2021), MapTiler.com (2018-2021), Mapbox (2014-2020).
-  The SDK also aggregates further third-party notices in its `LICENSE.md`
-  (https://github.com/maplibre/maplibre-native/blob/main/LICENSE.md), which
-  should be reproduced in the Android in-app notices.
-
-### Apache-2.0 (reproduce each component's NOTICE file, not just the license)
-
-Bundled in the Android APK:
-
-- `androidx.compose:*` (compose-bom 2024.12.01): foundation,
-  material-icons-extended, material3, runtime, ui, ui-tooling-preview
-- `androidx.activity:activity-compose` 1.9.3
-- `androidx.appcompat:appcompat` 1.7.0
-- `androidx.core:core-ktx` 1.15.0
-- `androidx.lifecycle:lifecycle-runtime-compose` 2.8.7
-- `org.jetbrains.kotlin:kotlin-stdlib` (Apache-2.0; also bundles Boost-1.0 and
-  fdlibm/SUN-licensed math portions that must be acknowledged)
-- `org.jetbrains.kotlinx:kotlinx-coroutines-android` 1.9.0
-- `org.jetbrains.kotlinx:kotlinx-serialization-json` 1.7.3
-
-> Full Apache-2.0 text: https://www.apache.org/licenses/LICENSE-2.0
+> Mobile-app dependencies (UI toolkit, MapLibre, libbox, and their NOTICE
+> files) are inventoried in the mobile app's own repository, alongside the
+> app's in-app license screen.
 
 ---
 
@@ -193,11 +167,7 @@ Bundled in the Android APK:
 
 Listed so they are deliberately **excluded** from the shipped notices: test
 dependencies (`testify`, `objx`, `go-spew`, `go-difflib`, `yaml.v3`,
-`check.v1`), build tools (`sagernet/gomobile`/`gobind`, Gradle, the `golang`
-build image), and all GitHub Actions. The MapLibre **demo tiles and glyph
-fonts** at `demotiles.maplibre.org` are fetched at runtime and not bundled, so
-no redistribution obligation attaches (but that demo endpoint is not intended
-for production traffic — move to a self-hosted/licensed source before scaling).
+`check.v1`), build tools (the `golang` build image), and all GitHub Actions.
 
 ---
 
@@ -207,10 +177,10 @@ The complete corresponding source for any distributed OpenRung binary — the
 OpenRung source, the pinned sing-box revision, and the build scripts — is
 available from the OpenRung public repository: **<add public repo URL>**.
 
-The mobile apps are built against a specific sing-box commit. Record that commit
-SHA per release (see `android/ThirdParty/README.md` and `ios/ThirdParty/README.md`)
-so the corresponding source is reproducible. OpenRung will provide the
-corresponding source for at least three (3) years on request.
+The mobile app is built against a specific sing-box commit; its repository
+records that commit SHA per release so the corresponding source is
+reproducible. OpenRung will provide the corresponding source for at least
+three (3) years on request.
 
 ---
 
@@ -259,20 +229,5 @@ COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, ... (full
 disclaimer as in the standard BSD-3-Clause text).
 ```
 
-### BSD 2-Clause License
-
-```
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-
-1. Redistributions of source code must retain the above copyright notice, this
-   list of conditions and the following disclaimer.
-2. Redistributions in binary form must reproduce the above copyright notice,
-   this list of conditions and the following disclaimer in the documentation
-   and/or other materials provided with the distribution.
-
-THIS SOFTWARE IS PROVIDED ... "AS IS" ... (full standard BSD-2-Clause disclaimer).
-```
-
-Full texts for MPL-2.0, Apache-2.0, GPL-2.0, and CC-BY-SA-4.0 are referenced by
+Full texts for MPL-2.0, GPL-2.0, and CC-BY-SA-4.0 are referenced by
 URL above; GPL-3.0 is bundled as `LICENSE` in this repository.
