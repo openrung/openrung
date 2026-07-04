@@ -210,6 +210,9 @@ func TestHubClientEndToEnd(t *testing.T) {
 	if lastReq.PublicPort != ack.PublicPort || lastReq.PublicHost != "127.0.0.1" {
 		t.Fatalf("register endpoint mismatch: host=%q port=%d", lastReq.PublicHost, lastReq.PublicPort)
 	}
+	if lastReq.ExitHost != "127.0.0.1" {
+		t.Fatalf("exit_host = %q, want the volunteer's source IP 127.0.0.1", lastReq.ExitHost)
+	}
 
 	if !eventually(2*time.Second, func() bool {
 		_, hb, _ := registrar.stats()

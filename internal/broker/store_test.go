@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -86,6 +87,35 @@ func TestHeartbeatExtendsRelayLease(t *testing.T) {
 
 	if !updated.ExpiresAt.Equal(heartbeatAt.Add(time.Minute)) {
 		t.Fatalf("expected expiration %s, got %s", heartbeatAt.Add(time.Minute), updated.ExpiresAt)
+	}
+}
+
+func TestStoreUpdateGeo(t *testing.T) {
+	store := NewStore()
+	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+
+	desc, err := store.Register(validRegisterRequest(), now, time.Minute)
+	if err != nil {
+		t.Fatalf("register relay: %v", err)
+	}
+	if desc.GeoLocation != (relay.GeoLocation{}) {
+		t.Fatalf("expected freshly registered relay without geo, got %+v", desc.GeoLocation)
+	}
+
+	geo := relay.GeoLocation{City: "Tokyo", Country: "Japan", CountryCode: "JP"}
+	if err := store.UpdateGeo(desc.ID, geo); err != nil {
+		t.Fatalf("update geo: %v", err)
+	}
+	listed, err := store.List(now.Add(time.Second), 10)
+	if err != nil {
+		t.Fatalf("list relays: %v", err)
+	}
+	if len(listed) != 1 || listed[0].GeoLocation != geo {
+		t.Fatalf("expected listed relay to carry geo, got %+v", listed)
+	}
+
+	if err := store.UpdateGeo("relay_missing", geo); !errors.Is(err, ErrRelayNotFound) {
+		t.Fatalf("expected ErrRelayNotFound for unknown relay, got %v", err)
 	}
 }
 

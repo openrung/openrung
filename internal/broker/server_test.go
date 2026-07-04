@@ -60,6 +60,19 @@ func TestValidateTransport(t *testing.T) {
 	}
 }
 
+func TestValidateExitHostRequiresTunnelTransport(t *testing.T) {
+	req := validRegisterRequest()
+	req.ExitHost = "198.51.100.7"
+	if err := validateRegisterRequest(req); err == nil {
+		t.Fatal("expected exit_host on direct transport to be rejected")
+	}
+
+	req.Transport = relay.TransportTunnel
+	if err := validateRegisterRequest(req); err != nil {
+		t.Fatalf("expected exit_host on tunnel transport to be valid: %v", err)
+	}
+}
+
 func TestRegisterDefaultsTransportDirect(t *testing.T) {
 	store := NewStore()
 	desc, err := store.Register(validRegisterRequest(), time.Now().UTC(), time.Minute)
@@ -110,6 +123,109 @@ func TestRegisterRejectsUnsafeLabel(t *testing.T) {
 	}
 }
 
+func TestRegisterResolvesRelayLocation(t *testing.T) {
+	resolver := &stubGeoResolver{geo: relay.GeoLocation{City: "Tokyo", Country: "Japan", CountryCode: "JP", Latitude: 35.6895, Longitude: 139.6917}}
+	server := NewServer(NewStore(), Config{GeoIP: resolver})
+
+	body, _ := json.Marshal(validRegisterRequest())
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/volunteers/register", bytes.NewReader(body)))
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var desc relay.Descriptor
+	if err := json.Unmarshal(recorder.Body.Bytes(), &desc); err != nil {
+		t.Fatalf("decode descriptor: %v", err)
+	}
+	if desc.GeoLocation != resolver.geo {
+		t.Fatalf("expected register response to carry geo, got %+v", desc.GeoLocation)
+	}
+
+	listRecorder := httptest.NewRecorder()
+	server.ServeHTTP(listRecorder, httptest.NewRequest(http.MethodGet, "/api/v1/relays", nil))
+	listBody := listRecorder.Body.String()
+	for _, want := range []string{`"city":"Tokyo"`, `"country":"Japan"`, `"country_code":"JP"`, `"latitude":35.6895`, `"longitude":139.6917`} {
+		if !strings.Contains(listBody, want) {
+			t.Fatalf("expected %s in list response: %s", want, listBody)
+		}
+	}
+}
+
+func TestRegisterGeolocatesTunnelRelayByExitHostWithoutExposingIt(t *testing.T) {
+	resolver := &stubGeoResolver{geo: relay.GeoLocation{City: "Tehran", Country: "Iran", CountryCode: "IR"}}
+	server := NewServer(NewStore(), Config{GeoIP: resolver})
+
+	req := validRegisterRequest()
+	req.PublicHost = "203.0.113.1" // relay hub
+	req.Transport = relay.TransportTunnel
+	req.ExitHost = "198.51.100.7" // volunteer's real IP
+	body, _ := json.Marshal(req)
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/volunteers/register", bytes.NewReader(body)))
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if len(resolver.hosts) != 1 || resolver.hosts[0] != "198.51.100.7" {
+		t.Fatalf("expected geo lookup against the exit host, got %v", resolver.hosts)
+	}
+
+	listRecorder := httptest.NewRecorder()
+	server.ServeHTTP(listRecorder, httptest.NewRequest(http.MethodGet, "/api/v1/relays", nil))
+	listBody := listRecorder.Body.String()
+	if !strings.Contains(listBody, `"city":"Tehran"`) {
+		t.Fatalf("expected exit-host geo in list response: %s", listBody)
+	}
+	// The volunteer's real IP must never leak through the public API.
+	for _, response := range []string{recorder.Body.String(), listBody} {
+		if strings.Contains(response, "198.51.100.7") {
+			t.Fatalf("exit host leaked into API response: %s", response)
+		}
+	}
+}
+
+func TestHeartbeatBackfillsRelayLocation(t *testing.T) {
+	resolver := &stubGeoResolver{err: errors.New("geoip endpoint down")}
+	server := NewServer(NewStore(), Config{GeoIP: resolver})
+
+	body, _ := json.Marshal(validRegisterRequest())
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/volunteers/register", bytes.NewReader(body)))
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var desc relay.Descriptor
+	if err := json.Unmarshal(recorder.Body.Bytes(), &desc); err != nil {
+		t.Fatalf("decode descriptor: %v", err)
+	}
+	if desc.GeoLocation != (relay.GeoLocation{}) {
+		t.Fatalf("expected failed lookup to leave geo empty, got %+v", desc.GeoLocation)
+	}
+
+	resolver.err = nil
+	resolver.geo = relay.GeoLocation{City: "Osaka", Country: "Japan", CountryCode: "JP"}
+	heartbeat := func() {
+		t.Helper()
+		heartbeatRecorder := httptest.NewRecorder()
+		server.ServeHTTP(heartbeatRecorder, httptest.NewRequest(http.MethodPost, "/api/v1/volunteers/"+desc.ID+"/heartbeat", nil))
+		if heartbeatRecorder.Code != http.StatusOK {
+			t.Fatalf("expected 200 heartbeat, got %d: %s", heartbeatRecorder.Code, heartbeatRecorder.Body.String())
+		}
+	}
+	heartbeat()
+
+	listRecorder := httptest.NewRecorder()
+	server.ServeHTTP(listRecorder, httptest.NewRequest(http.MethodGet, "/api/v1/relays", nil))
+	if !strings.Contains(listRecorder.Body.String(), `"city":"Osaka"`) {
+		t.Fatalf("expected heartbeat to backfill geo: %s", listRecorder.Body.String())
+	}
+
+	lookupsAfterBackfill := resolver.lookups
+	heartbeat()
+	if resolver.lookups != lookupsAfterBackfill {
+		t.Fatalf("expected no further lookups once geo is stored, got %d after %d", resolver.lookups, lookupsAfterBackfill)
+	}
+}
+
 func TestHealthzReportsStoreFailure(t *testing.T) {
 	server := NewServer(failingStore{Store: NewStore(), pingErr: errors.New("database down")}, Config{})
 	recorder := httptest.NewRecorder()
@@ -138,6 +254,19 @@ func TestHeartbeatMissingRelayStillReturnsNotFound(t *testing.T) {
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d: %s", recorder.Code, recorder.Body.String())
 	}
+}
+
+type stubGeoResolver struct {
+	geo     relay.GeoLocation
+	err     error
+	lookups int
+	hosts   []string
+}
+
+func (s *stubGeoResolver) Lookup(_ context.Context, host string) (relay.GeoLocation, error) {
+	s.lookups++
+	s.hosts = append(s.hosts, host)
+	return s.geo, s.err
 }
 
 type failingStore struct {

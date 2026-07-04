@@ -30,12 +30,14 @@ func run() error {
 	relayStore := flag.String("relay-store", envDefault("OPENRUNG_RELAY_STORE", "memory"), "relay state backend: memory or postgres")
 	relayDatabaseURL := flag.String("relay-database-url", os.Getenv("OPENRUNG_RELAY_DATABASE_URL"), "PostgreSQL database URL for relay state")
 	relayRanking := flag.String("relay-ranking", envDefault("OPENRUNG_RELAY_RANKING", "global"), "relay ranking mode: global or legacy")
+	geoIPEndpoint := flag.String("geoip-endpoint", envDefault("OPENRUNG_GEOIP_ENDPOINT", broker.DefaultGeoIPEndpoint), "IP geolocation HTTP endpoint for relay city/country lookups (relay host is appended); 'off' disables")
 	flag.Parse()
 
 	rankingMode, err := broker.ParseRankingMode(*relayRanking)
 	if err != nil {
 		return err
 	}
+	geoResolver := newGeoIPResolver(*geoIPEndpoint)
 	store, err := newRelayStore(*relayStore, *relayDatabaseURL, rankingMode)
 	if err != nil {
 		return err
@@ -55,6 +57,7 @@ func run() error {
 		DashboardToken:    os.Getenv("OPENRUNG_DASHBOARD_TOKEN"),
 		// Cloudflare's published ranges are trusted by default; add more (e.g. an upstream LB) here.
 		TrustedProxyCIDRs: splitAndTrim(os.Getenv("OPENRUNG_TRUSTED_PROXY_CIDRS")),
+		GeoIP:             geoResolver,
 	})
 	maintenanceInterval := *statusInterval
 	if maintenanceInterval <= 0 {
@@ -77,7 +80,7 @@ func run() error {
 		close(shutdownDone)
 	}()
 
-	slog.Info("starting broker", "addr", *addr, "lease_ttl", leaseTTL.String(), "telemetry_file", *telemetryFile, "relay_store", *relayStore, "relay_ranking", rankingMode, "dashboard_enabled", os.Getenv("OPENRUNG_DASHBOARD_TOKEN") != "", "status_interval", statusInterval.String())
+	slog.Info("starting broker", "addr", *addr, "lease_ttl", leaseTTL.String(), "telemetry_file", *telemetryFile, "relay_store", *relayStore, "relay_ranking", rankingMode, "dashboard_enabled", os.Getenv("OPENRUNG_DASHBOARD_TOKEN") != "", "status_interval", statusInterval.String(), "geoip_enabled", geoResolver != nil)
 	err = server.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {
 		<-shutdownDone
@@ -99,6 +102,17 @@ func newRelayStore(storeMode, databaseURL string, rankingMode broker.RankingMode
 		return broker.NewPostgresStore(ctx, databaseURL, rankingMode)
 	default:
 		return nil, errors.New("relay-store must be memory or postgres")
+	}
+}
+
+// newGeoIPResolver returns nil (geo lookups disabled) for "off"-style values
+// so operators can opt out without leaving the flag empty.
+func newGeoIPResolver(endpoint string) broker.GeoIPResolver {
+	switch strings.ToLower(strings.TrimSpace(endpoint)) {
+	case "", "off", "disabled", "none":
+		return nil
+	default:
+		return broker.NewHTTPGeoIPResolver(endpoint)
 	}
 }
 

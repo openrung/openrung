@@ -34,7 +34,13 @@ const descriptorColumns = `
 	label,
 	transport,
 	punch_capable,
-	punch_endpoint
+	punch_endpoint,
+	city,
+	country,
+	country_code,
+	latitude,
+	longitude,
+	exit_host
 `
 
 const postgresOperationTimeout = 5 * time.Second
@@ -62,6 +68,12 @@ CREATE TABLE IF NOT EXISTS relay_descriptors (
 	transport text NOT NULL DEFAULT 'direct',
 	punch_capable boolean NOT NULL DEFAULT false,
 	punch_endpoint text NOT NULL DEFAULT '',
+	city text NOT NULL DEFAULT '',
+	country text NOT NULL DEFAULT '',
+	country_code text NOT NULL DEFAULT '',
+	latitude double precision NOT NULL DEFAULT 0,
+	longitude double precision NOT NULL DEFAULT 0,
+	exit_host text NOT NULL DEFAULT '',
 	attributes jsonb NOT NULL DEFAULT '{}'::jsonb,
 	UNIQUE (public_host, public_port)
 );
@@ -80,6 +92,24 @@ ALTER TABLE relay_descriptors
 
 ALTER TABLE relay_descriptors
 	ADD COLUMN IF NOT EXISTS punch_endpoint text NOT NULL DEFAULT '';
+
+ALTER TABLE relay_descriptors
+	ADD COLUMN IF NOT EXISTS city text NOT NULL DEFAULT '';
+
+ALTER TABLE relay_descriptors
+	ADD COLUMN IF NOT EXISTS country text NOT NULL DEFAULT '';
+
+ALTER TABLE relay_descriptors
+	ADD COLUMN IF NOT EXISTS country_code text NOT NULL DEFAULT '';
+
+ALTER TABLE relay_descriptors
+	ADD COLUMN IF NOT EXISTS latitude double precision NOT NULL DEFAULT 0;
+
+ALTER TABLE relay_descriptors
+	ADD COLUMN IF NOT EXISTS longitude double precision NOT NULL DEFAULT 0;
+
+ALTER TABLE relay_descriptors
+	ADD COLUMN IF NOT EXISTS exit_host text NOT NULL DEFAULT '';
 
 CREATE INDEX IF NOT EXISTS relay_descriptors_active_idx
 	ON relay_descriptors (expires_at DESC, last_heartbeat_at DESC);
@@ -161,6 +191,7 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 		Label:            req.Label,
 		PublicHost:       req.PublicHost,
 		PublicPort:       req.PublicPort,
+		ExitHost:         req.ExitHost,
 		Protocol:         req.Protocol,
 		ClientID:         req.ClientID,
 		RealityPublicKey: req.RealityPublicKey,
@@ -179,6 +210,11 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 		ExpiresAt:        now.Add(ttl),
 	}
 
+	// Geo columns are deliberately absent from the INSERT: a re-registration
+	// at the same host:port keeps its previously resolved location until the
+	// handler's next successful UpdateGeo — except when the exit host changed
+	// (a hub port reused by a different volunteer), where the upsert clears
+	// the stale location so the handler resolves the new exit.
 	return scanDescriptor(s.pool.QueryRow(ctx, `
 		INSERT INTO relay_descriptors (
 			id,
@@ -201,9 +237,10 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 			label,
 			transport,
 			punch_capable,
-			punch_endpoint
+			punch_endpoint,
+			exit_host
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
 		)
 		ON CONFLICT (public_host, public_port) DO UPDATE SET
 			id = EXCLUDED.id,
@@ -224,7 +261,13 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 			label = EXCLUDED.label,
 			transport = EXCLUDED.transport,
 			punch_capable = EXCLUDED.punch_capable,
-			punch_endpoint = EXCLUDED.punch_endpoint
+			punch_endpoint = EXCLUDED.punch_endpoint,
+			city = CASE WHEN relay_descriptors.exit_host = EXCLUDED.exit_host THEN relay_descriptors.city ELSE '' END,
+			country = CASE WHEN relay_descriptors.exit_host = EXCLUDED.exit_host THEN relay_descriptors.country ELSE '' END,
+			country_code = CASE WHEN relay_descriptors.exit_host = EXCLUDED.exit_host THEN relay_descriptors.country_code ELSE '' END,
+			latitude = CASE WHEN relay_descriptors.exit_host = EXCLUDED.exit_host THEN relay_descriptors.latitude ELSE 0 END,
+			longitude = CASE WHEN relay_descriptors.exit_host = EXCLUDED.exit_host THEN relay_descriptors.longitude ELSE 0 END,
+			exit_host = EXCLUDED.exit_host
 		RETURNING `+descriptorColumns,
 		desc.ID,
 		desc.PublicHost,
@@ -247,6 +290,7 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 		desc.Transport,
 		desc.PunchCapable,
 		desc.PunchEndpoint,
+		desc.ExitHost,
 	))
 }
 
@@ -267,6 +311,24 @@ func (s *PostgresStore) Heartbeat(id string, now time.Time, ttl time.Duration) (
 		return relay.Descriptor{}, ErrRelayNotFound
 	}
 	return desc, err
+}
+
+func (s *PostgresStore) UpdateGeo(id string, geo relay.GeoLocation) error {
+	ctx, cancel := postgresOperationContext()
+	defer cancel()
+
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE relay_descriptors
+		SET city = $2, country = $3, country_code = $4, latitude = $5, longitude = $6
+		WHERE id = $1
+	`, id, geo.City, geo.Country, geo.CountryCode, geo.Latitude, geo.Longitude)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrRelayNotFound
+	}
+	return nil
 }
 
 func (s *PostgresStore) List(now time.Time, limit int) ([]relay.Descriptor, error) {
@@ -625,6 +687,12 @@ func scanDescriptor(row pgx.Row) (relay.Descriptor, error) {
 		&desc.Transport,
 		&desc.PunchCapable,
 		&desc.PunchEndpoint,
+		&desc.City,
+		&desc.Country,
+		&desc.CountryCode,
+		&desc.Latitude,
+		&desc.Longitude,
+		&desc.ExitHost,
 	)
 	return desc, err
 }

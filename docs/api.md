@@ -187,6 +187,13 @@ Request:
 volunteers with `transport: "tunnel"` and a `public_host`/`public_port` pointing
 at the hub; clients treat both the same.
 
+For tunnel registrations the hub also sends `exit_host`: the volunteer's public
+source IP as observed on its control connection, i.e. where tunneled traffic
+actually exits. The broker uses it only to geolocate the relay and never
+exposes it through any public endpoint, so a CGNAT volunteer's real IP stays
+private. `exit_host` is rejected for direct transport, where `public_host`
+already is the exit.
+
 Response:
 
 ```json
@@ -194,6 +201,11 @@ Response:
   "id": "relay_...",
   "public_host": "2001:db8::1",
   "public_port": 443,
+  "city": "Tokyo",
+  "country": "Japan",
+  "country_code": "JP",
+  "latitude": 35.6895,
+  "longitude": 139.6917,
   "protocol": "vless-reality-vision",
   "client_id": "2c08df10-4ef4-4ab9-95c6-cb1e94cdb2ff",
   "reality_public_key": "xray-public-key",
@@ -209,6 +221,13 @@ Response:
   "expires_at": "2026-06-09T07:03:00Z"
 }
 ```
+
+`city`, `country`, and `country_code` are resolved by the broker (never taken
+from the volunteer request) so clients can show where a relay's traffic
+physically exits: from `exit_host` for tunnel relays and from `public_host`
+for direct relays. The lookup is best-effort: when it has not succeeded yet
+the fields are omitted, and the broker retries on heartbeats until it
+resolves.
 
 ## Heartbeat
 
@@ -254,6 +273,11 @@ Response:
       "id": "relay_...",
       "public_host": "2001:db8::1",
       "public_port": 443,
+      "city": "Tokyo",
+      "country": "Japan",
+      "country_code": "JP",
+      "latitude": 35.6895,
+      "longitude": 139.6917,
       "protocol": "vless-reality-vision",
       "client_id": "2c08df10-4ef4-4ab9-95c6-cb1e94cdb2ff",
       "reality_public_key": "xray-public-key",

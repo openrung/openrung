@@ -47,13 +47,41 @@ type RegisterRequest struct {
 	// deriving one from PublicHost, so the scheme/host/port match the hub's
 	// actual listener. Empty means "derive http://PublicHost:9444".
 	PunchEndpoint string `json:"punch_endpoint,omitempty"`
+	// ExitHost is set by the relay hub for tunnel-transport registrations: the
+	// volunteer's source IP as observed on its control connection, i.e. where
+	// tunneled traffic actually exits. The broker uses it only to geolocate the
+	// relay (instead of PublicHost, which is the hub for tunnel transport) and
+	// never serves it to clients. Rejected for direct transport, where
+	// PublicHost already is the exit.
+	ExitHost string `json:"exit_host,omitempty"`
+}
+
+// GeoLocation is the broker-resolved physical location of the relay's exit:
+// exit_host for tunnel relays, public_host for direct relays. It is derived by
+// the broker, never supplied by the volunteer, and is best-effort: all fields
+// are empty when the lookup has not succeeded (yet).
+type GeoLocation struct {
+	City        string `json:"city,omitempty"`
+	Country     string `json:"country,omitempty"`
+	CountryCode string `json:"country_code,omitempty"`
+	// Latitude/Longitude let clients place the relay on a map. Zero values are
+	// omitted, so "no coordinates" and "0,0" (open ocean) are indistinguishable
+	// by design.
+	Latitude  float64 `json:"latitude,omitempty"`
+	Longitude float64 `json:"longitude,omitempty"`
 }
 
 type Descriptor struct {
-	ID               string    `json:"id"`
-	Label            string    `json:"label,omitempty"`
-	PublicHost       string    `json:"public_host"`
-	PublicPort       int       `json:"public_port"`
+	ID         string `json:"id"`
+	Label      string `json:"label,omitempty"`
+	PublicHost string `json:"public_host"`
+	PublicPort int    `json:"public_port"`
+	GeoLocation
+	// ExitHost is stored so heartbeat-time geo backfills keep resolving the
+	// true exit location of tunnel relays, but it is never serialized: exposing
+	// a CGNAT volunteer's real IP through the public API would defeat the
+	// privacy the hub provides.
+	ExitHost         string    `json:"-"`
 	Protocol         string    `json:"protocol"`
 	ClientID         string    `json:"client_id"`
 	RealityPublicKey string    `json:"reality_public_key"`
