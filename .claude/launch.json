@@ -1,0 +1,41 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "broker",
+      "runtimeExecutable": "go",
+      "runtimeArgs": ["run", "./cmd/broker", "-addr", ":8080"],
+      "port": 8080
+    },
+    {
+      "name": "volunteer",
+      "runtimeExecutable": "go",
+      "runtimeArgs": [
+        "run",
+        "./cmd/volunteer",
+        "-broker",
+        "http://localhost:8080",
+        "-public-host",
+        "127.0.0.1",
+        "-public-port",
+        "443",
+        "-client-id",
+        "2c08df10-4ef4-4ab9-95c6-cb1e94cdb2ff",
+        "-reality-private-key",
+        "dev-private-key",
+        "-reality-public-key",
+        "dev-public-key",
+        "-short-id",
+        "5f7a8d9c01ab23cd",
+        "-skip-xray-run"
+      ],
+      "port": 443
+    },
+    {
+      "name": "docs",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "8000", "--directory", "docs"],
+      "port": 8000
+    }
+  ]
+}

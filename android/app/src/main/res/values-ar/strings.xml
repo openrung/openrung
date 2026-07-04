@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">OpenRung</string>
+    <string name="vpn_notification_channel">OpenRung VPN</string>
+    <string name="vpn_notification_title">OpenRung VPN</string>
+    <string name="vpn_notification_preparing">جار تجهيز OpenRung VPN</string>
+    <string name="vpn_notification_connected">تم الاتصال عبر %1$s</string>
+    <string name="main_title">openrung://mobile-client</string>
+    <string name="status_format">الحالة = %1$s</string>
+    <string name="relay_format">المرحل = %1$s</string>
+    <string name="relay_location_unknown">موقع غير معروف</string>
+    <string name="broker_url_label">broker url</string>
+    <string name="action_connect">اتصال</string>
+    <string name="action_disconnect">قطع الاتصال</string>
+    <string name="ready_log">جاهز. اضغط على «اتصال» للتوجيه عبر مُرحّل متطوّع.</string>
+    <string name="log_line_format">&gt; %1$s</string>
+    <string name="error_line_format">! %1$s</string>
+    <string name="traffic_route_connected">مسار المرور: الجهاز -&gt; OpenRung VPN -&gt; مرحل متطوع</string>
+    <string name="traffic_route_disconnected">يعمل VPN بوضع fail-closed: لا مرحل، لا اتصال.</string>
+    <string name="settings_content_description">فتح الإعدادات</string>
+    <string name="settings_title">الإعدادات</string>
+    <string name="back_content_description">رجوع</string>
+    <string name="language_setting_title">اللغة</string>
+    <string name="language_setting_subtitle">استخدم لغة النظام أو اختر لغة لـ OpenRung.</string>
+    <string name="version_setting_title">الإصدار</string>
+    <string name="language_system">افتراضي النظام</string>
+    <string name="language_english">English</string>
+    <string name="language_simplified_chinese">简体中文</string>
+    <string name="language_traditional_chinese">繁體中文</string>
+    <string name="language_persian">فارسی</string>
+    <string name="language_russian">Русский</string>
+    <string name="language_arabic">العربية</string>
+    <string name="language_turkish">Türkçe</string>
+    <string name="language_vietnamese">Tiếng Việt</string>
+    <string name="language_burmese">မြန်မာ</string>
+    <string name="status_disconnected">غير متصل</string>
+    <string name="status_preparing">جار تجهيز VPN</string>
+    <string name="status_connecting">جار الاتصال</string>
+    <string name="status_connected">متصل</string>
+    <string name="status_disconnecting">جار قطع الاتصال</string>
+    <string name="status_failed">فشل</string>
+    <string name="log_fetching_relays">جار جلب المرحلات من %1$s</string>
+    <string name="log_broker_returned">أعاد broker عدد %1$d مرحلات؛ %2$d صالحة للاستخدام</string>
+    <string name="error_no_usable_relay">لا يوجد مرحل خروج مباشر VLESS Reality Vision صالح للاستخدام.</string>
+    <string name="error_vpn_connection_failed">فشل اتصال VPN</string>
+    <string name="log_trying_relay">تجربة المرحل %1$s عند %2$s:%3$d</string>
+    <string name="log_checking_relay_reachability">فحص إمكانية الوصول إلى TCP للمرحل</string>
+    <string name="error_relay_unreachable">لا يمكن الوصول إلى المرحل %1$s:%2$d من جهاز Android هذا. إذا كان هذا محاكيا، فاستخدم نقطة نهاية متطوع IPv4/مزدوجة المكدس أو شبكة محاكي تدعم IPv6.</string>
+    <string name="log_relay_failed">فشل المرحل %1$s: %2$s</string>
+    <string name="error_all_relays_failed">فشلت كل محاولات الاتصال بالمرحلات. آخر خطأ: %1$s</string>
+    <string name="error_unknown">غير معروف</string>
+    <string name="log_error_prefix">خطأ: %1$s</string>
+</resources>

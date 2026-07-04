@@ -1,0 +1,16 @@
+{
+  "name": "openrung-broker-proxy",
+  "main": "src/index.js",
+  "account_id": "c3a708e505e6fd00e5ea9339353bd92b",
+  "compatibility_date": "2026-06-25",
+  // Only the custom domain serves this; no public *.workers.dev or preview URL (each would be a
+  // second, China-blocked, enumerable endpoint for no benefit).
+  "workers_dev": false,
+  "preview_urls": false,
+  // custom_domain: true makes Cloudflare provision the proxied DNS record + edge cert for the
+  // hostname automatically (the zone openrung.org must be in this account).
+  "routes": [
+    { "pattern": "broker.openrung.org", "custom_domain": true }
+  ],
+  "observability": { "enabled": true }
+}

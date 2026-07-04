@@ -1,0 +1,564 @@
+package broker
+
+import (
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	_ "embed"
+	"encoding/base64"
+	"net/http"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+)
+
+const (
+	dashboardCookieName = "openrung_admin_session"
+	dashboardSessionTTL = 12 * time.Hour
+)
+
+//go:embed dashboard.html
+var dashboardHTML []byte
+
+type dashboardServer struct {
+	tokenHash   [32]byte
+	reader      TelemetryReader
+	relayLabels func() map[string]string
+	now         func() time.Time
+	mu          sync.Mutex
+	sessions    map[string]time.Time
+}
+
+func newDashboardServer(token string, reader TelemetryReader) *dashboardServer {
+	return &dashboardServer{
+		tokenHash: sha256.Sum256([]byte(token)),
+		reader:    reader,
+		now:       time.Now,
+		sessions:  make(map[string]time.Time),
+	}
+}
+
+func (d *dashboardServer) register(mux *http.ServeMux) {
+	mux.HandleFunc("GET /admin/telemetry/login", d.loginPage)
+	mux.HandleFunc("POST /admin/telemetry/login", d.login)
+	mux.HandleFunc("POST /admin/telemetry/logout", d.logout)
+	mux.HandleFunc("GET /admin/telemetry", d.requireAuth(d.dashboard))
+	mux.HandleFunc("GET /admin/api/telemetry/overview", d.requireAuth(d.overview))
+}
+
+func (d *dashboardServer) loginPage(w http.ResponseWriter, r *http.Request) {
+	if d.authenticated(r) {
+		http.Redirect(w, r, "/admin/telemetry", http.StatusSeeOther)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = w.Write([]byte(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>OpenRung telemetry login</title><style>body{margin:0;background:#07100b;color:#e9f7ee;font:16px ui-monospace,SFMono-Regular,Menlo,monospace;display:grid;min-height:100vh;place-items:center}.box{width:min(88vw,390px);padding:30px;border:1px solid #245c37;background:#0b1710;box-shadow:0 18px 80px #0008}h1{font-size:22px;color:#55e27b}label,input,button{display:block;width:100%;box-sizing:border-box}label{margin:22px 0 8px;color:#a9c9b3}input{padding:12px;background:#06100a;border:1px solid #327448;color:#fff;font:inherit}button{margin-top:16px;padding:12px;border:0;background:#55e27b;color:#061008;font:700 15px inherit;cursor:pointer}.error{color:#ff7f87}</style></head><body><main class="box"><h1>OpenRung telemetry</h1><p>Administrator access</p><form method="post" action="/admin/telemetry/login"><label for="token">Dashboard token</label><input id="token" name="token" type="password" autocomplete="current-password" required autofocus><button type="submit">Sign in</button></form></main></body></html>`))
+}
+
+func (d *dashboardServer) login(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+	if err := r.ParseForm(); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid login request")
+		return
+	}
+	presented := sha256.Sum256([]byte(r.FormValue("token")))
+	if subtle.ConstantTimeCompare(presented[:], d.tokenHash[:]) != 1 {
+		w.Header().Set("Cache-Control", "no-store")
+		http.Error(w, "invalid dashboard token", http.StatusUnauthorized)
+		return
+	}
+
+	sessionBytes := make([]byte, 32)
+	if _, err := rand.Read(sessionBytes); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not create dashboard session")
+		return
+	}
+	sessionID := base64.RawURLEncoding.EncodeToString(sessionBytes)
+	expires := d.now().UTC().Add(dashboardSessionTTL)
+	d.mu.Lock()
+	d.removeExpiredLocked(d.now().UTC())
+	d.sessions[sessionID] = expires
+	d.mu.Unlock()
+	http.SetCookie(w, &http.Cookie{
+		Name:     dashboardCookieName,
+		Value:    sessionID,
+		Path:     "/admin",
+		Expires:  expires,
+		MaxAge:   int(dashboardSessionTTL.Seconds()),
+		HttpOnly: true,
+		Secure:   requestIsHTTPS(r),
+		SameSite: http.SameSiteStrictMode,
+	})
+	http.Redirect(w, r, "/admin/telemetry", http.StatusSeeOther)
+}
+
+func (d *dashboardServer) logout(w http.ResponseWriter, r *http.Request) {
+	if cookie, err := r.Cookie(dashboardCookieName); err == nil {
+		d.mu.Lock()
+		delete(d.sessions, cookie.Value)
+		d.mu.Unlock()
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: dashboardCookieName, Value: "", Path: "/admin", MaxAge: -1,
+		HttpOnly: true, Secure: requestIsHTTPS(r), SameSite: http.SameSiteStrictMode,
+	})
+	http.Redirect(w, r, "/admin/telemetry/login", http.StatusSeeOther)
+}
+
+func (d *dashboardServer) requireAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !d.authenticated(r) {
+			w.Header().Set("Cache-Control", "no-store")
+			if strings.HasPrefix(r.URL.Path, "/admin/api/") {
+				writeError(w, http.StatusUnauthorized, "dashboard session expired")
+			} else {
+				http.Redirect(w, r, "/admin/telemetry/login", http.StatusSeeOther)
+			}
+			return
+		}
+		next(w, r)
+	}
+}
+
+func (d *dashboardServer) authenticated(r *http.Request) bool {
+	cookie, err := r.Cookie(dashboardCookieName)
+	if err != nil || cookie.Value == "" {
+		return false
+	}
+	now := d.now().UTC()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	expires, ok := d.sessions[cookie.Value]
+	if !ok || !expires.After(now) {
+		delete(d.sessions, cookie.Value)
+		return false
+	}
+	return true
+}
+
+func (d *dashboardServer) removeExpiredLocked(now time.Time) {
+	for id, expires := range d.sessions {
+		if !expires.After(now) {
+			delete(d.sessions, id)
+		}
+	}
+}
+
+func requestIsHTTPS(r *http.Request) bool {
+	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
+func (d *dashboardServer) dashboard(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+	_, _ = w.Write(dashboardHTML)
+}
+
+func (d *dashboardServer) overview(w http.ResponseWriter, r *http.Request) {
+	window, ok := dashboardWindow(r.URL.Query().Get("window"))
+	if !ok {
+		writeError(w, http.StatusBadRequest, "window must be 1h, 24h, or 7d")
+		return
+	}
+	now := d.now().UTC()
+	ov := buildTelemetryOverview(d.reader.TelemetryRecords(now.Add(-window)), now, window)
+	if d.relayLabels != nil {
+		applyRelayLabels(&ov, d.relayLabels())
+	}
+	writeJSON(w, http.StatusOK, ov)
+}
+
+func dashboardWindow(raw string) (time.Duration, bool) {
+	switch raw {
+	case "", "24h":
+		return 24 * time.Hour, true
+	case "1h":
+		return time.Hour, true
+	case "7d":
+		return telemetryRetention, true
+	default:
+		return 0, false
+	}
+}
+
+type telemetryOverview struct {
+	GeneratedAt     time.Time          `json:"generated_at"`
+	Window          string             `json:"window"`
+	Totals          overviewTotals     `json:"totals"`
+	Trend           []trendPoint       `json:"trend"`
+	TopRelays       []relaySummary     `json:"top_relays"`
+	TopApps         []countSummary     `json:"top_applications"`
+	TopCountries    []countSummary     `json:"top_countries"`
+	TopCities       []countSummary     `json:"top_cities"`
+	TopISPs         []countSummary     `json:"top_isps"`
+	ActiveRelays    []countSummary     `json:"active_by_relay"`
+	ActiveCountries []countSummary     `json:"active_by_country"`
+	ActiveCities    []countSummary     `json:"active_by_city"`
+	ActiveISPs      []countSummary     `json:"active_by_isp"`
+	ActiveOS        []countSummary     `json:"active_by_os"`
+	FailureStages   []countSummary     `json:"failure_stages"`
+	Recent          []sessionSummary   `json:"recent_sessions"`
+	SpeedTests      []speedTestSummary `json:"speed_tests"`
+}
+
+type overviewTotals struct {
+	Clients        int     `json:"clients"`
+	Sessions       int     `json:"sessions"`
+	Attempts       int     `json:"attempts"`
+	Successes      int     `json:"successes"`
+	Failures       int     `json:"failures"`
+	ActiveClients  int     `json:"active_clients"`
+	ActiveSessions int     `json:"active_sessions"`
+	SuccessRate    float64 `json:"success_rate"`
+}
+
+type trendPoint struct {
+	Time      time.Time `json:"time"`
+	Attempts  int       `json:"attempts"`
+	Successes int       `json:"successes"`
+	Failures  int       `json:"failures"`
+}
+
+type countSummary struct {
+	Name  string `json:"name"`
+	Label string `json:"label,omitempty"`
+	Count int    `json:"count"`
+}
+
+type relaySummary struct {
+	RelayID   string `json:"relay_id"`
+	Label     string `json:"label,omitempty"`
+	Successes int    `json:"successes"`
+	Failures  int    `json:"failures"`
+}
+
+type sessionSummary struct {
+	SessionID       string     `json:"session_id"`
+	ClientID        string     `json:"client_id"`
+	SourceIP        string     `json:"source_ip"`
+	OperatingSystem string     `json:"operating_system,omitempty"`
+	Country         string     `json:"country,omitempty"`
+	City            string     `json:"city,omitempty"`
+	ISP             string     `json:"isp,omitempty"`
+	Organization    string     `json:"organization,omitempty"`
+	ASN             string     `json:"asn,omitempty"`
+	RelayID         string     `json:"relay_id,omitempty"`
+	RelayLabel      string     `json:"relay_label,omitempty"`
+	Status          string     `json:"status"`
+	StartedAt       time.Time  `json:"started_at"`
+	LastSeenAt      time.Time  `json:"last_seen_at"`
+	DurationMS      int64      `json:"duration_ms,omitempty"`
+	Active          bool       `json:"active"`
+	LastHeartbeatAt *time.Time `json:"last_heartbeat_at,omitempty"`
+}
+
+type speedTestSummary struct {
+	RelayID       string  `json:"relay_id"`
+	Label         string  `json:"label,omitempty"`
+	Tests         int     `json:"tests"`
+	AverageMbps   float64 `json:"average_mbps"`
+	AverageTTFBMS float64 `json:"average_ttfb_ms"`
+}
+
+type sessionAccumulator struct {
+	summary           sessionSummary
+	isp               string
+	observedClientIP  string
+	reportedClientIP  string
+	fallbackSourceIP  string
+	lastHeartbeatAt   time.Time
+	runningDurationMS int64
+	terminal          bool
+	attempted         bool
+	succeeded         bool
+	failed            bool
+}
+
+func buildTelemetryOverview(records []TelemetryRecord, now time.Time, window time.Duration) telemetryOverview {
+	start := now.Add(-window)
+	clients := make(map[string]struct{})
+	sessions := make(map[string]*sessionAccumulator)
+	apps := make(map[string]int)
+	failures := make(map[string]int)
+	relays := make(map[string]*relaySummary)
+	type speedAccumulator struct {
+		tests      int
+		mbps, ttfb int64
+	}
+	speeds := make(map[string]*speedAccumulator)
+	buckets := make(map[time.Time]*trendPoint)
+
+	for bucket := start.Truncate(time.Hour); !bucket.After(now); bucket = bucket.Add(time.Hour) {
+		buckets[bucket] = &trendPoint{Time: bucket}
+	}
+	for _, record := range records {
+		event := record.Event
+		if event.OccurredAt.Before(start) || event.OccurredAt.After(now) {
+			continue
+		}
+		clients[event.ClientID] = struct{}{}
+		session := sessions[event.SessionID]
+		if session == nil {
+			session = &sessionAccumulator{summary: sessionSummary{
+				SessionID: event.SessionID, ClientID: event.ClientID,
+				Status: "seen", StartedAt: event.OccurredAt, LastSeenAt: record.ReceivedAt,
+			}}
+			sessions[event.SessionID] = session
+		}
+		if record.SourceIP != "" {
+			session.fallbackSourceIP = record.SourceIP
+			if event.Event == "client_seen" {
+				session.observedClientIP = record.SourceIP
+			}
+		}
+		if clientIP := event.Attributes["client_ip"]; clientIP != "" {
+			session.reportedClientIP = clientIP
+		}
+		if event.OccurredAt.Before(session.summary.StartedAt) {
+			session.summary.StartedAt = event.OccurredAt
+		}
+		if record.ReceivedAt.After(session.summary.LastSeenAt) {
+			session.summary.LastSeenAt = record.ReceivedAt
+		}
+		if event.RelayID != "" {
+			session.summary.RelayID = event.RelayID
+		}
+		if operatingSystem := event.Attributes["operating_system"]; operatingSystem != "" {
+			session.summary.OperatingSystem = operatingSystem
+		} else if androidAPI := event.Attributes["android_api"]; androidAPI != "" {
+			session.summary.OperatingSystem = "Android (API " + androidAPI + ")"
+		}
+		if country := firstNonEmpty(event.Attributes["country"], event.Attributes["country_code"]); country != "" {
+			session.summary.Country = country
+		}
+		if city := event.Attributes["city"]; city != "" {
+			session.summary.City = city
+		}
+		if organization := event.Attributes["organization"]; organization != "" {
+			session.summary.Organization = organization
+		}
+		if asn := event.Attributes["asn"]; asn != "" {
+			session.summary.ASN = asn
+		}
+		if isp := event.Attributes["isp"]; isp != "" {
+			session.isp = isp
+		}
+		if event.Application != "" {
+			apps[event.Application]++
+		}
+		bucket := buckets[event.OccurredAt.Truncate(time.Hour)]
+		switch event.Event {
+		case "connection_attempted":
+			session.attempted = true
+			if bucket != nil {
+				bucket.Attempts++
+			}
+		case "connection_succeeded":
+			session.succeeded = true
+			if bucket != nil {
+				bucket.Successes++
+			}
+			if event.RelayID != "" {
+				relayFor(relays, event.RelayID).Successes++
+			}
+		case "connection_failed":
+			session.failed = true
+			session.terminal = true
+			if bucket != nil {
+				bucket.Failures++
+			}
+			failures[firstNonEmpty(event.Attributes["failure_stage"], "unknown")]++
+		case "relay_attempt_failed":
+			if event.RelayID != "" {
+				relayFor(relays, event.RelayID).Failures++
+			}
+		case "connection_ended":
+			session.terminal = true
+			session.summary.DurationMS = event.Measurements["session_duration_ms"]
+		case "tunnel_stopped":
+			session.terminal = true
+		case "session_heartbeat":
+			if record.ReceivedAt.After(session.lastHeartbeatAt) {
+				session.lastHeartbeatAt = record.ReceivedAt
+			}
+			if elapsed := event.Measurements["session_duration_ms"]; elapsed > session.runningDurationMS {
+				session.runningDurationMS = elapsed
+			}
+		case "speed_test_completed":
+			if event.RelayID != "" {
+				speed := speeds[event.RelayID]
+				if speed == nil {
+					speed = &speedAccumulator{}
+					speeds[event.RelayID] = speed
+				}
+				speed.tests++
+				speed.mbps += event.Measurements["download_mbps_milli"]
+				speed.ttfb += event.Measurements["time_to_first_byte_ms"]
+			}
+		}
+	}
+
+	overview := telemetryOverview{GeneratedAt: now, Window: window.String()}
+	overview.Totals.Clients, overview.Totals.Sessions = len(clients), len(sessions)
+	countryCounts := make(map[string]int)
+	cityCounts := make(map[string]int)
+	ispCounts := make(map[string]int)
+	activeClients := make(map[string]struct{})
+	activeRelays := make(map[string]int)
+	activeCountries := make(map[string]int)
+	activeCities := make(map[string]int)
+	activeISPs := make(map[string]int)
+	activeOS := make(map[string]int)
+	for _, session := range sessions {
+		session.summary.SourceIP = firstNonEmpty(session.observedClientIP, session.reportedClientIP, session.fallbackSourceIP)
+		session.summary.ISP = firstNonEmpty(session.isp, session.summary.Organization, session.summary.ASN)
+		// connection_ended carries the final duration; until then, surface the
+		// running duration from heartbeats so active sessions aren't blank.
+		if session.summary.DurationMS == 0 {
+			session.summary.DurationMS = session.runningDurationMS
+		}
+		switch {
+		case session.failed:
+			session.summary.Status = "failed"
+		case session.succeeded:
+			session.summary.Status = "succeeded"
+		case session.attempted:
+			session.summary.Status = "attempting"
+		}
+		if session.attempted {
+			overview.Totals.Attempts++
+		}
+		if session.succeeded {
+			overview.Totals.Successes++
+		}
+		if session.failed {
+			overview.Totals.Failures++
+		}
+		incrementNonEmpty(countryCounts, session.summary.Country)
+		incrementNonEmpty(cityCounts, session.summary.City)
+		incrementNonEmpty(ispCounts, session.summary.ISP)
+		if !session.lastHeartbeatAt.IsZero() {
+			lastHeartbeatAt := session.lastHeartbeatAt
+			session.summary.LastHeartbeatAt = &lastHeartbeatAt
+		}
+		session.summary.Active = !session.terminal && session.lastHeartbeatAt.After(now.Add(-activeSessionTimeout))
+		if session.summary.Active {
+			overview.Totals.ActiveSessions++
+			activeClients[session.summary.ClientID] = struct{}{}
+			incrementNonEmpty(activeRelays, session.summary.RelayID)
+			incrementNonEmpty(activeCountries, session.summary.Country)
+			incrementNonEmpty(activeCities, session.summary.City)
+			incrementNonEmpty(activeISPs, session.summary.ISP)
+			incrementNonEmpty(activeOS, session.summary.OperatingSystem)
+		}
+		overview.Recent = append(overview.Recent, session.summary)
+	}
+	overview.Totals.ActiveClients = len(activeClients)
+	if overview.Totals.Attempts > 0 {
+		overview.Totals.SuccessRate = float64(overview.Totals.Successes) / float64(overview.Totals.Attempts)
+	}
+	for _, point := range buckets {
+		overview.Trend = append(overview.Trend, *point)
+	}
+	sort.Slice(overview.Trend, func(i, j int) bool { return overview.Trend[i].Time.Before(overview.Trend[j].Time) })
+	sort.Slice(overview.Recent, func(i, j int) bool { return overview.Recent[i].LastSeenAt.After(overview.Recent[j].LastSeenAt) })
+	if len(overview.Recent) > 25 {
+		overview.Recent = overview.Recent[:25]
+	}
+	for _, relay := range relays {
+		overview.TopRelays = append(overview.TopRelays, *relay)
+	}
+	sort.Slice(overview.TopRelays, func(i, j int) bool {
+		return overview.TopRelays[i].Successes+overview.TopRelays[i].Failures > overview.TopRelays[j].Successes+overview.TopRelays[j].Failures
+	})
+	if len(overview.TopRelays) > 10 {
+		overview.TopRelays = overview.TopRelays[:10]
+	}
+	overview.TopApps = sortedCounts(apps, 10)
+	overview.TopCountries = sortedCounts(countryCounts, 10)
+	overview.TopCities = sortedCounts(cityCounts, 10)
+	overview.TopISPs = sortedCounts(ispCounts, 10)
+	overview.ActiveRelays = sortedCounts(activeRelays, 10)
+	overview.ActiveCountries = sortedCounts(activeCountries, 10)
+	overview.ActiveCities = sortedCounts(activeCities, 10)
+	overview.ActiveISPs = sortedCounts(activeISPs, 10)
+	overview.ActiveOS = sortedCounts(activeOS, 10)
+	overview.FailureStages = sortedCounts(failures, 10)
+	for relayID, speed := range speeds {
+		overview.SpeedTests = append(overview.SpeedTests, speedTestSummary{RelayID: relayID, Tests: speed.tests, AverageMbps: float64(speed.mbps) / float64(speed.tests) / 1000, AverageTTFBMS: float64(speed.ttfb) / float64(speed.tests)})
+	}
+	sort.Slice(overview.SpeedTests, func(i, j int) bool { return overview.SpeedTests[i].AverageMbps > overview.SpeedTests[j].AverageMbps })
+	return overview
+}
+
+func applyRelayLabels(ov *telemetryOverview, labels map[string]string) {
+	if len(labels) == 0 {
+		return
+	}
+	for i := range ov.TopRelays {
+		if label := labels[ov.TopRelays[i].RelayID]; label != "" {
+			ov.TopRelays[i].Label = label
+		}
+	}
+	for i := range ov.Recent {
+		if label := labels[ov.Recent[i].RelayID]; label != "" {
+			ov.Recent[i].RelayLabel = label
+		}
+	}
+	for i := range ov.ActiveRelays {
+		if label := labels[ov.ActiveRelays[i].Name]; label != "" {
+			ov.ActiveRelays[i].Label = label
+		}
+	}
+	for i := range ov.SpeedTests {
+		if label := labels[ov.SpeedTests[i].RelayID]; label != "" {
+			ov.SpeedTests[i].Label = label
+		}
+	}
+}
+
+func relayFor(relays map[string]*relaySummary, id string) *relaySummary {
+	relay := relays[id]
+	if relay == nil {
+		relay = &relaySummary{RelayID: id}
+		relays[id] = relay
+	}
+	return relay
+}
+
+func sortedCounts(values map[string]int, limit int) []countSummary {
+	result := make([]countSummary, 0, len(values))
+	for name, count := range values {
+		result = append(result, countSummary{Name: name, Count: count})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Count == result[j].Count {
+			return result[i].Name < result[j].Name
+		}
+		return result[i].Count > result[j].Count
+	})
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	return result
+}
+
+func incrementNonEmpty(values map[string]int, name string) {
+	if strings.TrimSpace(name) != "" {
+		values[name]++
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}

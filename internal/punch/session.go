@@ -1,0 +1,255 @@
+package punch
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net"
+	"time"
+)
+
+// DefaultTTL is the punch time budget used when the hub does not specify one.
+const DefaultTTL = 6 * time.Second
+
+// quicHandshakeTimeout bounds the QUIC handshake over the freshly punched hole.
+const quicHandshakeTimeout = 5 * time.Second
+
+// Dialer runs the client side of a punch: discover, coordinate via the hub, punch,
+// and stand up a loopback bridge that sing-box dials in place of the relay.
+type Dialer struct {
+	Hub     HubClient
+	RelayID string
+	Logger  *slog.Logger
+}
+
+// Establishment is a live punched path. The caller starts Bridge.Serve with a
+// session-lived context and points sing-box at BridgeHost:BridgePort. PeerIP must
+// be added to sing-box's route_exclude_address so the punched QUIC datagrams are
+// not captured by the client's own TUN.
+type Establishment struct {
+	Bridge     *ClientBridge
+	BridgeHost string
+	BridgePort int
+	PeerIP     string
+	SessionID  string
+	NATClass   string
+
+	sock *net.UDPConn
+}
+
+// Close tears down the bridge and releases the punched socket.
+func (e *Establishment) Close() error {
+	if e.Bridge != nil {
+		_ = e.Bridge.Close()
+	}
+	if e.sock != nil {
+		_ = e.sock.Close()
+	}
+	return nil
+}
+
+func (d *Dialer) logger() *slog.Logger {
+	if d.Logger != nil {
+		return d.Logger
+	}
+	return slog.Default()
+}
+
+// Establish attempts the full client punch flow. On success it returns a live
+// Establishment (the caller must run Bridge.Serve) and an OK PunchResult. On any
+// failure it returns a non-nil error and a PunchResult whose Reason/NATClass are
+// suitable for telemetry; the caller then falls back to the hub relay. A
+// *HubHTTPError with status 404/409 signals a stale relay id (re-fetch relays).
+func (d *Dialer) Establish(ctx context.Context) (*Establishment, PunchResult, error) {
+	start := time.Now()
+	res := PunchResult{}
+
+	cfg, err := d.Hub.FetchConfig(ctx)
+	if err != nil {
+		res.Reason = "config"
+		return nil, res, err
+	}
+
+	sock, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	if err != nil {
+		res.Reason = "socket"
+		return nil, res, err
+	}
+	established := false
+	defer func() {
+		if !established {
+			_ = sock.Close()
+		}
+	}()
+
+	nonceHex, nonceRaw, err := GenerateNonce()
+	if err != nil {
+		res.Reason = "nonce"
+		return nil, res, err
+	}
+
+	reflexive, class, gatherErr := Gather(ctx, sock, cfg.ReflectorAddrs, nonceRaw)
+	res.NATClass = class
+	local := LocalCandidates(sock)
+	if len(reflexive) == 0 && len(local) == 0 {
+		res.Reason = "discovery"
+		if gatherErr == nil {
+			gatherErr = fmt.Errorf("no candidates gathered")
+		}
+		return nil, res, gatherErr
+	}
+
+	resp, err := d.Hub.RequestPunch(ctx, PunchRequest{
+		RelayID:         d.RelayID,
+		ClientNonce:     nonceHex,
+		ClientReflexive: reflexive,
+		ClientLocal:     local,
+		ClientClass:     class,
+		QUICALPN:        ALPN,
+		ProtoVersion:    ProtoVersion,
+	})
+	if err != nil {
+		res.Reason = "request"
+		return nil, res, err
+	}
+	res.SessionID = resp.SessionID
+	if !resp.OK {
+		res.Reason = "declined:" + resp.Error
+		return nil, res, fmt.Errorf("hub declined punch: %s", resp.Error)
+	}
+
+	token, err := DecodeToken(resp.PunchToken)
+	if err != nil {
+		res.Reason = "token"
+		return nil, res, err
+	}
+
+	ttl := time.Duration(resp.TTLMillis) * time.Millisecond
+	if ttl <= 0 {
+		ttl = DefaultTTL
+	}
+	deadline := time.Now().Add(ttl)
+	peers := append(append([]Endpoint{}, resp.VolunteerReflexive...), resp.VolunteerLocal...)
+
+	confirmed, err := Attempt(ctx, sock, peers, resp.SessionID, token, deadline)
+	if err != nil {
+		res.Reason = "punch"
+		return nil, res, err
+	}
+
+	dialCtx, cancel := context.WithTimeout(ctx, quicHandshakeTimeout)
+	defer cancel()
+	conn, err := DialQUIC(dialCtx, sock, confirmed, resp.CertFingerprint)
+	if err != nil {
+		res.Reason = "quic"
+		return nil, res, err
+	}
+
+	bridge, err := NewClientBridge(conn, token, d.logger())
+	if err != nil {
+		_ = conn.CloseWithError(0, "")
+		res.Reason = "bridge"
+		return nil, res, err
+	}
+
+	host, port := bridge.Endpoint()
+	established = true
+	res.OK = true
+	res.RTTMillis = time.Since(start).Milliseconds()
+	return &Establishment{
+		Bridge:     bridge,
+		BridgeHost: host,
+		BridgePort: port,
+		PeerIP:     confirmed.IP.String(),
+		SessionID:  resp.SessionID,
+		NATClass:   resp.VolunteerClass,
+		sock:       sock,
+	}, res, nil
+}
+
+// RespondToDirective runs the volunteer side of a punch. It synchronously gathers
+// its own reflexive candidates and returns a PunchAck for the hub to relay to the
+// client, then punches and serves QUIC in the background (bounded by the
+// directive TTL and ctx), bridging streams to targetHost:targetPort (the loopback
+// Xray listener). ctx should be the long-lived tunnel context so the background
+// punch survives the control stream closing but stops on tunnel shutdown.
+func RespondToDirective(ctx context.Context, dir PunchDirective, targetHost string, targetPort int, logger *slog.Logger) PunchAck {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	fail := func(reason string) PunchAck {
+		return PunchAck{SessionID: dir.SessionID, OK: false, Error: reason}
+	}
+
+	token, err := DecodeToken(dir.PunchToken)
+	if err != nil {
+		return fail("bad token")
+	}
+
+	sock, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	if err != nil {
+		return fail("socket")
+	}
+
+	_, nonceRaw, err := GenerateNonce()
+	if err != nil {
+		_ = sock.Close()
+		return fail("nonce")
+	}
+
+	gatherCtx, gatherCancel := context.WithTimeout(ctx, gatherTimeout+500*time.Millisecond)
+	reflexive, class, _ := Gather(gatherCtx, sock, dir.ReflectorAddrs, nonceRaw)
+	gatherCancel()
+	local := LocalCandidates(sock)
+	if len(reflexive) == 0 && len(local) == 0 {
+		_ = sock.Close()
+		return fail("discovery")
+	}
+
+	cert, fingerprint, err := GenerateSessionCert()
+	if err != nil {
+		_ = sock.Close()
+		return fail("cert")
+	}
+
+	ttl := time.Duration(dir.TTLMillis) * time.Millisecond
+	if ttl <= 0 {
+		ttl = DefaultTTL
+	}
+	peers := append(append([]Endpoint{}, dir.ClientReflexive...), dir.ClientLocal...)
+
+	go func() {
+		defer sock.Close()
+
+		// The TTL bounds only the punch attempt (hole opening). Once the hole is
+		// open the QUIC session must live for the whole tunnel lifetime, so the
+		// bridge runs under ctx (the long-lived tunnel context), not the TTL
+		// deadline — otherwise every punched session would be torn down ~TTL
+		// seconds after it is established.
+		deadline := time.Now().Add(ttl)
+		attemptCtx, cancel := context.WithDeadline(ctx, deadline)
+		_, err := Attempt(attemptCtx, sock, peers, dir.SessionID, token, deadline)
+		cancel()
+		if err != nil {
+			logger.Info("punch attempt failed", "session", dir.SessionID, "error", err)
+			return
+		}
+		ln, err := ListenQUIC(sock, cert)
+		if err != nil {
+			logger.Warn("punch listen quic failed", "session", dir.SessionID, "error", err)
+			return
+		}
+		if err := VolunteerBridge(ctx, ln, token, targetHost, targetPort, logger); err != nil && ctx.Err() == nil {
+			logger.Info("punch bridge closed", "session", dir.SessionID, "error", err)
+		}
+	}()
+
+	return PunchAck{
+		SessionID:          dir.SessionID,
+		OK:                 true,
+		VolunteerReflexive: reflexive,
+		VolunteerLocal:     local,
+		VolunteerClass:     class,
+		CertFingerprint:    fingerprint,
+	}
+}

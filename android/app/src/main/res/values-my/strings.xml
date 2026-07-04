@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">OpenRung</string>
+    <string name="vpn_notification_channel">OpenRung VPN</string>
+    <string name="vpn_notification_title">OpenRung VPN</string>
+    <string name="vpn_notification_preparing">OpenRung VPN ကို ပြင်ဆင်နေသည်</string>
+    <string name="vpn_notification_connected">%1$s မှတစ်ဆင့် ချိတ်ဆက်ပြီး</string>
+    <string name="main_title">openrung://mobile-client</string>
+    <string name="status_format">အခြေအနေ = %1$s</string>
+    <string name="relay_format">relay = %1$s</string>
+    <string name="relay_location_unknown">မသိသော တည်နေရာ</string>
+    <string name="broker_url_label">broker url</string>
+    <string name="action_connect">ချိတ်ဆက်မည်</string>
+    <string name="action_disconnect">ချိတ်ဆက်မှု ဖြုတ်မည်</string>
+    <string name="ready_log">အသင့်ဖြစ်ပါပြီ။ စေတနာ့ဝန်ထမ်း ရီလေးမှတစ်ဆင့် ချိတ်ဆက်ရန် ချိတ်ဆက်မည် ကိုနှိပ်ပါ။</string>
+    <string name="log_line_format">&gt; %1$s</string>
+    <string name="error_line_format">! %1$s</string>
+    <string name="traffic_route_connected">traffic route: device -&gt; OpenRung VPN -&gt; volunteer relay</string>
+    <string name="traffic_route_disconnected">vpn သည် fail-closed ဖြစ်သည်: relay မရှိလျှင် ချိတ်ဆက်မှု မရှိပါ။</string>
+    <string name="settings_content_description">ဆက်တင်များ ဖွင့်ရန်</string>
+    <string name="settings_title">ဆက်တင်များ</string>
+    <string name="back_content_description">နောက်သို့</string>
+    <string name="language_setting_title">ဘာသာစကား</string>
+    <string name="language_setting_subtitle">စနစ်ဘာသာစကားကို သုံးပါ၊ သို့မဟုတ် OpenRung အတွက် ဘာသာစကားရွေးပါ။</string>
+    <string name="version_setting_title">ဗားရှင်း</string>
+    <string name="language_system">စနစ် မူလတန်ဖိုး</string>
+    <string name="language_english">English</string>
+    <string name="language_simplified_chinese">简体中文</string>
+    <string name="language_traditional_chinese">繁體中文</string>
+    <string name="language_persian">فارسی</string>
+    <string name="language_russian">Русский</string>
+    <string name="language_arabic">العربية</string>
+    <string name="language_turkish">Türkçe</string>
+    <string name="language_vietnamese">Tiếng Việt</string>
+    <string name="language_burmese">မြန်မာ</string>
+    <string name="status_disconnected">ချိတ်ဆက်မှု ပြတ်နေသည်</string>
+    <string name="status_preparing">VPN ကို ပြင်ဆင်နေသည်</string>
+    <string name="status_connecting">ချိတ်ဆက်နေသည်</string>
+    <string name="status_connected">ချိတ်ဆက်ပြီး</string>
+    <string name="status_disconnecting">ချိတ်ဆက်မှု ဖြုတ်နေသည်</string>
+    <string name="status_failed">မအောင်မြင်ပါ</string>
+    <string name="log_fetching_relays">%1$s မှ relay များ ရယူနေသည်</string>
+    <string name="log_broker_returned">broker မှ relay %1$d ခု ပြန်ပေးခဲ့သည်။ %2$d ခု အသုံးပြုနိုင်သည်</string>
+    <string name="error_no_usable_relay">အသုံးပြုနိုင်သော VLESS Reality Vision direct-exit relay မရှိပါ။</string>
+    <string name="error_vpn_connection_failed">VPN ချိတ်ဆက်မှု မအောင်မြင်ပါ</string>
+    <string name="log_trying_relay">%2$s:%3$d ရှိ relay %1$s ကို စမ်းနေသည်</string>
+    <string name="log_checking_relay_reachability">relay TCP ရောက်နိုင်မှုကို စစ်ဆေးနေသည်</string>
+    <string name="error_relay_unreachable">ဤ Android စက်မှ relay %1$s:%2$d သို့ မရောက်နိုင်ပါ။ emulator ဖြစ်ပါက IPv4/dual-stack volunteer endpoint သို့မဟုတ် IPv6 အသုံးပြုနိုင်သော emulator network ကို သုံးပါ။</string>
+    <string name="log_relay_failed">relay %1$s မအောင်မြင်ပါ: %2$s</string>
+    <string name="error_all_relays_failed">relay ချိတ်ဆက်ရန် ကြိုးစားမှုအားလုံး မအောင်မြင်ပါ။ နောက်ဆုံး အမှား: %1$s</string>
+    <string name="error_unknown">မသိပါ</string>
+    <string name="log_error_prefix">အမှား: %1$s</string>
+</resources>

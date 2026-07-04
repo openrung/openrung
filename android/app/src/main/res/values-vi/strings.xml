@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">OpenRung</string>
+    <string name="vpn_notification_channel">OpenRung VPN</string>
+    <string name="vpn_notification_title">OpenRung VPN</string>
+    <string name="vpn_notification_preparing">Đang chuẩn bị OpenRung VPN</string>
+    <string name="vpn_notification_connected">Đã kết nối qua %1$s</string>
+    <string name="main_title">openrung://mobile-client</string>
+    <string name="status_format">trạng thái = %1$s</string>
+    <string name="relay_format">relay = %1$s</string>
+    <string name="relay_location_unknown">Vị trí không xác định</string>
+    <string name="broker_url_label">broker url</string>
+    <string name="action_connect">KẾT NỐI</string>
+    <string name="action_disconnect">NGẮT KẾT NỐI</string>
+    <string name="ready_log">sẵn sàng. nhấn kết nối để định tuyến qua relay tình nguyện.</string>
+    <string name="log_line_format">&gt; %1$s</string>
+    <string name="error_line_format">! %1$s</string>
+    <string name="traffic_route_connected">đường đi lưu lượng: thiết bị -&gt; OpenRung VPN -&gt; relay tình nguyện</string>
+    <string name="traffic_route_disconnected">vpn ở chế độ fail-closed: không có relay, không kết nối.</string>
+    <string name="settings_content_description">Mở cài đặt</string>
+    <string name="settings_title">Cài đặt</string>
+    <string name="back_content_description">Quay lại</string>
+    <string name="language_setting_title">Ngôn ngữ</string>
+    <string name="language_setting_subtitle">Dùng ngôn ngữ hệ thống hoặc chọn ngôn ngữ cho OpenRung.</string>
+    <string name="version_setting_title">Phiên bản</string>
+    <string name="language_system">Mặc định hệ thống</string>
+    <string name="language_english">English</string>
+    <string name="language_simplified_chinese">简体中文</string>
+    <string name="language_traditional_chinese">繁體中文</string>
+    <string name="language_persian">فارسی</string>
+    <string name="language_russian">Русский</string>
+    <string name="language_arabic">العربية</string>
+    <string name="language_turkish">Türkçe</string>
+    <string name="language_vietnamese">Tiếng Việt</string>
+    <string name="language_burmese">မြန်မာ</string>
+    <string name="status_disconnected">Đã ngắt kết nối</string>
+    <string name="status_preparing">Đang chuẩn bị VPN</string>
+    <string name="status_connecting">Đang kết nối</string>
+    <string name="status_connected">Đã kết nối</string>
+    <string name="status_disconnecting">Đang ngắt kết nối</string>
+    <string name="status_failed">Thất bại</string>
+    <string name="log_fetching_relays">đang lấy relay từ %1$s</string>
+    <string name="log_broker_returned">broker trả về %1$d relay; %2$d dùng được</string>
+    <string name="error_no_usable_relay">Không có relay thoát trực tiếp VLESS Reality Vision nào dùng được.</string>
+    <string name="error_vpn_connection_failed">Kết nối VPN thất bại</string>
+    <string name="log_trying_relay">đang thử relay %1$s tại %2$s:%3$d</string>
+    <string name="log_checking_relay_reachability">đang kiểm tra khả năng truy cập TCP của relay</string>
+    <string name="error_relay_unreachable">Không thể truy cập relay %1$s:%2$d từ thiết bị Android này. Nếu đây là trình giả lập, hãy dùng endpoint tình nguyện IPv4/dual-stack hoặc mạng giả lập hỗ trợ IPv6.</string>
+    <string name="log_relay_failed">relay %1$s thất bại: %2$s</string>
+    <string name="error_all_relays_failed">Tất cả lần thử kết nối relay đều thất bại. Lỗi cuối: %1$s</string>
+    <string name="error_unknown">không xác định</string>
+    <string name="log_error_prefix">lỗi: %1$s</string>
+</resources>

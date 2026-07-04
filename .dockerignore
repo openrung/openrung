@@ -1,0 +1,33 @@
+# Keep the Docker build context small and free of non-Go assets / secrets.
+# The volunteer image only needs go.mod/go.sum, cmd/, internal/, and
+# deploy/volunteer/entrypoint.sh.
+
+.git
+.gitignore
+.github
+.DS_Store
+**/.DS_Store
+
+# Docs and mobile clients are not needed to build the relay.
+*.md
+# ...but the third-party notices must ship inside the image (license compliance).
+!THIRD_PARTY_NOTICES.md
+docs
+ios
+android
+scripts
+
+# Build outputs / caches.
+bin
+dist
+build
+.build
+.gocache
+.cache
+.claude
+
+# Local runtime files and secrets.
+.env
+*.local.json
+openrung-telemetry.jsonl
+openrung-xray-config.json

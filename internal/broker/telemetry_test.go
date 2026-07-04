@@ -1,0 +1,272 @@
+package broker
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+type memoryTelemetrySink struct {
+	records []TelemetryRecord
+}
+
+func (s *memoryTelemetrySink) WriteTelemetry(_ context.Context, records []TelemetryRecord) error {
+	s.records = append(s.records, records...)
+	return nil
+}
+
+func TestTelemetryHandlerStoresSourceIPAndEvents(t *testing.T) {
+	sink := &memoryTelemetrySink{}
+	payload, err := json.Marshal(telemetryBatch{Events: []TelemetryEvent{{
+		SchemaVersion: 1,
+		EventID:       "event-1",
+		Event:         "connection_attempted",
+		OccurredAt:    time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC),
+		ClientID:      "client-1",
+		SessionID:     "session-1",
+	}}})
+	if err != nil {
+		t.Fatalf("marshal telemetry: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/telemetry/events", bytes.NewReader(payload))
+	req.RemoteAddr = "203.0.113.42:54321"
+	recorder := httptest.NewRecorder()
+	telemetryHandler(sink, nil, newClientIPResolver(nil)).ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if len(sink.records) != 1 {
+		t.Fatalf("expected one telemetry record, got %d", len(sink.records))
+	}
+	if got := sink.records[0].SourceIP; got != "203.0.113.42" {
+		t.Fatalf("expected retained source IP, got %q", got)
+	}
+}
+
+func TestRelayListRecordsPreTunnelClientIP(t *testing.T) {
+	sink := &memoryTelemetrySink{}
+	server := NewServer(NewStore(), Config{TelemetrySink: sink})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/relays?limit=5", nil)
+	req.RemoteAddr = "198.51.100.19:4242"
+	req.Header.Set("X-OpenRung-Client-ID", "client-1")
+	req.Header.Set("X-OpenRung-Session-ID", "session-1")
+	req.Header.Set("X-OpenRung-App-Version", "0.1.0")
+	req.Header.Set("X-OpenRung-Android-API", "35")
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if len(sink.records) != 1 {
+		t.Fatalf("expected one client_seen record, got %d", len(sink.records))
+	}
+	record := sink.records[0]
+	if record.SourceIP != "198.51.100.19" || record.Event.Event != "client_seen" {
+		t.Fatalf("unexpected client seen record: %+v", record)
+	}
+	if record.Event.Attributes["android_api"] != "35" {
+		t.Fatalf("expected Android API attribute, got %+v", record.Event.Attributes)
+	}
+}
+
+func TestTelemetryHandlerRejectsMissingIdentity(t *testing.T) {
+	sink := &memoryTelemetrySink{}
+	payload := []byte(`{"events":[{"schema_version":1,"event_id":"event-1","event":"connection_attempted","occurred_at":"2026-06-20T12:00:00Z","client_id":"","session_id":"session-1"}]}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/telemetry/events", bytes.NewReader(payload))
+	recorder := httptest.NewRecorder()
+	telemetryHandler(sink, nil, newClientIPResolver(nil)).ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", recorder.Code)
+	}
+}
+
+func TestSpeedTestHandlerStreamsRequestedBytes(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/speed-test?bytes=10000", nil)
+	recorder := httptest.NewRecorder()
+	speedTestHandler().ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Body.Len() != 10000 {
+		t.Fatalf("expected 10000 bytes, got %d", recorder.Body.Len())
+	}
+	if recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("expected no-store cache control")
+	}
+}
+
+func TestSpeedTestHandlerRejectsOversizedRequest(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/speed-test?bytes=25000001", nil)
+	recorder := httptest.NewRecorder()
+	speedTestHandler().ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", recorder.Code)
+	}
+}
+
+func TestJSONLTelemetrySinkLoadsOnlyRecentRecords(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "telemetry.jsonl")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoder := json.NewEncoder(file)
+	for _, occurredAt := range []time.Time{now.Add(-8 * 24 * time.Hour), now.Add(-time.Hour)} {
+		record := telemetryRecordAt(occurredAt, "event-"+occurredAt.Format(time.RFC3339))
+		if err := encoder.Encode(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	sink, err := newJSONLTelemetrySink(path, func() time.Time { return now })
+	if err != nil {
+		t.Fatalf("open sink: %v", err)
+	}
+	defer sink.Close()
+	records := sink.TelemetryRecords(now.Add(-telemetryRetention))
+	if len(records) != 1 || records[0].Event.OccurredAt != now.Add(-time.Hour) {
+		t.Fatalf("expected only recent record, got %+v", records)
+	}
+}
+
+func TestJSONLTelemetrySinkPrunesOutOfOrderRecords(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+	sink, err := newJSONLTelemetrySink(filepath.Join(t.TempDir(), "telemetry.jsonl"), func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sink.Close()
+	records := []TelemetryRecord{
+		telemetryRecordAt(now.Add(-time.Hour), "recent-1"),
+		telemetryRecordAt(now.Add(-8*24*time.Hour), "old"),
+		telemetryRecordAt(now.Add(-2*time.Hour), "recent-2"),
+	}
+	if err := sink.WriteTelemetry(context.Background(), records); err != nil {
+		t.Fatal(err)
+	}
+	if got := sink.TelemetryRecords(now.Add(-telemetryRetention)); len(got) != 2 {
+		t.Fatalf("expected two retained records, got %d", len(got))
+	}
+}
+
+func TestJSONLTelemetrySinkConcurrentReadWrite(t *testing.T) {
+	now := time.Now().UTC()
+	sink, err := newJSONLTelemetrySink(filepath.Join(t.TempDir(), "telemetry.jsonl"), func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sink.Close()
+	var wg sync.WaitGroup
+	for index := 0; index < 20; index++ {
+		wg.Add(2)
+		go func(index int) {
+			defer wg.Done()
+			_ = sink.WriteTelemetry(context.Background(), []TelemetryRecord{telemetryRecordAt(now, "event-"+string(rune('a'+index)))})
+		}(index)
+		go func() {
+			defer wg.Done()
+			_ = sink.TelemetryRecords(now.Add(-time.Hour))
+		}()
+	}
+	wg.Wait()
+	if got := len(sink.TelemetryRecords(now.Add(-time.Hour))); got != 20 {
+		t.Fatalf("expected 20 records, got %d", got)
+	}
+}
+
+func TestJSONLTelemetrySinkRejectsMalformedRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "telemetry.jsonl")
+	if err := os.WriteFile(path, []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := newJSONLTelemetrySink(path, time.Now)
+	if err == nil || !strings.Contains(err.Error(), "line 1") {
+		t.Fatalf("expected line-specific decode error, got %v", err)
+	}
+}
+
+func TestJSONLTelemetrySinkBuffersThenFlushes(t *testing.T) {
+	now := time.Now().UTC()
+	path := filepath.Join(t.TempDir(), "telemetry.jsonl")
+	sink, err := newJSONLTelemetrySinkWithIntervals(path, func() time.Time { return now }, 20*time.Millisecond, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sink.Close()
+	if err := sink.WriteTelemetry(context.Background(), []TelemetryRecord{telemetryRecordAt(now, "buffered")}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != 0 {
+		t.Fatalf("expected write to remain buffered initially, size=%d", info.Size())
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		info, err := os.Stat(path)
+		if err == nil && info.Size() > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("telemetry buffer did not flush on schedule")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestJSONLTelemetrySinkCloseFlushesAndSyncs(t *testing.T) {
+	now := time.Now().UTC()
+	path := filepath.Join(t.TempDir(), "telemetry.jsonl")
+	sink, err := newJSONLTelemetrySinkWithIntervals(path, func() time.Time { return now }, time.Hour, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.WriteTelemetry(context.Background(), []TelemetryRecord{telemetryRecordAt(now, "close")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(contents), `"event_id":"close"`) {
+		t.Fatalf("close did not persist buffered telemetry: %s", contents)
+	}
+}
+
+func telemetryRecordAt(occurredAt time.Time, eventID string) TelemetryRecord {
+	return TelemetryRecord{
+		ReceivedAt: occurredAt,
+		SourceIP:   "203.0.113.10",
+		Event: TelemetryEvent{
+			SchemaVersion: 1,
+			EventID:       eventID,
+			Event:         "connection_attempted",
+			OccurredAt:    occurredAt,
+			ClientID:      "client-1",
+			SessionID:     eventID,
+		},
+	}
+}

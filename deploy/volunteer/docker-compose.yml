@@ -1,0 +1,39 @@
+# OpenRung volunteer relay.
+#
+#   cp .env.example .env      # then edit .env (set OPENRUNG_BROKER_URL + OPENRUNG_PUBLIC_HOST)
+#   docker compose up -d --build
+#   docker compose logs -f
+#
+services:
+  volunteer:
+    build:
+      context: ../..
+      dockerfile: deploy/volunteer/Dockerfile
+      args:
+        XRAY_VERSION: v26.3.27
+    image: openrung-volunteer:latest
+    container_name: openrung-volunteer
+    restart: unless-stopped
+    env_file: [.env]
+
+    # An exit relay needs a real, reachable public address. Host networking:
+    #   - exposes the server's real IPv6/IPv4 (no Docker NAT in the way)
+    #   - lets the connection log record real client IPs
+    # IPv4-only host and prefer bridge networking instead? Comment out
+    # network_mode below, set OPENRUNG_LISTEN_HOST=0.0.0.0 in .env, and add:
+    #   ports: ["443:443"]
+    # (client IPs in the log will then show Docker's gateway, not the real client)
+    network_mode: host
+
+    # Least privilege: drop every capability, re-add only the ability to bind
+    # the privileged public port (443). This relies on the file capability set
+    # on the binary, so do NOT add `no-new-privileges` here (it would disable
+    # the file capability and break the bind).
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+
+    # The container filesystem is read-only; the only writable path needed is
+    # the generated xray config under /tmp.
+    read_only: true
+    tmpfs:
+      - /tmp

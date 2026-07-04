@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">OpenRung</string>
+    <string name="vpn_notification_channel">OpenRung VPN</string>
+    <string name="vpn_notification_title">OpenRung VPN</string>
+    <string name="vpn_notification_preparing">در حال آماده‌سازی OpenRung VPN</string>
+    <string name="vpn_notification_connected">از طریق %1$s متصل شد</string>
+    <string name="main_title">openrung://mobile-client</string>
+    <string name="status_format">وضعیت = %1$s</string>
+    <string name="relay_format">رله = %1$s</string>
+    <string name="relay_location_unknown">موقعیت نامشخص</string>
+    <string name="broker_url_label">broker url</string>
+    <string name="action_connect">اتصال</string>
+    <string name="action_disconnect">قطع اتصال</string>
+    <string name="ready_log">آماده است. برای عبور از رله داوطلب، روی اتصال ضربه بزنید.</string>
+    <string name="log_line_format">&gt; %1$s</string>
+    <string name="error_line_format">! %1$s</string>
+    <string name="traffic_route_connected">مسیر ترافیک: دستگاه -&gt; OpenRung VPN -&gt; رله داوطلب</string>
+    <string name="traffic_route_disconnected">VPN در حالت fail-closed است: بدون رله، اتصال برقرار نمی‌شود.</string>
+    <string name="settings_content_description">باز کردن تنظیمات</string>
+    <string name="settings_title">تنظیمات</string>
+    <string name="back_content_description">بازگشت</string>
+    <string name="language_setting_title">زبان</string>
+    <string name="language_setting_subtitle">از زبان سیستم استفاده کنید یا زبانی برای OpenRung انتخاب کنید.</string>
+    <string name="version_setting_title">نسخه</string>
+    <string name="language_system">پیش‌فرض سیستم</string>
+    <string name="language_english">English</string>
+    <string name="language_simplified_chinese">简体中文</string>
+    <string name="language_traditional_chinese">繁體中文</string>
+    <string name="language_persian">فارسی</string>
+    <string name="language_russian">Русский</string>
+    <string name="language_arabic">العربية</string>
+    <string name="language_turkish">Türkçe</string>
+    <string name="language_vietnamese">Tiếng Việt</string>
+    <string name="language_burmese">မြန်မာ</string>
+    <string name="status_disconnected">قطع شده</string>
+    <string name="status_preparing">در حال آماده‌سازی VPN</string>
+    <string name="status_connecting">در حال اتصال</string>
+    <string name="status_connected">متصل</string>
+    <string name="status_disconnecting">در حال قطع اتصال</string>
+    <string name="status_failed">ناموفق</string>
+    <string name="log_fetching_relays">در حال دریافت رله‌ها از %1$s</string>
+    <string name="log_broker_returned">broker تعداد %1$d رله برگرداند؛ %2$d قابل استفاده است</string>
+    <string name="error_no_usable_relay">هیچ رله خروج مستقیم VLESS Reality Vision قابل استفاده‌ای موجود نیست.</string>
+    <string name="error_vpn_connection_failed">اتصال VPN ناموفق بود</string>
+    <string name="log_trying_relay">در حال امتحان رله %1$s در %2$s:%3$d</string>
+    <string name="log_checking_relay_reachability">در حال بررسی دسترسی TCP رله</string>
+    <string name="error_relay_unreachable">رله %1$s:%2$d از این دستگاه Android قابل دسترسی نیست. اگر این شبیه‌ساز است، از یک نقطه پایانی داوطلب IPv4/دوپشته یا شبکه شبیه‌ساز دارای IPv6 استفاده کنید.</string>
+    <string name="log_relay_failed">رله %1$s ناموفق بود: %2$s</string>
+    <string name="error_all_relays_failed">همه تلاش‌های اتصال به رله ناموفق بود. آخرین خطا: %1$s</string>
+    <string name="error_unknown">نامشخص</string>
+    <string name="log_error_prefix">خطا: %1$s</string>
+</resources>

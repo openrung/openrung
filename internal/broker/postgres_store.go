@@ -1,0 +1,641 @@
+package broker
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"openrung/internal/relay"
+)
+
+const descriptorColumns = `
+	id,
+	public_host,
+	public_port,
+	protocol,
+	client_id,
+	reality_public_key,
+	short_id,
+	server_name,
+	flow,
+	exit_mode,
+	max_sessions,
+	max_mbps,
+	volunteer_version,
+	registered_at,
+	last_heartbeat_at,
+	expires_at,
+	label,
+	transport,
+	punch_capable,
+	punch_endpoint
+`
+
+const postgresOperationTimeout = 5 * time.Second
+
+const postgresSchema = `
+CREATE TABLE IF NOT EXISTS relay_descriptors (
+	id text PRIMARY KEY,
+	public_host text NOT NULL,
+	public_port integer NOT NULL CHECK (public_port BETWEEN 1 AND 65535),
+	protocol text NOT NULL,
+	client_id text NOT NULL,
+	reality_public_key text NOT NULL,
+	short_id text NOT NULL,
+	server_name text NOT NULL,
+	flow text NOT NULL,
+	exit_mode text NOT NULL,
+	max_sessions integer NOT NULL CHECK (max_sessions > 0),
+	max_mbps integer NOT NULL CHECK (max_mbps > 0),
+	volunteer_version text NOT NULL,
+	registered_at timestamptz NOT NULL,
+	last_heartbeat_at timestamptz NOT NULL,
+	expires_at timestamptz NOT NULL,
+	label text NOT NULL DEFAULT '',
+	is_ipv6 boolean NOT NULL,
+	transport text NOT NULL DEFAULT 'direct',
+	punch_capable boolean NOT NULL DEFAULT false,
+	punch_endpoint text NOT NULL DEFAULT '',
+	attributes jsonb NOT NULL DEFAULT '{}'::jsonb,
+	UNIQUE (public_host, public_port)
+);
+
+ALTER TABLE relay_descriptors
+	ADD COLUMN IF NOT EXISTS attributes jsonb NOT NULL DEFAULT '{}'::jsonb;
+
+ALTER TABLE relay_descriptors
+	ADD COLUMN IF NOT EXISTS label text NOT NULL DEFAULT '';
+
+ALTER TABLE relay_descriptors
+	ADD COLUMN IF NOT EXISTS transport text NOT NULL DEFAULT 'direct';
+
+ALTER TABLE relay_descriptors
+	ADD COLUMN IF NOT EXISTS punch_capable boolean NOT NULL DEFAULT false;
+
+ALTER TABLE relay_descriptors
+	ADD COLUMN IF NOT EXISTS punch_endpoint text NOT NULL DEFAULT '';
+
+CREATE INDEX IF NOT EXISTS relay_descriptors_active_idx
+	ON relay_descriptors (expires_at DESC, last_heartbeat_at DESC);
+
+CREATE TABLE IF NOT EXISTS relay_sessions (
+	session_id text PRIMARY KEY,
+	client_id text NOT NULL,
+	relay_id text NOT NULL,
+	last_heartbeat_at timestamptz NOT NULL,
+	terminal_at timestamptz,
+	updated_at timestamptz NOT NULL,
+	attributes jsonb NOT NULL DEFAULT '{}'::jsonb
+);
+
+ALTER TABLE relay_sessions
+	ADD COLUMN IF NOT EXISTS attributes jsonb NOT NULL DEFAULT '{}'::jsonb;
+
+CREATE INDEX IF NOT EXISTS relay_sessions_active_by_relay_idx
+	ON relay_sessions (relay_id, last_heartbeat_at DESC)
+	WHERE terminal_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS relay_metrics (
+	event_id text PRIMARY KEY,
+	relay_id text NOT NULL,
+	observed_at timestamptz NOT NULL,
+	success_count integer NOT NULL DEFAULT 0,
+	failure_count integer NOT NULL DEFAULT 0,
+	tcp_ms bigint,
+	tunnel_start_ms bigint,
+	internet_probe_ms bigint,
+	ttfb_ms bigint,
+	download_mbps_milli bigint,
+	speed_test_count integer NOT NULL DEFAULT 0,
+	measurements jsonb NOT NULL DEFAULT '{}'::jsonb
+);
+
+ALTER TABLE relay_metrics
+	ADD COLUMN IF NOT EXISTS measurements jsonb NOT NULL DEFAULT '{}'::jsonb;
+
+CREATE INDEX IF NOT EXISTS relay_metrics_recent_by_relay_idx
+	ON relay_metrics (relay_id, observed_at DESC);
+`
+
+type PostgresStore struct {
+	pool        *pgxpool.Pool
+	rankingMode RankingMode
+}
+
+func NewPostgresStore(ctx context.Context, databaseURL string, rankingMode RankingMode) (*PostgresStore, error) {
+	if strings.TrimSpace(databaseURL) == "" {
+		return nil, errors.New("relay database URL is required")
+	}
+	pool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("open relay database: %w", err)
+	}
+	store := &PostgresStore{pool: pool, rankingMode: normalizeRankingMode(rankingMode)}
+	if err := store.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	if err := store.migrate(ctx); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return store, nil
+}
+
+func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl time.Duration) (relay.Descriptor, error) {
+	ctx, cancel := postgresOperationContext()
+	defer cancel()
+
+	id, err := newRelayID()
+	if err != nil {
+		return relay.Descriptor{}, err
+	}
+	desc := relay.Descriptor{
+		ID:               id,
+		Label:            req.Label,
+		PublicHost:       req.PublicHost,
+		PublicPort:       req.PublicPort,
+		Protocol:         req.Protocol,
+		ClientID:         req.ClientID,
+		RealityPublicKey: req.RealityPublicKey,
+		ShortID:          req.ShortID,
+		ServerName:       req.ServerName,
+		Flow:             req.Flow,
+		ExitMode:         req.ExitMode,
+		MaxSessions:      req.MaxSessions,
+		MaxMbps:          req.MaxMbps,
+		VolunteerVersion: req.VolunteerVersion,
+		Transport:        normalizeTransport(req.Transport),
+		PunchCapable:     req.PunchCapable,
+		PunchEndpoint:    req.PunchEndpoint,
+		RegisteredAt:     now,
+		LastHeartbeatAt:  now,
+		ExpiresAt:        now.Add(ttl),
+	}
+
+	return scanDescriptor(s.pool.QueryRow(ctx, `
+		INSERT INTO relay_descriptors (
+			id,
+			public_host,
+			public_port,
+			protocol,
+			client_id,
+			reality_public_key,
+			short_id,
+			server_name,
+			flow,
+			exit_mode,
+			max_sessions,
+			max_mbps,
+			volunteer_version,
+			registered_at,
+			last_heartbeat_at,
+			expires_at,
+			is_ipv6,
+			label,
+			transport,
+			punch_capable,
+			punch_endpoint
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+		)
+		ON CONFLICT (public_host, public_port) DO UPDATE SET
+			id = EXCLUDED.id,
+			protocol = EXCLUDED.protocol,
+			client_id = EXCLUDED.client_id,
+			reality_public_key = EXCLUDED.reality_public_key,
+			short_id = EXCLUDED.short_id,
+			server_name = EXCLUDED.server_name,
+			flow = EXCLUDED.flow,
+			exit_mode = EXCLUDED.exit_mode,
+			max_sessions = EXCLUDED.max_sessions,
+			max_mbps = EXCLUDED.max_mbps,
+			volunteer_version = EXCLUDED.volunteer_version,
+			registered_at = EXCLUDED.registered_at,
+			last_heartbeat_at = EXCLUDED.last_heartbeat_at,
+			expires_at = EXCLUDED.expires_at,
+			is_ipv6 = EXCLUDED.is_ipv6,
+			label = EXCLUDED.label,
+			transport = EXCLUDED.transport,
+			punch_capable = EXCLUDED.punch_capable,
+			punch_endpoint = EXCLUDED.punch_endpoint
+		RETURNING `+descriptorColumns,
+		desc.ID,
+		desc.PublicHost,
+		desc.PublicPort,
+		desc.Protocol,
+		desc.ClientID,
+		desc.RealityPublicKey,
+		desc.ShortID,
+		desc.ServerName,
+		desc.Flow,
+		desc.ExitMode,
+		desc.MaxSessions,
+		desc.MaxMbps,
+		desc.VolunteerVersion,
+		desc.RegisteredAt,
+		desc.LastHeartbeatAt,
+		desc.ExpiresAt,
+		relay.IsIPv6Host(desc.PublicHost),
+		desc.Label,
+		desc.Transport,
+		desc.PunchCapable,
+		desc.PunchEndpoint,
+	))
+}
+
+func (s *PostgresStore) Heartbeat(id string, now time.Time, ttl time.Duration) (relay.Descriptor, error) {
+	ctx, cancel := postgresOperationContext()
+	defer cancel()
+
+	desc, err := scanDescriptor(s.pool.QueryRow(ctx, `
+		UPDATE relay_descriptors
+		SET last_heartbeat_at = $2, expires_at = $3
+		WHERE id = $1
+		RETURNING `+descriptorColumns,
+		id,
+		now,
+		now.Add(ttl),
+	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return relay.Descriptor{}, ErrRelayNotFound
+	}
+	return desc, err
+}
+
+func (s *PostgresStore) List(now time.Time, limit int) ([]relay.Descriptor, error) {
+	ctx, cancel := postgresOperationContext()
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx, `SELECT `+descriptorColumns+` FROM relay_descriptors WHERE expires_at > $1`, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var relays []relay.Descriptor
+	for rows.Next() {
+		desc, err := scanDescriptor(rows)
+		if err != nil {
+			return nil, err
+		}
+		relays = append(relays, desc)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	snapshots, err := s.metricSnapshots(ctx, now)
+	if err != nil {
+		return nil, err
+	}
+	sortRelayCandidates(relays, snapshots, s.rankingMode)
+	if limit > 0 && len(relays) > limit {
+		return relays[:limit], nil
+	}
+	return relays, nil
+}
+
+func (s *PostgresStore) Stats(now time.Time) (StoreStats, error) {
+	ctx, cancel := postgresOperationContext()
+	defer cancel()
+
+	var active int
+	var capacity sql.NullInt64
+	if err := s.pool.QueryRow(ctx, `
+		SELECT COUNT(*), COALESCE(SUM(max_sessions), 0)::bigint
+		FROM relay_descriptors
+		WHERE expires_at > $1
+	`, now).Scan(&active, &capacity); err != nil {
+		return StoreStats{}, err
+	}
+	return StoreStats{ActiveVolunteers: active, AdvertisedSessionCapacity: int(capacity.Int64)}, nil
+}
+
+func (s *PostgresStore) Prune(now time.Time) ([]relay.Descriptor, error) {
+	ctx, cancel := postgresOperationContext()
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx, `DELETE FROM relay_descriptors WHERE expires_at <= $1 RETURNING `+descriptorColumns, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var expired []relay.Descriptor
+	for rows.Next() {
+		desc, err := scanDescriptor(rows)
+		if err != nil {
+			return nil, err
+		}
+		expired = append(expired, desc)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	cutoff := now.Add(-rankingWindow)
+	if _, err := s.pool.Exec(ctx, `DELETE FROM relay_metrics WHERE observed_at < $1`, cutoff); err != nil {
+		return nil, err
+	}
+	if _, err := s.pool.Exec(ctx, `DELETE FROM relay_sessions WHERE terminal_at IS NOT NULL AND terminal_at < $1`, cutoff); err != nil {
+		return nil, err
+	}
+	return expired, nil
+}
+
+func (s *PostgresStore) RecordRelayTelemetry(ctx context.Context, records []TelemetryRecord, now time.Time) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	for _, record := range records {
+		if err := s.recordRelayTelemetry(ctx, tx, record, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *PostgresStore) Ping(ctx context.Context) error {
+	if err := s.pool.Ping(ctx); err != nil {
+		return fmt.Errorf("ping relay database: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) Close() error {
+	s.pool.Close()
+	return nil
+}
+
+func (s *PostgresStore) migrate(ctx context.Context) error {
+	if _, err := s.pool.Exec(ctx, postgresSchema); err != nil {
+		return fmt.Errorf("migrate relay database: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) metricSnapshots(ctx context.Context, now time.Time) (map[string]RelayMetricsSnapshot, error) {
+	snapshots := make(map[string]RelayMetricsSnapshot)
+	activeRows, err := s.pool.Query(ctx, `
+		SELECT relay_id, COUNT(*)::bigint
+		FROM relay_sessions
+		WHERE terminal_at IS NULL AND last_heartbeat_at > $1
+		GROUP BY relay_id
+	`, now.Add(-activeSessionTimeout))
+	if err != nil {
+		return nil, err
+	}
+	for activeRows.Next() {
+		var relayID string
+		var active int64
+		if err := activeRows.Scan(&relayID, &active); err != nil {
+			activeRows.Close()
+			return nil, err
+		}
+		snapshot := snapshots[relayID]
+		snapshot.ActiveSessions = int(active)
+		snapshots[relayID] = snapshot
+	}
+	if err := activeRows.Err(); err != nil {
+		activeRows.Close()
+		return nil, err
+	}
+	activeRows.Close()
+
+	metricRows, err := s.pool.Query(ctx, `
+		SELECT
+			relay_id,
+			COALESCE(SUM(success_count), 0)::bigint,
+			COALESCE(SUM(failure_count), 0)::bigint,
+			COALESCE(SUM(tcp_ms), 0)::bigint,
+			COUNT(tcp_ms)::bigint,
+			COALESCE(SUM(tunnel_start_ms), 0)::bigint,
+			COUNT(tunnel_start_ms)::bigint,
+			COALESCE(SUM(internet_probe_ms), 0)::bigint,
+			COUNT(internet_probe_ms)::bigint,
+			COALESCE(SUM(ttfb_ms), 0)::bigint,
+			COUNT(ttfb_ms)::bigint,
+			COALESCE(SUM(speed_test_count), 0)::bigint,
+			COALESCE(SUM(download_mbps_milli), 0)::bigint
+		FROM relay_metrics
+		WHERE observed_at >= $1 AND observed_at <= $2
+		GROUP BY relay_id
+	`, now.Add(-rankingWindow), now)
+	if err != nil {
+		return nil, err
+	}
+	defer metricRows.Close()
+	for metricRows.Next() {
+		var relayID string
+		var successes, failures int64
+		var tcpTotal, tcpCount, tunnelTotal, tunnelCount int64
+		var internetTotal, internetCount, ttfbTotal, ttfbCount int64
+		var speedTests, speedTotal int64
+		if err := metricRows.Scan(
+			&relayID,
+			&successes,
+			&failures,
+			&tcpTotal,
+			&tcpCount,
+			&tunnelTotal,
+			&tunnelCount,
+			&internetTotal,
+			&internetCount,
+			&ttfbTotal,
+			&ttfbCount,
+			&speedTests,
+			&speedTotal,
+		); err != nil {
+			return nil, err
+		}
+		snapshot := snapshots[relayID]
+		snapshot.Successes = int(successes)
+		snapshot.Failures = int(failures)
+		snapshot.TCPMS = metricValue{total: float64(tcpTotal), count: int(tcpCount)}
+		snapshot.TunnelStartMS = metricValue{total: float64(tunnelTotal), count: int(tunnelCount)}
+		snapshot.InternetProbeMS = metricValue{total: float64(internetTotal), count: int(internetCount)}
+		snapshot.TTFBMS = metricValue{total: float64(ttfbTotal), count: int(ttfbCount)}
+		snapshot.SpeedTests = int(speedTests)
+		snapshot.DownloadMbpsTotal = float64(speedTotal) / 1000
+		snapshots[relayID] = snapshot
+	}
+	return snapshots, metricRows.Err()
+}
+
+func (s *PostgresStore) recordRelayTelemetry(ctx context.Context, tx pgx.Tx, record TelemetryRecord, now time.Time) error {
+	event := record.Event
+	observedAt := record.ReceivedAt
+	if observedAt.IsZero() {
+		observedAt = event.OccurredAt
+	}
+	if observedAt.IsZero() {
+		observedAt = now
+	}
+
+	switch event.Event {
+	case "session_heartbeat":
+		if event.SessionID == "" || event.RelayID == "" {
+			return nil
+		}
+		_, err := tx.Exec(ctx, `
+			INSERT INTO relay_sessions (session_id, client_id, relay_id, last_heartbeat_at, terminal_at, updated_at)
+			VALUES ($1, $2, $3, $4, NULL, $5)
+			ON CONFLICT (session_id) DO UPDATE SET
+				client_id = EXCLUDED.client_id,
+				relay_id = EXCLUDED.relay_id,
+				last_heartbeat_at = GREATEST(relay_sessions.last_heartbeat_at, EXCLUDED.last_heartbeat_at),
+				terminal_at = CASE
+					WHEN relay_sessions.terminal_at IS NOT NULL
+						AND relay_sessions.terminal_at >= EXCLUDED.last_heartbeat_at
+					THEN relay_sessions.terminal_at
+					ELSE NULL
+				END,
+				updated_at = EXCLUDED.updated_at
+		`, event.SessionID, event.ClientID, event.RelayID, observedAt, now)
+		return err
+	case "connection_succeeded":
+		if event.RelayID == "" {
+			return nil
+		}
+		return s.insertMetric(ctx, tx, event.EventID, event.RelayID, observedAt, true, false, event.Measurements)
+	case "relay_attempt_failed":
+		if event.RelayID == "" {
+			return nil
+		}
+		return s.insertMetric(ctx, tx, event.EventID, event.RelayID, observedAt, false, true, event.Measurements)
+	case "speed_test_completed":
+		if event.RelayID == "" {
+			return nil
+		}
+		return s.insertMetric(ctx, tx, event.EventID, event.RelayID, observedAt, false, false, event.Measurements)
+	case "connection_ended", "tunnel_stopped", "connection_failed":
+		return s.markSessionTerminal(ctx, tx, event, observedAt, now)
+	default:
+		return nil
+	}
+}
+
+func (s *PostgresStore) insertMetric(ctx context.Context, tx pgx.Tx, eventID, relayID string, observedAt time.Time, success, failure bool, measurements map[string]int64) error {
+	successCount, failureCount := 0, 0
+	if success {
+		successCount = 1
+	}
+	if failure {
+		failureCount = 1
+	}
+	speedTestCount := 0
+	if measurements["download_mbps_milli"] > 0 {
+		speedTestCount = 1
+	}
+
+	_, err := tx.Exec(ctx, `
+		INSERT INTO relay_metrics (
+			event_id,
+			relay_id,
+			observed_at,
+			success_count,
+			failure_count,
+			tcp_ms,
+			tunnel_start_ms,
+			internet_probe_ms,
+			ttfb_ms,
+			download_mbps_milli,
+			speed_test_count
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		ON CONFLICT (event_id) DO NOTHING
+	`,
+		eventID,
+		relayID,
+		observedAt,
+		successCount,
+		failureCount,
+		positiveInt64(measurements["relay_tcp_ms"]),
+		positiveInt64(measurements["tunnel_start_ms"]),
+		positiveInt64(measurements["internet_probe_ms"]),
+		positiveInt64(measurements["time_to_first_byte_ms"]),
+		positiveInt64(measurements["download_mbps_milli"]),
+		speedTestCount,
+	)
+	return err
+}
+
+func (s *PostgresStore) markSessionTerminal(ctx context.Context, tx pgx.Tx, event TelemetryEvent, observedAt, now time.Time) error {
+	if event.SessionID == "" {
+		return nil
+	}
+	if event.RelayID == "" {
+		_, err := tx.Exec(ctx, `
+			UPDATE relay_sessions
+			SET terminal_at = CASE
+					WHEN terminal_at IS NULL OR terminal_at < $2 THEN $2
+					ELSE terminal_at
+				END,
+				updated_at = $3
+			WHERE session_id = $1
+		`, event.SessionID, observedAt, now)
+		return err
+	}
+
+	_, err := tx.Exec(ctx, `
+		INSERT INTO relay_sessions (session_id, client_id, relay_id, last_heartbeat_at, terminal_at, updated_at)
+		VALUES ($1, $2, $3, $4, $4, $5)
+		ON CONFLICT (session_id) DO UPDATE SET
+			client_id = CASE WHEN EXCLUDED.client_id = '' THEN relay_sessions.client_id ELSE EXCLUDED.client_id END,
+			relay_id = CASE WHEN EXCLUDED.relay_id = '' THEN relay_sessions.relay_id ELSE EXCLUDED.relay_id END,
+			terminal_at = CASE
+				WHEN relay_sessions.terminal_at IS NULL OR relay_sessions.terminal_at < EXCLUDED.terminal_at
+				THEN EXCLUDED.terminal_at
+				ELSE relay_sessions.terminal_at
+			END,
+			updated_at = EXCLUDED.updated_at
+	`, event.SessionID, event.ClientID, event.RelayID, observedAt, now)
+	return err
+}
+
+func scanDescriptor(row pgx.Row) (relay.Descriptor, error) {
+	var desc relay.Descriptor
+	err := row.Scan(
+		&desc.ID,
+		&desc.PublicHost,
+		&desc.PublicPort,
+		&desc.Protocol,
+		&desc.ClientID,
+		&desc.RealityPublicKey,
+		&desc.ShortID,
+		&desc.ServerName,
+		&desc.Flow,
+		&desc.ExitMode,
+		&desc.MaxSessions,
+		&desc.MaxMbps,
+		&desc.VolunteerVersion,
+		&desc.RegisteredAt,
+		&desc.LastHeartbeatAt,
+		&desc.ExpiresAt,
+		&desc.Label,
+		&desc.Transport,
+		&desc.PunchCapable,
+		&desc.PunchEndpoint,
+	)
+	return desc, err
+}
+
+func positiveInt64(value int64) any {
+	if value <= 0 {
+		return nil
+	}
+	return value
+}
+
+func postgresOperationContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), postgresOperationTimeout)
+}

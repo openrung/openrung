@@ -1,0 +1,37 @@
+# OpenRung relay hub.
+#
+#   cp .env.example .env      # then edit .env (set OPENRUNG_HUB_PUBLIC_HOST + OPENRUNG_BROKER_URL)
+#   # put your TLS cert/key in ./certs (strongly recommended — see README.md)
+#   docker compose up -d --build
+#   docker compose logs -f
+#
+services:
+  relayhub:
+    build:
+      context: ../..
+      dockerfile: deploy/relayhub/Dockerfile
+    image: openrung-relayhub:latest
+    container_name: openrung-relayhub
+    restart: unless-stopped
+    env_file: [.env]
+
+    # The hub binds the control port plus a whole public port range, and is a
+    # data-plane component, so host networking is simplest (no per-port NAT).
+    # Prefer bridge networking instead? Comment out network_mode and publish the
+    # ports explicitly, e.g.:
+    #   ports:
+    #     - "9443:9443"
+    #     - "20000-20100:20000-20100"
+    network_mode: host
+
+    # Least privilege: the hub needs no special capabilities when its control
+    # and public ports are >= 1024 (the defaults).
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+    # Read-only root filesystem; mount your TLS cert/key (referenced by
+    # OPENRUNG_HUB_TLS_CERT / OPENRUNG_HUB_TLS_KEY) read-only.
+    read_only: true
+    volumes:
+      - ./certs:/etc/openrung/certs:ro

@@ -1,0 +1,1022 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>OpenRung — Reach the open internet</title>
+    <meta
+      name="description"
+      content="OpenRung helps people facing network restrictions reach public websites and apps through a worldwide volunteer relay network. Always free, privacy-first, and run by a nonprofit foundation."
+    >
+    <meta name="theme-color" content="#1d8a4f">
+    <meta property="og:title" content="OpenRung — Reach the open internet">
+    <meta property="og:description" content="A free, privacy-first volunteer relay network that helps you reach the open internet.">
+    <meta property="og:type" content="website">
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f6f8f7;
+        --bg-2: #eef5f0;
+        --panel: #ffffff;
+        --ink: #11201a;
+        --muted: #51625a;
+        --line: #d9e4dd;
+        --accent: #1d8a4f;
+        --accent-strong: #0f5d33;
+        --soft: #e6f5ec;
+        --warm: #f0fbf5;
+        --amber-bg: #fff7e6;
+        --amber-line: #f0d399;
+        --amber-ink: #8a5a00;
+        --radius: 14px;
+        --radius-sm: 10px;
+        --shadow: 0 18px 48px rgba(15, 45, 30, 0.10);
+        --shadow-sm: 0 6px 18px rgba(15, 45, 30, 0.06);
+        --maxw: 1080px;
+      }
+
+      * { box-sizing: border-box; }
+
+      html { scroll-behavior: smooth; }
+
+      body {
+        margin: 0;
+        font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+          "Noto Sans CJK SC", "Vazirmatn", "Noto Sans Arabic", Tahoma, sans-serif;
+        background: var(--bg);
+        color: var(--ink);
+        line-height: 1.65;
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
+      }
+
+      a { color: var(--accent-strong); }
+
+      /* Accessibility */
+      .skip-link {
+        position: absolute;
+        inset-inline-start: -999px;
+        top: 0;
+        background: var(--accent);
+        color: #fff;
+        padding: 10px 16px;
+        border-radius: 0 0 var(--radius-sm) 0;
+        z-index: 50;
+      }
+      .skip-link:focus { inset-inline-start: 0; }
+
+      :focus-visible {
+        outline: 3px solid var(--accent);
+        outline-offset: 2px;
+        border-radius: 6px;
+      }
+
+      .wrap {
+        width: min(var(--maxw), calc(100% - 40px));
+        margin: 0 auto;
+      }
+
+      /* Header */
+      header {
+        border-bottom: 1px solid var(--line);
+        background: rgba(246, 248, 247, 0.85);
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        backdrop-filter: saturate(140%) blur(12px);
+      }
+
+      .nav {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        padding: 14px 0;
+        flex-wrap: wrap;
+      }
+
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        font-weight: 800;
+        letter-spacing: 0.01em;
+        font-size: 1.12rem;
+        text-decoration: none;
+        color: var(--ink);
+      }
+
+      .brand .mark {
+        width: 32px;
+        height: 32px;
+        display: grid;
+        place-items: center;
+        background: var(--ink);
+        border-radius: 9px;
+        flex: none;
+      }
+      .brand .mark svg { width: 22px; height: 22px; display: block; }
+
+      .nav-right {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        flex-wrap: wrap;
+      }
+
+      .nav-links {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+      }
+
+      .nav-link {
+        color: var(--muted);
+        font-size: 0.95rem;
+        text-decoration: none;
+        font-weight: 600;
+      }
+      .nav-link:hover { color: var(--accent-strong); }
+
+      .lang {
+        display: inline-flex;
+        flex-wrap: wrap;
+        gap: 2px;
+        padding: 3px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: var(--panel);
+        flex: none;
+      }
+      .lang button {
+        border: 0;
+        border-radius: 999px;
+        padding: 6px 11px;
+        color: var(--muted);
+        background: transparent;
+        font: inherit;
+        font-size: 0.82rem;
+        font-weight: 700;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .lang button[aria-pressed="true"] {
+        color: #fff;
+        background: var(--accent);
+      }
+
+      /* Hero */
+      .hero {
+        position: relative;
+        overflow: hidden;
+        background:
+          radial-gradient(1100px 520px at 82% -10%, var(--bg-2), transparent 60%);
+      }
+      .hero-grid {
+        display: grid;
+        grid-template-columns: 1.15fr 0.85fr;
+        gap: 40px;
+        align-items: center;
+        padding: 76px 0 70px;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--accent-strong);
+        background: var(--soft);
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 6px 13px;
+        font-size: 0.85rem;
+        font-weight: 700;
+        margin-bottom: 22px;
+      }
+      .eyebrow .dot {
+        width: 8px; height: 8px; border-radius: 50%;
+        background: var(--accent);
+        box-shadow: 0 0 0 4px rgba(29,138,79,0.18);
+      }
+
+      h1 {
+        font-size: clamp(2.1rem, 5vw, 3.5rem);
+        line-height: 1.18;
+        letter-spacing: -0.01em;
+        margin: 0 0 18px;
+        font-weight: 800;
+      }
+      h1 .hl { color: var(--accent-strong); }
+
+      .lead {
+        color: var(--muted);
+        font-size: 1.12rem;
+        max-width: 560px;
+        margin: 0 0 28px;
+      }
+
+      .cta-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+        margin-bottom: 22px;
+      }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 9px;
+        min-height: 50px;
+        border-radius: 999px;
+        padding: 0 22px;
+        background: var(--accent);
+        color: #fff;
+        font-weight: 800;
+        font-size: 1rem;
+        text-decoration: none;
+        border: 0;
+        font-family: inherit;
+        cursor: pointer;
+        box-shadow: 0 12px 24px rgba(29, 138, 79, 0.24);
+        transition: transform .12s ease, background .12s ease;
+      }
+      .button:hover { background: var(--accent-strong); transform: translateY(-1px); }
+      .button svg { width: 20px; height: 20px; flex: none; }
+
+      .button.secondary {
+        color: var(--accent-strong);
+        background: var(--soft);
+        border: 1px solid var(--line);
+        box-shadow: none;
+      }
+      .button.secondary:hover { background: #d8efe1; color: var(--accent-strong); }
+
+      .button.ghost {
+        background: transparent;
+        color: var(--accent-strong);
+        box-shadow: none;
+        border: 1px solid var(--accent);
+      }
+      .button.ghost:hover { background: var(--soft); }
+
+      .promise {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 16px;
+        padding: 0;
+        margin: 0;
+        list-style: none;
+      }
+      .promise li {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        color: var(--ink);
+        font-weight: 600;
+        font-size: 0.95rem;
+      }
+      .promise svg { width: 18px; height: 18px; color: var(--accent); flex: none; }
+
+      /* Hero art */
+      .hero-art {
+        position: relative;
+        aspect-ratio: 1 / 1;
+        max-width: 380px;
+        margin-inline: auto;
+        width: 100%;
+      }
+      .hero-art svg { width: 100%; height: 100%; display: block; }
+      [dir="rtl"] .hero-art svg { transform: scaleX(-1); }
+
+      /* Sections */
+      section { scroll-margin-top: 80px; }
+      .band { padding: 64px 0; border-top: 1px solid var(--line); }
+      .band.alt { background: var(--bg-2); }
+
+      .section-head { max-width: 640px; margin-bottom: 34px; }
+      .kicker {
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        font-size: 0.78rem;
+        font-weight: 800;
+        color: var(--accent);
+        margin: 0 0 10px;
+      }
+      h2 {
+        font-size: clamp(1.6rem, 3.4vw, 2.2rem);
+        line-height: 1.25;
+        margin: 0 0 12px;
+        font-weight: 800;
+        letter-spacing: -0.01em;
+      }
+      .section-head p { color: var(--muted); font-size: 1.06rem; margin: 0; }
+
+      /* Steps */
+      .steps {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 18px;
+        counter-reset: step;
+      }
+      .step {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 26px 24px;
+        box-shadow: var(--shadow-sm);
+      }
+      .step .num {
+        counter-increment: step;
+        width: 38px; height: 38px;
+        display: grid; place-items: center;
+        background: var(--soft);
+        color: var(--accent-strong);
+        border-radius: 11px;
+        font-weight: 800;
+        margin-bottom: 14px;
+      }
+      .step .num::before { content: counter(step); }
+      .step h3 { margin: 0 0 6px; font-size: 1.08rem; }
+      .step p { margin: 0; color: var(--muted); }
+
+      /* Feature grid */
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(232px, 1fr));
+        gap: 16px;
+      }
+      .tile {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 24px;
+        box-shadow: var(--shadow-sm);
+      }
+      .tile .ic {
+        width: 42px; height: 42px;
+        display: grid; place-items: center;
+        background: var(--soft);
+        border-radius: 11px;
+        color: var(--accent-strong);
+        margin-bottom: 14px;
+      }
+      .tile .ic svg { width: 22px; height: 22px; }
+      .tile h3 { font-size: 1.06rem; margin: 0 0 6px; }
+      .tile p { color: var(--muted); margin: 0; }
+
+      /* Download */
+      .download-card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 30px;
+        box-shadow: var(--shadow);
+        display: grid;
+        gap: 18px;
+        max-width: 720px;
+      }
+      .notice {
+        display: flex;
+        gap: 12px;
+        align-items: flex-start;
+        background: var(--amber-bg);
+        border: 1px solid var(--amber-line);
+        color: var(--amber-ink);
+        border-radius: var(--radius-sm);
+        padding: 14px 16px;
+        font-size: 0.95rem;
+      }
+      .notice svg { width: 20px; height: 20px; flex: none; margin-top: 1px; }
+      .dl-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 50px;
+        padding: 0 18px;
+        border-radius: 999px;
+        border: 1px dashed var(--line);
+        color: var(--muted);
+        font-weight: 700;
+        font-size: 0.95rem;
+        background: var(--bg);
+      }
+      .dl-note { color: var(--muted); font-size: 0.9rem; margin: 0; }
+
+      /* Volunteer / donate split */
+      .split {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 18px;
+      }
+      .promo {
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 30px;
+        background: var(--panel);
+        box-shadow: var(--shadow-sm);
+        display: flex;
+        flex-direction: column;
+      }
+      .promo h3 { font-size: 1.25rem; margin: 0 0 10px; }
+      .promo p { color: var(--muted); margin: 0 0 18px; }
+      .promo .button, .promo .chip { align-self: flex-start; margin-top: auto; }
+
+      /* Contact */
+      .contact-card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 28px 30px;
+        box-shadow: var(--shadow-sm);
+        max-width: 720px;
+      }
+      .contact-mail {
+        display: inline-flex;
+        align-items: center;
+        gap: 9px;
+        font-size: 1.18rem;
+        font-weight: 800;
+        text-decoration: none;
+        color: var(--accent-strong);
+        margin-top: 6px;
+        direction: ltr;
+      }
+      .contact-mail svg { width: 20px; height: 20px; }
+
+      /* Footer */
+      footer {
+        border-top: 1px solid var(--line);
+        background: var(--bg-2);
+        padding: 30px 0 40px;
+        color: var(--muted);
+        font-size: 0.92rem;
+      }
+      .foot {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 14px 22px;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .foot-links { display: flex; flex-wrap: wrap; gap: 18px; }
+      .foot-links a { color: var(--muted); text-decoration: none; font-weight: 600; }
+      .foot-links a:hover { color: var(--accent-strong); }
+      .foot .privacy { width: 100%; margin: 0; font-size: 0.86rem; opacity: 0.85; }
+
+      @media (max-width: 880px) {
+        .hero-grid { grid-template-columns: 1fr; gap: 24px; padding: 52px 0 56px; }
+        .hero-art { max-width: 280px; order: -1; }
+        .steps { grid-template-columns: 1fr; }
+        .split { grid-template-columns: 1fr; }
+      }
+      @media (max-width: 720px) {
+        .nav-links { display: none; }
+        .band { padding: 48px 0; }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        html { scroll-behavior: auto; }
+        .button { transition: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <a class="skip-link" href="#main" data-i18n="skip">Skip to main content</a>
+
+    <!-- Reusable ladder mark -->
+    <svg style="display:none" xmlns="http://www.w3.org/2000/svg">
+      <symbol id="ladder" viewBox="0 0 256 256">
+        <g fill="currentColor" transform="rotate(18 128 128)">
+          <rect x="101" y="52" width="13" height="38" rx="3"/>
+          <rect x="101" y="94" width="13" height="47" rx="3"/>
+          <rect x="101" y="145" width="13" height="59" rx="3"/>
+          <rect x="142" y="52" width="13" height="38" rx="3"/>
+          <rect x="142" y="94" width="13" height="47" rx="3"/>
+          <rect x="142" y="145" width="13" height="59" rx="3"/>
+          <rect x="101" y="60" width="54" height="13" rx="3"/>
+          <rect x="101" y="111" width="54" height="13" rx="3"/>
+          <rect x="101" y="162" width="54" height="13" rx="3"/>
+        </g>
+      </symbol>
+    </svg>
+
+    <header>
+      <nav class="nav wrap" aria-label="Main">
+        <a class="brand" href="#top" aria-label="OpenRung">
+          <span class="mark" aria-hidden="true"><svg style="color:#fff"><use href="#ladder"/></svg></span>
+          <span>OpenRung</span>
+        </a>
+        <div class="nav-right">
+          <div class="nav-links">
+            <a class="nav-link" href="#how" data-i18n="navHow">How it works</a>
+            <a class="nav-link" href="#why" data-i18n="navWhy">Features</a>
+            <a class="nav-link" href="#download" data-i18n="navDownload">Download</a>
+            <a class="nav-link" href="#volunteer" data-i18n="navVolunteer">Volunteer</a>
+            <a class="nav-link" href="#contact" data-i18n="navContact">Contact</a>
+          </div>
+          <div class="lang" aria-label="Language">
+            <button type="button" data-lang="en" aria-pressed="true">EN</button>
+            <button type="button" data-lang="zh" aria-pressed="false">中文</button>
+            <button type="button" data-lang="fa" aria-pressed="false">فارسی</button>
+            <button type="button" data-lang="ru" aria-pressed="false">RU</button>
+          </div>
+        </div>
+      </nav>
+    </header>
+
+    <main id="main">
+      <span id="top"></span>
+      <!-- Hero -->
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="wrap hero-grid">
+          <div>
+            <span class="eyebrow"><span class="dot" aria-hidden="true"></span><span data-i18n="heroEyebrow">In private beta · OpenRung 0.1.4</span></span>
+            <h1 id="hero-title"><span data-i18n="heroHeadline">Internet access is a</span> <span class="hl" data-i18n="heroHeadlineHl">right, not a privilege.</span></h1>
+            <p class="lead" data-i18n="heroLead">
+              OpenRung helps people facing network restrictions reach public websites and apps through a worldwide volunteer relay network. Always free, privacy-first, and run by a Delaware nonprofit foundation.
+            </p>
+            <div class="cta-row">
+              <a class="button" href="#download">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>
+                <span data-i18n="heroDownload">Download for Android</span>
+              </a>
+              <a class="button secondary" href="#how" data-i18n="heroHow">See how it works</a>
+            </div>
+            <ul class="promise">
+              <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg><span data-i18n="promiseFree">Always free</span></li>
+              <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg><span data-i18n="promiseNoSignup">No sign-up</span></li>
+              <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg><span data-i18n="promiseNoLog">No browsing logs</span></li>
+            </ul>
+          </div>
+          <div class="hero-art" aria-hidden="true">
+            <svg viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0" stop-color="#e6f5ec"/>
+                  <stop offset="1" stop-color="#ffffff"/>
+                </linearGradient>
+              </defs>
+              <circle cx="200" cy="200" r="180" fill="url(#g1)" stroke="#d9e4dd"/>
+              <!-- wall -->
+              <g stroke="#cdd9d1" stroke-width="2">
+                <line x1="120" y1="70" x2="120" y2="330" stroke-dasharray="2 10" stroke-linecap="round"/>
+              </g>
+              <!-- ascending rungs (climb over) -->
+              <g fill="#1d8a4f">
+                <rect x="70" y="250" width="70" height="13" rx="6"/>
+                <rect x="130" y="210" width="70" height="13" rx="6"/>
+                <rect x="190" y="170" width="70" height="13" rx="6"/>
+                <rect x="250" y="130" width="70" height="13" rx="6"/>
+              </g>
+              <g fill="#0f5d33">
+                <circle cx="305" cy="108" r="13"/>
+              </g>
+              <!-- arrow to open net -->
+              <path d="M300 150 q40 -20 60 -55" fill="none" stroke="#0f5d33" stroke-width="3" stroke-linecap="round" stroke-dasharray="2 9"/>
+            </svg>
+          </div>
+        </div>
+      </section>
+
+      <!-- How it works -->
+      <section class="band" id="how" aria-labelledby="how-title">
+        <div class="wrap">
+          <div class="section-head">
+            <p class="kicker" data-i18n="howKicker">How it works</p>
+            <h2 id="how-title" data-i18n="howTitle">Reach the open internet in three steps</h2>
+            <p data-i18n="howLead">No complex setup — install, connect, browse.</p>
+          </div>
+          <div class="steps">
+            <div class="step">
+              <div class="num" aria-hidden="true"></div>
+              <h3 data-i18n="step1Title">Download &amp; install</h3>
+              <p data-i18n="step1Body">Install the OpenRung app on your Android device.</p>
+            </div>
+            <div class="step">
+              <div class="num" aria-hidden="true"></div>
+              <h3 data-i18n="step2Title">Connect</h3>
+              <p data-i18n="step2Body">The app automatically finds an available volunteer relay and connects.</p>
+            </div>
+            <div class="step">
+              <div class="num" aria-hidden="true"></div>
+              <h3 data-i18n="step3Title">Browse freely</h3>
+              <p data-i18n="step3Body">Use websites and apps as usual — no paywall.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Why / features -->
+      <section class="band alt" id="why" aria-labelledby="why-title">
+        <div class="wrap">
+          <div class="section-head">
+            <p class="kicker" data-i18n="whyKicker">Features</p>
+            <h2 id="why-title" data-i18n="whyTitle">Built for the public good</h2>
+            <p data-i18n="whyLead">OpenRung is supported by volunteers and donors with a single goal: keeping open internet access free and reliable.</p>
+          </div>
+          <div class="grid">
+            <article class="tile">
+              <div class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M5 9h14M5 15h14"/></svg></div>
+              <h3 data-i18n="whyFreeTitle">Free forever</h3>
+              <p data-i18n="whyFreeBody">No subscriptions, no hidden fees, and no paywall for access.</p>
+            </article>
+            <article class="tile">
+              <div class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
+              <h3 data-i18n="whyPrivacyTitle">Privacy-first</h3>
+              <p data-i18n="whyPrivacyBody">No account required, no browsing logs kept, and we never sell your data.</p>
+            </article>
+            <article class="tile">
+              <div class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg></div>
+              <h3 data-i18n="whyVolunteerTitle">Volunteer-powered</h3>
+              <p data-i18n="whyVolunteerBody">Volunteer hosts provide relay capacity — the network exists because of its community.</p>
+            </article>
+            <article class="tile">
+              <div class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18M5 21V8l7-5 7 5v13M9 21v-6h6v6"/></svg></div>
+              <h3 data-i18n="whyNonprofitTitle">Nonprofit-governed</h3>
+              <p data-i18n="whyNonprofitBody">Run by the OpenRung Foundation, accountable to the public benefit and transparent.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- Download -->
+      <section class="band" id="download" aria-labelledby="download-title">
+        <div class="wrap">
+          <div class="section-head">
+            <p class="kicker" data-i18n="downloadKicker">Download</p>
+            <h2 id="download-title" data-i18n="downloadTitle">Get OpenRung</h2>
+            <p data-i18n="downloadLead">Android is available now; iOS and desktop are in development.</p>
+          </div>
+          <div class="download-card">
+            <div class="notice">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+              <span data-i18n="downloadBeta">OpenRung 0.1.4 is still in active development and may experience occasional outages.</span>
+            </div>
+            <div class="dl-actions">
+              <a class="button" href="https://downloads.openrung.org/OpenRung-0.1.4-release.apk">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>
+                <span data-i18n="downloadAndroid">Download for Android (APK)</span>
+              </a>
+              <span class="chip" data-i18n="downloadIos">iOS · Coming soon</span>
+              <span class="chip" data-i18n="downloadDesktop">Desktop · Coming soon</span>
+            </div>
+            <p class="dl-note" data-i18n="downloadNote">Version 0.1.4 · Installed directly from an APK; you may need to allow “unknown sources” in system settings.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Volunteer + Donate -->
+      <section class="band alt" id="volunteer" aria-labelledby="support-title">
+        <div class="wrap">
+          <div class="section-head">
+            <p class="kicker" data-i18n="supportKicker">Get involved</p>
+            <h2 id="support-title" data-i18n="supportTitle">Help the network grow</h2>
+            <p data-i18n="supportLead">OpenRung relies on volunteers for relay capacity and donors to keep it running.</p>
+          </div>
+          <div class="split">
+            <div class="promo">
+              <h3 data-i18n="volunteerTitle">Become a volunteer</h3>
+              <p data-i18n="volunteerBody">If you're on the open internet, you can run a volunteer relay and give others a path to it. Volunteers run a desktop command-line app. Note: in the current version, volunteers act as direct exit nodes, which carries real legal and privacy risk — please review what's involved first.</p>
+              <a class="button ghost" href="mailto:admin@openrung.org?subject=Volunteer%20with%20OpenRung" data-i18n="volunteerButton">Contact us to volunteer</a>
+            </div>
+            <div class="promo" id="donate">
+              <h3 data-i18n="donateTitle">Donate</h3>
+              <p data-i18n="donateBody">Your support keeps OpenRung free and funds infrastructure, security, volunteer tools, and user support. Online donations are coming soon.</p>
+              <a class="button ghost" href="mailto:admin@openrung.org?subject=Donate%20to%20OpenRung" data-i18n="donateButton">Contact us to donate</a>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Contact -->
+      <section class="band" id="contact" aria-labelledby="contact-title">
+        <div class="wrap">
+          <div class="section-head">
+            <p class="kicker" data-i18n="contactKicker">Contact</p>
+            <h2 id="contact-title" data-i18n="contactTitle">Get in touch</h2>
+            <p data-i18n="contactBody">Access help, volunteer hosting, donor conversations, security reports, and governance questions are all welcome by email:</p>
+          </div>
+          <div class="contact-card">
+            <a class="contact-mail" href="mailto:admin@openrung.org">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>
+              admin@openrung.org
+            </a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="wrap foot">
+        <span data-i18n="footerRights">© 2026 OpenRung Foundation · A nonprofit project</span>
+        <div class="foot-links">
+          <a href="#why" data-i18n="footerPrivacyLink">Privacy</a>
+          <a href="mailto:admin@openrung.org" data-i18n="footerContact">Contact</a>
+        </div>
+        <p class="privacy" data-i18n="footerPrivacy">We don't require an account, don't keep your browsing logs, and never sell your data.</p>
+      </div>
+    </footer>
+
+    <script>
+      const translations = {
+        en: {
+          lang: "en",
+          dir: "ltr",
+          pageTitle: "OpenRung — Reach the open internet",
+          pageDescription: "OpenRung helps people facing network restrictions reach public websites and apps through a worldwide volunteer relay network. Always free, privacy-first, and run by a nonprofit foundation.",
+          skip: "Skip to main content",
+          navHow: "How it works",
+          navWhy: "Features",
+          navDownload: "Download",
+          navVolunteer: "Volunteer",
+          navContact: "Contact",
+          heroEyebrow: "In private beta · OpenRung 0.1.4",
+          heroHeadline: "Internet access is a",
+          heroHeadlineHl: "right, not a privilege.",
+          heroLead: "OpenRung helps people facing network restrictions reach public websites and apps through a worldwide volunteer relay network. Always free, privacy-first, and run by a Delaware nonprofit foundation.",
+          heroDownload: "Download for Android",
+          heroHow: "See how it works",
+          promiseFree: "Always free",
+          promiseNoSignup: "No sign-up",
+          promiseNoLog: "No browsing logs",
+          howKicker: "How it works",
+          howTitle: "Reach the open internet in three steps",
+          howLead: "No complex setup — install, connect, browse.",
+          step1Title: "Download & install",
+          step1Body: "Install the OpenRung app on your Android device.",
+          step2Title: "Connect",
+          step2Body: "The app automatically finds an available volunteer relay and connects.",
+          step3Title: "Browse freely",
+          step3Body: "Use websites and apps as usual — no paywall.",
+          whyKicker: "Features",
+          whyTitle: "Built for the public good",
+          whyLead: "OpenRung is supported by volunteers and donors with a single goal: keeping open internet access free and reliable.",
+          whyFreeTitle: "Free forever",
+          whyFreeBody: "No subscriptions, no hidden fees, and no paywall for access.",
+          whyPrivacyTitle: "Privacy-first",
+          whyPrivacyBody: "No account required, no browsing logs kept, and we never sell your data.",
+          whyVolunteerTitle: "Volunteer-powered",
+          whyVolunteerBody: "Volunteer hosts provide relay capacity — the network exists because of its community.",
+          whyNonprofitTitle: "Nonprofit-governed",
+          whyNonprofitBody: "Run by the OpenRung Foundation, accountable to the public benefit and transparent.",
+          downloadKicker: "Download",
+          downloadTitle: "Get OpenRung",
+          downloadLead: "Android is available now; iOS and desktop are in development.",
+          downloadBeta: "OpenRung 0.1.4 is still in active development and may experience occasional outages.",
+          downloadAndroid: "Download for Android (APK)",
+          downloadIos: "iOS · Coming soon",
+          downloadDesktop: "Desktop · Coming soon",
+          downloadNote: "Version 0.1.4 · Installed directly from an APK; you may need to allow “unknown sources” in system settings.",
+          supportKicker: "Get involved",
+          supportTitle: "Help the network grow",
+          supportLead: "OpenRung relies on volunteers for relay capacity and donors to keep it running.",
+          volunteerTitle: "Become a volunteer",
+          volunteerBody: "If you're on the open internet, you can run a volunteer relay and give others a path to it. Volunteers run a desktop command-line app. Note: in the current version, volunteers act as direct exit nodes, which carries real legal and privacy risk — please review what's involved first.",
+          volunteerButton: "Contact us to volunteer",
+          donateTitle: "Donate",
+          donateBody: "Your support keeps OpenRung free and funds infrastructure, security, volunteer tools, and user support. Online donations are coming soon.",
+          donateButton: "Contact us to donate",
+          contactKicker: "Contact",
+          contactTitle: "Get in touch",
+          contactBody: "Access help, volunteer hosting, donor conversations, security reports, and governance questions are all welcome by email:",
+          footerRights: "© 2026 OpenRung Foundation · A nonprofit project",
+          footerPrivacyLink: "Privacy",
+          footerContact: "Contact",
+          footerPrivacy: "We don't require an account, don't keep your browsing logs, and never sell your data."
+        },
+        zh: {
+          lang: "zh-CN",
+          dir: "ltr",
+          pageTitle: "OpenRung — 自由访问开放互联网",
+          pageDescription: "OpenRung 通过遍布世界各地的志愿者中继，帮助身处网络限制中的人访问公共网站与应用。永久免费、注重隐私、由非营利基金会运营。",
+          skip: "跳到主要内容",
+          navHow: "工作原理",
+          navWhy: "特点",
+          navDownload: "下载",
+          navVolunteer: "志愿者",
+          navContact: "联系",
+          heroEyebrow: "内测中 · OpenRung 0.1.4",
+          heroHeadline: "互联网访问是一项",
+          heroHeadlineHl: "权利，而非特权。",
+          heroLead: "OpenRung 通过遍布世界各地的志愿者中继，帮助身处网络限制中的人访问公共网站与应用。永久免费、注重隐私，由一家特拉华州非营利基金会运营。",
+          heroDownload: "下载 Android 版",
+          heroHow: "了解工作原理",
+          promiseFree: "永久免费",
+          promiseNoSignup: "无需注册",
+          promiseNoLog: "不留存浏览记录",
+          howKicker: "工作原理",
+          howTitle: "三步连接开放的互联网",
+          howLead: "无需复杂配置——安装、连接、访问。",
+          step1Title: "下载并安装",
+          step1Body: "在 Android 设备上安装 OpenRung 应用。",
+          step2Title: "一键连接",
+          step2Body: "应用会自动找到可用的志愿者中继并建立连接。",
+          step3Title: "自由访问",
+          step3Body: "像往常一样浏览网站、使用应用，没有付费墙。",
+          whyKicker: "特点",
+          whyTitle: "为公共利益而建",
+          whyLead: "OpenRung 由志愿者和捐赠者共同支持，目标只有一个：让开放的互联网访问始终免费、可靠。",
+          whyFreeTitle: "永久免费",
+          whyFreeBody: "没有订阅、没有隐藏费用，也不会为访问设置付费门槛。",
+          whyPrivacyTitle: "隐私优先",
+          whyPrivacyBody: "无需账号，不留存你的浏览记录，也不会出售你的数据。",
+          whyVolunteerTitle: "志愿者网络",
+          whyVolunteerBody: "由全球志愿者主机提供中继容量，网络因社区而存在。",
+          whyNonprofitTitle: "非营利治理",
+          whyNonprofitBody: "由 OpenRung 基金会运营，对公共利益负责并保持透明。",
+          downloadKicker: "下载",
+          downloadTitle: "获取 OpenRung",
+          downloadLead: "目前提供 Android 版本，iOS 与桌面版正在开发中。",
+          downloadBeta: "OpenRung 0.1.4 仍在积极开发中，服务可能不时中断。",
+          downloadAndroid: "下载 Android 版 (APK)",
+          downloadIos: "iOS · 即将推出",
+          downloadDesktop: "桌面版 · 即将推出",
+          downloadNote: "版本 0.1.4 · 通过 APK 直接安装，可能需要在系统设置中允许“未知来源”。",
+          supportKicker: "参与支持",
+          supportTitle: "帮助网络成长",
+          supportLead: "OpenRung 依靠志愿者提供中继、依靠捐赠者维持运转。",
+          volunteerTitle: "成为志愿者",
+          volunteerBody: "如果你身处自由的网络环境，可以运行一个志愿者中继，为他人提供通往开放互联网的通道。志愿者通过桌面命令行程序运行。请注意：在当前阶段，志愿者作为直接出口节点，存在一定的法律与隐私风险，请先了解相关须知。",
+          volunteerButton: "联系我们参与志愿",
+          donateTitle: "捐赠支持",
+          donateBody: "你的支持帮助 OpenRung 保持免费，并用于基础设施、安全、志愿者工具与用户支持。在线捐赠通道即将开放。",
+          donateButton: "联系我们捐赠",
+          contactKicker: "联系",
+          contactTitle: "联系我们",
+          contactBody: "使用帮助、志愿托管、捐赠沟通、安全报告与治理问题，都欢迎通过邮件联系：",
+          footerRights: "© 2026 OpenRung Foundation · 一个非营利项目",
+          footerPrivacyLink: "隐私",
+          footerContact: "联系",
+          footerPrivacy: "我们不要求账号、不留存你的浏览记录，也不会出售你的数据。"
+        },
+        fa: {
+          lang: "fa",
+          dir: "rtl",
+          pageTitle: "OpenRung — دسترسی به اینترنت آزاد",
+          pageDescription: "OpenRung به افرادی که با محدودیت‌های شبکه روبه‌رو هستند کمک می‌کند تا از طریق شبکهٔ جهانی رله‌های داوطلبانه به وب‌سایت‌ها و برنامه‌های عمومی دسترسی پیدا کنند. همیشه رایگان، با حفظ حریم خصوصی و زیر نظر یک بنیاد غیرانتفاعی.",
+          skip: "پرش به محتوای اصلی",
+          navHow: "چگونه کار می‌کند",
+          navWhy: "ویژگی‌ها",
+          navDownload: "دانلود",
+          navVolunteer: "داوطلب شوید",
+          navContact: "تماس",
+          heroEyebrow: "نسخهٔ آزمایشی خصوصی · OpenRung 0.1.4",
+          heroHeadline: "دسترسی به اینترنت یک",
+          heroHeadlineHl: "حق است، نه امتیاز.",
+          heroLead: "OpenRung به افرادی که با محدودیت‌های شبکه روبه‌رو هستند کمک می‌کند تا از طریق شبکهٔ جهانی رله‌های داوطلبانه به وب‌سایت‌ها و برنامه‌های عمومی دسترسی پیدا کنند. همیشه رایگان، با حفظ حریم خصوصی و زیر نظر یک بنیاد غیرانتفاعی در ایالت دلاور.",
+          heroDownload: "دانلود برای اندروید",
+          heroHow: "چگونه کار می‌کند",
+          promiseFree: "همیشه رایگان",
+          promiseNoSignup: "بدون ثبت‌نام",
+          promiseNoLog: "بدون ثبت سابقهٔ مرور",
+          howKicker: "چگونه کار می‌کند",
+          howTitle: "در سه گام به اینترنت آزاد دسترسی پیدا کنید",
+          howLead: "بدون پیکربندی پیچیده — نصب کنید، متصل شوید، استفاده کنید.",
+          step1Title: "دانلود و نصب",
+          step1Body: "برنامهٔ OpenRung را روی دستگاه اندرویدی خود نصب کنید.",
+          step2Title: "اتصال",
+          step2Body: "برنامه به‌طور خودکار یک رلهٔ داوطلب در دسترس را پیدا کرده و متصل می‌شود.",
+          step3Title: "مرور آزادانه",
+          step3Body: "مانند همیشه از وب‌سایت‌ها و برنامه‌ها استفاده کنید — بدون دیوار پرداخت.",
+          whyKicker: "ویژگی‌ها",
+          whyTitle: "ساخته‌شده برای منفعت عمومی",
+          whyLead: "OpenRung با پشتیبانی داوطلبان و حامیان مالی و تنها با یک هدف اداره می‌شود: حفظ دسترسی آزاد به اینترنت به‌صورت رایگان و پایدار.",
+          whyFreeTitle: "همیشه رایگان",
+          whyFreeBody: "بدون اشتراک، بدون هزینه‌های پنهان و بدون دیوار پرداخت برای دسترسی.",
+          whyPrivacyTitle: "اولویت با حریم خصوصی",
+          whyPrivacyBody: "نیازی به حساب کاربری نیست، سابقهٔ مرور شما ذخیره نمی‌شود و داده‌های شما هرگز فروخته نمی‌شود.",
+          whyVolunteerTitle: "نیروی داوطلبان",
+          whyVolunteerBody: "میزبان‌های داوطلب ظرفیت رله را فراهم می‌کنند — این شبکه به‌خاطر جامعه‌اش وجود دارد.",
+          whyNonprofitTitle: "مدیریت غیرانتفاعی",
+          whyNonprofitBody: "زیر نظر بنیاد OpenRung اداره می‌شود؛ پاسخ‌گو به منفعت عمومی و شفاف.",
+          downloadKicker: "دانلود",
+          downloadTitle: "دریافت OpenRung",
+          downloadLead: "نسخهٔ اندروید هم‌اکنون در دسترس است؛ نسخه‌های iOS و دسکتاپ در حال توسعه هستند.",
+          downloadBeta: "OpenRung 0.1.4 هنوز در حال توسعهٔ فعال است و ممکن است گاهی قطعی داشته باشد.",
+          downloadAndroid: "دانلود برای اندروید (APK)",
+          downloadIos: "iOS · به‌زودی",
+          downloadDesktop: "دسکتاپ · به‌زودی",
+          downloadNote: "نسخهٔ 0.1.4 · به‌صورت مستقیم از فایل APK نصب می‌شود؛ ممکن است لازم باشد «منابع ناشناس» را در تنظیمات سیستم مجاز کنید.",
+          supportKicker: "مشارکت",
+          supportTitle: "به رشد شبکه کمک کنید",
+          supportLead: "OpenRung برای ظرفیت رله به داوطلبان و برای ادامهٔ فعالیت به حامیان مالی متکی است.",
+          volunteerTitle: "داوطلب شوید",
+          volunteerBody: "اگر به اینترنت آزاد دسترسی دارید، می‌توانید یک رلهٔ داوطلب اجرا کنید و راهی به آن را برای دیگران فراهم کنید. داوطلبان از یک برنامهٔ خط فرمان دسکتاپ استفاده می‌کنند. توجه: در نسخهٔ کنونی، داوطلبان به‌عنوان گرهٔ خروجی مستقیم عمل می‌کنند که خطرهای حقوقی و حریم خصوصی واقعی به همراه دارد — لطفاً ابتدا جزئیات را مطالعه کنید.",
+          volunteerButton: "برای داوطلب‌شدن تماس بگیرید",
+          donateTitle: "حمایت مالی",
+          donateBody: "حمایت شما کمک می‌کند OpenRung رایگان بماند و هزینهٔ زیرساخت، امنیت، ابزارهای داوطلبان و پشتیبانی کاربران را تأمین می‌کند. پرداخت آنلاین به‌زودی فعال می‌شود.",
+          donateButton: "برای حمایت تماس بگیرید",
+          contactKicker: "تماس",
+          contactTitle: "با ما در تماس باشید",
+          contactBody: "برای راهنمایی استفاده، میزبانی داوطلبانه، گفت‌وگو با حامیان، گزارش مسائل امنیتی و پرسش‌های مربوط به مدیریت، از طریق ایمیل با ما در تماس باشید:",
+          footerRights: "© 2026 OpenRung Foundation · یک پروژهٔ غیرانتفاعی",
+          footerPrivacyLink: "حریم خصوصی",
+          footerContact: "تماس",
+          footerPrivacy: "ما حساب کاربری نمی‌خواهیم، سابقهٔ مرور شما را ذخیره نمی‌کنیم و داده‌های شما را هرگز نمی‌فروشیم."
+        },
+        ru: {
+          lang: "ru",
+          dir: "ltr",
+          pageTitle: "OpenRung — доступ к открытому интернету",
+          pageDescription: "OpenRung помогает людям с ограничениями доступа открывать публичные сайты и приложения через всемирную волонтёрскую сеть ретрансляторов. Всегда бесплатно, с заботой о приватности, под управлением некоммерческого фонда.",
+          skip: "Перейти к основному содержанию",
+          navHow: "Как это работает",
+          navWhy: "Преимущества",
+          navDownload: "Скачать",
+          navVolunteer: "Волонтёрам",
+          navContact: "Контакты",
+          heroEyebrow: "Закрытое бета-тестирование · OpenRung 0.1.4",
+          heroHeadline: "Доступ в интернет —",
+          heroHeadlineHl: "это право, а не привилегия.",
+          heroLead: "OpenRung помогает людям с ограничениями доступа открывать публичные сайты и приложения через всемирную волонтёрскую сеть ретрансляторов. Всегда бесплатно, с заботой о приватности, под управлением некоммерческого фонда из штата Делавэр.",
+          heroDownload: "Скачать для Android",
+          heroHow: "Как это работает",
+          promiseFree: "Всегда бесплатно",
+          promiseNoSignup: "Без регистрации",
+          promiseNoLog: "Без журналов посещений",
+          howKicker: "Как это работает",
+          howTitle: "Откройте открытый интернет за три шага",
+          howLead: "Без сложной настройки — установите, подключитесь, пользуйтесь.",
+          step1Title: "Скачайте и установите",
+          step1Body: "Установите приложение OpenRung на ваше устройство Android.",
+          step2Title: "Подключитесь",
+          step2Body: "Приложение автоматически находит доступный волонтёрский ретранслятор и подключается.",
+          step3Title: "Пользуйтесь свободно",
+          step3Body: "Открывайте сайты и приложения как обычно — без платного доступа.",
+          whyKicker: "Преимущества",
+          whyTitle: "Создано для общественного блага",
+          whyLead: "OpenRung поддерживается волонтёрами и донорами с одной целью: сохранять доступ к открытому интернету бесплатным и надёжным.",
+          whyFreeTitle: "Всегда бесплатно",
+          whyFreeBody: "Без подписок, скрытых платежей и платного доступа.",
+          whyPrivacyTitle: "Приватность прежде всего",
+          whyPrivacyBody: "Аккаунт не нужен, журналы посещений не хранятся, а ваши данные никогда не продаются.",
+          whyVolunteerTitle: "Сила волонтёров",
+          whyVolunteerBody: "Волонтёрские узлы обеспечивают пропускную способность сети — она существует благодаря сообществу.",
+          whyNonprofitTitle: "Некоммерческое управление",
+          whyNonprofitBody: "Управляется фондом OpenRung, подотчётным обществу и прозрачным.",
+          downloadKicker: "Скачать",
+          downloadTitle: "Получить OpenRung",
+          downloadLead: "Версия для Android уже доступна; iOS и десктоп в разработке.",
+          downloadBeta: "OpenRung 0.1.4 всё ещё активно разрабатывается, возможны временные перебои.",
+          downloadAndroid: "Скачать для Android (APK)",
+          downloadIos: "iOS · Скоро",
+          downloadDesktop: "Десктоп · Скоро",
+          downloadNote: "Версия 0.1.4 · Устанавливается напрямую из APK; возможно, потребуется разрешить «неизвестные источники» в настройках системы.",
+          supportKicker: "Участие",
+          supportTitle: "Помогите сети расти",
+          supportLead: "OpenRung полагается на волонтёров для пропускной способности и на доноров, чтобы продолжать работу.",
+          volunteerTitle: "Стать волонтёром",
+          volunteerBody: "Если у вас есть свободный доступ в интернет, вы можете запустить волонтёрский ретранслятор и открыть путь к нему для других. Волонтёры используют десктопное приложение командной строки. Внимание: в текущей версии волонтёры выступают прямыми выходными узлами, что несёт реальные юридические риски и риски для приватности — сначала ознакомьтесь с деталями.",
+          volunteerButton: "Связаться, чтобы стать волонтёром",
+          donateTitle: "Поддержать",
+          donateBody: "Ваша поддержка помогает OpenRung оставаться бесплатным и финансирует инфраструктуру, безопасность, инструменты для волонтёров и поддержку пользователей. Онлайн-пожертвования скоро появятся.",
+          donateButton: "Связаться, чтобы поддержать",
+          contactKicker: "Контакты",
+          contactTitle: "Свяжитесь с нами",
+          contactBody: "Помощь с использованием, волонтёрский хостинг, общение с донорами, сообщения о безопасности и вопросы управления — пишите нам:",
+          footerRights: "© 2026 OpenRung Foundation · Некоммерческий проект",
+          footerPrivacyLink: "Приватность",
+          footerContact: "Контакты",
+          footerPrivacy: "Мы не требуем аккаунта, не храним журналы посещений и никогда не продаём ваши данные."
+        }
+      };
+
+      const FALLBACK = "en";
+      const langButtons = document.querySelectorAll("[data-lang]");
+      const metaDesc = document.querySelector('meta[name="description"]');
+
+      function setLanguage(language) {
+        const active = translations[language] ? language : FALLBACK;
+        const copy = translations[active];
+
+        document.documentElement.lang = copy.lang;
+        document.documentElement.dir = copy.dir || "ltr";
+        document.title = copy.pageTitle;
+        if (metaDesc) metaDesc.setAttribute("content", copy.pageDescription);
+
+        document.querySelectorAll("[data-i18n]").forEach((el) => {
+          const key = el.dataset.i18n;
+          if (copy[key] !== undefined) el.textContent = copy[key];
+        });
+
+        langButtons.forEach((btn) => {
+          btn.setAttribute("aria-pressed", String(btn.dataset.lang === active));
+        });
+
+        try { localStorage.setItem("openrung-language", active); } catch (e) {}
+      }
+
+      langButtons.forEach((btn) => {
+        btn.addEventListener("click", () => setLanguage(btn.dataset.lang));
+      });
+
+      let saved = FALLBACK;
+      try { saved = localStorage.getItem("openrung-language") || FALLBACK; } catch (e) {}
+      setLanguage(saved);
+    </script>
+  </body>
+</html>
