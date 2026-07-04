@@ -6,8 +6,8 @@ Thanks for your interest in contributing.
 
 OpenRung is licensed under the **GNU General Public License v3.0 or later**
 (GPL-3.0-or-later); see [`LICENSE`](LICENSE). This is required because the
-mobile clients statically link [sing-box](https://github.com/SagerNet/sing-box),
-which is GPL-3.0-or-later.
+OpenRung mobile app (developed in its own repository) statically links
+[sing-box](https://github.com/SagerNet/sing-box), which is GPL-3.0-or-later.
 
 By submitting a contribution, you agree that your contribution is licensed under
 GPL-3.0-or-later, consistent with the project license (inbound = outbound).
@@ -63,7 +63,6 @@ New first-party source files should carry an SPDX header so their license is
 unambiguous:
 
 - Go: `// SPDX-License-Identifier: GPL-3.0-or-later`
-- Kotlin / Swift: `// SPDX-License-Identifier: GPL-3.0-or-later`
 
 ## Third-party dependencies
 

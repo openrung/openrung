@@ -182,10 +182,10 @@ sequenceDiagram
 
 The mobile client is an iOS/Android app using VPN mode. It asks the broker for relay candidates, configures a compatible VLESS Reality client, and routes device traffic through the selected volunteer.
 
-Implementation detail for later:
+It is developed in a separate React Native repository with native VPN modules:
 
-- Android can use `VpnService` plus a userspace TCP/UDP stack or tun2socks bridge.
-- iOS can use `NetworkExtension` packet tunnel provider.
+- Android uses `VpnService` plus the embedded tunnel engine.
+- iOS uses a `NetworkExtension` packet tunnel provider.
 
 ### Future Dedicated Exit Mode
 

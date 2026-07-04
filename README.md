@@ -29,7 +29,7 @@ everyday volunteers in unrestricted regions.
 OpenRung connects censored users with everyday volunteers, similar in spirit to
 Tor's [Snowflake](https://snowflake.torproject.org/):
 
-- **Clients** (iOS, Android, and a desktop CLI) route device traffic through a
+- **Clients** (the mobile app and a desktop CLI) route device traffic through a
   VPN tunnel to a volunteer relay.
 - **Volunteers** run a small command-line app that relays that traffic to the
   open internet.
@@ -61,8 +61,8 @@ clients are steered toward relays that actually work.
   IPv4 and dual-stack options.
 - 🕳️ **Works behind CGNAT** — volunteers with no inbound port can join through
   a reverse-tunnel relay hub.
-- 📱 **Full-device mobile clients** — iOS and Android apps route all device
-  traffic in VPN mode.
+- 📱 **Full-device mobile client** — the OpenRung app routes all device
+  traffic in VPN mode (developed in a separate React Native repository).
 - 🧭 **Privacy-aware control plane** — the broker matchmakes but never carries
   user traffic.
 - 🗄️ **Production-friendly broker** — optional shared PostgreSQL state for safe
@@ -173,7 +173,9 @@ go run ./cmd/client check -broker http://localhost:8080
 ```
 
 For macOS full-device routing, see [`docs/desktop-client.md`](docs/desktop-client.md).
-The mobile apps live in [`ios/`](ios/) and [`android/`](android/).
+The mobile app (React Native with native VPN modules) is developed in a
+separate repository; the original native iOS and Android clients have been
+retired from this one.
 
 ## Repository layout
 
@@ -190,8 +192,6 @@ internal/relay/      Shared relay descriptor models.
 internal/relayhub/   Relay hub configuration.
 internal/tunnel/     Reverse-tunnel transport (hub + volunteer client, yamux).
 internal/volunteer/  Xray config generation helpers.
-android/             Android VPN client (Compose UI + VpnService).
-ios/                 iOS VPN client and shared Swift package.
 deploy/              Broker proxy, relay hub, and volunteer deployment assets.
 docs/                Architecture, API, client, and operations docs + website.
 ```
@@ -203,9 +203,6 @@ docs/                Architecture, API, client, and operations docs + website.
 | [Architecture](docs/architecture.md) | Goals, components, and trust boundaries |
 | [Broker API](docs/api.md) | HTTP API reference (`/api/v1`) |
 | [Desktop client](docs/desktop-client.md) | macOS/CLI client and full-device routing |
-| [iOS client](docs/ios-client.md) | iPhone VPN app design and status |
-| [Mobile VPN notes](docs/mobile-vpn.md) | Full-device VPN behavior on mobile |
-| [Hybrid mobile direction](docs/mobile-hybrid.md) | Long-term mobile architecture |
 | [Security and abuse](docs/security-abuse.md) | Threat model, volunteer risk, and abuse handling |
 | [Relay hub deployment](deploy/relayhub/README.md) | Running a hub: TLS, ports, and cost |
 
@@ -232,7 +229,7 @@ most valuable contribution:
   [Open an issue](https://github.com/openrung/openrung/issues) — relay IDs,
   connection logs, and network conditions help a lot.
 - 💡 **Feature ideas and questions** are welcome as issues too.
-- 🙋 **Want to run a relay or help test the mobile apps?** Email
+- 🙋 **Want to run a relay or help test the mobile app?** Email
   [admin@openrung.org](mailto:admin@openrung.org).
 
 ## Contributing
@@ -246,14 +243,15 @@ and thank you for helping people reach the open internet.
 OpenRung is licensed under the **GNU General Public License v3.0 or later**
 (GPL-3.0-or-later). See [`LICENSE`](LICENSE).
 
-The mobile clients statically link [sing-box](https://github.com/SagerNet/sing-box)
-(GPL-3.0-or-later), so the combined apps — and the project as a whole — are
-GPL-3.0-or-later. The relay transport's VLESS + REALITY + Vision support comes
+The mobile app (maintained in its own repository) statically links
+[sing-box](https://github.com/SagerNet/sing-box) (GPL-3.0-or-later), so the
+combined app — and the project as a whole — is GPL-3.0-or-later. The relay
+transport's VLESS + REALITY + Vision support comes
 from [Xray-core](https://github.com/XTLS/Xray-core) (MPL-2.0), which the
 volunteer runs as a separate process.
 
-Third-party components bundled or linked into distributed artifacts (apps,
-Docker images, server binaries), and the attribution and source-offer
+Third-party components bundled or linked into distributed artifacts (Docker
+images, server binaries), and the attribution and source-offer
 obligations they carry, are documented in
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). Complete corresponding
 source for any released binary is available from this repository.
@@ -265,7 +263,7 @@ OpenRung builds on excellent open source work:
 - [Xray-core](https://github.com/XTLS/Xray-core) — VLESS + REALITY + Vision
   relay transport
 - [sing-box](https://github.com/SagerNet/sing-box) — mobile tunnel engine
-- [MapLibre](https://maplibre.org/) — maps in the mobile clients
+- [MapLibre](https://maplibre.org/) — maps in the mobile app
 - Tor's [Snowflake](https://snowflake.torproject.org/) — inspiration for
   volunteer-powered circumvention
 
