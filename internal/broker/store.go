@@ -23,6 +23,7 @@ const (
 type RelayStore interface {
 	Register(relay.RegisterRequest, time.Time, time.Duration) (relay.Descriptor, error)
 	Heartbeat(string, time.Time, time.Duration) (relay.Descriptor, error)
+	UpdateGeo(string, relay.GeoLocation) error
 	List(time.Time, int) ([]relay.Descriptor, error)
 	Stats(time.Time) (StoreStats, error)
 	Prune(time.Time) ([]relay.Descriptor, error)
@@ -67,6 +68,7 @@ func (s *Store) Register(req relay.RegisterRequest, now time.Time, ttl time.Dura
 		Label:            req.Label,
 		PublicHost:       req.PublicHost,
 		PublicPort:       req.PublicPort,
+		ExitHost:         req.ExitHost,
 		Protocol:         req.Protocol,
 		ClientID:         req.ClientID,
 		RealityPublicKey: req.RealityPublicKey,
@@ -106,6 +108,19 @@ func (s *Store) Heartbeat(id string, now time.Time, ttl time.Duration) (relay.De
 	s.relays[id] = desc
 
 	return desc, nil
+}
+
+func (s *Store) UpdateGeo(id string, geo relay.GeoLocation) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	desc, ok := s.relays[id]
+	if !ok {
+		return ErrRelayNotFound
+	}
+	desc.GeoLocation = geo
+	s.relays[id] = desc
+	return nil
 }
 
 func (s *Store) List(now time.Time, limit int) ([]relay.Descriptor, error) {

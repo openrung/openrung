@@ -140,6 +140,82 @@ func TestPostgresStoreGlobalRankingUsesSharedMetrics(t *testing.T) {
 	}
 }
 
+func TestPostgresStoreGeoSurvivesReRegistration(t *testing.T) {
+	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	store := newTestPostgresStore(t, RankingModeGlobal)
+
+	desc, err := store.Register(validRegisterRequest(), now, time.Minute)
+	if err != nil {
+		t.Fatalf("register relay: %v", err)
+	}
+	geo := relay.GeoLocation{City: "Tokyo", Country: "Japan", CountryCode: "JP"}
+	if err := store.UpdateGeo(desc.ID, geo); err != nil {
+		t.Fatalf("update geo: %v", err)
+	}
+	listed, err := store.List(now.Add(time.Second), 10)
+	if err != nil {
+		t.Fatalf("list relays: %v", err)
+	}
+	if len(listed) != 1 || listed[0].GeoLocation != geo {
+		t.Fatalf("expected listed relay to carry geo, got %+v", listed)
+	}
+
+	// Re-registering the same host:port must keep the resolved location.
+	replacement, err := store.Register(validRegisterRequest(), now.Add(2*time.Second), time.Minute)
+	if err != nil {
+		t.Fatalf("re-register relay: %v", err)
+	}
+	if replacement.GeoLocation != geo {
+		t.Fatalf("expected re-registered relay to keep geo, got %+v", replacement.GeoLocation)
+	}
+
+	if err := store.UpdateGeo("relay_missing", geo); !errors.Is(err, ErrRelayNotFound) {
+		t.Fatalf("expected ErrRelayNotFound for unknown relay, got %v", err)
+	}
+}
+
+func TestPostgresStoreExitHostChangeClearsGeo(t *testing.T) {
+	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	store := newTestPostgresStore(t, RankingModeGlobal)
+
+	req := validRegisterRequest()
+	req.Transport = relay.TransportTunnel
+	req.ExitHost = "198.51.100.7"
+	desc, err := store.Register(req, now, time.Minute)
+	if err != nil {
+		t.Fatalf("register tunnel relay: %v", err)
+	}
+	if desc.ExitHost != "198.51.100.7" {
+		t.Fatalf("expected stored exit host, got %q", desc.ExitHost)
+	}
+	geo := relay.GeoLocation{City: "Tehran", Country: "Iran", CountryCode: "IR"}
+	if err := store.UpdateGeo(desc.ID, geo); err != nil {
+		t.Fatalf("update geo: %v", err)
+	}
+
+	// Same hub endpoint, same exit host: the location sticks.
+	sameExit, err := store.Register(req, now.Add(time.Second), time.Minute)
+	if err != nil {
+		t.Fatalf("re-register same exit: %v", err)
+	}
+	if sameExit.GeoLocation != geo {
+		t.Fatalf("expected geo to survive same-exit re-registration, got %+v", sameExit.GeoLocation)
+	}
+
+	// Same hub endpoint reused by a different volunteer: stale location cleared.
+	req.ExitHost = "198.51.100.99"
+	newExit, err := store.Register(req, now.Add(2*time.Second), time.Minute)
+	if err != nil {
+		t.Fatalf("re-register new exit: %v", err)
+	}
+	if newExit.GeoLocation != (relay.GeoLocation{}) {
+		t.Fatalf("expected geo cleared after exit host change, got %+v", newExit.GeoLocation)
+	}
+	if newExit.ExitHost != "198.51.100.99" {
+		t.Fatalf("expected updated exit host, got %q", newExit.ExitHost)
+	}
+}
+
 func newTestPostgresStore(t *testing.T, rankingMode RankingMode) *PostgresStore {
 	t.Helper()
 	store := newTestPostgresStoreWithoutCleanup(t, rankingMode)

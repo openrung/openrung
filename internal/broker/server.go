@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -21,6 +22,10 @@ type Config struct {
 	// TrustedProxyCIDRs are additional CIDRs (beyond Cloudflare's published ranges) whose forwarded
 	// CF-Connecting-IP / X-Forwarded-For headers the broker will trust for the real client IP.
 	TrustedProxyCIDRs []string
+	// GeoIP resolves the city/country of a relay's public endpoint so clients
+	// can show where volunteer relays are located. Nil disables lookups;
+	// descriptors then carry empty geo fields.
+	GeoIP GeoIPResolver
 }
 
 func NewServer(store RelayStore, cfg Config) http.Handler {
@@ -83,7 +88,8 @@ func registerHandler(store RelayStore, cfg Config) http.HandlerFunc {
 			writeError(w, http.StatusServiceUnavailable, "could not register relay")
 			return
 		}
-		slog.Info("volunteer registered", "relay_id", desc.ID, "public", desc.PublicHost, "port", desc.PublicPort, "max_sessions", desc.MaxSessions, "version", desc.VolunteerVersion)
+		resolveRelayGeo(r.Context(), store, cfg.GeoIP, &desc)
+		slog.Info("volunteer registered", "relay_id", desc.ID, "public", desc.PublicHost, "port", desc.PublicPort, "city", desc.City, "country", desc.Country, "max_sessions", desc.MaxSessions, "version", desc.VolunteerVersion)
 
 		writeJSON(w, http.StatusCreated, desc)
 	}
@@ -113,8 +119,45 @@ func heartbeatHandler(store RelayStore, cfg Config) http.HandlerFunc {
 			return
 		}
 
+		// Backfill relays whose registration-time lookup failed (or that
+		// registered before the broker resolved locations at all).
+		resolveRelayGeo(r.Context(), store, cfg.GeoIP, &desc)
+
 		writeJSON(w, http.StatusOK, relay.HeartbeatResponse{OK: true, ExpiresAt: desc.ExpiresAt})
 	}
+}
+
+// resolveRelayGeo best-effort resolves and persists the location of a relay's
+// public endpoint. It only performs a lookup when the descriptor has no geo
+// yet, and never fails the surrounding request: on lookup or store errors the
+// descriptor simply keeps its empty geo until a later attempt succeeds. The
+// resolver caches failures, so heartbeat-driven retries stay rate-limited.
+func resolveRelayGeo(ctx context.Context, store RelayStore, resolver GeoIPResolver, desc *relay.Descriptor) {
+	if resolver == nil || desc.GeoLocation != (relay.GeoLocation{}) {
+		return
+	}
+	host := geoLookupHost(desc)
+	geo, err := resolver.Lookup(ctx, host)
+	if err != nil {
+		slog.Warn("could not resolve relay location", "relay_id", desc.ID, "host", host, "error", err)
+		return
+	}
+	if err := store.UpdateGeo(desc.ID, geo); err != nil {
+		slog.Warn("could not store relay location", "relay_id", desc.ID, "error", err)
+		return
+	}
+	desc.GeoLocation = geo
+	slog.Info("relay location resolved", "relay_id", desc.ID, "city", geo.City, "country", geo.Country)
+}
+
+// geoLookupHost picks the address whose location clients care about: the
+// volunteer's exit IP when the hub reported one (tunnel transport), otherwise
+// the advertised public endpoint (direct transport, where they coincide).
+func geoLookupHost(desc *relay.Descriptor) string {
+	if desc.ExitHost != "" {
+		return desc.ExitHost
+	}
+	return desc.PublicHost
 }
 
 func listRelaysHandler(store RelayStore, telemetrySink TelemetrySink, clientIP *clientIPResolver) http.HandlerFunc {
@@ -167,6 +210,8 @@ func validateRegisterRequest(req relay.RegisterRequest) error {
 		return errors.New("exit_mode must be direct or dedicated")
 	case req.Transport != "" && req.Transport != relay.TransportDirect && req.Transport != relay.TransportTunnel:
 		return errors.New("transport must be direct or tunnel")
+	case req.ExitHost != "" && req.Transport != relay.TransportTunnel:
+		return errors.New("exit_host is only allowed for tunnel transport")
 	case req.MaxSessions < 1:
 		return errors.New("max_sessions must be at least 1")
 	case req.MaxMbps < 1:

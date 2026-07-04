@@ -119,7 +119,7 @@ func (h *Hub) handleControl(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	registration, err := h.Registrar.Register(ctx, h.registerRequest(hello, port))
+	registration, err := h.Registrar.Register(ctx, h.registerRequest(hello, port, remoteHost(conn.RemoteAddr())))
 	if err != nil {
 		_ = publicListener.Close()
 		h.Allocator.Release(port)
@@ -175,7 +175,7 @@ func (h *Hub) handleControl(ctx context.Context, conn net.Conn) {
 	t.run(ctx)
 }
 
-func (h *Hub) registerRequest(hello HelloFrame, port int) relay.RegisterRequest {
+func (h *Hub) registerRequest(hello HelloFrame, port int, exitHost string) relay.RegisterRequest {
 	punchOn := h.punchAvailable() && hello.StreamTyping && hello.PunchCapable
 	punchEndpoint := ""
 	if punchOn {
@@ -184,6 +184,7 @@ func (h *Hub) registerRequest(hello HelloFrame, port int) relay.RegisterRequest 
 	return relay.RegisterRequest{
 		PublicHost:       h.PublicHost,
 		PublicPort:       port,
+		ExitHost:         exitHost,
 		Protocol:         relay.ProtocolVLESSRealityVision,
 		ClientID:         hello.ClientID,
 		RealityPublicKey: hello.RealityPublicKey,
@@ -199,6 +200,21 @@ func (h *Hub) registerRequest(hello HelloFrame, port int) relay.RegisterRequest 
 		PunchCapable:     punchOn,
 		PunchEndpoint:    punchEndpoint,
 	}
+}
+
+// remoteHost extracts the bare IP of the volunteer's control connection — its
+// public (post-NAT) source address, which is where tunneled traffic exits.
+// Returns "" when the address cannot be parsed so registration proceeds
+// without an exit host rather than sending junk to the broker.
+func remoteHost(addr net.Addr) string {
+	if addr == nil {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return ""
+	}
+	return host
 }
 
 // punchAvailable reports whether this hub is configured to coordinate punches.
