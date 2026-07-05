@@ -3,6 +3,7 @@ package tunnel
 import (
 	"context"
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -119,7 +120,8 @@ func (h *Hub) handleControl(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	registration, err := h.Registrar.Register(ctx, h.registerRequest(hello, port, remoteHost(conn.RemoteAddr())))
+	regReq := h.registerRequest(hello, port, remoteHost(conn.RemoteAddr()))
+	registration, err := h.Registrar.Register(ctx, regReq)
 	if err != nil {
 		_ = publicListener.Close()
 		h.Allocator.Release(port)
@@ -165,13 +167,16 @@ func (h *Hub) handleControl(ctx context.Context, conn net.Conn) {
 		publicListener: publicListener,
 		port:           port,
 		relayID:        registration.RelayID,
+		registerReq:    regReq,
 		streamTyping:   streamTyping,
 		logger:         logger.With("relay_id", registration.RelayID, "public_port", port, "remote", remote),
 	}
 	// Publish before the blocking accept loop so the punch coordinator can find
 	// this volunteer as soon as it is registered.
 	h.addTunnel(registration.RelayID, t)
-	defer h.removeTunnel(registration.RelayID, t)
+	// The relay ID can change if the heartbeat loop re-registers (broker forgot
+	// us), so remove whatever ID the tunnel holds at teardown time.
+	defer func() { h.removeTunnel(t.currentRelayID(), t) }()
 	t.run(ctx)
 }
 
@@ -262,9 +267,29 @@ type tunnel struct {
 	session        *yamux.Session
 	publicListener net.Listener
 	port           int
-	relayID        string
 	streamTyping   bool
 	logger         *slog.Logger
+
+	// registerReq is the request the tunnel was registered with, kept so the
+	// heartbeat loop can re-register verbatim if the broker forgets the relay.
+	registerReq relay.RegisterRequest
+
+	// relayID is the broker-assigned ID; it changes on re-registration, so it
+	// is guarded for the teardown path that reads it after the heartbeat loop.
+	relayIDMu sync.Mutex
+	relayID   string
+}
+
+func (t *tunnel) currentRelayID() string {
+	t.relayIDMu.Lock()
+	defer t.relayIDMu.Unlock()
+	return t.relayID
+}
+
+func (t *tunnel) setRelayID(id string) {
+	t.relayIDMu.Lock()
+	defer t.relayIDMu.Unlock()
+	t.relayID = id
 }
 
 func (t *tunnel) run(parent context.Context) {
@@ -340,11 +365,38 @@ func (t *tunnel) heartbeatLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			hbCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			err := t.hub.Registrar.Heartbeat(hbCtx, t.relayID)
+			err := t.hub.Registrar.Heartbeat(hbCtx, t.currentRelayID())
 			cancel()
-			if err != nil {
-				t.logger.Warn("relay heartbeat failed", "error", err)
+			if err == nil {
+				continue
 			}
+			if !errors.Is(err, ErrRelayNotFound) {
+				t.logger.Warn("relay heartbeat failed", "error", err)
+				continue
+			}
+			t.reregister(ctx)
 		}
 	}
+}
+
+// reregister refreshes the broker registration after the broker forgot the
+// relay (e.g. its in-memory store was lost across a restart). The public
+// listener and yamux session stay untouched — only the broker-side identity
+// changes — but the broker assigns a fresh relay ID, so the hub registry
+// (which the punch coordinator keys by relay ID) is re-keyed. On failure the
+// next heartbeat gets not-found again and retries.
+func (t *tunnel) reregister(ctx context.Context) {
+	regCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	registration, err := t.hub.Registrar.Register(regCtx, t.registerReq)
+	cancel()
+	if err != nil {
+		t.logger.Warn("relay re-registration failed", "error", err)
+		return
+	}
+	oldID := t.currentRelayID()
+	t.setRelayID(registration.RelayID)
+	t.hub.removeTunnel(oldID, t)
+	t.hub.addTunnel(registration.RelayID, t)
+	t.logger.Info("relay re-registered after broker forgot it",
+		"old_relay_id", oldID, "new_relay_id", registration.RelayID)
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -11,6 +12,11 @@ import (
 
 	"openrung/internal/relay"
 )
+
+// ErrRelayNotFound is returned (wrapped) by Heartbeat when the broker no
+// longer knows the relay — e.g. an in-memory store lost it across a broker
+// restart. The caller should re-register rather than keep heartbeating.
+var ErrRelayNotFound = errors.New("relay not found")
 
 // RelayRegistration is the result of registering a tunneled relay with the broker.
 type RelayRegistration struct {
@@ -89,6 +95,9 @@ func (b *brokerRegistrar) postJSON(ctx context.Context, path string, body, out a
 		_ = json.NewDecoder(resp.Body).Decode(&apiErr)
 		if apiErr.Error == "" {
 			apiErr.Error = resp.Status
+		}
+		if resp.StatusCode == http.StatusNotFound && apiErr.Error == "relay not found" {
+			return fmt.Errorf("broker %s: %w", path, ErrRelayNotFound)
 		}
 		return fmt.Errorf("broker %s: %s", path, apiErr.Error)
 	}
