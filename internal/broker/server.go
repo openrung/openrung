@@ -13,6 +13,10 @@ import (
 	"openrung/internal/relay"
 )
 
+// maxRegisterBodyBytes caps volunteer registration payloads; descriptors are
+// small structs, so anything near the cap is malformed or hostile.
+const maxRegisterBodyBytes = 64 << 10
+
 type Config struct {
 	RegistrationToken string
 	VolunteerLeaseTTL time.Duration
@@ -33,6 +37,10 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 		cfg.VolunteerLeaseTTL = 3 * time.Minute
 	}
 	clientIP := newClientIPResolver(cfg.TrustedProxyCIDRs)
+	clientSeen := newClientSeenDeduper(clientSeenDedupWindow, clientSeenDedupMaxEntries)
+	relayListLimiter := newIPRateLimiter(relayListRatePerSecond, relayListBurst, rateLimiterMaxTrackedIPs)
+	telemetryLimiter := newIPRateLimiter(telemetryRatePerSecond, telemetryBurst, rateLimiterMaxTrackedIPs)
+	speedTestLimiter := newIPRateLimiter(speedTestRatePerSecond, speedTestBurst, rateLimiterMaxTrackedIPs)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -45,9 +53,9 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 	})
 	mux.HandleFunc("POST /api/v1/volunteers/register", registerHandler(store, cfg))
 	mux.HandleFunc("POST /api/v1/volunteers/", heartbeatHandler(store, cfg))
-	mux.HandleFunc("GET /api/v1/relays", listRelaysHandler(store, cfg.TelemetrySink, clientIP))
-	mux.HandleFunc("POST /api/v1/telemetry/events", telemetryHandler(cfg.TelemetrySink, store, clientIP))
-	mux.HandleFunc("GET /api/v1/speed-test", speedTestHandler())
+	mux.HandleFunc("GET /api/v1/relays", rateLimited(relayListLimiter, clientIP, 10, listRelaysHandler(store, cfg.TelemetrySink, clientIP, clientSeen)))
+	mux.HandleFunc("POST /api/v1/telemetry/events", rateLimited(telemetryLimiter, clientIP, 10, telemetryHandler(cfg.TelemetrySink, store, clientIP)))
+	mux.HandleFunc("GET /api/v1/speed-test", rateLimited(speedTestLimiter, clientIP, 30, speedTestHandler(speedTestMaxConcurrent)))
 	if cfg.DashboardToken != "" && cfg.TelemetryReader != nil {
 		dashboard := newDashboardServer(cfg.DashboardToken, cfg.TelemetryReader)
 		dashboard.relayLabels = relayLabelResolver(store)
@@ -65,6 +73,7 @@ func registerHandler(store RelayStore, cfg Config) http.HandlerFunc {
 		}
 
 		var req relay.RegisterRequest
+		r.Body = http.MaxBytesReader(w, r.Body, maxRegisterBodyBytes)
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON request")
 			return
@@ -160,9 +169,9 @@ func geoLookupHost(desc *relay.Descriptor) string {
 	return desc.PublicHost
 }
 
-func listRelaysHandler(store RelayStore, telemetrySink TelemetrySink, clientIP *clientIPResolver) http.HandlerFunc {
+func listRelaysHandler(store RelayStore, telemetrySink TelemetrySink, clientIP *clientIPResolver, clientSeen *clientSeenDeduper) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		recordClientSeen(r, telemetrySink, clientIP)
+		recordClientSeen(r, telemetrySink, clientIP, clientSeen)
 		limit := 5
 		if raw := r.URL.Query().Get("limit"); raw != "" {
 			parsed, err := strconv.Atoi(raw)
