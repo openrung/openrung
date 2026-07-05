@@ -99,6 +99,9 @@ func TestServerRateLimitsSpeedTest(t *testing.T) {
 	if recorder.Header().Get("Retry-After") == "" {
 		t.Fatal("expected Retry-After header on 429")
 	}
+	if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("expected no-store cache control on 429, got %q", got)
+	}
 
 	// A different source IP is not affected by the exhausted bucket.
 	otherSource := httptest.NewRequest(http.MethodGet, "/api/v1/speed-test?bytes=10", nil)

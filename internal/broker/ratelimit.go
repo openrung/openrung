@@ -102,6 +102,9 @@ func (l *ipRateLimiter) sweepLocked(now time.Time) {
 func rateLimited(limiter *ipRateLimiter, clientIP *clientIPResolver, retryAfterSeconds int, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !limiter.allow(clientIP.clientIP(r)) {
+			// A 429 is per-client state: a shared cache (Cloudflare's edge)
+			// storing one would replay it to every client behind the edge.
+			w.Header().Set("Cache-Control", "no-store")
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
 			writeError(w, http.StatusTooManyRequests, "rate limit exceeded, retry later")
 			return

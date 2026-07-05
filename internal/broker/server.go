@@ -171,6 +171,10 @@ func geoLookupHost(desc *relay.Descriptor) string {
 
 func listRelaysHandler(store RelayStore, telemetrySink TelemetrySink, clientIP *clientIPResolver, clientSeen *clientSeenDeduper) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Relay availability is real-time: shared caches (Cloudflare's edge in
+		// production) must never store a copy, and clients cannot bust an edge
+		// cache from their side. Set on every path so errors aren't cached either.
+		w.Header().Set("Cache-Control", "no-store")
 		recordClientSeen(r, telemetrySink, clientIP, clientSeen)
 		limit := 5
 		if raw := r.URL.Query().Get("limit"); raw != "" {

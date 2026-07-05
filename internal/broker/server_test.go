@@ -257,6 +257,25 @@ func TestListRelaysReportsStoreFailure(t *testing.T) {
 	}
 }
 
+func TestListRelaysIsNeverCacheable(t *testing.T) {
+	server := NewServer(NewStore(), Config{})
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/relays", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("expected no-store cache control on relay list, got %q", got)
+	}
+
+	failingServer := NewServer(failingStore{Store: NewStore(), listErr: errors.New("database down")}, Config{})
+	failRecorder := httptest.NewRecorder()
+	failingServer.ServeHTTP(failRecorder, httptest.NewRequest(http.MethodGet, "/api/v1/relays", nil))
+	if got := failRecorder.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("expected no-store cache control on relay list error, got %q", got)
+	}
+}
+
 func TestHeartbeatMissingRelayStillReturnsNotFound(t *testing.T) {
 	server := NewServer(NewStore(), Config{})
 	recorder := httptest.NewRecorder()
