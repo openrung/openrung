@@ -65,7 +65,20 @@ func run() error {
 	}
 	go maintainBroker(store, telemetrySink, maintenanceInterval, *statusInterval > 0)
 
-	server := &http.Server{Addr: *addr, Handler: handler}
+	server := &http.Server{
+		Addr:    *addr,
+		Handler: handler,
+		// Bound every phase of a connection so slow-drip (slowloris-style)
+		// clients cannot pin goroutines and file descriptors indefinitely. The
+		// read window still fits a full 512 KiB telemetry upload on a very slow
+		// link; the speed-test handler extends its own write deadline because a
+		// 25 MB download legitimately needs longer than the write timeout.
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       2 * time.Minute,
+		WriteTimeout:      2 * time.Minute,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    64 << 10,
+	}
 	shutdownContext, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
 	shutdownDone := make(chan struct{})

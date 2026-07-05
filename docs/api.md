@@ -2,6 +2,17 @@
 
 All API paths are currently versioned under `/api/v1`.
 
+## Abuse limits
+
+The unauthenticated endpoints (`GET /api/v1/relays`, `POST
+/api/v1/telemetry/events`, `GET /api/v1/speed-test`) are rate limited per
+client IP. Requests over the budget receive `429 Too Many Requests` with a
+`Retry-After` header (seconds); clients should back off and retry. The budgets
+are far above normal client behavior — relay-list polling, telemetry batching,
+and an occasional speed test never hit them — and they apply to the real client
+IP resolved through trusted proxies, so one abusive source behind Cloudflare
+does not exhaust anyone else's budget.
+
 ## Client telemetry
 
 Android clients attach a persistent installation identifier and a per-connection
@@ -15,9 +26,12 @@ X-OpenRung-Android-API: 35
 ```
 
 The broker writes a `client_seen` record containing the request source IP before
-returning the relay list. The default broker command stores telemetry as
-append-only JSON Lines in `openrung-telemetry.jsonl`; change the path with
-`-telemetry-file`.
+returning the relay list, at most once per client session every four minutes —
+repeat polling inside that window does not produce more records. The default
+broker command stores telemetry as JSON Lines in `openrung-telemetry.jsonl`;
+change the path with `-telemetry-file`. The file is compacted in place once it
+outgrows its size budget (256 MiB), keeping the retained recent records, so disk
+usage stays bounded.
 
 When the request arrives through a trusted proxy, the source IP is taken from the
 `CF-Connecting-IP` header (falling back to the left-most `X-Forwarded-For` entry)
@@ -52,7 +66,11 @@ Content-Type: application/json
 }
 ```
 
-The endpoint accepts at most 200 events and 512 KiB per request. Package
+The endpoint accepts at most 200 events and 512 KiB per request. Events dated
+more than one hour into the future are rejected (retention and dashboards key
+off the server's receipt time, so client clocks cannot extend either), and
+free-form fields are length-capped: attribute/measurement keys at 64
+characters, attribute values and `application_package` at 256. Package
 attribution is collected on Android 10 and newer. This first implementation
 records connection starts and destinations, not per-flow byte counters or flow
 completion times.
@@ -98,7 +116,10 @@ GET /api/v1/speed-test?bytes=10000000
 ```
 
 The broker streams the requested number of bytes with caching disabled and
-rejects requests larger than 25 MB.
+rejects requests larger than 25 MB. Because each stream is expensive for broker
+egress, only a few speed tests may run concurrently in addition to the per-IP
+rate limit; a busy broker answers `429` with `Retry-After`, and the app should
+retry the measurement later rather than treat it as a failure.
 
 ## Telemetry dashboard
 
@@ -113,7 +134,8 @@ The dashboard requires the configured token, creates an HttpOnly administrator
 session lasting 12 hours, and refreshes its operational overview every 30
 seconds. It supports one-hour, 24-hour, and seven-day windows. The JSONL file
 remains the durable telemetry store; the broker retains the most recent seven
-days in memory for dashboard queries.
+days in memory for dashboard queries, capped at a 64 MiB budget that discards
+the oldest records first if a burst of telemetry would exceed it.
 
 The authenticated dashboard reads its data from:
 

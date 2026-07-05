@@ -123,6 +123,17 @@ func TestRegisterRejectsUnsafeLabel(t *testing.T) {
 	}
 }
 
+func TestRegisterRejectsOversizedBody(t *testing.T) {
+	server := NewServer(NewStore(), Config{})
+
+	oversized := []byte(`{"public_host":"` + strings.Repeat("a", maxRegisterBodyBytes) + `"}`)
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/volunteers/register", bytes.NewReader(oversized)))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for oversized register body, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestRegisterResolvesRelayLocation(t *testing.T) {
 	resolver := &stubGeoResolver{geo: relay.GeoLocation{City: "Tokyo", Country: "Japan", CountryCode: "JP", Latitude: 35.6895, Longitude: 139.6917}}
 	server := NewServer(NewStore(), Config{GeoIP: resolver})
