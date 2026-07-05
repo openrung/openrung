@@ -24,6 +24,11 @@ type fakeRegistrar struct {
 	heartbeats    int
 	lastReq       relay.RegisterRequest
 	relayID       string
+	// relayIDs, when non-empty, are consumed one per Register call before
+	// falling back to relayID.
+	relayIDs []string
+	// failHeartbeatOnce is returned by the next Heartbeat call, then cleared.
+	failHeartbeatOnce error
 }
 
 func (f *fakeRegistrar) Register(_ context.Context, req relay.RegisterRequest) (RelayRegistration, error) {
@@ -32,6 +37,10 @@ func (f *fakeRegistrar) Register(_ context.Context, req relay.RegisterRequest) (
 	f.registerCount++
 	f.lastReq = req
 	id := f.relayID
+	if len(f.relayIDs) > 0 {
+		id = f.relayIDs[0]
+		f.relayIDs = f.relayIDs[1:]
+	}
 	if id == "" {
 		id = "relay_test"
 	}
@@ -42,6 +51,11 @@ func (f *fakeRegistrar) Heartbeat(_ context.Context, _ string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.heartbeats++
+	if f.failHeartbeatOnce != nil {
+		err := f.failHeartbeatOnce
+		f.failHeartbeatOnce = nil
+		return err
+	}
 	return nil
 }
 
@@ -76,7 +90,7 @@ func startEchoServer(t *testing.T) (string, int) {
 
 // startTestHub spins up a hub on a plaintext loopback control listener with a
 // single-port allocator and returns the control address and allocator.
-func startTestHub(t *testing.T, registrar Registrar, token string) (string, *PortAllocator) {
+func startTestHub(t *testing.T, registrar Registrar, token string) (*Hub, string, *PortAllocator) {
 	t.Helper()
 	controlLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -101,7 +115,7 @@ func startTestHub(t *testing.T, registrar Registrar, token string) (string, *Por
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = hub.Serve(ctx) }()
 	t.Cleanup(cancel)
-	return controlLn.Addr().String(), alloc
+	return hub, controlLn.Addr().String(), alloc
 }
 
 func eventually(timeout time.Duration, cond func() bool) bool {
@@ -146,7 +160,7 @@ func dialEchoThroughTunnel(port int) error {
 func TestHubClientEndToEnd(t *testing.T) {
 	echoHost, echoPort := startEchoServer(t)
 	registrar := &fakeRegistrar{relayID: "relay_abc"}
-	controlAddr, alloc := startTestHub(t, registrar, "secret")
+	_, controlAddr, alloc := startTestHub(t, registrar, "secret")
 
 	clientCtx, clientCancel := context.WithCancel(context.Background())
 	defer clientCancel()
@@ -228,9 +242,99 @@ func TestHubClientEndToEnd(t *testing.T) {
 	}
 }
 
+func TestHubReregistersWhenBrokerForgetsRelay(t *testing.T) {
+	echoHost, echoPort := startEchoServer(t)
+	registrar := &fakeRegistrar{
+		relayIDs:          []string{"relay_old", "relay_new"},
+		failHeartbeatOnce: fmt.Errorf("broker /api/v1/volunteers/relay_old/heartbeat: %w", ErrRelayNotFound),
+	}
+	hub, controlAddr, _ := startTestHub(t, registrar, "secret")
+
+	clientCtx, clientCancel := context.WithCancel(context.Background())
+	defer clientCancel()
+
+	ackCh := make(chan HelloAckFrame, 1)
+	client := &Client{
+		HubAddr: controlAddr,
+		Hello: HelloFrame{
+			Token:            "secret",
+			RealityPublicKey: "pk",
+			ShortID:          "sid",
+			ServerName:       "www.example.com",
+			ClientID:         "cid",
+			Flow:             relay.FlowVision,
+			ExitMode:         relay.ExitModeDirect,
+		},
+		TargetHost:   echoHost,
+		TargetPort:   echoPort,
+		ReconnectMin: 10 * time.Millisecond,
+		Logger:       discardLogger(),
+		OnRegistered: func(a HelloAckFrame) {
+			select {
+			case ackCh <- a:
+			default:
+			}
+		},
+	}
+	go func() { _ = client.Run(clientCtx) }()
+
+	var ack HelloAckFrame
+	select {
+	case ack = <-ackCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for tunnel establishment")
+	}
+	if ack.RelayID != "relay_old" {
+		t.Fatalf("relay_id = %q, want relay_old", ack.RelayID)
+	}
+	if hub.lookupTunnel("relay_old") == nil {
+		t.Fatal("registry missing initial relay_old entry")
+	}
+
+	// The first heartbeat returns not-found; the hub must re-register.
+	if !eventually(3*time.Second, func() bool {
+		registers, _, _ := registrar.stats()
+		return registers == 2
+	}) {
+		registers, hb, _ := registrar.stats()
+		t.Fatalf("no re-registration after not-found heartbeat (registers=%d heartbeats=%d)", registers, hb)
+	}
+
+	// Re-registration reuses the original request, including the exit host.
+	_, _, lastReq := registrar.stats()
+	if lastReq.ExitHost != "127.0.0.1" || lastReq.PublicPort != ack.PublicPort {
+		t.Fatalf("re-register request mismatch: exit_host=%q port=%d", lastReq.ExitHost, lastReq.PublicPort)
+	}
+
+	// The registry is re-keyed to the new relay ID.
+	if !eventually(2*time.Second, func() bool { return hub.lookupTunnel("relay_new") != nil }) {
+		t.Fatal("registry not re-keyed to relay_new")
+	}
+	if hub.lookupTunnel("relay_old") != nil {
+		t.Fatal("stale relay_old entry left in registry")
+	}
+
+	// The public listener and yamux session were untouched: traffic still flows,
+	// and subsequent heartbeats (now against the new ID) succeed.
+	if err := dialEchoThroughTunnel(ack.PublicPort); err != nil {
+		t.Fatalf("echo through tunnel after re-registration: %v", err)
+	}
+	_, hbBefore, _ := registrar.stats()
+	if !eventually(2*time.Second, func() bool {
+		_, hb, _ := registrar.stats()
+		return hb > hbBefore
+	}) {
+		t.Fatal("heartbeats stopped after re-registration")
+	}
+	registers, _, _ := registrar.stats()
+	if registers != 2 {
+		t.Fatalf("register count = %d, want exactly 2", registers)
+	}
+}
+
 func TestHubRejectsBadToken(t *testing.T) {
 	registrar := &fakeRegistrar{}
-	controlAddr, alloc := startTestHub(t, registrar, "secret")
+	_, controlAddr, alloc := startTestHub(t, registrar, "secret")
 
 	conn, err := net.Dial("tcp", controlAddr)
 	if err != nil {
@@ -259,7 +363,7 @@ func TestHubRejectsBadToken(t *testing.T) {
 
 func TestHubRejectsProtocolMismatch(t *testing.T) {
 	registrar := &fakeRegistrar{}
-	controlAddr, _ := startTestHub(t, registrar, "")
+	_, controlAddr, _ := startTestHub(t, registrar, "")
 
 	conn, err := net.Dial("tcp", controlAddr)
 	if err != nil {

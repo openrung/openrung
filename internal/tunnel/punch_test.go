@@ -18,7 +18,7 @@ import (
 func TestTypedRelayStillEchoes(t *testing.T) {
 	echoHost, echoPort := startEchoServer(t)
 	registrar := &fakeRegistrar{relayID: "relay_typed"}
-	controlAddr, _ := startTestHub(t, registrar, "secret") // hub has no reflector → punch unavailable
+	_, controlAddr, _ := startTestHub(t, registrar, "secret") // hub has no reflector → punch unavailable
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
