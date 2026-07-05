@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -95,7 +96,7 @@ func TestTelemetryHandlerRejectsMissingIdentity(t *testing.T) {
 func TestSpeedTestHandlerStreamsRequestedBytes(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/speed-test?bytes=10000", nil)
 	recorder := httptest.NewRecorder()
-	speedTestHandler().ServeHTTP(recorder, req)
+	speedTestHandler(speedTestMaxConcurrent).ServeHTTP(recorder, req)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
@@ -111,10 +112,68 @@ func TestSpeedTestHandlerStreamsRequestedBytes(t *testing.T) {
 func TestSpeedTestHandlerRejectsOversizedRequest(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/speed-test?bytes=25000001", nil)
 	recorder := httptest.NewRecorder()
-	speedTestHandler().ServeHTTP(recorder, req)
+	speedTestHandler(speedTestMaxConcurrent).ServeHTTP(recorder, req)
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", recorder.Code)
+	}
+}
+
+// gatedWriter blocks the handler's first body write until released, keeping a
+// speed-test stream "in flight" so concurrency limits can be observed.
+type gatedWriter struct {
+	header  http.Header
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+	written int
+}
+
+func newGatedWriter() *gatedWriter {
+	return &gatedWriter{header: make(http.Header), started: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (w *gatedWriter) Header() http.Header { return w.header }
+func (w *gatedWriter) WriteHeader(int)     {}
+func (w *gatedWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() {
+		close(w.started)
+		<-w.release
+	})
+	w.written += len(p)
+	return len(p), nil
+}
+
+func TestSpeedTestHandlerLimitsConcurrentStreams(t *testing.T) {
+	handler := speedTestHandler(1)
+
+	blocked := newGatedWriter()
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		handler.ServeHTTP(blocked, httptest.NewRequest(http.MethodGet, "/api/v1/speed-test?bytes=100000", nil))
+	}()
+	<-blocked.started
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/speed-test?bytes=100000", nil))
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 while a stream holds the only slot, got %d", recorder.Code)
+	}
+	if recorder.Header().Get("Retry-After") == "" {
+		t.Fatal("expected Retry-After header on busy response")
+	}
+
+	close(blocked.release)
+	<-firstDone
+	if blocked.written != 100000 {
+		t.Fatalf("expected first stream to finish with 100000 bytes, got %d", blocked.written)
+	}
+
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/speed-test?bytes=10", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected freed slot to serve again, got %d", recorder.Code)
 	}
 }
 
@@ -253,6 +312,195 @@ func TestJSONLTelemetrySinkCloseFlushesAndSyncs(t *testing.T) {
 	}
 	if !strings.Contains(string(contents), `"event_id":"close"`) {
 		t.Fatalf("close did not persist buffered telemetry: %s", contents)
+	}
+}
+
+func TestTelemetryHandlerRejectsFutureEvent(t *testing.T) {
+	sink := &memoryTelemetrySink{}
+	payload, err := json.Marshal(telemetryBatch{Events: []TelemetryEvent{{
+		SchemaVersion: 1,
+		EventID:       "event-1",
+		Event:         "connection_attempted",
+		OccurredAt:    time.Now().UTC().Add(2 * time.Hour),
+		ClientID:      "client-1",
+		SessionID:     "session-1",
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/telemetry/events", bytes.NewReader(payload))
+	recorder := httptest.NewRecorder()
+	telemetryHandler(sink, nil, newClientIPResolver(nil)).ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for future-dated event, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if len(sink.records) != 0 {
+		t.Fatalf("expected no stored records, got %d", len(sink.records))
+	}
+}
+
+func TestTelemetryHandlerRejectsOversizedAttributeValue(t *testing.T) {
+	sink := &memoryTelemetrySink{}
+	payload, err := json.Marshal(telemetryBatch{Events: []TelemetryEvent{{
+		SchemaVersion: 1,
+		EventID:       "event-1",
+		Event:         "connection_attempted",
+		OccurredAt:    time.Now().UTC(),
+		ClientID:      "client-1",
+		SessionID:     "session-1",
+		Attributes:    map[string]string{"note": strings.Repeat("x", maxTelemetryValueBytes+1)},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/telemetry/events", bytes.NewReader(payload))
+	recorder := httptest.NewRecorder()
+	telemetryHandler(sink, nil, newClientIPResolver(nil)).ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for oversized attribute, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestJSONLTelemetrySinkEnforcesMemoryBudget(t *testing.T) {
+	now := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	sink, err := newJSONLTelemetrySink(filepath.Join(t.TempDir(), "telemetry.jsonl"), func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sink.Close()
+
+	sample, err := json.Marshal(telemetryRecordAt(now, "event-0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordSize := int64(len(sample) + 1)
+	sink.memoryLimit = 2*recordSize + recordSize/2
+
+	for index := 0; index < 5; index++ {
+		record := telemetryRecordAt(now, fmt.Sprintf("event-%d", index))
+		if err := sink.WriteTelemetry(context.Background(), []TelemetryRecord{record}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	records := sink.TelemetryRecords(time.Time{})
+	if len(records) != 2 {
+		t.Fatalf("expected budget to retain 2 records, got %d", len(records))
+	}
+	if records[0].Event.EventID != "event-3" || records[1].Event.EventID != "event-4" {
+		t.Fatalf("expected oldest records dropped first, got %q and %q", records[0].Event.EventID, records[1].Event.EventID)
+	}
+	if sink.memoryBytes > sink.memoryLimit {
+		t.Fatalf("memory accounting exceeds budget: %d > %d", sink.memoryBytes, sink.memoryLimit)
+	}
+}
+
+func TestJSONLTelemetrySinkCompactsOversizedFile(t *testing.T) {
+	now := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "telemetry.jsonl")
+	sink, err := newJSONLTelemetrySinkWithIntervals(path, func() time.Time { return now }, time.Hour, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sample, err := json.Marshal(telemetryRecordAt(now, "event-0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordSize := int64(len(sample) + 1)
+	sink.memoryLimit = 2*recordSize + recordSize/2
+	sink.fileLimit = 3 * recordSize
+
+	for index := 0; index < 6; index++ {
+		record := telemetryRecordAt(now, fmt.Sprintf("event-%d", index))
+		if err := sink.WriteTelemetry(context.Background(), []TelemetryRecord{record}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if sink.fileBytes > sink.fileLimit {
+		t.Fatalf("file accounting exceeds budget after writes: %d > %d", sink.fileBytes, sink.fileLimit)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(contents)), "\n")
+	if len(lines) >= 6 {
+		t.Fatalf("expected compaction to shrink the file, still holds %d records", len(lines))
+	}
+	for _, line := range lines {
+		var record TelemetryRecord
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("compacted file contains malformed record: %v", err)
+		}
+	}
+	if !strings.Contains(lines[len(lines)-1], `"event_id":"event-5"`) {
+		t.Fatalf("expected newest record to survive compaction, got %s", lines[len(lines)-1])
+	}
+}
+
+func TestJSONLTelemetrySinkRetentionIgnoresClientClock(t *testing.T) {
+	now := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	sink, err := newJSONLTelemetrySink(filepath.Join(t.TempDir(), "telemetry.jsonl"), func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sink.Close()
+
+	// Received 8 days ago but "occurred" a year from now: the client-controlled
+	// event time must not be able to extend retention.
+	forged := telemetryRecordAt(now.Add(365*24*time.Hour), "forged-future")
+	forged.ReceivedAt = now.Add(-8 * 24 * time.Hour)
+	current := telemetryRecordAt(now, "current")
+	if err := sink.WriteTelemetry(context.Background(), []TelemetryRecord{forged, current}); err != nil {
+		t.Fatal(err)
+	}
+
+	records := sink.TelemetryRecords(time.Time{})
+	if len(records) != 1 || records[0].Event.EventID != "current" {
+		t.Fatalf("expected only the honestly-timed record to survive, got %+v", records)
+	}
+}
+
+func TestClientSeenDeduperSuppressesRepeatsWithinWindow(t *testing.T) {
+	dedup := newClientSeenDeduper(4*time.Minute, 10)
+	now := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+
+	if !dedup.shouldRecord("client-1", "session-1", now) {
+		t.Fatal("first sighting must record")
+	}
+	if dedup.shouldRecord("client-1", "session-1", now.Add(time.Minute)) {
+		t.Fatal("repeat inside the window must be suppressed")
+	}
+	if !dedup.shouldRecord("client-1", "session-2", now) {
+		t.Fatal("a different session must record")
+	}
+	if !dedup.shouldRecord("client-1", "session-1", now.Add(5*time.Minute)) {
+		t.Fatal("sighting after the window must record again")
+	}
+}
+
+func TestRelayListDedupsRepeatClientSeen(t *testing.T) {
+	sink := &memoryTelemetrySink{}
+	server := NewServer(NewStore(), Config{TelemetrySink: sink})
+	for range 3 {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/relays", nil)
+		req.Header.Set("X-OpenRung-Client-ID", "client-1")
+		req.Header.Set("X-OpenRung-Session-ID", "session-1")
+		recorder := httptest.NewRecorder()
+		server.ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", recorder.Code)
+		}
+	}
+	if len(sink.records) != 1 {
+		t.Fatalf("expected one client_seen record for repeat polling, got %d", len(sink.records))
 	}
 }
 
