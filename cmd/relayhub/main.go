@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -30,6 +31,13 @@ func run() error {
 	cfg, err := parseConfig()
 	if err != nil {
 		return err
+	}
+
+	// Fail closed: an empty token disables volunteer authentication, so any node
+	// could register as a relay through this hub. Require a token unless the
+	// operator explicitly opts into an open hub.
+	if cfg.Token == "" && !envTrue("OPENRUNG_ALLOW_ANONYMOUS_VOLUNTEERS") {
+		return errors.New("OPENRUNG_VOLUNTEER_TOKEN is empty: refusing to start an open hub where any node can register as a relay. Set OPENRUNG_VOLUNTEER_TOKEN, or set OPENRUNG_ALLOW_ANONYMOUS_VOLUNTEERS=true to run open intentionally")
 	}
 
 	alloc, err := tunnel.NewPortAllocator(cfg.PortRangeStart, cfg.PortRangeEnd)
@@ -219,4 +227,14 @@ func envDurationDefault(key string, fallback time.Duration) time.Duration {
 		}
 	}
 	return fallback
+}
+
+// envTrue reports whether an env var is set to a truthy value.
+func envTrue(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }

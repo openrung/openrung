@@ -7,7 +7,6 @@ import (
 
 func TestBrokerCandidates(t *testing.T) {
 	https := "https://broker.openrung.org/"
-	ip := "http://54.238.185.205:8080/"
 
 	tests := []struct {
 		name    string
@@ -15,24 +14,24 @@ func TestBrokerCandidates(t *testing.T) {
 		want    []string
 	}{
 		{
-			name:    "empty primary yields defaults in order",
+			name:    "empty primary yields the HTTPS default",
 			primary: "",
-			want:    []string{https, ip},
+			want:    []string{https},
 		},
 		{
 			name:    "blank primary is ignored",
 			primary: "   ",
-			want:    []string{https, ip},
+			want:    []string{https},
 		},
 		{
 			name:    "genuine override is tried first",
 			primary: "https://mirror.example/",
-			want:    []string{"https://mirror.example/", https, ip},
+			want:    []string{"https://mirror.example/", https},
 		},
 		{
-			name:    "primary echoing a default does not reorder defaults",
-			primary: ip,
-			want:    []string{https, ip},
+			name:    "primary echoing a default does not duplicate it",
+			primary: https,
+			want:    []string{https},
 		},
 	}
 

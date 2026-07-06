@@ -37,6 +37,14 @@ func run() error {
 	if err != nil {
 		return err
 	}
+
+	// Fail closed: with no registration token, anyone can register a relay and
+	// poison the directory that clients route their VPN traffic through. Require
+	// a token unless the operator explicitly opts into an open broker.
+	registrationToken := os.Getenv("OPENRUNG_VOLUNTEER_TOKEN")
+	if registrationToken == "" && !envTrue("OPENRUNG_ALLOW_ANONYMOUS_REGISTRATION") {
+		return errors.New("OPENRUNG_VOLUNTEER_TOKEN is empty: refusing to start an open broker where anyone can register relays. Set OPENRUNG_VOLUNTEER_TOKEN, or set OPENRUNG_ALLOW_ANONYMOUS_REGISTRATION=true to run open intentionally")
+	}
 	geoResolver := newGeoIPResolver(*geoIPEndpoint)
 	store, err := newRelayStore(*relayStore, *relayDatabaseURL, rankingMode)
 	if err != nil {
@@ -50,7 +58,7 @@ func run() error {
 		return err
 	}
 	handler := broker.NewServer(store, broker.Config{
-		RegistrationToken: os.Getenv("OPENRUNG_VOLUNTEER_TOKEN"),
+		RegistrationToken: registrationToken,
 		VolunteerLeaseTTL: *leaseTTL,
 		TelemetrySink:     telemetrySink,
 		TelemetryReader:   telemetrySink,
@@ -134,6 +142,16 @@ func envDefault(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// envTrue reports whether an env var is set to a truthy value.
+func envTrue(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // splitAndTrim parses a comma-separated env value into a trimmed, non-empty slice.

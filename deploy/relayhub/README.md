@@ -126,7 +126,7 @@ flags — run `relayhub -h`). See `.env.example` for the full list. The essentia
 | `OPENRUNG_BROKER_URL`         | yes      | —              | Broker the hub registers relays with               |
 | `OPENRUNG_HUB_CONTROL_ADDR`   | no       | `:9443`        | Address volunteers dial                            |
 | `OPENRUNG_HUB_PORT_RANGE`     | no       | `20000-20100`  | Public ports allocated to tunnels (one each)       |
-| `OPENRUNG_VOLUNTEER_TOKEN`    | no       | —              | Shared auth token (must match the broker)          |
+| `OPENRUNG_VOLUNTEER_TOKEN`    | yes\*    | —              | Shared auth token (must match the broker). Required: the hub refuses to start without it unless `OPENRUNG_ALLOW_ANONYMOUS_VOLUNTEERS=true` |
 | `OPENRUNG_HUB_TLS_CERT/KEY`   | no       | —              | TLS for the control channel                        |
 | `OPENRUNG_HUB_HEARTBEAT_INTERVAL` | no   | `30s`          | How often live relays are re-heartbeated           |
 | `OPENRUNG_HUB_HTTP_ADDR`      | no       | —              | HTTP API address (e.g. `:9444`) — serves the reachability prober and, with reflectors, the punch coordinator; empty disables both |

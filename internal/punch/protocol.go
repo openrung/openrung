@@ -132,6 +132,66 @@ func dedupeEndpoints(in []Endpoint) []Endpoint {
 	return out
 }
 
+// maxPunchPeers caps how many candidate endpoints of each kind (host, srflx) a
+// single peer may advertise. A legitimate peer offers a handful — one reflexive
+// per reflector vantage point plus a few LAN addresses — so a longer list is a
+// bid to turn Attempt's probe spray into a reflected flood at third parties.
+const maxPunchPeers = 8
+
+// isGloballyRoutable reports whether ip is an ordinary public unicast address,
+// i.e. NOT loopback, private (RFC1918/ULA), link-local, carrier-grade-NAT shared
+// space (RFC6598 100.64.0.0/10), unspecified, or multicast.
+func isGloballyRoutable(ip net.IP) bool {
+	if ip == nil || ip.IsUnspecified() || ip.IsLoopback() ||
+		ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsMulticast() || ip.IsInterfaceLocalMulticast() {
+		return false
+	}
+	if v4 := ip.To4(); v4 != nil && v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
+		return false // 100.64.0.0/10 carrier-grade NAT shared space
+	}
+	return true
+}
+
+// SanitizePeers filters and clamps peer-advertised punch candidates so the probe
+// spray in Attempt can never be aimed at an arbitrary third party:
+//
+//   - A "host" (LAN) candidate must NOT be globally routable. A public IP tagged
+//     as a same-subnet address is an attempt to make the volunteer flood a
+//     victim, never a real LAN peer, so it is dropped.
+//   - Multicast/unspecified addresses and invalid ports are always dropped.
+//   - Each kind (host, srflx) is independently capped at maxPunchPeers.
+//
+// Reflexive ("srflx") provenance is enforced upstream by the punch coordinator,
+// which forwards only reflector-observed reflexive endpoints; a public srflx
+// reaching here has therefore already been proven to belong to a real peer.
+func SanitizePeers(in []Endpoint) []Endpoint {
+	out := make([]Endpoint, 0, len(in))
+	var hostN, srflxN int
+	for _, e := range dedupeEndpoints(in) {
+		ip := net.ParseIP(e.IP)
+		if ip == nil || e.Port < 1 || e.Port > 65535 || ip.IsMulticast() || ip.IsUnspecified() {
+			continue
+		}
+		switch e.Kind {
+		case KindHost:
+			if isGloballyRoutable(ip) || hostN >= maxPunchPeers {
+				continue
+			}
+			hostN++
+		case KindSrflx:
+			if srflxN >= maxPunchPeers {
+				continue
+			}
+			srflxN++
+		default:
+			continue // unknown kind: never spray at it
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
 // PunchRequest is the client -> hub HTTP body (POST /api/v1/punch/request).
 type PunchRequest struct {
 	RelayID         string     `json:"relay_id"`

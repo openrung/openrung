@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -41,6 +42,7 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 	relayListLimiter := newIPRateLimiter(relayListRatePerSecond, relayListBurst, rateLimiterMaxTrackedIPs)
 	telemetryLimiter := newIPRateLimiter(telemetryRatePerSecond, telemetryBurst, rateLimiterMaxTrackedIPs)
 	speedTestLimiter := newIPRateLimiter(speedTestRatePerSecond, speedTestBurst, rateLimiterMaxTrackedIPs)
+	volunteerLimiter := newIPRateLimiter(volunteerRatePerSecond, volunteerBurst, rateLimiterMaxTrackedIPs)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -51,8 +53,8 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 		}
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	})
-	mux.HandleFunc("POST /api/v1/volunteers/register", registerHandler(store, cfg))
-	mux.HandleFunc("POST /api/v1/volunteers/", heartbeatHandler(store, cfg))
+	mux.HandleFunc("POST /api/v1/volunteers/register", rateLimited(volunteerLimiter, clientIP, 10, registerHandler(store, cfg)))
+	mux.HandleFunc("POST /api/v1/volunteers/", rateLimited(volunteerLimiter, clientIP, 10, heartbeatHandler(store, cfg)))
 	mux.HandleFunc("GET /api/v1/relays", rateLimited(relayListLimiter, clientIP, 10, listRelaysHandler(store, cfg.TelemetrySink, clientIP, clientSeen)))
 	mux.HandleFunc("POST /api/v1/telemetry/events", rateLimited(telemetryLimiter, clientIP, 10, telemetryHandler(cfg.TelemetrySink, store, clientIP)))
 	mux.HandleFunc("GET /api/v1/speed-test", rateLimited(speedTestLimiter, clientIP, 30, speedTestHandler(speedTestMaxConcurrent)))
@@ -248,7 +250,11 @@ func authorized(r *http.Request, token string) bool {
 	if token == "" {
 		return true
 	}
-	return r.Header.Get("Authorization") == "Bearer "+token
+	// Constant-time compare so a network attacker cannot recover the token one
+	// byte at a time from response-timing differences.
+	expected := "Bearer " + token
+	presented := r.Header.Get("Authorization")
+	return subtle.ConstantTimeCompare([]byte(presented), []byte(expected)) == 1
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
