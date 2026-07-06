@@ -10,12 +10,33 @@ import (
 	"openrung/internal/relay"
 )
 
+// InboundMode selects how the client captures traffic. The zero value is
+// ModeTUN, so existing callers (the CLI, the mobile-serving backend) keep
+// producing byte-identical full-device TUN configs.
+type InboundMode int
+
+const (
+	// ModeTUN captures all device traffic via a TUN interface (needs elevated
+	// privileges). This is the default and unchanged behavior.
+	ModeTUN InboundMode = iota
+	// ModeProxy exposes a local mixed (HTTP + SOCKS) inbound on loopback for
+	// the desktop system-proxy mode, which needs no privileges. The GUI points
+	// the OS proxy at ProxyListenAddress:ProxyListenPort.
+	ModeProxy
+)
+
 type SingBoxConfigInput struct {
 	Relay             relay.Descriptor
 	TunnelIPv4Address string
 	TunnelIPv6Address string
 	DNSServers        []string
 	MTU               int
+	// Mode selects the inbound (TUN by default; mixed loopback for proxy mode).
+	Mode InboundMode
+	// ProxyListenAddress and ProxyListenPort configure the mixed inbound in
+	// ModeProxy. Address defaults to 127.0.0.1; a positive port is required.
+	ProxyListenAddress string
+	ProxyListenPort    int
 	// BridgeHost and BridgePort, when set, redirect the VLESS outbound to a local
 	// punch bridge (127.0.0.1:BridgePort) instead of the relay's public endpoint.
 	// The Reality identity fields are unchanged, so the end-to-end target is still
@@ -55,29 +76,9 @@ func BuildSingBoxConfig(input SingBoxConfigInput) ([]byte, error) {
 		return nil, errors.New("mtu must be positive")
 	}
 
-	tunInbound := map[string]any{
-		"type":                     "tun",
-		"tag":                      "tun-in",
-		"address":                  []string{tunnelIPv4Address, tunnelIPv6Address},
-		"mtu":                      mtu,
-		"auto_route":               true,
-		"strict_route":             true,
-		"stack":                    "system",
-		"dns_mode":                 "hijack",
-		"endpoint_independent_nat": true,
-	}
-	// Exclude the real transport peers from the TUN so their traffic is not
-	// captured by auto_route/strict_route. On the direct path that is the relay's
-	// public IP; on the punch path it is additionally the volunteer's reflexive
-	// UDP IP the QUIC socket talks to (see Correction #1 in the plan).
-	var excludeAddresses []string
-	for _, host := range []string{input.Relay.PublicHost, input.PunchPeerExcludeAddress} {
-		if excludeAddress := relayRouteExcludeAddress(host); excludeAddress != "" {
-			excludeAddresses = append(excludeAddresses, excludeAddress)
-		}
-	}
-	if len(excludeAddresses) > 0 {
-		tunInbound["route_exclude_address"] = excludeAddresses
+	inbound, err := buildInbound(input, tunnelIPv4Address, tunnelIPv6Address, mtu)
+	if err != nil {
+		return nil, err
 	}
 
 	serverHost := input.Relay.PublicHost
@@ -97,7 +98,7 @@ func BuildSingBoxConfig(input SingBoxConfigInput) ([]byte, error) {
 			"final":   "dns-0",
 		},
 		"inbounds": []any{
-			tunInbound,
+			inbound,
 		},
 		"outbounds": []any{
 			map[string]any{
@@ -146,6 +147,58 @@ func BuildSingBoxConfig(input SingBoxConfigInput) ([]byte, error) {
 	}
 
 	return json.MarshalIndent(cfg, "", "  ")
+}
+
+// buildInbound constructs the single inbound for the requested mode. ModeTUN
+// reproduces the original full-device TUN inbound byte-for-byte (including the
+// transport-peer route exclusions); ModeProxy emits a loopback mixed inbound.
+func buildInbound(input SingBoxConfigInput, tunnelIPv4Address, tunnelIPv6Address string, mtu int) (map[string]any, error) {
+	if input.Mode == ModeProxy {
+		listen := input.ProxyListenAddress
+		if listen == "" {
+			listen = "127.0.0.1"
+		}
+		if input.ProxyListenPort <= 0 {
+			return nil, errors.New("proxy mode requires a positive ProxyListenPort")
+		}
+		// A mixed inbound speaks both HTTP and SOCKS on loopback; the desktop
+		// proxymode controller points the OS system proxy at it. No TUN, so no
+		// auto_route/strict_route and no route_exclude_address are needed — the
+		// OS only sends proxy-aware traffic here, and the relay endpoint is
+		// reached as ordinary direct traffic.
+		return map[string]any{
+			"type":        "mixed",
+			"tag":         "mixed-in",
+			"listen":      listen,
+			"listen_port": input.ProxyListenPort,
+		}, nil
+	}
+
+	tunInbound := map[string]any{
+		"type":                     "tun",
+		"tag":                      "tun-in",
+		"address":                  []string{tunnelIPv4Address, tunnelIPv6Address},
+		"mtu":                      mtu,
+		"auto_route":               true,
+		"strict_route":             true,
+		"stack":                    "system",
+		"dns_mode":                 "hijack",
+		"endpoint_independent_nat": true,
+	}
+	// Exclude the real transport peers from the TUN so their traffic is not
+	// captured by auto_route/strict_route. On the direct path that is the relay's
+	// public IP; on the punch path it is additionally the volunteer's reflexive
+	// UDP IP the QUIC socket talks to (see Correction #1 in the plan).
+	var excludeAddresses []string
+	for _, host := range []string{input.Relay.PublicHost, input.PunchPeerExcludeAddress} {
+		if excludeAddress := relayRouteExcludeAddress(host); excludeAddress != "" {
+			excludeAddresses = append(excludeAddresses, excludeAddress)
+		}
+	}
+	if len(excludeAddresses) > 0 {
+		tunInbound["route_exclude_address"] = excludeAddresses
+	}
+	return tunInbound, nil
 }
 
 func relayRouteExcludeAddress(host string) string {
