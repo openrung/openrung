@@ -11,15 +11,17 @@ import (
 
 const (
 	// DefaultBrokerURL is the HTTPS, Cloudflare-fronted discovery endpoint.
-	// Discovery runs BEFORE the tunnel is up, so TLS + CDN edge IPs make it
-	// costly to block; the raw-IP fallback in DefaultBrokerURLs covers a
-	// blocked edge.
+	// Discovery runs BEFORE the tunnel is up, so it must be TLS: the relay list
+	// seeds the entire VPN config and the request carries the client identity, so
+	// a cleartext endpoint would hand both to an on-path censor.
 	DefaultBrokerURL = "https://broker.openrung.org/"
 
-	// TelemetryBrokerURL is the raw origin IP. Heartbeats fire ~once/minute
-	// per connected user and ride the established tunnel, so they skip the CDN
-	// front to avoid burning the Workers free-tier quota.
-	TelemetryBrokerURL = "http://54.238.185.205:8080/"
+	// TelemetryBrokerURL is the endpoint for client telemetry. It must be HTTPS:
+	// the first events (BeginSession / connection_attempted) fire BEFORE the
+	// tunnel is up, so a cleartext endpoint would expose the persistent client
+	// identity to a network observer. Reuses the HTTPS discovery endpoint; a
+	// pinned bare-IP fallback can be layered on later if CDN quota is a concern.
+	TelemetryBrokerURL = DefaultBrokerURL
 
 	// RelayLimit is the connect-path page size; DirectoryRelayLimit is the
 	// broker's maximum page size (larger is rejected with HTTP 400), used to
@@ -39,12 +41,13 @@ const (
 	MinDirectoryRefreshInterval = 30 * time.Second
 )
 
-// DefaultBrokerURLs are the ordered discovery candidates: Cloudflare-fronted
-// endpoint first, raw IP as a fallback so a blocked edge never takes discovery
-// offline.
+// DefaultBrokerURLs are the ordered discovery candidates. HTTPS only: discovery
+// runs BEFORE the tunnel, so a cleartext bare-IP fallback would let an on-path
+// censor read or rewrite the relay list — and observe the client identity
+// headers — exactly the adversary this tool exists to defeat. A pinned bare-IP
+// HTTPS fallback for a blocked edge can be added later.
 var DefaultBrokerURLs = []string{
 	"https://broker.openrung.org/",
-	"http://54.238.185.205:8080/",
 }
 
 // BrokerCandidates returns the ordered, de-duplicated discovery candidates for

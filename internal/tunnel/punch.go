@@ -190,14 +190,19 @@ func (c *PunchCoordinator) handleRequest(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Classify the client from the hub's OWN reflector observations (keyed by the
-	// client nonce), never trusting the client's self-declared class. Fall back to
-	// the client-reported candidates only if the reflector saw nothing.
-	clientReflexive := req.ClientReflexive
+	// client nonce), never trusting the client's self-declared class or reflexive
+	// address. A client-declared reflexive could name any victim IP, which the
+	// volunteer would then spray with punch probes — an open UDP reflector. So we
+	// forward ONLY reflector-observed reflexive endpoints; when the reflector saw
+	// nothing for this nonce we send none (the client falls back to the hub
+	// relay). Host candidates are clamped and filtered to non-routable addresses
+	// (see SanitizePeers) so they can only reach the volunteer's own LAN.
+	var clientReflexive []punch.Endpoint
 	clientClass := punch.ClassUnknown
 	if key, err := punch.NonceKey(req.ClientNonce); err == nil {
 		if class, reflexive, ok := c.Reflector.Classify(key); ok {
 			clientClass = class
-			clientReflexive = reflexive
+			clientReflexive = punch.SanitizePeers(reflexive)
 		}
 	}
 
@@ -213,7 +218,7 @@ func (c *PunchCoordinator) handleRequest(w http.ResponseWriter, r *http.Request)
 		SessionID:       sessionID,
 		RelayID:         req.RelayID,
 		ClientReflexive: clientReflexive,
-		ClientLocal:     req.ClientLocal,
+		ClientLocal:     punch.SanitizePeers(req.ClientLocal),
 		ClientClass:     clientClass,
 		PunchToken:      tokenHex,
 		ReflectorAddrs:  c.Hub.ReflectorAddrs,

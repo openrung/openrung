@@ -7,8 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
+
+	"openrung/internal/client"
 )
 
 // HTTPClient posts telemetry batches to the broker. It is the CLI analog of the
@@ -63,18 +64,13 @@ func (c HTTPClient) Send(ctx context.Context, events []Event) error {
 }
 
 // TelemetryURL builds the telemetry endpoint URL from a broker base URL,
-// mirroring RelayListURL in internal/client/broker.go.
+// mirroring RelayListURL in internal/client/broker.go. Like the relay-list path
+// it refuses cleartext endpoints so pre-tunnel telemetry (which carries the
+// persistent client identity) never leaves the device in the clear.
 func TelemetryURL(baseURL string) (string, error) {
-	if strings.TrimSpace(baseURL) == "" {
-		return "", fmt.Errorf("broker URL is required")
-	}
-
-	parsed, err := url.Parse(baseURL)
+	parsed, err := client.EnforceSecureBrokerURL(baseURL)
 	if err != nil {
-		return "", fmt.Errorf("parse broker URL: %w", err)
-	}
-	if parsed.Scheme == "" || parsed.Host == "" {
-		return "", fmt.Errorf("broker URL must include scheme and host")
+		return "", err
 	}
 
 	basePath := strings.Trim(parsed.Path, "/")

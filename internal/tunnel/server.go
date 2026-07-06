@@ -316,15 +316,29 @@ func (t *tunnel) run(parent context.Context) {
 		_ = t.session.Close()
 	}()
 
-	t.logger.Info("tunnel ready")
+	// Bound concurrent public-port connections: each costs a goroutine, a yamux
+	// stream, and a volunteer-side dial, so an unbounded accept loop lets anyone
+	// exhaust hub/volunteer file descriptors and the yamux stream window just by
+	// opening TCP connections. Excess connections are dropped, not queued.
+	sem := make(chan struct{}, t.maxConcurrentConns())
+	t.logger.Info("tunnel ready", "max_conns", cap(sem))
 	for {
 		clientConn, err := t.publicListener.Accept()
 		if err != nil {
 			break
 		}
+		select {
+		case sem <- struct{}{}:
+		default:
+			// At the per-tunnel cap: shed the excess connection rather than pin
+			// another goroutine + stream. Genuine load stays well under the cap.
+			_ = clientConn.Close()
+			continue
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer func() { <-sem }()
 			t.handleClient(clientConn)
 		}()
 	}
@@ -353,7 +367,50 @@ func (t *tunnel) handleClient(clientConn net.Conn) {
 			return
 		}
 	}
+	// A real client (VLESS speaks first) sends its handshake immediately. Reap a
+	// connection that opens the public port and then goes silent — otherwise idle
+	// connections pin goroutines and yamux streams up to the per-tunnel cap. The
+	// deadline covers only the first read; once the client speaks we clear it and
+	// splice unbounded (yamux keepalive detects dead peers), so an established
+	// tunnel of any lifetime is unaffected.
+	_ = clientConn.SetReadDeadline(time.Now().Add(clientHandshakeTimeout))
+	first := make([]byte, 4096)
+	n, err := clientConn.Read(first)
+	if err != nil {
+		return
+	}
+	_ = clientConn.SetReadDeadline(time.Time{})
+	if _, err := stream.Write(first[:n]); err != nil {
+		return
+	}
 	pipe(clientConn, stream)
+}
+
+// clientHandshakeTimeout bounds how long a freshly accepted public connection
+// may stay silent before the hub reaps it (see handleClient). A var so tests can
+// shorten it; not meant to be reconfigured at runtime.
+var clientHandshakeTimeout = 30 * time.Second
+
+// Per-tunnel bound on concurrent public-port connections. The cap scales with
+// the volunteer's advertised session capacity (one session fans out into many
+// short-lived connections) but is clamped so it can be neither unbounded nor
+// trivially small. Overflow from a hostile MaxSessions falls through to the
+// floor, never a panic.
+const (
+	connsPerSession    = 256
+	perTunnelConnFloor = 512
+	perTunnelConnCeil  = 8192
+)
+
+func (t *tunnel) maxConcurrentConns() int {
+	n := t.registerReq.MaxSessions * connsPerSession
+	if n < perTunnelConnFloor {
+		return perTunnelConnFloor
+	}
+	if n > perTunnelConnCeil {
+		return perTunnelConnCeil
+	}
+	return n
 }
 
 func (t *tunnel) heartbeatLoop(ctx context.Context) {

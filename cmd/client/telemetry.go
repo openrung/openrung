@@ -6,7 +6,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -79,12 +78,9 @@ func probeInternet(ctx context.Context, brokerURL string) (int64, bool) {
 }
 
 func healthURL(brokerURL string) (string, error) {
-	parsed, err := url.Parse(strings.TrimSpace(brokerURL))
+	parsed, err := client.EnforceSecureBrokerURL(brokerURL)
 	if err != nil {
 		return "", err
-	}
-	if parsed.Scheme == "" || parsed.Host == "" {
-		return "", fmt.Errorf("broker URL must include scheme and host")
 	}
 	basePath := strings.Trim(parsed.Path, "/")
 	parts := []string{"healthz"}

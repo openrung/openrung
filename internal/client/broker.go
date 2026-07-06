@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -61,19 +62,13 @@ func (c BrokerClient) ListRelays(ctx context.Context, limit int, clientID, sessi
 }
 
 func RelayListURL(baseURL string, limit int) (string, error) {
-	if strings.TrimSpace(baseURL) == "" {
-		return "", fmt.Errorf("broker URL is required")
-	}
 	if limit < 1 {
 		limit = defaultRelayLimit
 	}
 
-	parsed, err := url.Parse(baseURL)
+	parsed, err := EnforceSecureBrokerURL(baseURL)
 	if err != nil {
-		return "", fmt.Errorf("parse broker URL: %w", err)
-	}
-	if parsed.Scheme == "" || parsed.Host == "" {
-		return "", fmt.Errorf("broker URL must include scheme and host")
+		return "", err
 	}
 
 	basePath := strings.Trim(parsed.Path, "/")
@@ -88,6 +83,52 @@ func RelayListURL(baseURL string, limit int) (string, error) {
 	parsed.RawQuery = query.Encode()
 
 	return parsed.String(), nil
+}
+
+// EnforceSecureBrokerURL parses baseURL and rejects cleartext broker endpoints.
+// https is allowed to any host; plain http is allowed ONLY to a loopback host
+// (local development). Plaintext http to any other host is refused so an on-path
+// network observer cannot read or tamper with the pre-tunnel broker traffic —
+// the relay directory seeds the entire VPN config and both the directory and
+// telemetry requests carry the persistent client identity headers. It returns
+// the parsed URL so callers can build endpoint paths on it.
+//
+// (A pinned bare-IP HTTPS fallback for a blocked edge can be layered on later;
+// until then there is no cleartext path off the device.)
+func EnforceSecureBrokerURL(baseURL string) (*url.URL, error) {
+	trimmed := strings.TrimSpace(baseURL)
+	if trimmed == "" {
+		return nil, fmt.Errorf("broker URL is required")
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return nil, fmt.Errorf("parse broker URL: %w", err)
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return nil, fmt.Errorf("broker URL must include scheme and host")
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "https":
+		return parsed, nil
+	case "http":
+		if hostIsLoopback(parsed.Hostname()) {
+			return parsed, nil
+		}
+		return nil, fmt.Errorf("refusing cleartext broker URL %q: use https (plain http is allowed only to localhost)", trimmed)
+	default:
+		return nil, fmt.Errorf("broker URL scheme must be https, got %q", parsed.Scheme)
+	}
+}
+
+// hostIsLoopback reports whether host is localhost or a loopback IP literal.
+func hostIsLoopback(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 func brokerStatusError(resp *http.Response) error {

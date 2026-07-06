@@ -78,8 +78,12 @@ func matchProbe(data []byte, magic, sessionID string, token []byte) bool {
 // quic-go uses). Attempt runs entirely in the caller's goroutine and starts no
 // background reader, so there is no race with quic-go's read loop afterwards.
 func Attempt(ctx context.Context, sock *net.UDPConn, peers []Endpoint, sessionID string, token []byte, deadline time.Time) (*net.UDPAddr, error) {
+	// SanitizePeers clamps the candidate count and drops globally-routable "host"
+	// addresses, so a malicious peer cannot make this socket spray probes at an
+	// arbitrary victim (open UDP reflector) or exhaust the sender with a huge
+	// candidate list.
 	peerAddrs := make([]*net.UDPAddr, 0, len(peers))
-	for _, p := range dedupeEndpoints(peers) {
+	for _, p := range SanitizePeers(peers) {
 		if addr, err := p.UDPAddr(); err == nil {
 			peerAddrs = append(peerAddrs, addr)
 		}
