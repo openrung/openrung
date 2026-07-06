@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+#
+# Provision an OpenRung broker on AWS Lightsail.
+#
+#   deploy/broker/lightsail-up.sh [name]
+#
+# The broker is the control-plane HTTP API: it serves the relay directory to
+# clients, accepts volunteer/hub registrations and heartbeats, and ingests client
+# telemetry. It carries NO user traffic. This stands one up on a micro_3_0
+# instance (1 GB RAM / 2 vCPU), gives it a static IP, pulls the prebuilt image
+# from GHCR, runs it with host networking + a persistent telemetry volume, and
+# opens the HTTP port.
+#
+# Front the broker with Cloudflare (TLS + DDoS). The raw origin port stays open
+# as the app's direct-IP fallback; the broker only trusts forwarded client-IP
+# headers from Cloudflare's ranges, so a direct hit cannot spoof its source. If
+# you do not need the direct-IP fallback, restrict the origin port to
+# Cloudflare's ranges at the firewall.
+#
+# Prerequisites: an authenticated `aws` CLI (aws configure) with Lightsail
+# permissions, and the GHCR image published and PUBLIC (see deploy/broker/README.md).
+#
+# Overridable via env: OPENRUNG_REGION, OPENRUNG_AZ, OPENRUNG_BUNDLE,
+# OPENRUNG_BLUEPRINT, OPENRUNG_IMAGE, OPENRUNG_BROKER_PORT, OPENRUNG_VOLUNTEER_TOKEN,
+# OPENRUNG_DASHBOARD_TOKEN, OPENRUNG_RELAY_STORE, OPENRUNG_RELAY_DATABASE_URL,
+# OPENRUNG_GEOIP_ENDPOINT.
+set -euo pipefail
+
+REGION="${OPENRUNG_REGION:-ap-northeast-1}"     # Tokyo
+AZ="${OPENRUNG_AZ:-${REGION}a}"
+BUNDLE="${OPENRUNG_BUNDLE:-micro_3_0}"          # 1GB RAM / 2 vCPU / 40GB / 2TB
+BLUEPRINT="${OPENRUNG_BLUEPRINT:-ubuntu_24_04}"
+IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-broker:main}"
+PORT="${OPENRUNG_BROKER_PORT:-8080}"
+TOKEN="${OPENRUNG_VOLUNTEER_TOKEN:-}"
+DASHBOARD_TOKEN="${OPENRUNG_DASHBOARD_TOKEN:-}"
+RELAY_STORE="${OPENRUNG_RELAY_STORE:-memory}"
+RELAY_DATABASE_URL="${OPENRUNG_RELAY_DATABASE_URL:-}"
+GEOIP_ENDPOINT="${OPENRUNG_GEOIP_ENDPOINT:-}"
+
+adjectives=(happy grumpy glorious sleepy brave clever gentle jolly mighty nimble plucky quiet rapid shiny snappy spry sturdy sunny swift witty zesty breezy cosmic dapper eager fuzzy golden hardy lucky merry noble proud quirky rustic silly valiant)
+nouns=(hippo walrus castle otter falcon badger lantern comet maple harbor meadow beacon pebble willow cactus cobra ferret gecko heron ibex jaguar koala lemur marmot narwhal ocelot panther quokka raven salmon tapir urchin viper wombat yak zebra)
+
+NAME="${1:-broker-${adjectives[RANDOM % ${#adjectives[@]}]}-${nouns[RANDOM % ${#nouns[@]}]}}"
+IPNAME="${NAME}-ip"
+
+echo "Provisioning Lightsail broker '${NAME}' in ${REGION} (${BUNDLE}, ${BLUEPRINT})"
+
+# Static IP (free while attached; gives the broker a stable public host to point
+# hubs/volunteers and the Cloudflare origin at).
+aws lightsail allocate-static-ip --static-ip-name "$IPNAME" --region "$REGION" >/dev/null 2>&1 || true
+STATIC_IP="$(aws lightsail get-static-ip --static-ip-name "$IPNAME" --region "$REGION" --query 'staticIp.ipAddress' --output text)"
+
+# Auth: the broker fails closed without a registration token, so when none is
+# provided we explicitly opt into an open, unauthenticated broker — set
+# OPENRUNG_VOLUNTEER_TOKEN to require auth (a token supersedes the anonymous flag).
+TOKEN_ENV=""
+ANON_ENV=""
+if [ -n "$TOKEN" ]; then
+  TOKEN_ENV="OPENRUNG_VOLUNTEER_TOKEN=${TOKEN}"
+else
+  ANON_ENV="OPENRUNG_ALLOW_ANONYMOUS_REGISTRATION=true"
+fi
+
+# Optional env lines, included only when set so blank lines are harmless.
+DASHBOARD_ENV=""; [ -n "$DASHBOARD_TOKEN" ] && DASHBOARD_ENV="OPENRUNG_DASHBOARD_TOKEN=${DASHBOARD_TOKEN}"
+STORE_ENV=""; [ -n "$RELAY_STORE" ] && STORE_ENV="OPENRUNG_RELAY_STORE=${RELAY_STORE}"
+DB_ENV=""; [ -n "$RELAY_DATABASE_URL" ] && DB_ENV="OPENRUNG_RELAY_DATABASE_URL=${RELAY_DATABASE_URL}"
+GEOIP_ENV=""; [ -n "$GEOIP_ENDPOINT" ] && GEOIP_ENV="OPENRUNG_GEOIP_ENDPOINT=${GEOIP_ENDPOINT}"
+
+# Launch script: install Docker, write the env file, pull the public image, and
+# run the broker. Host networking so the broker sees real peer IPs (its
+# trusted-proxy client-IP logic needs them); a named volume persists telemetry
+# across restarts; the rootfs is otherwise read-only. The image points
+# OPENRUNG_TELEMETRY_FILE at the volume, so no telemetry path is set here.
+read -r -d '' USERDATA <<EOF || true
+#!/bin/sh
+# NOTE: Lightsail prepends its own #!/bin/sh preamble, so this runs under dash.
+# Keep it POSIX — no bashisms (e.g. no 'set -o pipefail').
+set -eux
+exec > /var/log/openrung-init.log 2>&1
+export DEBIAN_FRONTEND=noninteractive
+# DPkg::Lock::Timeout waits for cloud-init's own apt activity to release the lock.
+apt-get -o DPkg::Lock::Timeout=300 update
+apt-get -o DPkg::Lock::Timeout=300 install -y docker.io
+systemctl enable --now docker
+
+mkdir -p /etc/openrung
+cat > /etc/openrung/broker.env <<ENVEOF
+OPENRUNG_ADDR=:${PORT}
+${TOKEN_ENV}
+${ANON_ENV}
+${DASHBOARD_ENV}
+${STORE_ENV}
+${DB_ENV}
+${GEOIP_ENV}
+ENVEOF
+
+docker pull ${IMAGE}
+docker rm -f openrung-broker 2>/dev/null || true
+docker run -d --name openrung-broker --restart unless-stopped \\
+  --network host --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp \\
+  -v openrung-broker-state:/var/lib/openrung \\
+  --env-file /etc/openrung/broker.env \\
+  ${IMAGE}
+EOF
+
+aws lightsail create-instances \
+  --instance-names "$NAME" \
+  --availability-zone "$AZ" \
+  --blueprint-id "$BLUEPRINT" \
+  --bundle-id "$BUNDLE" \
+  --ip-address-type dualstack \
+  --user-data "$USERDATA" \
+  --region "$REGION" >/dev/null
+
+echo "Waiting for instance to start..."
+until [ "$(aws lightsail get-instance --instance-name "$NAME" --region "$REGION" --query 'instance.state.name' --output text 2>/dev/null)" = "running" ]; do
+  sleep 5
+done
+
+aws lightsail attach-static-ip --static-ip-name "$IPNAME" --instance-name "$NAME" --region "$REGION" >/dev/null
+
+# Open the HTTP port (IPv4 + IPv6). Additive — leaves the default SSH (22) rule
+# in place. The raw origin stays world-reachable as the direct-IP fallback;
+# restrict cidrs to Cloudflare's ranges here if you do not want that.
+aws lightsail open-instance-public-ports --instance-name "$NAME" --region "$REGION" \
+  --port-info "fromPort=${PORT},toPort=${PORT},protocol=TCP,cidrs=0.0.0.0/0,ipv6Cidrs=::/0" >/dev/null
+
+echo "Done. Broker '${NAME}' is at ${STATIC_IP}:${PORT} (ready ~2-3 min after boot)."
+echo "  Health:  curl http://${STATIC_IP}:${PORT}/healthz"
+echo "  Relays:  curl http://${STATIC_IP}:${PORT}/api/v1/relays"
+if [ -n "$DASHBOARD_TOKEN" ]; then
+  echo "  Dashboard: http://${STATIC_IP}:${PORT}/admin/telemetry"
+fi
+echo
+echo "Point hubs and volunteers at it with:"
+echo "  OPENRUNG_BROKER_URL=http://${STATIC_IP}:${PORT}"
+echo
+echo "Front it with Cloudflare for TLS, and set the client apps' HTTPS broker URL"
+echo "to the Cloudflare hostname. Telemetry persists in the 'openrung-broker-state'"
+echo "docker volume across restarts."
+echo "OPENRUNG_BROKER name=${NAME} ip=${STATIC_IP} port=${PORT}"

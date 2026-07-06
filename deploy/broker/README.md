@@ -26,6 +26,34 @@ curl http://localhost:8080/healthz
 curl http://localhost:8080/api/v1/relays
 ```
 
+## Deploy to AWS Lightsail (one command)
+
+`lightsail-up.sh` provisions a broker on a `micro_3_0` instance (1 GB RAM /
+2 vCPU): it allocates a static IP, installs Docker, pulls
+`ghcr.io/openrung/openrung-broker:main`, runs it (host networking, read-only
+rootfs, persistent telemetry volume), and opens the HTTP port.
+
+Prerequisites: an authenticated `aws` CLI (`aws configure`) with Lightsail
+permissions, and the broker image published to GHCR and made **public** (see note
+below).
+
+```sh
+./deploy/broker/lightsail-up.sh mybroker
+```
+
+With no `OPENRUNG_VOLUNTEER_TOKEN` set it runs open (anonymous registration); set
+one to require auth. Optional overrides: `OPENRUNG_REGION`, `OPENRUNG_BUNDLE`,
+`OPENRUNG_DASHBOARD_TOKEN`, `OPENRUNG_RELAY_STORE` / `OPENRUNG_RELAY_DATABASE_URL`,
+`OPENRUNG_GEOIP_ENDPOINT`. The script prints the health URL and the
+`OPENRUNG_BROKER_URL=http://<ip>:8080` to point hubs and volunteers at. Front the
+origin with Cloudflare for TLS (below) and set the client apps' HTTPS broker URL
+to the Cloudflare hostname.
+
+> **GHCR package visibility:** the first time the broker image is published, the
+> GHCR package defaults to **private** and the instance pulls anonymously. Make it
+> public once: GitHub → org **Packages** → `openrung-broker` → *Package settings* →
+> *Change visibility* → *Public*. (Or have the instance `docker login ghcr.io`.)
+
 ## ⚠️ Auth: the broker fails closed
 
 The broker **refuses to start without a registration token** so that not just
