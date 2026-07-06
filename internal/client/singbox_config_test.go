@@ -157,6 +157,77 @@ func TestBuildSingBoxConfigPunchBridgeRedirectsAndExcludesPeer(t *testing.T) {
 	}
 }
 
+func TestBuildSingBoxProxyModeUsesMixedInbound(t *testing.T) {
+	now := time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC)
+	cfg, err := BuildSingBoxConfig(SingBoxConfigInput{
+		Relay:           validRelay(now),
+		Mode:            ModeProxy,
+		ProxyListenPort: 7890,
+	})
+	if err != nil {
+		t.Fatalf("build proxy config: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(cfg, &decoded); err != nil {
+		t.Fatalf("config should be valid JSON: %v", err)
+	}
+
+	inbound := decoded["inbounds"].([]any)[0].(map[string]any)
+	if inbound["type"] != "mixed" || inbound["tag"] != "mixed-in" {
+		t.Fatalf("expected mixed inbound, got %+v", inbound)
+	}
+	if inbound["listen"] != "127.0.0.1" || inbound["listen_port"].(float64) != 7890 {
+		t.Fatalf("expected loopback 7890, got listen=%v port=%v", inbound["listen"], inbound["listen_port"])
+	}
+	// A mixed inbound must never carry TUN-only keys.
+	for _, key := range []string{"auto_route", "strict_route", "route_exclude_address", "dns_mode"} {
+		if _, ok := inbound[key]; ok {
+			t.Fatalf("proxy inbound leaked TUN-only key %q: %+v", key, inbound)
+		}
+	}
+	// The outbound (VLESS+Reality) and final route are shared with TUN mode.
+	proxy := decoded["outbounds"].([]any)[0].(map[string]any)
+	if proxy["type"] != "vless" || proxy["server"] != "volunteer.example.com" {
+		t.Fatalf("proxy mode should keep the VLESS outbound: %+v", proxy)
+	}
+	if decoded["route"].(map[string]any)["final"] != "proxy" {
+		t.Fatalf("expected final route proxy")
+	}
+}
+
+func TestBuildSingBoxProxyModeRequiresPort(t *testing.T) {
+	now := time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC)
+	_, err := BuildSingBoxConfig(SingBoxConfigInput{Relay: validRelay(now), Mode: ModeProxy})
+	if err == nil {
+		t.Fatal("expected an error when proxy mode has no listen port")
+	}
+}
+
+func TestBuildSingBoxProxyModeHonorsPunchBridge(t *testing.T) {
+	// Proxy mode still redirects the outbound to the loopback punch bridge when
+	// set — punch is orthogonal to the inbound type.
+	now := time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC)
+	cfg, err := BuildSingBoxConfig(SingBoxConfigInput{
+		Relay:           validRelay(now),
+		Mode:            ModeProxy,
+		ProxyListenPort: 7890,
+		BridgeHost:      "127.0.0.1",
+		BridgePort:      54321,
+	})
+	if err != nil {
+		t.Fatalf("build proxy config: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(cfg, &decoded); err != nil {
+		t.Fatalf("config should be valid JSON: %v", err)
+	}
+	proxy := decoded["outbounds"].([]any)[0].(map[string]any)
+	if proxy["server"] != "127.0.0.1" || proxy["server_port"].(float64) != 54321 {
+		t.Fatalf("proxy mode did not honor the punch bridge: %+v", proxy)
+	}
+}
+
 func TestBuildSingBoxConfigDoesNotExcludeHostnameRelay(t *testing.T) {
 	now := time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC)
 	cfg, err := BuildSingBoxConfig(SingBoxConfigInput{Relay: validRelay(now)})

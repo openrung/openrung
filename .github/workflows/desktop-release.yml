@@ -1,0 +1,91 @@
+name: desktop-release
+
+# Builds the OpenRung desktop app for macOS, Linux, and Windows on their native
+# runners (Wails cannot cross-compile — it links each OS's native webview), with
+# sing-box bundled into each. Run manually (Actions → desktop-release → Run) or
+# on a version tag. Artifacts appear on the run's summary page.
+on:
+  workflow_dispatch:
+    inputs:
+      singbox_version:
+        description: sing-box version to bundle (no leading v)
+        default: "1.14.0-alpha.35"
+  push:
+    tags: ["v*"]
+
+env:
+  # sing-box release to bundle. Bump as needed; must exist as a GitHub release.
+  SING_BOX_VERSION: ${{ github.event.inputs.singbox_version || '1.14.0-alpha.35' }}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            sbfile: darwin-arm64
+          - os: ubuntu-22.04
+            sbfile: linux-amd64
+          - os: windows-latest
+            sbfile: windows-amd64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+
+      - name: Install Linux webview deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libgtk-3-dev libwebkit2gtk-4.0-dev
+
+      - name: Fetch sing-box (unix)
+        if: runner.os != 'Windows'
+        run: |
+          V="$SING_BOX_VERSION"
+          curl -sSL -o sb.tar.gz "https://github.com/SagerNet/sing-box/releases/download/v$V/sing-box-$V-${{ matrix.sbfile }}.tar.gz"
+          tar -xzf sb.tar.gz
+          echo "SING_BOX=$PWD/sing-box-$V-${{ matrix.sbfile }}/sing-box" >> "$GITHUB_ENV"
+
+      - name: Fetch sing-box (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $V = "$env:SING_BOX_VERSION"
+          Invoke-WebRequest -Uri "https://github.com/SagerNet/sing-box/releases/download/v$V/sing-box-$V-windows-amd64.zip" -OutFile sb.zip
+          Expand-Archive sb.zip -DestinationPath sb
+          "SING_BOX=$PWD\sb\sing-box-$V-windows-amd64\sing-box.exe" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          ./desktop/scripts/package-macos.sh
+          ditto -c -k --keepParent desktop/build/bin/OpenRung.app desktop/build/bin/OpenRung-macos-arm64.zip
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: ./desktop/scripts/package-linux.sh
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./desktop/scripts/package-windows.ps1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OpenRung-${{ matrix.sbfile }}
+          path: |
+            desktop/build/bin/OpenRung-*.zip
+            desktop/build/bin/OpenRung-*.tar.gz
+          if-no-files-found: error
