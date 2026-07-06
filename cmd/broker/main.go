@@ -23,9 +23,9 @@ func main() {
 }
 
 func run() error {
-	addr := flag.String("addr", ":8080", "HTTP listen address")
+	addr := flag.String("addr", envDefault("OPENRUNG_ADDR", ":8080"), "HTTP listen address")
 	leaseTTL := flag.Duration("lease-ttl", 3*time.Minute, "volunteer relay lease TTL")
-	telemetryFile := flag.String("telemetry-file", "openrung-telemetry.jsonl", "append-only client telemetry JSONL file")
+	telemetryFile := flag.String("telemetry-file", envDefault("OPENRUNG_TELEMETRY_FILE", "openrung-telemetry.jsonl"), "append-only client telemetry JSONL file (its directory must be writable)")
 	statusInterval := flag.Duration("status-interval", time.Minute, "interval for broker network status logs; 0 disables")
 	relayStore := flag.String("relay-store", envDefault("OPENRUNG_RELAY_STORE", "memory"), "relay state backend: memory or postgres")
 	relayDatabaseURL := flag.String("relay-database-url", os.Getenv("OPENRUNG_RELAY_DATABASE_URL"), "PostgreSQL database URL for relay state")

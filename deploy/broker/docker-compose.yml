@@ -1,0 +1,48 @@
+# OpenRung broker (control plane).
+#
+#   cp .env.example .env      # then edit .env (token/anonymous, dashboard, store)
+#   docker compose up -d --build
+#   docker compose logs -f
+#
+services:
+  broker:
+    build:
+      context: ../..
+      dockerfile: deploy/broker/Dockerfile
+    image: openrung-broker:latest
+    container_name: openrung-broker
+    restart: unless-stopped
+    env_file: [.env]
+
+    # Host networking so the broker sees the REAL peer IP. Its client-IP resolver
+    # only honours CF-Connecting-IP / X-Forwarded-For when the direct peer is a
+    # Cloudflare (or OPENRUNG_TRUSTED_PROXY_CIDRS) address; behind Docker bridge
+    # NAT every peer becomes the docker gateway, which would collapse per-IP rate
+    # limiting and telemetry source IPs onto a single address. The broker binds
+    # OPENRUNG_ADDR (:8080 by default) directly on the host.
+    #
+    # Prefer bridge networking? Uncomment the ports block, DROP network_mode, add
+    # the docker bridge subnet to OPENRUNG_TRUSTED_PROXY_CIDRS, and firewall the
+    # published port to Cloudflare's ranges only (otherwise a direct hit can spoof
+    # the forwarded client IP):
+    #   ports:
+    #     - "8080:8080"
+    network_mode: host
+
+    # Least privilege: the broker needs no capabilities (it binds a port >= 1024
+    # and never changes users or mounts).
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+    # Read-only root filesystem. The only writable path the broker needs is the
+    # telemetry state dir (append-only JSONL + in-place compaction temp files),
+    # which is a persistent named volume so dashboard history survives restarts.
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - openrung-broker-state:/var/lib/openrung
+
+volumes:
+  openrung-broker-state:

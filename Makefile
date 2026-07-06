@@ -1,7 +1,8 @@
-.PHONY: test fmt broker volunteer relayhub client docker-build docker-keygen docker-run relayhub-docker-build
+.PHONY: test fmt broker volunteer relayhub client docker-build docker-keygen docker-run relayhub-docker-build broker-docker-build
 
 VOLUNTEER_IMAGE ?= openrung-volunteer:latest
 RELAYHUB_IMAGE ?= openrung-relayhub:latest
+BROKER_IMAGE ?= openrung-broker:latest
 
 fmt:
 	gofmt -w cmd internal
@@ -40,6 +41,10 @@ docker-build:
 # Build the relay hub image (run from the repo root).
 relayhub-docker-build:
 	docker build -f deploy/relayhub/Dockerfile -t $(RELAYHUB_IMAGE) .
+
+# Build the broker (control plane) image (run from the repo root).
+broker-docker-build:
+	docker build -f deploy/broker/Dockerfile -t $(BROKER_IMAGE) .
 
 # Print a fresh Reality key pair for a stable relay identity.
 docker-keygen:
