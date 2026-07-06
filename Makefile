@@ -10,7 +10,7 @@ test:
 	go test ./...
 
 broker:
-	go run ./cmd/broker -addr :8080
+	OPENRUNG_ALLOW_ANONYMOUS_REGISTRATION=true go run ./cmd/broker -addr :8080
 
 volunteer:
 	go run ./cmd/volunteer \
@@ -24,7 +24,7 @@ volunteer:
 		-skip-xray-run
 
 relayhub:
-	go run ./cmd/relayhub \
+	OPENRUNG_ALLOW_ANONYMOUS_VOLUNTEERS=true go run ./cmd/relayhub \
 		-broker http://localhost:8080 \
 		-public-host 127.0.0.1 \
 		-port-range 20000-20010 \

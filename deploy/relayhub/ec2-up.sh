@@ -157,6 +157,7 @@ OPENRUNG_HUB_TLS_KEY=/etc/openrung/certs/hub.key
 OPENRUNG_HUB_REFLECTOR_ADDRS=$PRIMARY:__REFLECTOR_PORT__,$SECONDARY:__REFLECTOR_PORT__
 OPENRUNG_HUB_REFLECTOR_ADVERTISE=__EIP1__:__REFLECTOR_PORT__,__EIP2__:__REFLECTOR_PORT__
 __TOKEN_ENV__
+__ANON_ENV__
 ENV
 
 docker pull __IMAGE__
@@ -168,8 +169,16 @@ docker run -d --name openrung-relayhub --restart unless-stopped \
   __IMAGE__
 TMPL
 
+# Without a token the hub fails closed, so when none is provided we explicitly
+# opt into anonymous volunteers (open, unauthenticated hub) instead — set
+# OPENRUNG_VOLUNTEER_TOKEN to require auth.
 TOKEN_ENV=""
-if [ -n "$TOKEN" ]; then TOKEN_ENV="OPENRUNG_VOLUNTEER_TOKEN=${TOKEN}"; fi
+ANON_ENV=""
+if [ -n "$TOKEN" ]; then
+  TOKEN_ENV="OPENRUNG_VOLUNTEER_TOKEN=${TOKEN}"
+else
+  ANON_ENV="OPENRUNG_ALLOW_ANONYMOUS_VOLUNTEERS=true"
+fi
 sed -i \
   -e "s#__IMAGE__#${IMAGE}#g" \
   -e "s#__BROKER_URL__#${BROKER_URL}#g" \
@@ -177,6 +186,7 @@ sed -i \
   -e "s/__CONTROL_PORT__/${CONTROL_PORT}/g" -e "s/__HTTP_PORT__/${HTTP_PORT}/g" \
   -e "s/__PORT_RANGE__/${PORT_RANGE}/g" -e "s/__REFLECTOR_PORT__/${REFLECTOR_PORT}/g" \
   -e "s#__TOKEN_ENV__#${TOKEN_ENV}#g" \
+  -e "s#__ANON_ENV__#${ANON_ENV}#g" \
   "$UD"
 
 # --- launch (primary private IP + one secondary; auto public IP for boot egress) ---
