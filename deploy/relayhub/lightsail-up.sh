@@ -54,9 +54,16 @@ aws lightsail allocate-static-ip --static-ip-name "$IPNAME" --region "$REGION" >
 STATIC_IP="$(aws lightsail get-static-ip --static-ip-name "$IPNAME" --region "$REGION" --query 'staticIp.ipAddress' --output text)"
 
 # Optional bearer token (must match the broker). Included in the env file only
-# when set so a blank line is harmless.
+# when set so a blank line is harmless. Without a token the hub fails closed, so
+# when none is provided we explicitly opt into anonymous volunteers (open,
+# unauthenticated hub) instead — set OPENRUNG_VOLUNTEER_TOKEN to require auth.
 TOKEN_ENV=""
-if [ -n "$TOKEN" ]; then TOKEN_ENV="OPENRUNG_VOLUNTEER_TOKEN=${TOKEN}"; fi
+ANON_ENV=""
+if [ -n "$TOKEN" ]; then
+  TOKEN_ENV="OPENRUNG_VOLUNTEER_TOKEN=${TOKEN}"
+else
+  ANON_ENV="OPENRUNG_ALLOW_ANONYMOUS_VOLUNTEERS=true"
+fi
 
 # HTTP API (reachability prober) env line, only when a port is configured.
 HTTP_ENV=""
@@ -97,6 +104,7 @@ OPENRUNG_HUB_TLS_CERT=/etc/openrung/certs/hub.crt
 OPENRUNG_HUB_TLS_KEY=/etc/openrung/certs/hub.key
 ${HTTP_ENV}
 ${TOKEN_ENV}
+${ANON_ENV}
 ENVEOF
 
 docker pull ${IMAGE}
