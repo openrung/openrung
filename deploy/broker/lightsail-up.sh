@@ -105,8 +105,24 @@ docker run -d --name openrung-broker --restart unless-stopped \\
   ${IMAGE}
 EOF
 
+# SSH access: import the standard key pair (id_ed25519_openrung) into this region
+# and launch the instance with it, so it is reachable with the fleet's standard
+# key. Idempotent. Falls back to the Lightsail default key pair when no local key
+# is found (override the key with OPENRUNG_SSH_PUBKEY / OPENRUNG_SSH_KEY_NAME).
+SSH_KEY_NAME="${OPENRUNG_SSH_KEY_NAME:-openrung}"
+SSH_PUBKEY="${OPENRUNG_SSH_PUBKEY:-}"
+if [ -z "$SSH_PUBKEY" ] && [ -f "$HOME/.ssh/id_ed25519_openrung" ]; then
+  SSH_PUBKEY="$(ssh-keygen -y -f "$HOME/.ssh/id_ed25519_openrung" 2>/dev/null || true)"
+fi
+KEYPAIR_ARG=""
+if [ -n "$SSH_PUBKEY" ]; then
+  aws lightsail import-key-pair --key-pair-name "$SSH_KEY_NAME" --public-key-base64 "$SSH_PUBKEY" --region "$REGION" >/dev/null 2>&1 || true
+  KEYPAIR_ARG="--key-pair-name $SSH_KEY_NAME"
+fi
+
 aws lightsail create-instances \
   --instance-names "$NAME" \
+  $KEYPAIR_ARG \
   --availability-zone "$AZ" \
   --blueprint-id "$BLUEPRINT" \
   --bundle-id "$BUNDLE" \
