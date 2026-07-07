@@ -38,6 +38,15 @@
           "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
           "url": "https://openrung.org/#download",
           "license": "https://www.gnu.org/licenses/gpl-3.0.html"
+        },
+        {
+          "@type": "SoftwareApplication",
+          "name": "OpenRung Desktop",
+          "operatingSystem": "macOS, Windows, Linux",
+          "applicationCategory": "UtilitiesApplication",
+          "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+          "url": "https://openrung.org/#download",
+          "license": "https://www.gnu.org/licenses/gpl-3.0.html"
         }
       ]
     }
@@ -756,6 +765,42 @@
         font-size: 0.94rem;
       }
       .dl-early svg { width: 19px; height: 19px; flex: none; margin-top: 2px; color: var(--accent); }
+
+      /* iOS TestFlight beta request form */
+      .ios-beta { border-top: 1px solid var(--line); padding-top: 22px; }
+      .ios-beta h3 { margin: 0 0 6px; font-size: 1.08rem; letter-spacing: -0.01em; }
+      .ios-beta p { margin: 0 0 14px; color: var(--muted); font-size: 0.96rem; }
+      .ios-form { display: flex; flex-wrap: wrap; gap: 10px; }
+      .ios-form input[type="email"] {
+        flex: 1 1 240px;
+        min-height: 52px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: var(--bg);
+        padding: 0 20px;
+        font: inherit;
+        color: var(--ink);
+        direction: ltr; /* email addresses stay LTR even on the fa page */
+      }
+      .ios-form input[type="email"]::placeholder { color: var(--muted); opacity: 0.7; }
+      .ios-form-hint {
+        margin: 10px 0 0;
+        color: var(--accent-strong);
+        font-size: 0.92rem;
+        font-weight: 600;
+      }
+
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+        border: 0;
+      }
 
       /* ============================================================
          Get involved
@@ -1498,7 +1543,7 @@
           <div class="section-head" data-reveal>
             <p class="kicker" data-i18n="downloadKicker">Download</p>
             <h2 id="download-title" data-i18n="downloadTitle">Get OpenRung</h2>
-            <p data-i18n="downloadLead">Android is available now; iOS and desktop are in development.</p>
+            <p data-i18n="downloadLead">Android and desktop are available now; iOS is in beta through TestFlight.</p>
           </div>
           <div class="download-card" data-reveal>
             <div class="dl-actions">
@@ -1506,17 +1551,38 @@
                 <svg aria-hidden="true"><use href="#dl-arrow"/></svg>
                 <span data-i18n="downloadAndroid">Download for Android (APK)</span>
               </a>
-              <span class="chip" data-i18n="downloadIos">iOS · In development</span>
-              <span class="chip" data-i18n="downloadDesktop">Desktop · In development</span>
+              <a class="button ghost" href="https://github.com/openrung/openrung/releases/download/v0.1.0/OpenRung-macos-arm64.zip">
+                <svg aria-hidden="true"><use href="#dl-arrow"/></svg>
+                <span data-i18n="downloadMac">macOS (Apple Silicon)</span>
+              </a>
+              <a class="button ghost" href="https://github.com/openrung/openrung/releases/download/v0.1.0/OpenRung-windows-amd64.zip">
+                <svg aria-hidden="true"><use href="#dl-arrow"/></svg>
+                <span data-i18n="downloadWindows">Windows (x64)</span>
+              </a>
+              <a class="button ghost" href="https://github.com/openrung/openrung/releases/download/v0.1.0/OpenRung-linux-x86_64.tar.gz">
+                <svg aria-hidden="true"><use href="#dl-arrow"/></svg>
+                <span data-i18n="downloadLinux">Linux (x64)</span>
+              </a>
             </div>
             <p class="dl-meta">
-              <span><svg aria-hidden="true"><use href="#check"/></svg><span data-i18n="downloadVersionLabel">Version</span>&nbsp;<span data-version>0.1.4</span></span>
+              <span><svg aria-hidden="true"><use href="#check"/></svg><span data-i18n="downloadVersionLabel">Android version</span>&nbsp;<span data-version>0.1.4</span></span>
               <span><svg aria-hidden="true"><use href="#check"/></svg><span data-i18n="downloadReq">Android 8.0 or newer</span></span>
-              <span><svg aria-hidden="true"><use href="#check"/></svg><span data-i18n="downloadSigned">Released and signed by the OpenRung Foundation</span></span>
+              <span><svg aria-hidden="true"><use href="#check"/></svg><span data-i18n="downloadDesktopReq">Desktop: macOS (Apple Silicon) · Windows 10+ · Linux x86-64</span></span>
+              <span><svg aria-hidden="true"><use href="#check"/></svg><span data-i18n="downloadSigned">Official builds released by the OpenRung Foundation</span></span>
             </p>
             <div class="dl-early">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l2.5 2.5"/></svg>
-              <span data-i18n="downloadEarly">Early-access build: it improves every week, and short interruptions are possible while the network grows. Installing the APK may require allowing installs from your browser in Android settings.</span>
+              <span data-i18n="downloadEarly">Early-access builds: they improve every week, and short interruptions are possible while the network grows. Installing the APK may require allowing installs from your browser in Android settings. Desktop builds are not yet code-signed: on macOS, right-click the app and choose Open the first time; Windows may show a SmartScreen warning.</span>
+            </div>
+            <div class="ios-beta">
+              <h3 data-i18n="iosBetaTitle">iOS · TestFlight beta</h3>
+              <p data-i18n="iosBetaBody">The iOS app is in closed beta. Leave your email and we'll send you a TestFlight invitation.</p>
+              <form id="testflight-form" class="ios-form">
+                <label class="sr-only" for="testflight-email" data-i18n="iosBetaEmailLabel">Your email</label>
+                <input id="testflight-email" name="email" type="email" required autocomplete="email" inputmode="email" placeholder="you@example.com">
+                <button class="button ghost" type="submit" data-i18n="iosBetaButton">Request a TestFlight invite</button>
+              </form>
+              <p class="ios-form-hint" id="testflight-hint" hidden data-i18n="iosBetaHint">Your email app should open with a pre-filled request — just press send.</p>
             </div>
           </div>
         </div>
@@ -1587,7 +1653,7 @@
                 <span data-i18n="faq5Q">Why isn't it on Google Play or the App Store yet?</span>
                 <span class="chev" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span>
               </summary>
-              <div class="faq-body"><p data-i18n="faq5A">OpenRung is in early access while we harden the network. The Android APK on this site is the official release, built and signed by us. App-store releases and the iOS app are on the roadmap.</p></div>
+              <div class="faq-body"><p data-i18n="faq5A">OpenRung is in early access while we harden the network. The Android APK and desktop builds on this site are official releases built by us. The iOS app is in TestFlight beta — request an invite in the Download section. App-store releases are on the roadmap.</p></div>
             </details>
             <details class="faq-item" data-reveal style="--d:.25s">
               <summary>
@@ -1709,7 +1775,7 @@
           heroHeadline: "Internet access is a",
           heroHeadlineHl: "right, not a privilege.",
           heroLead: "OpenRung helps people facing network restrictions reach public websites and apps through a worldwide volunteer relay network. Always free, privacy-first, and run by a Delaware nonprofit foundation.",
-          heroDownload: "Download for Android",
+          heroDownload: "Download for Free",
           heroHow: "See how it works",
           poemQuote: "Spring fills the garden — no wall can shut it in; one branch of red apricot blossom reaches beyond the wall.",
           poemAttrib: "— Ye Shaoweng, 'Visiting a Garden When the Master Is Away' (Song dynasty, c. 1200)",
@@ -1753,14 +1819,21 @@
           whyFreeBody: "No subscriptions, no hidden fees, and no paywall for access.",
           downloadKicker: "Download",
           downloadTitle: "Get OpenRung",
-          downloadLead: "Android is available now; iOS and desktop are in development.",
+          downloadLead: "Android and desktop are available now; iOS is in beta through TestFlight.",
           downloadAndroid: "Download for Android (APK)",
-          downloadIos: "iOS · In development",
-          downloadDesktop: "Desktop · In development",
-          downloadVersionLabel: "Version",
+          downloadMac: "macOS (Apple Silicon)",
+          downloadWindows: "Windows (x64)",
+          downloadLinux: "Linux (x64)",
+          downloadVersionLabel: "Android version",
           downloadReq: "Android 8.0 or newer",
-          downloadSigned: "Released and signed by the OpenRung Foundation",
-          downloadEarly: "Early-access build: it improves every week, and short interruptions are possible while the network grows. Installing the APK may require allowing installs from your browser in Android settings.",
+          downloadDesktopReq: "Desktop: macOS (Apple Silicon) · Windows 10+ · Linux x86-64",
+          downloadSigned: "Official builds released by the OpenRung Foundation",
+          downloadEarly: "Early-access builds: they improve every week, and short interruptions are possible while the network grows. Installing the APK may require allowing installs from your browser in Android settings. Desktop builds are not yet code-signed: on macOS, right-click the app and choose Open the first time; Windows may show a SmartScreen warning.",
+          iosBetaTitle: "iOS · TestFlight beta",
+          iosBetaBody: "The iOS app is in closed beta. Leave your email and we'll send you a TestFlight invitation.",
+          iosBetaEmailLabel: "Your email",
+          iosBetaButton: "Request a TestFlight invite",
+          iosBetaHint: "Your email app should open with a pre-filled request — just press send.",
           supportKicker: "Get involved",
           supportTitle: "Help the network grow",
           supportLead: "OpenRung relies on volunteers for relay capacity and donors to keep it running.",
@@ -1782,7 +1855,7 @@
           faq4Q: "How is this different from a commercial VPN?",
           faq4A: "VPN companies route you through servers they own and charge for it. OpenRung is a nonprofit network of everyday volunteers, built specifically to get past censorship: connections are disguised as ordinary web traffic, access is free, and the code is open for anyone to audit.",
           faq5Q: "Why isn't it on Google Play or the App Store yet?",
-          faq5A: "OpenRung is in early access while we harden the network. The Android APK on this site is the official release, built and signed by us. App-store releases and the iOS app are on the roadmap.",
+          faq5A: "OpenRung is in early access while we harden the network. The Android APK and desktop builds on this site are official releases built by us. The iOS app is in TestFlight beta — request an invite in the Download section. App-store releases are on the roadmap.",
           faq6Q: "Is it safe to run a volunteer relay?",
           faq6A: "Honest answer: it depends on where you live and your comfort level. Relays currently act as exits, so websites see the volunteer's IP address — much like a Tor exit node. Read the security notes on GitHub before volunteering; entry-relay modes that lower this risk are on the roadmap.",
           contactKicker: "Contact",
@@ -1817,7 +1890,7 @@
           heroHeadline: "互联网访问是",
           heroHeadlineHl: "基本人权，而非特权。",
           heroLead: "OpenRung 通过遍布世界各地的志愿者中继，帮助身处网络限制中的人访问公共网站与应用。永久免费、注重隐私，由一家特拉华州非营利基金会运营。",
-          heroDownload: "下载 Android 版",
+          heroDownload: "免费下载",
           heroHow: "了解工作原理",
           poemQuote: "「春色满园关不住，一枝红杏出墙来。」",
           poemAttrib: "——宋·叶绍翁《游园不值》",
@@ -1861,14 +1934,21 @@
           whyFreeBody: "没有订阅、没有隐藏费用，也不会为访问设置付费门槛。",
           downloadKicker: "下载",
           downloadTitle: "获取 OpenRung",
-          downloadLead: "目前提供 Android 版本，iOS 与桌面版正在开发中。",
+          downloadLead: "Android 与桌面版现已可用，iOS 版正通过 TestFlight 进行测试。",
           downloadAndroid: "下载 Android 版 (APK)",
-          downloadIos: "iOS · 开发中",
-          downloadDesktop: "桌面版 · 开发中",
-          downloadVersionLabel: "版本",
+          downloadMac: "macOS 版（Apple 芯片）",
+          downloadWindows: "Windows 版 (x64)",
+          downloadLinux: "Linux 版 (x64)",
+          downloadVersionLabel: "Android 版本",
           downloadReq: "Android 8.0 或更高版本",
-          downloadSigned: "由 OpenRung 基金会构建并签名发布",
-          downloadEarly: "抢先体验版本：每周持续改进，网络扩展期间偶尔可能出现短暂中断。直接安装 APK 时，可能需要在 Android 设置中允许来自浏览器的安装。",
+          downloadDesktopReq: "桌面版：macOS（Apple 芯片）· Windows 10+ · Linux x86-64",
+          downloadSigned: "由 OpenRung 基金会官方构建发布",
+          downloadEarly: "抢先体验版本：每周持续改进，网络扩展期间偶尔可能出现短暂中断。直接安装 APK 时，可能需要在 Android 设置中允许来自浏览器的安装。桌面版暂未进行代码签名：macOS 首次打开请右键点击应用并选择“打开”；Windows 可能会显示 SmartScreen 警告。",
+          iosBetaTitle: "iOS · TestFlight 测试版",
+          iosBetaBody: "iOS 应用正在封闭测试中。留下你的邮箱，我们会向你发送 TestFlight 邀请。",
+          iosBetaEmailLabel: "你的邮箱",
+          iosBetaButton: "申请 TestFlight 邀请",
+          iosBetaHint: "你的邮件应用将打开一封预填好的申请邮件——直接发送即可。",
           supportKicker: "参与支持",
           supportTitle: "帮助网络成长",
           supportLead: "OpenRung 依靠志愿者提供中继、依靠捐赠者维持运转。",
@@ -1890,7 +1970,7 @@
           faq4Q: "这与商业 VPN 有什么不同？",
           faq4A: "VPN 公司用自有服务器为你转发流量并收取费用。OpenRung 是由普通志愿者组成的非营利网络，专为突破封锁而设计：连接伪装成普通网页流量，访问免费，代码开放，任何人都可以审计。",
           faq5Q: "为什么还没有上架 Google Play 或 App Store？",
-          faq5A: "OpenRung 处于抢先体验阶段，我们正在加固网络。本站提供的 Android APK 是由我们构建并签名的官方版本。应用商店上架和 iOS 应用都在路线图中。",
+          faq5A: "OpenRung 处于抢先体验阶段，我们正在加固网络。本站提供的 Android APK 与桌面版均为我们构建的官方版本。iOS 应用正在 TestFlight 测试中——可在下载区申请邀请。应用商店上架已在路线图中。",
           faq6Q: "运行志愿者中继安全吗？",
           faq6A: "坦率地说：取决于你所在的地区和你的接受程度。目前中继作为出口节点，网站会看到志愿者的 IP 地址——与 Tor 出口节点类似。志愿之前请先阅读 GitHub 上的安全须知；降低此风险的入口中继模式已在路线图中。",
           contactKicker: "联系",
@@ -1925,7 +2005,7 @@
           heroHeadline: "دسترسی به اینترنت یک",
           heroHeadlineHl: "حق است، نه امتیاز.",
           heroLead: "OpenRung به افرادی که با محدودیت‌های شبکه روبه‌رو هستند کمک می‌کند تا از طریق شبکهٔ جهانی رله‌های داوطلبانه به وب‌سایت‌ها و برنامه‌های عمومی دسترسی پیدا کنند. همیشه رایگان، با حفظ حریم خصوصی و زیر نظر یک بنیاد غیرانتفاعی در ایالت دلاور.",
-          heroDownload: "دانلود برای اندروید",
+          heroDownload: "دانلود رایگان",
           heroHow: "چگونه کار می‌کند",
           poemQuote: "بهارِ باغ را پشتِ هیچ دیواری نتوان بست؛ شاخه‌ای شکوفهٔ سرخ، سر از دیوار برآورده است.",
           poemAttrib: "— یِه شائو‌ونگ، «دیدار از باغی که صاحبش نبود»، دودمان سونگ",
@@ -1969,14 +2049,21 @@
           whyFreeBody: "بدون اشتراک، بدون هزینه‌های پنهان و بدون دیوار پرداخت برای دسترسی.",
           downloadKicker: "دانلود",
           downloadTitle: "دریافت OpenRung",
-          downloadLead: "نسخهٔ اندروید هم‌اکنون در دسترس است؛ نسخه‌های iOS و دسکتاپ در حال توسعه هستند.",
+          downloadLead: "نسخه‌های اندروید و دسکتاپ هم‌اکنون در دسترس‌اند؛ نسخهٔ iOS در مرحلهٔ بتا از طریق TestFlight است.",
           downloadAndroid: "دانلود برای اندروید (APK)",
-          downloadIos: "iOS · در حال توسعه",
-          downloadDesktop: "دسکتاپ · در حال توسعه",
-          downloadVersionLabel: "نسخهٔ",
+          downloadMac: "macOS (تراشهٔ اپل)",
+          downloadWindows: "ویندوز (x64)",
+          downloadLinux: "لینوکس (x64)",
+          downloadVersionLabel: "نسخهٔ اندروید",
           downloadReq: "اندروید ۸٫۰ یا جدیدتر",
-          downloadSigned: "ساخته و امضاشده توسط بنیاد OpenRung",
-          downloadEarly: "نسخهٔ دسترسی زودهنگام: هر هفته بهتر می‌شود و در دورهٔ رشد شبکه ممکن است وقفه‌های کوتاهی رخ دهد. برای نصب APK شاید لازم باشد در تنظیمات اندروید، نصب از مرورگر را مجاز کنید.",
+          downloadDesktopReq: "دسکتاپ: macOS (تراشهٔ اپل) · ویندوز ۱۰ به بعد · لینوکس x86-64",
+          downloadSigned: "نسخه‌های رسمی منتشرشده توسط بنیاد OpenRung",
+          downloadEarly: "نسخه‌های دسترسی زودهنگام: هر هفته بهتر می‌شوند و در دورهٔ رشد شبکه ممکن است وقفه‌های کوتاهی رخ دهد. برای نصب APK شاید لازم باشد در تنظیمات اندروید، نصب از مرورگر را مجاز کنید. نسخه‌های دسکتاپ هنوز امضای کد ندارند: در macOS بار اول روی برنامه راست‌کلیک کنید و «Open» را بزنید؛ ویندوز ممکن است هشدار SmartScreen نشان دهد.",
+          iosBetaTitle: "iOS · بتای TestFlight",
+          iosBetaBody: "برنامهٔ iOS در مرحلهٔ آزمایش محدود است. ایمیل خود را بگذارید تا دعوت‌نامهٔ TestFlight برایتان بفرستیم.",
+          iosBetaEmailLabel: "ایمیل شما",
+          iosBetaButton: "درخواست دعوت‌نامهٔ TestFlight",
+          iosBetaHint: "برنامهٔ ایمیل شما با یک درخواست از پیش پرشده باز می‌شود — فقط ارسال را بزنید.",
           supportKicker: "مشارکت",
           supportTitle: "به رشد شبکه کمک کنید",
           supportLead: "OpenRung برای ظرفیت رله به داوطلبان و برای ادامهٔ فعالیت به حامیان مالی متکی است.",
@@ -1998,7 +2085,7 @@
           faq4Q: "چه تفاوتی با VPNهای تجاری دارد؟",
           faq4A: "شرکت‌های VPN ترافیک شما را از سرورهای خودشان عبور می‌دهند و بابت آن پول می‌گیرند. OpenRung شبکه‌ای غیرانتفاعی از داوطلبان عادی است که به‌طور خاص برای عبور از سانسور ساخته شده: اتصال‌ها شبیه ترافیک عادی وب پنهان می‌شوند، دسترسی رایگان است و کد برای بررسی همه باز است.",
           faq5Q: "چرا هنوز در Google Play یا App Store نیست؟",
-          faq5A: "OpenRung در مرحلهٔ دسترسی زودهنگام است و ما در حال مقاوم‌سازی شبکه هستیم. فایل APK این سایت نسخهٔ رسمی است که توسط ما ساخته و امضا شده است. انتشار در فروشگاه‌های اپ و نسخهٔ iOS در نقشهٔ راه قرار دارند.",
+          faq5A: "OpenRung در مرحلهٔ دسترسی زودهنگام است و ما در حال مقاوم‌سازی شبکه هستیم. فایل APK اندروید و نسخه‌های دسکتاپ این سایت، نسخه‌های رسمی ساخته‌شده توسط ما هستند. برنامهٔ iOS در بتای TestFlight است — در بخش دانلود درخواست دعوت‌نامه بدهید. انتشار در فروشگاه‌های اپ در نقشهٔ راه قرار دارد.",
           faq6Q: "آیا اجرای رلهٔ داوطلب امن است؟",
           faq6A: "پاسخ صادقانه: بستگی به محل زندگی و میزان پذیرش ریسک شما دارد. رله‌ها در حال حاضر به‌عنوان خروجی عمل می‌کنند، بنابراین وب‌سایت‌ها نشانی IP داوطلب را می‌بینند — مشابه گرهٔ خروجی Tor. پیش از داوطلب‌شدن، نکات امنیتی را در GitHub بخوانید؛ حالت‌های رلهٔ ورودی برای کاهش این ریسک در نقشهٔ راه قرار دارند.",
           contactKicker: "تماس",
@@ -2033,7 +2120,7 @@
           heroHeadline: "Доступ в интернет —",
           heroHeadlineHl: "это право, а не привилегия.",
           heroLead: "OpenRung помогает людям с ограничениями доступа открывать публичные сайты и приложения через всемирную волонтёрскую сеть ретрансляторов. Всегда бесплатно, с заботой о приватности, под управлением некоммерческого фонда из штата Делавэр.",
-          heroDownload: "Скачать для Android",
+          heroDownload: "Скачать бесплатно",
           heroHow: "Как это работает",
           poemQuote: "«Весну, что полнит сад, не запереть на ключ — ветвь абрикоса в алом цвету перебралась через стену».",
           poemAttrib: "— Е Шаовэн, «Пришёл в сад, но не застал хозяина» (эпоха Сун)",
@@ -2077,14 +2164,21 @@
           whyFreeBody: "Без подписок, скрытых платежей и платного доступа.",
           downloadKicker: "Скачать",
           downloadTitle: "Получить OpenRung",
-          downloadLead: "Версия для Android уже доступна; iOS и десктоп в разработке.",
+          downloadLead: "Версии для Android и компьютера уже доступны; iOS — в бета-версии через TestFlight.",
           downloadAndroid: "Скачать для Android (APK)",
-          downloadIos: "iOS · В разработке",
-          downloadDesktop: "Десктоп · В разработке",
-          downloadVersionLabel: "Версия",
+          downloadMac: "macOS (Apple Silicon)",
+          downloadWindows: "Windows (x64)",
+          downloadLinux: "Linux (x64)",
+          downloadVersionLabel: "Версия Android",
           downloadReq: "Android 8.0 или новее",
-          downloadSigned: "Собрано и подписано фондом OpenRung",
-          downloadEarly: "Версия раннего доступа: она улучшается каждую неделю, и пока сеть растёт, возможны кратковременные перебои. Для установки APK может понадобиться разрешить установку из браузера в настройках Android.",
+          downloadDesktopReq: "Компьютер: macOS (Apple Silicon) · Windows 10+ · Linux x86-64",
+          downloadSigned: "Официальные сборки фонда OpenRung",
+          downloadEarly: "Версии раннего доступа: они улучшаются каждую неделю, и пока сеть растёт, возможны кратковременные перебои. Для установки APK может понадобиться разрешить установку из браузера в настройках Android. Настольные сборки пока не подписаны: на macOS при первом запуске откройте приложение через правый клик → «Открыть»; Windows может показать предупреждение SmartScreen.",
+          iosBetaTitle: "iOS · бета в TestFlight",
+          iosBetaBody: "Приложение для iOS в закрытой бете. Оставьте свою почту — мы пришлём приглашение в TestFlight.",
+          iosBetaEmailLabel: "Ваша почта",
+          iosBetaButton: "Запросить приглашение в TestFlight",
+          iosBetaHint: "Откроется ваша почтовая программа с готовым письмом — просто отправьте его.",
           supportKicker: "Участие",
           supportTitle: "Помогите сети расти",
           supportLead: "OpenRung полагается на волонтёров для пропускной способности и на доноров, чтобы продолжать работу.",
@@ -2106,7 +2200,7 @@
           faq4Q: "Чем это отличается от коммерческого VPN?",
           faq4A: "VPN-компании пропускают ваш трафик через собственные серверы и берут за это деньги. OpenRung — некоммерческая сеть обычных волонтёров, созданная именно для обхода цензуры: соединения маскируются под обычный веб-трафик, доступ бесплатен, а код открыт для проверки любым желающим.",
           faq5Q: "Почему приложения ещё нет в Google Play или App Store?",
-          faq5A: "OpenRung находится в раннем доступе, пока мы укрепляем сеть. APK на этом сайте — официальный выпуск, собранный и подписанный нами. Публикация в магазинах приложений и версия для iOS есть в планах.",
+          faq5A: "OpenRung находится в раннем доступе, пока мы укрепляем сеть. APK для Android и настольные сборки на этом сайте — официальные выпуски, собранные нами. Приложение для iOS в бете TestFlight — запросите приглашение в разделе «Скачать». Публикация в магазинах приложений есть в планах.",
           faq6Q: "Безопасно ли запускать волонтёрский ретранслятор?",
           faq6A: "Честный ответ: зависит от того, где вы живёте, и от вашей готовности к риску. Сейчас ретрансляторы работают как выходные узлы, поэтому сайты видят IP-адрес волонтёра — как у выходного узла Tor. Перед тем как стать волонтёром, прочитайте заметки о безопасности на GitHub; режимы входных ретрансляторов, снижающие этот риск, есть в планах.",
           contactKicker: "Контакты",
@@ -2184,6 +2278,28 @@
       });
       const apkLink = document.getElementById("apk-link");
       if (apkLink) apkLink.href = APK_URL;
+
+      /* ============================================================
+         iOS TestFlight invite request — the site is static, so the
+         form composes a pre-filled email to us with the visitor's
+         address; we invite them to TestFlight manually.
+         ============================================================ */
+      const testflightForm = document.getElementById("testflight-form");
+      if (testflightForm) {
+        testflightForm.addEventListener("submit", (e) => {
+          e.preventDefault();
+          const email = document.getElementById("testflight-email").value.trim();
+          if (!email) return;
+          const subject = encodeURIComponent("OpenRung iOS TestFlight beta request");
+          const body = encodeURIComponent(
+            "Please invite " + email + " to the OpenRung iOS TestFlight beta."
+          );
+          const hint = document.getElementById("testflight-hint");
+          if (hint) hint.hidden = false;
+          window.location.href =
+            "mailto:admin@openrung.org?subject=" + subject + "&body=" + body;
+        });
+      }
 
       /* ============================================================
          Header state + mobile menu
