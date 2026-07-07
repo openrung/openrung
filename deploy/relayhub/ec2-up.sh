@@ -35,8 +35,10 @@ CONTROL_PORT="${OPENRUNG_HUB_CONTROL_PORT:-9443}"
 HTTP_PORT="${OPENRUNG_HUB_HTTP_PORT:-9444}"
 PORT_RANGE="${OPENRUNG_HUB_PORT_RANGE:-20000-20100}"
 REFLECTOR_PORT="${OPENRUNG_HUB_REFLECTOR_PORT:-19302}"
-KEY_NAME="${OPENRUNG_KEY_NAME:-openrung-relayhub}"
-KEY_FILE="${OPENRUNG_KEY_FILE:-$HOME/.ssh/${KEY_NAME}.pem}"
+KEY_NAME="${OPENRUNG_KEY_NAME:-openrung}"
+# Local private key used to SSH into the instance and (below) imported as the EC2
+# key pair when it does not exist yet, so hosts share the fleet-standard key.
+KEY_FILE="${OPENRUNG_KEY_FILE:-$HOME/.ssh/id_ed25519_openrung}"
 SG_NAME="${OPENRUNG_SG_NAME:-openrung-relayhub}"
 TOKEN="${OPENRUNG_VOLUNTEER_TOKEN:-}"
 
@@ -75,11 +77,23 @@ fi
 echo "Security group: ${SG_ID}"
 
 # --- key pair (idempotent) ---
+# Prefer importing the fleet-standard public key (derived from $KEY_FILE) so every
+# host is reachable with the same key. Only generate a fresh key pair as a last
+# resort, and never overwrite an existing local private key.
 if ! aws ec2 describe-key-pairs --region "$REGION" --key-names "$KEY_NAME" >/dev/null 2>&1; then
-  mkdir -p "$(dirname "$KEY_FILE")"
-  aws ec2 create-key-pair --region "$REGION" --key-name "$KEY_NAME" --query KeyMaterial --output text > "$KEY_FILE"
-  chmod 600 "$KEY_FILE"
-  echo "Created key pair, private key at ${KEY_FILE}"
+  if [ -f "$KEY_FILE" ] && PUBKEY="$(ssh-keygen -y -f "$KEY_FILE" 2>/dev/null)" && [ -n "$PUBKEY" ]; then
+    aws ec2 import-key-pair --region "$REGION" --key-name "$KEY_NAME" \
+      --public-key-material "$(printf '%s' "$PUBKEY" | base64)" >/dev/null
+    echo "Imported key pair '${KEY_NAME}' from ${KEY_FILE}"
+  elif [ -e "$KEY_FILE" ]; then
+    echo "ERROR: ${KEY_FILE} exists but is not a usable SSH private key; set OPENRUNG_KEY_FILE" >&2
+    exit 1
+  else
+    mkdir -p "$(dirname "$KEY_FILE")"
+    aws ec2 create-key-pair --region "$REGION" --key-name "$KEY_NAME" --query KeyMaterial --output text > "$KEY_FILE"
+    chmod 600 "$KEY_FILE"
+    echo "Created key pair, private key at ${KEY_FILE}"
+  fi
 fi
 
 # --- two Elastic IPs ---
