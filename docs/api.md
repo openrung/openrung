@@ -89,6 +89,13 @@ ordinary telemetry when available. The broker considers a session active for
 150 seconds after its latest received heartbeat unless a terminal event has
 arrived.
 
+Clients that can measure tunneled traffic add cumulative `bytes_sent`
+(client-to-relay upload) and `bytes_received` (download) measurements to
+`session_heartbeat` and `connection_ended` events. The dashboard takes the
+largest value reported for a session, so out-of-order delivery cannot shrink
+the total; sessions from clients that do not report traffic simply omit the
+counters.
+
 The JSONL sink updates the dashboard's in-memory records immediately, flushes
 buffered JSONL output every five seconds, syncs it to durable storage every 30
 seconds, and performs a final flush and sync during graceful broker shutdown.
@@ -147,9 +154,22 @@ Valid windows are `1h`, `24h`, and `7d`. When the dashboard token is unset, all
 dashboard routes return 404. Production deployments should use HTTPS directly
 or through a reverse proxy.
 
+The overview embeds only the 25 most recent sessions; the full session list for
+a window is paged through:
+
+```http
+GET /admin/api/telemetry/sessions?window=24h&offset=0&limit=25
+```
+
+`offset` is the zero-based position into the window's sessions ordered newest
+first, and `limit` accepts 1 to 100 (default 25). The response reports `total`
+alongside the page so clients can render pagination controls; an offset past
+the end returns an empty page rather than an error.
+
 Recent session entries include the Android API level, city, ISP, organization,
-and ASN when those attributes are present in client telemetry. The overview also
-includes top-city and top-ISP rankings counted by unique session.
+ASN, and — when the client reports traffic counters — `bytes_sent` and
+`bytes_received` for the session. The overview also includes top-city and
+top-ISP rankings counted by unique session.
 
 The session `source_ip` prefers the broker-observed pre-tunnel `client_seen`
 address, then the client's pre-tunnel `client_ip` attribute. The source address

@@ -241,6 +241,92 @@ func TestBuildTelemetryOverviewHandlesMissingMetadataAndASNFallback(t *testing.T
 	}
 }
 
+func TestBuildTelemetryOverviewTracksSessionBytes(t *testing.T) {
+	now := time.Date(2026, 7, 7, 12, 30, 0, 0, time.UTC)
+	records := []TelemetryRecord{
+		// Cumulative counters can arrive out of order; the largest value wins.
+		dashboardRecord(now.Add(-2*time.Minute), "hb-2", "session_heartbeat", "client-1", "session-1", "relay-1", nil, map[string]int64{"bytes_sent": 2_000, "bytes_received": 9_000}),
+		dashboardRecord(now.Add(-3*time.Minute), "hb-1", "session_heartbeat", "client-1", "session-1", "relay-1", nil, map[string]int64{"bytes_sent": 1_000, "bytes_received": 5_000}),
+		dashboardRecord(now.Add(-time.Minute), "ended", "connection_ended", "client-1", "session-1", "relay-1", nil, map[string]int64{"bytes_sent": 2_500, "bytes_received": 9_500}),
+		dashboardRecord(now.Add(-time.Minute), "no-bytes", "session_heartbeat", "client-2", "session-2", "relay-1", nil, nil),
+	}
+	overview := buildTelemetryOverview(records, now, time.Hour)
+	byID := make(map[string]sessionSummary)
+	for _, session := range overview.Recent {
+		byID[session.SessionID] = session
+	}
+	if got := byID["session-1"]; got.BytesSent != 2_500 || got.BytesReceived != 9_500 {
+		t.Fatalf("session bytes = %d/%d, want 2500/9500", got.BytesSent, got.BytesReceived)
+	}
+	if got := byID["session-2"]; got.BytesSent != 0 || got.BytesReceived != 0 {
+		t.Fatalf("session without traffic reporting should stay at zero: %+v", got)
+	}
+	encoded, err := json.Marshal(byID["session-2"])
+	if err != nil || strings.Contains(string(encoded), "bytes_sent") {
+		t.Fatalf("zero byte counts must be omitted from JSON: %v %s", err, encoded)
+	}
+}
+
+func TestDashboardSessionsPagination(t *testing.T) {
+	now := time.Date(2026, 7, 7, 12, 30, 0, 0, time.UTC)
+	store := &dashboardTelemetryStore{}
+	for i, id := range []string{"session-old", "session-mid", "session-new"} {
+		at := now.Add(time.Duration(i-3) * time.Minute)
+		record := dashboardRecord(at, id+"-event", "connection_succeeded", "client-"+id, id, "relay-1", nil, nil)
+		if err := store.WriteTelemetry(context.Background(), []TelemetryRecord{record}); err != nil {
+			t.Fatalf("write telemetry: %v", err)
+		}
+	}
+	dashboard := newDashboardServer("secret", store)
+	dashboard.now = func() time.Time { return now }
+	dashboard.relayLabels = func() map[string]string { return map[string]string{"relay-1": "proud-falcon"} }
+	dashboard.sessions["valid"] = now.Add(time.Hour)
+
+	fetch := func(query string) (*httptest.ResponseRecorder, sessionsPage) {
+		request := httptest.NewRequest(http.MethodGet, "/admin/api/telemetry/sessions?"+query, nil)
+		request.AddCookie(&http.Cookie{Name: dashboardCookieName, Value: "valid"})
+		response := httptest.NewRecorder()
+		dashboard.requireAuth(dashboard.listSessions).ServeHTTP(response, request)
+		var page sessionsPage
+		if response.Code == http.StatusOK {
+			if err := json.NewDecoder(response.Body).Decode(&page); err != nil {
+				t.Fatalf("decode sessions page: %v", err)
+			}
+		}
+		return response, page
+	}
+
+	response, first := fetch("window=24h&offset=0&limit=2")
+	if response.Code != http.StatusOK {
+		t.Fatalf("sessions page failed: %d: %s", response.Code, response.Body.String())
+	}
+	if first.Total != 3 || len(first.Sessions) != 2 {
+		t.Fatalf("unexpected first page: total=%d sessions=%d", first.Total, len(first.Sessions))
+	}
+	if first.Sessions[0].SessionID != "session-new" || first.Sessions[1].SessionID != "session-mid" {
+		t.Fatalf("expected newest-first ordering, got %+v", first.Sessions)
+	}
+	if first.Sessions[0].RelayLabel != "proud-falcon" {
+		t.Fatalf("expected relay label on paged sessions, got %+v", first.Sessions[0])
+	}
+
+	_, second := fetch("window=24h&offset=2&limit=2")
+	if second.Total != 3 || len(second.Sessions) != 1 || second.Sessions[0].SessionID != "session-old" {
+		t.Fatalf("unexpected second page: %+v", second)
+	}
+
+	_, beyond := fetch("window=24h&offset=50&limit=2")
+	if beyond.Total != 3 || len(beyond.Sessions) != 0 || beyond.Offset != 3 {
+		t.Fatalf("offset past the end should clamp and return no sessions: %+v", beyond)
+	}
+
+	for _, query := range []string{"window=30d", "offset=-1", "limit=0", "limit=101", "offset=abc"} {
+		if response, _ := fetch(query); response.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for %q, got %d", query, response.Code)
+		}
+	}
+}
+
 func TestBuildTelemetryOverviewPrefersClientIPOverRelayTransportIP(t *testing.T) {
 	now := time.Date(2026, 6, 22, 12, 30, 0, 0, time.UTC)
 	clientSeen := dashboardRecord(now.Add(-time.Minute), "client-seen", "client_seen", "client-1", "session-1", "", nil, nil)

@@ -6,8 +6,10 @@ import (
 	"crypto/subtle"
 	_ "embed"
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +18,12 @@ import (
 const (
 	dashboardCookieName = "openrung_admin_session"
 	dashboardSessionTTL = 12 * time.Hour
+
+	// The overview keeps a small embedded preview of recent sessions; the
+	// dedicated sessions endpoint pages through the full window.
+	overviewRecentSessions  = 25
+	sessionsDefaultPageSize = 25
+	sessionsMaxPageSize     = 100
 )
 
 //go:embed dashboard.html
@@ -45,6 +53,7 @@ func (d *dashboardServer) register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/telemetry/logout", d.logout)
 	mux.HandleFunc("GET /admin/telemetry", d.requireAuth(d.dashboard))
 	mux.HandleFunc("GET /admin/api/telemetry/overview", d.requireAuth(d.overview))
+	mux.HandleFunc("GET /admin/api/telemetry/sessions", d.requireAuth(d.listSessions))
 }
 
 func (d *dashboardServer) loginPage(w http.ResponseWriter, r *http.Request) {
@@ -167,10 +176,64 @@ func (d *dashboardServer) overview(w http.ResponseWriter, r *http.Request) {
 	}
 	now := d.now().UTC()
 	ov := buildTelemetryOverview(d.reader.TelemetryRecords(now.Add(-window)), now, window)
+	if len(ov.Recent) > overviewRecentSessions {
+		ov.Recent = ov.Recent[:overviewRecentSessions]
+	}
 	if d.relayLabels != nil {
 		applyRelayLabels(&ov, d.relayLabels())
 	}
 	writeJSON(w, http.StatusOK, ov)
+}
+
+type sessionsPage struct {
+	GeneratedAt time.Time        `json:"generated_at"`
+	Window      string           `json:"window"`
+	Total       int              `json:"total"`
+	Offset      int              `json:"offset"`
+	Limit       int              `json:"limit"`
+	Sessions    []sessionSummary `json:"sessions"`
+}
+
+func (d *dashboardServer) listSessions(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	window, ok := dashboardWindow(query.Get("window"))
+	if !ok {
+		writeError(w, http.StatusBadRequest, "window must be 1h, 24h, or 7d")
+		return
+	}
+	offset, err := queryInt(query.Get("offset"), 0)
+	if err != nil || offset < 0 {
+		writeError(w, http.StatusBadRequest, "offset must be a non-negative integer")
+		return
+	}
+	limit, err := queryInt(query.Get("limit"), sessionsDefaultPageSize)
+	if err != nil || limit < 1 || limit > sessionsMaxPageSize {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("limit must be between 1 and %d", sessionsMaxPageSize))
+		return
+	}
+
+	now := d.now().UTC()
+	ov := buildTelemetryOverview(d.reader.TelemetryRecords(now.Add(-window)), now, window)
+	total := len(ov.Recent)
+	if offset > total {
+		offset = total
+	}
+	end := min(offset+limit, total)
+	page := append([]sessionSummary{}, ov.Recent[offset:end]...)
+	if d.relayLabels != nil {
+		applySessionRelayLabels(page, d.relayLabels())
+	}
+	writeJSON(w, http.StatusOK, sessionsPage{
+		GeneratedAt: now, Window: window.String(),
+		Total: total, Offset: offset, Limit: limit, Sessions: page,
+	})
+}
+
+func queryInt(raw string, fallback int) (int, error) {
+	if raw == "" {
+		return fallback, nil
+	}
+	return strconv.Atoi(raw)
 }
 
 func dashboardWindow(raw string) (time.Duration, bool) {
@@ -253,6 +316,8 @@ type sessionSummary struct {
 	StartedAt       time.Time  `json:"started_at"`
 	LastSeenAt      time.Time  `json:"last_seen_at"`
 	DurationMS      int64      `json:"duration_ms,omitempty"`
+	BytesSent       int64      `json:"bytes_sent,omitempty"`
+	BytesReceived   int64      `json:"bytes_received,omitempty"`
 	Active          bool       `json:"active"`
 	LastHeartbeatAt *time.Time `json:"last_heartbeat_at,omitempty"`
 }
@@ -350,6 +415,15 @@ func buildTelemetryOverview(records []TelemetryRecord, now time.Time, window tim
 		}
 		if event.Application != "" {
 			apps[event.Application]++
+		}
+		// bytes_sent / bytes_received are cumulative per session (heartbeats carry
+		// the running totals, connection_ended the final ones), so the largest
+		// reported value wins regardless of event order.
+		if sent := event.Measurements["bytes_sent"]; sent > session.summary.BytesSent {
+			session.summary.BytesSent = sent
+		}
+		if received := event.Measurements["bytes_received"]; received > session.summary.BytesReceived {
+			session.summary.BytesReceived = received
 		}
 		bucket := buckets[event.OccurredAt.Truncate(time.Hour)]
 		switch event.Event {
@@ -466,10 +540,15 @@ func buildTelemetryOverview(records []TelemetryRecord, now time.Time, window tim
 		overview.Trend = append(overview.Trend, *point)
 	}
 	sort.Slice(overview.Trend, func(i, j int) bool { return overview.Trend[i].Time.Before(overview.Trend[j].Time) })
-	sort.Slice(overview.Recent, func(i, j int) bool { return overview.Recent[i].LastSeenAt.After(overview.Recent[j].LastSeenAt) })
-	if len(overview.Recent) > 25 {
-		overview.Recent = overview.Recent[:25]
-	}
+	// The session id tiebreak keeps the order stable across rebuilds — batched
+	// uploads share one ReceivedAt, and an unstable order would make pages of
+	// the sessions endpoint overlap or skip entries between requests.
+	sort.Slice(overview.Recent, func(i, j int) bool {
+		if overview.Recent[i].LastSeenAt.Equal(overview.Recent[j].LastSeenAt) {
+			return overview.Recent[i].SessionID < overview.Recent[j].SessionID
+		}
+		return overview.Recent[i].LastSeenAt.After(overview.Recent[j].LastSeenAt)
+	})
 	for _, relay := range relays {
 		overview.TopRelays = append(overview.TopRelays, *relay)
 	}
@@ -505,11 +584,7 @@ func applyRelayLabels(ov *telemetryOverview, labels map[string]string) {
 			ov.TopRelays[i].Label = label
 		}
 	}
-	for i := range ov.Recent {
-		if label := labels[ov.Recent[i].RelayID]; label != "" {
-			ov.Recent[i].RelayLabel = label
-		}
-	}
+	applySessionRelayLabels(ov.Recent, labels)
 	for i := range ov.ActiveRelays {
 		if label := labels[ov.ActiveRelays[i].Name]; label != "" {
 			ov.ActiveRelays[i].Label = label
@@ -518,6 +593,17 @@ func applyRelayLabels(ov *telemetryOverview, labels map[string]string) {
 	for i := range ov.SpeedTests {
 		if label := labels[ov.SpeedTests[i].RelayID]; label != "" {
 			ov.SpeedTests[i].Label = label
+		}
+	}
+}
+
+func applySessionRelayLabels(sessions []sessionSummary, labels map[string]string) {
+	if len(labels) == 0 {
+		return
+	}
+	for i := range sessions {
+		if label := labels[sessions[i].RelayID]; label != "" {
+			sessions[i].RelayLabel = label
 		}
 	}
 }

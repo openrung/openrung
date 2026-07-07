@@ -8,6 +8,24 @@
       "port": 8080
     },
     {
+      "name": "broker-dashboard",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "OPENRUNG_DASHBOARD_TOKEN=preview-token",
+        "OPENRUNG_ALLOW_ANONYMOUS_REGISTRATION=true",
+        "go",
+        "run",
+        "./cmd/broker",
+        "-addr",
+        ":8093",
+        "-geoip-endpoint",
+        "off",
+        "-status-interval",
+        "0"
+      ],
+      "port": 8093
+    },
+    {
       "name": "volunteer",
       "runtimeExecutable": "go",
       "runtimeArgs": [
