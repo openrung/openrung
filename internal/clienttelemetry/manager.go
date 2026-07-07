@@ -39,8 +39,14 @@ type Manager struct {
 	appVersion string
 	clientID   string
 	geo        map[string]string
+	traffic    TrafficCounters
 	now        func() time.Time
 }
+
+// TrafficCounters reports the session's cumulative tunneled traffic in bytes:
+// sent is client-to-relay upload, received is download. Implementations must be
+// safe for concurrent use and must not call back into the Manager.
+type TrafficCounters func() (sent, received int64)
 
 // New builds a Manager for the given broker. It resolves the persistent client
 // id up front so every event in the session shares it.
@@ -102,6 +108,19 @@ func (m *Manager) SetGeoAttributes(geo map[string]string) {
 	}
 	m.mu.Lock()
 	m.geo = copied
+	m.mu.Unlock()
+}
+
+// SetTrafficCounters registers the source of cumulative session byte counts.
+// When set, session_heartbeat and connection_ended events carry bytes_sent /
+// bytes_received measurements so the broker dashboard can show per-session
+// data usage.
+func (m *Manager) SetTrafficCounters(counters TrafficCounters) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.traffic = counters
 	m.mu.Unlock()
 }
 
@@ -169,6 +188,7 @@ func (m *Manager) EndSession(reason string) {
 	}
 	m.mu.Lock()
 	session := m.session
+	traffic := m.traffic
 	now := m.now()
 	m.mu.Unlock()
 	if session == nil {
@@ -181,6 +201,7 @@ func (m *Manager) EndSession(reason string) {
 	if !session.ConnectedAt.IsZero() {
 		meas["connection_duration_ms"] = durationMs(session.ConnectedAt, now)
 	}
+	addTrafficMeasurements(meas, traffic)
 	m.Record("connection_ended", session.RelayID, map[string]string{"reason": reason}, meas)
 
 	m.mu.Lock()
@@ -267,6 +288,11 @@ func (m *Manager) buildHeartbeatLocked() (Event, bool) {
 		attrs[k] = v
 	}
 	attrs["connection_state"] = "connected"
+	meas := map[string]int64{
+		"session_duration_ms":   durationMs(m.session.StartedAt, now),
+		"connected_duration_ms": durationMs(m.session.ConnectedAt, now),
+	}
+	addTrafficMeasurements(meas, m.traffic)
 	return Event{
 		SchemaVersion: SchemaVersion,
 		EventID:       eventID,
@@ -276,11 +302,24 @@ func (m *Manager) buildHeartbeatLocked() (Event, bool) {
 		SessionID:     m.session.ID,
 		RelayID:       m.session.RelayID,
 		Attributes:    attrs,
-		Measurements: map[string]int64{
-			"session_duration_ms":   durationMs(m.session.StartedAt, now),
-			"connected_duration_ms": durationMs(m.session.ConnectedAt, now),
-		},
+		Measurements:  meas,
 	}, true
+}
+
+// addTrafficMeasurements attaches cumulative session byte counts when a
+// traffic source is registered. Zero values are skipped so sessions without
+// traffic reporting stay byte-free on the dashboard rather than showing 0.
+func addTrafficMeasurements(meas map[string]int64, traffic TrafficCounters) {
+	if traffic == nil {
+		return
+	}
+	sent, received := traffic()
+	if sent > 0 {
+		meas["bytes_sent"] = sent
+	}
+	if received > 0 {
+		meas["bytes_received"] = received
+	}
 }
 
 func (m *Manager) enqueueLocked(event Event) {

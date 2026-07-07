@@ -161,6 +161,54 @@ func TestHeartbeatMeasurementsAndDrain(t *testing.T) {
 	}
 }
 
+func TestTrafficCountersAttachToHeartbeatAndConnectionEnded(t *testing.T) {
+	clock := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)
+	now := func() time.Time { return clock }
+	transport := &captureTransport{}
+	m := testManager(transport, now)
+
+	if _, err := m.BeginSession(); err != nil {
+		t.Fatalf("begin session: %v", err)
+	}
+	m.MarkConnected("relay_123")
+	var sent, received int64 = 1_500, 42_000
+	m.SetTrafficCounters(func() (int64, int64) { return sent, received })
+
+	if err := m.Heartbeat(context.Background()); err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+	batches := transport.batches
+	if len(batches) != 1 || len(batches[0]) != 1 {
+		t.Fatalf("expected a single heartbeat, got %+v", transport.sizes())
+	}
+	heartbeat := batches[0][0]
+	if heartbeat.Measurements["bytes_sent"] != 1_500 || heartbeat.Measurements["bytes_received"] != 42_000 {
+		t.Fatalf("heartbeat traffic = %d/%d, want 1500/42000", heartbeat.Measurements["bytes_sent"], heartbeat.Measurements["bytes_received"])
+	}
+
+	sent, received = 2_500, 99_000
+	m.EndSession("disconnect")
+	if len(m.outbox) != 1 {
+		t.Fatalf("expected connection_ended event, got %d", len(m.outbox))
+	}
+	ended := m.outbox[0]
+	if ended.Measurements["bytes_sent"] != 2_500 || ended.Measurements["bytes_received"] != 99_000 {
+		t.Fatalf("connection_ended traffic = %d/%d, want 2500/99000", ended.Measurements["bytes_sent"], ended.Measurements["bytes_received"])
+	}
+}
+
+func TestZeroTrafficCountersAreOmitted(t *testing.T) {
+	meas := map[string]int64{"session_duration_ms": 1}
+	addTrafficMeasurements(meas, func() (int64, int64) { return 0, 0 })
+	if _, ok := meas["bytes_sent"]; ok {
+		t.Fatal("zero bytes_sent should be omitted")
+	}
+	if _, ok := meas["bytes_received"]; ok {
+		t.Fatal("zero bytes_received should be omitted")
+	}
+	addTrafficMeasurements(meas, nil)
+}
+
 func TestEndSessionEmitsConnectionEnded(t *testing.T) {
 	clock := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
 	now := func() time.Time { return clock }
