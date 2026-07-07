@@ -1502,7 +1502,7 @@
           </div>
           <div class="download-card" data-reveal>
             <div class="dl-actions">
-              <a class="button" id="apk-link" href="https://downloads.openrung.org/android/android-0.2.1-release.apk">
+              <a class="button" id="apk-link" href="https://github.com/openrung/openrung-mobile-app/releases/latest/download/openrung-android.apk">
                 <svg aria-hidden="true"><use href="#dl-arrow"/></svg>
                 <span data-i18n="downloadAndroid">Download for Android (APK)</span>
               </a>
@@ -1684,8 +1684,11 @@
       // Reveal-on-scroll styles only engage when JS actually runs.
       document.documentElement.classList.add("js");
 
-      const APP_VERSION = "0.2.1";
-      const APK_URL = "https://downloads.openrung.org/android/android-" + APP_VERSION + "-release.apk";
+      const APP_VERSION = "0.2.3";
+      // Permanent "latest release" link — GitHub redirects it to the newest published APK, so it
+      // never needs a per-release edit. openrung-android.apk is the stable-named asset attached by
+      // the openrung-mobile-app release workflow.
+      const APK_URL = "https://github.com/openrung/openrung-mobile-app/releases/latest/download/openrung-android.apk";
 
       /* ============================================================
          Translations
