@@ -8,7 +8,7 @@
       name="description"
       content="OpenRung helps people facing network restrictions reach public websites and apps through a worldwide volunteer relay network. Always free, privacy-first, open source, and run by a nonprofit foundation."
     >
-    <meta name="theme-color" content="#0a1611">
+    <meta name="theme-color" content="#12241b">
     <link rel="canonical" href="https://openrung.org/">
     <link rel="icon" type="image/svg+xml" href="/openrung-mark.svg">
     <link rel="apple-touch-icon" href="/openrung-white-on-black.png">
@@ -48,8 +48,8 @@
          ============================================================ */
       :root {
         /* Dark surfaces (hero, CTA, footer) */
-        --ink-bg: #0a1611;
-        --ink-bg-2: #0d1c15;
+        --ink-bg: #12241b;
+        --ink-bg-2: #162b21;
         --ink-panel: rgba(255, 255, 255, 0.045);
         --ink-line: rgba(255, 255, 255, 0.10);
         --ink-line-strong: rgba(255, 255, 255, 0.16);
@@ -70,6 +70,23 @@
         --accent-bright: #35d07f;
         --accent-glow: rgba(53, 208, 127, 0.35);
         --soft: #e6f5ec;
+
+        /* Blossom — 红杏 poetic accent (「春色滿園關不住，一枝紅杏出牆來」).
+           Green is the garden and the service; blossom red is the poem.
+           Usage laws: --blossom-bright is text-safe on dark bands only;
+           --blossom-deep is the only blossom tone allowed as text on light
+           bands; --blossom / --blossom-petal are graphics-only. Blossom
+           never colors an interactive control. */
+        --blossom: #e8564a;
+        --blossom-bright: #ff8a7a;
+        --blossom-deep: #b93a30;
+        --blossom-petal: #ffd3c9;
+        --seal-red: #c73e2e;
+        --branch-ink: #d8cfc2;
+        --font-kai: "Kaiti SC", "STKaiti", "BiauKai", "Kaiti TC", "KaiTi",
+          "DFKai-SB", "TW-Kai", "AR PL KaitiM GB", "AR PL UKai CN",
+          "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", "SimSun",
+          "PingFang SC", serif;
 
         --radius: 18px;
         --radius-sm: 12px;
@@ -98,7 +115,7 @@
       }
 
       a { color: var(--accent-strong); }
-      ::selection { background: var(--accent-bright); color: #06130c; }
+      ::selection { background: var(--blossom-bright); color: #2a1210; }
 
       .wrap {
         width: min(var(--maxw), calc(100% - 44px));
@@ -138,7 +155,7 @@
         border-bottom: 1px solid transparent;
       }
       header.scrolled {
-        background: rgba(8, 17, 12, 0.78);
+        background: rgba(18, 36, 27, 0.78);
         -webkit-backdrop-filter: saturate(150%) blur(16px);
         backdrop-filter: saturate(150%) blur(16px);
         border-bottom-color: var(--ink-line);
@@ -252,7 +269,7 @@
       .mobile-menu {
         display: none;
         border-top: 1px solid var(--ink-line);
-        background: rgba(8, 17, 12, 0.97);
+        background: rgba(18, 36, 27, 0.97);
         -webkit-backdrop-filter: blur(16px);
         backdrop-filter: blur(16px);
       }
@@ -327,10 +344,11 @@
       .hero {
         position: relative;
         background:
+          radial-gradient(700px 420px at 88% 4%, rgba(232, 86, 74, 0.09), transparent 60%),
           radial-gradient(900px 480px at 12% -8%, rgba(53, 208, 127, 0.14), transparent 60%),
           radial-gradient(1100px 600px at 95% 10%, rgba(28, 120, 90, 0.20), transparent 62%),
           radial-gradient(800px 500px at 60% 115%, rgba(20, 90, 60, 0.25), transparent 65%),
-          linear-gradient(180deg, #0a1611 0%, #0c1a13 60%, #0a1611 100%);
+          linear-gradient(180deg, #12241b 0%, #152a20 60%, #12241b 100%);
         color: var(--ink-text);
         overflow: hidden;
       }
@@ -390,7 +408,7 @@
         text-wrap: balance;
       }
       h1 .hl {
-        background: linear-gradient(92deg, var(--accent-bright), #7fe7b4);
+        background: linear-gradient(92deg, var(--blossom-bright), var(--blossom-petal));
         -webkit-background-clip: text;
         background-clip: text;
         color: transparent;
@@ -430,10 +448,11 @@
       }
       .promise svg { width: 18px; height: 18px; color: var(--accent-bright); flex: none; }
 
-      /* Hero artwork */
+      /* Hero artwork — 一枝紅杏出牆來 */
       .hero-art {
         position: relative;
         max-width: 520px;
+        margin-block: 0;
         margin-inline: auto;
         width: 100%;
         animation: heroFloat 9s ease-in-out infinite;
@@ -442,8 +461,66 @@
         0%, 100% { transform: translateY(0); }
         50% { transform: translateY(-10px); }
       }
-      .hero-art svg { width: 100%; height: auto; display: block; }
-      [dir="rtl"] .hero-art svg { transform: scaleX(-1); }
+      .hero-canvas { position: relative; }
+      .hero-canvas > svg { width: 100%; height: auto; display: block; }
+
+      /* Vertical poem inscription, hanging in the 留白 below the moon.
+         Physical `right`, never inset-inline-end: vertical classical
+         Chinese hangs on the right regardless of page direction. */
+      .poem-scroll {
+        position: absolute;
+        top: 37%;
+        right: 4%;
+        z-index: 1;
+        writing-mode: vertical-rl;
+        direction: ltr; /* keep glyphs top→bottom even when the page is dir=rtl */
+        font-family: var(--font-kai);
+        font-weight: 400;
+        font-synthesis: none;
+        font-size: clamp(16px, 2vw, 24px);
+        letter-spacing: 0.16em;
+        line-height: 2.0;
+        color: rgba(255, 178, 164, 0.42);
+        text-shadow: 0 0 22px rgba(232, 86, 74, 0.16);
+        white-space: nowrap; /* a column must never wrap; sizes below guarantee fit */
+        pointer-events: none;
+        -webkit-user-select: none;
+        user-select: none;
+      }
+      .poem-col { display: block; }
+      .poem-col--2 { padding-inline-start: 1.5em; } /* inline-start = top in vertical-rl: classical stagger */
+      .poem-seal {
+        width: 32px;
+        height: auto;
+        display: inline-block;
+        margin-inline-start: 12px; /* gap below 來 */
+        transform: rotate(-2.5deg);
+        opacity: 0.92;
+      }
+      .poem-seal text { font-family: var(--font-kai); letter-spacing: 0; writing-mode: horizontal-tb; }
+
+      /* Museum-placard caption: the accessible counterpart of the calligraphy */
+      .poem-caption {
+        margin: 14px auto 0;
+        text-align: center;
+        font-size: 0.85rem;
+        color: var(--ink-muted);
+        max-width: 46ch;
+        text-wrap: pretty;
+      }
+      .poem-caption .poem-attrib { display: block; margin-top: 2px; font-size: 0.78rem; opacity: 0.75; }
+      .poem-caption:lang(zh) { font-family: var(--font-kai); font-size: 0.95rem; font-synthesis: none; }
+
+      @media (prefers-reduced-motion: no-preference) {
+        .poem-col { animation: inkIn 1.4s var(--ease-out) both; }
+        .poem-col--2 { animation-delay: 0.45s; }
+        .poem-seal { animation: sealIn 0.6s var(--ease-out) 1.3s both; }
+      }
+      @keyframes inkIn { from { opacity: 0; } }
+      @keyframes sealIn {
+        from { opacity: 0; transform: rotate(-2.5deg) scale(1.15); }
+        to { opacity: 0.92; transform: rotate(-2.5deg) scale(1); }
+      }
 
       /* SVG animation helpers (hero + diagram) */
       .twinkle { animation: twinkle 3.6s ease-in-out infinite; }
@@ -521,10 +598,11 @@
       }
       .kicker::before {
         content: "";
-        width: 22px;
-        height: 2px;
-        border-radius: 2px;
-        background: var(--accent);
+        width: 12px;
+        height: 12px;
+        background: var(--blossom);
+        -webkit-mask: url('data:image/svg+xml;utf8,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22%3E%3Ccircle cx=%2212%22 cy=%225.8%22 r=%224.6%22/%3E%3Ccircle cx=%226.1%22 cy=%2210.1%22 r=%224.6%22/%3E%3Ccircle cx=%228.4%22 cy=%2217%22 r=%224.6%22/%3E%3Ccircle cx=%2215.6%22 cy=%2217%22 r=%224.6%22/%3E%3Ccircle cx=%2217.9%22 cy=%2210.1%22 r=%224.6%22/%3E%3C/svg%3E') center / contain no-repeat;
+        mask: url('data:image/svg+xml;utf8,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22%3E%3Ccircle cx=%2212%22 cy=%225.8%22 r=%224.6%22/%3E%3Ccircle cx=%226.1%22 cy=%2210.1%22 r=%224.6%22/%3E%3Ccircle cx=%228.4%22 cy=%2217%22 r=%224.6%22/%3E%3Ccircle cx=%2215.6%22 cy=%2217%22 r=%224.6%22/%3E%3Ccircle cx=%2217.9%22 cy=%2210.1%22 r=%224.6%22/%3E%3C/svg%3E') center / contain no-repeat;
       }
       h2 {
         font-size: clamp(1.85rem, 3.6vw, 2.6rem);
@@ -541,44 +619,21 @@
          ============================================================ */
       .hiw-grid {
         display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 56px;
-        align-items: start;
+        gap: 34px;
       }
-      .hiw-visual {
-        position: sticky;
-        top: calc(var(--header-h) + 40px);
-        background: linear-gradient(180deg, #0b1712, #0e1e16);
-        border: 1px solid rgba(20, 60, 40, 0.5);
-        border-radius: 22px;
-        padding: 20px;
-        box-shadow: var(--shadow);
-        overflow: hidden;
-      }
-      .hiw-visual::before {
-        content: "";
-        position: absolute;
-        inset: 0;
-        background: radial-gradient(420px 260px at 78% 18%, rgba(53, 208, 127, 0.12), transparent 65%);
-        pointer-events: none;
-      }
-      .hiw-visual svg { width: 100%; height: auto; display: block; position: relative; }
+      /* Full-width animated diagram, near its native 1200px design size */
+      .hiw-visual img { width: 100%; height: auto; display: block; border-radius: 22px; }
 
-      .hiw-steps { display: grid; gap: 14px; }
+      .hiw-steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
       .hiw-step {
         background: var(--panel);
         border: 1px solid var(--line);
         border-radius: var(--radius);
         padding: 26px 26px 24px;
         box-shadow: var(--shadow-sm);
-        cursor: pointer;
         transition: border-color 0.25s ease, box-shadow 0.25s ease, transform 0.25s var(--ease-out);
       }
       .hiw-step:hover { transform: translateY(-2px); }
-      .hiw-step.active {
-        border-color: rgba(29, 138, 79, 0.55);
-        box-shadow: 0 14px 36px rgba(15, 93, 51, 0.14);
-      }
       .hiw-step .num {
         width: 40px; height: 40px;
         display: grid; place-items: center;
@@ -589,22 +644,8 @@
         margin-bottom: 14px;
         transition: background 0.25s ease, color 0.25s ease;
       }
-      .hiw-step.active .num { background: var(--accent); color: #fff; }
       .hiw-step h3 { margin: 0 0 6px; font-size: 1.14rem; letter-spacing: -0.01em; }
       .hiw-step p { margin: 0; color: var(--muted); }
-
-      /* Diagram stage states: dim everything, light up the current act */
-      .hiw-visual .st { transition: opacity 0.45s ease; }
-      .hiw-visual[data-stage="1"] .st-2, .hiw-visual[data-stage="1"] .st-3 { opacity: 0.16; }
-      .hiw-visual[data-stage="2"] .st-3 { opacity: 0.16; }
-      .hiw-visual[data-stage="2"] .st-1 { opacity: 0.55; }
-      .hiw-visual[data-stage="3"] .st-1, .hiw-visual[data-stage="3"] .st-2 { opacity: 0.55; }
-      .hiw-visual .diag-label {
-        font-size: 13px;
-        font-weight: 600;
-        fill: #b9cfc2;
-        font-family: inherit;
-      }
 
       /* ============================================================
          Trust grid
@@ -673,7 +714,11 @@
         position: absolute;
         inset: 0 0 auto 0;
         height: 4px;
-        background: linear-gradient(90deg, var(--accent-bright), var(--accent), var(--accent-strong));
+        background: linear-gradient(90deg, var(--accent-strong), var(--accent) 55%, var(--blossom) 90%, var(--blossom-bright));
+      }
+      /* gradients don't follow logical direction */
+      [dir="rtl"] .download-card::before {
+        background: linear-gradient(270deg, var(--accent-strong), var(--accent) 55%, var(--blossom) 90%, var(--blossom-bright));
       }
       .dl-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
       .chip {
@@ -806,7 +851,8 @@
         position: relative;
         background:
           radial-gradient(760px 380px at 50% -20%, rgba(53, 208, 127, 0.18), transparent 65%),
-          linear-gradient(180deg, #0b1712, var(--ink-bg));
+          radial-gradient(520px 300px at 82% 8%, rgba(232, 86, 74, 0.10), transparent 60%),
+          linear-gradient(180deg, #142920, var(--ink-bg));
         color: var(--ink-text);
         text-align: center;
         padding: 96px 0;
@@ -823,6 +869,17 @@
         pointer-events: none;
       }
       .cta-band h2 { color: var(--ink-text); margin-bottom: 12px; }
+      .cta-poem {
+        font-family: var(--font-kai);
+        font-weight: 400;
+        font-synthesis: none;
+        font-size: clamp(0.95rem, 1.5vw, 1.15rem);
+        letter-spacing: 0.24em;
+        margin: 0 0 14px;
+        margin-inline-end: -0.24em; /* cancel trailing tracking so it centers */
+        color: rgba(255, 138, 122, 0.72);
+        text-align: center;
+      }
       .cta-band .cta-lead { color: var(--ink-muted); font-size: 1.1rem; margin: 0 0 30px; }
       .cta-band .cta-row { justify-content: center; margin-bottom: 0; position: relative; }
       .cta-mark { width: 58px; height: 58px; margin: 0 auto 22px; display: block; color: var(--accent-bright); }
@@ -885,13 +942,16 @@
          Responsive
          ============================================================ */
       @media (max-width: 1020px) {
-        .hiw-grid { grid-template-columns: 1fr; gap: 26px; }
-        .hiw-visual { position: static; max-width: 620px; }
+        .hiw-steps { grid-template-columns: 1fr; }
         .grid { grid-template-columns: 1fr 1fr; }
       }
       @media (max-width: 880px) {
         .hero-grid { grid-template-columns: 1fr; gap: 30px; padding: calc(var(--header-h) + 40px) 0 62px; }
         .hero-art { max-width: 360px; order: -1; }
+        .poem-caption { font-size: 0.8rem; }
+        .poem-scroll { top: 34%; }
+        .poem-col--2 { padding-inline-start: 1em; }
+        .poem-seal { width: 26px; margin-inline-start: 8px; }
         .stats-grid { grid-template-columns: 1fr 1fr; gap: 26px 18px; }
         .split { grid-template-columns: 1fr; }
         .band { padding: 64px 0; }
@@ -900,7 +960,7 @@
       @media (max-width: 760px) {
         .nav-links, .nav-github { display: none; }
         .menu-btn { display: grid; }
-        header { background: rgba(8, 17, 12, 0.78); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); }
+        header { background: rgba(18, 36, 27, 0.78); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); }
         .grid { grid-template-columns: 1fr; }
       }
       @media (max-width: 480px) {
@@ -950,6 +1010,16 @@
       </symbol>
       <symbol id="dl-arrow" viewBox="0 0 24 24">
         <path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/>
+      </symbol>
+      <!-- geometric five-petal blossom (UI counterpart of the hero's 红杏) -->
+      <symbol id="blossom" viewBox="0 0 24 24">
+        <g fill="currentColor">
+          <circle cx="12" cy="5.8" r="4.6"/>
+          <circle cx="6.1" cy="10.1" r="4.6"/>
+          <circle cx="8.4" cy="17" r="4.6"/>
+          <circle cx="15.6" cy="17" r="4.6"/>
+          <circle cx="17.9" cy="10.1" r="4.6"/>
+        </g>
       </symbol>
     </svg>
 
@@ -1031,127 +1101,289 @@
             </ul>
           </div>
 
-          <!-- Animated relay-network artwork: phone → rungs over the wall → relay → open internet -->
-          <div class="hero-art" aria-hidden="true">
-            <svg class="animated" viewBox="0 0 480 480" xmlns="http://www.w3.org/2000/svg">
+          <!-- 一枝紅杏出牆來 — a red apricot branch in blossom reaches over the garden wall -->
+          <figure class="hero-art">
+            <div class="hero-canvas">
+            <svg class="animated" viewBox="0 0 480 480" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+              <style>
+                @media (prefers-reduced-motion: no-preference) {
+                  .wo-garden-breathe { animation: wo-gardenBreathe 8s ease-in-out infinite; }
+                  .wo-breathe {
+                    transform-box: fill-box;
+                    transform-origin: center;
+                    animation: wo-blossomBreathe 6s ease-in-out infinite;
+                  }
+                  .wo-breathe-2 { animation-delay: -3s; }
+                  .wo-twinkle { animation: wo-twinkleK 5s ease-in-out infinite; }
+                  .wo-tw2 { animation-delay: -1.7s; }
+                  .wo-tw3 { animation-delay: -3.4s; }
+                  .wo-glow { animation: wo-glowPulse 6s ease-in-out infinite; }
+                }
+                @keyframes wo-gardenBreathe { 0%, 100% { opacity: .7; } 50% { opacity: 1; } }
+                @keyframes wo-blossomBreathe {
+                  0%, 100% { opacity: .88; transform: scale(1); }
+                  50%      { opacity: 1;   transform: scale(1.03); }
+                }
+                @keyframes wo-twinkleK { 0%, 100% { opacity: .25; } 50% { opacity: .8; } }
+                @keyframes wo-glowPulse { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+              </style>
+
               <defs>
-                <linearGradient id="rung-g" x1="0" y1="0" x2="1" y2="0">
-                  <stop offset="0" stop-color="#1d8a4f"/>
-                  <stop offset="1" stop-color="#35d07f"/>
-                </linearGradient>
-                <radialGradient id="globe-g" cx="0.35" cy="0.3" r="1">
-                  <stop offset="0" stop-color="rgba(53,208,127,0.35)"/>
-                  <stop offset="1" stop-color="rgba(53,208,127,0.02)"/>
-                </radialGradient>
-                <linearGradient id="screen-g" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0" stop-color="#123626"/>
-                  <stop offset="1" stop-color="#0c2318"/>
-                </linearGradient>
-                <filter id="soft-glow" x="-60%" y="-60%" width="220%" height="220%">
-                  <feGaussianBlur stdDeviation="6" result="b"/>
-                  <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+                <!-- one shared soft filter: blur + crisp original merged (glowing-petal look) -->
+                <filter id="wo-soft" x="-120%" y="-120%" width="340%" height="340%">
+                  <feGaussianBlur in="SourceGraphic" stdDeviation="3" result="wo-b"/>
+                  <feMerge>
+                    <feMergeNode in="wo-b"/>
+                    <feMergeNode in="SourceGraphic"/>
+                  </feMerge>
                 </filter>
+
+                <!-- garden glow gradients (the only green in the scene) -->
+                <radialGradient id="wo-garden1">
+                  <stop offset="0" stop-color="#35d07f" stop-opacity="0.14"/>
+                  <stop offset="1" stop-color="#35d07f" stop-opacity="0"/>
+                </radialGradient>
+                <radialGradient id="wo-garden2">
+                  <stop offset="0" stop-color="#35d07f" stop-opacity="0.08"/>
+                  <stop offset="1" stop-color="#35d07f" stop-opacity="0"/>
+                </radialGradient>
+                <!-- soft halo behind the hero blossom (gradient, not a second filter) -->
+                <radialGradient id="wo-halo">
+                  <stop offset="0" stop-color="#ff8a7a" stop-opacity="0.30"/>
+                  <stop offset="1" stop-color="#ff8a7a" stop-opacity="0"/>
+                </radialGradient>
+
+                <!-- one apricot petal: rounded obovate, base at origin, tip up -->
+                <path id="wo-petal" d="M 0 -1.5 C 3.4 -3.4, 4.2 -8, 0 -10.4 C -4.2 -8, -3.4 -3.4, 0 -1.5 Z"/>
+
+                <!-- full five-petal apricot blossom, woodblock-flat two tones -->
+                <g id="wo-flower">
+                  <use href="#wo-petal" fill="#e8564a" transform="rotate(-4)"/>
+                  <use href="#wo-petal" fill="#ff8a7a" transform="rotate(70)"/>
+                  <use href="#wo-petal" fill="#e8564a" transform="rotate(146) scale(0.9)"/>
+                  <use href="#wo-petal" fill="#e8564a" transform="rotate(215)"/>
+                  <use href="#wo-petal" fill="#ff8a7a" transform="rotate(289)"/>
+                  <path d="M -2.6 1.4 A 2.9 2.9 0 0 0 2.6 1.4" fill="none" stroke="#b8382f" stroke-width="1.2"/>
+                  <circle r="2" fill="#7c2a24"/>
+                  <g fill="#ffe9b8">
+                    <circle cx="0" cy="-2.6" r="0.9"/>
+                    <circle cx="2.47" cy="-0.8" r="0.9"/>
+                    <circle cx="1.53" cy="2.1" r="0.9"/>
+                    <circle cx="-1.53" cy="2.1" r="0.9"/>
+                    <circle cx="-2.47" cy="-0.8" r="0.9"/>
+                  </g>
+                </g>
+
+                <!-- profile blossom: three petals in a cup, green calyx whisper -->
+                <g id="wo-flower-side">
+                  <use href="#wo-petal" fill="#ff8a7a" transform="rotate(-38) scale(0.92)"/>
+                  <use href="#wo-petal" fill="#e8564a"/>
+                  <use href="#wo-petal" fill="#e8564a" transform="rotate(36) scale(0.92)"/>
+                  <path d="M -4.2 -0.6 Q 0 3.4, 4.2 -0.6 Q 0 1.2, -4.2 -0.6 Z" fill="#b8382f"/>
+                  <path d="M 0 2.4 Q -1 5, -2.6 6.4 M 0 2.4 Q 1 5, 2.6 6.4"
+                        fill="none" stroke="#3f5b46" stroke-width="1.2" stroke-linecap="round"/>
+                </g>
+
+                <!-- bud: red teardrop, tip up, two-stroke green calyx -->
+                <g id="wo-bud">
+                  <path fill="#c9463c" d="M 0 -4.5 C 2.6 -1.8, 2.4 1.6, 0 3.5 C -2.4 1.6, -2.6 -1.8, 0 -4.5 Z"/>
+                  <path d="M -1.8 2.6 Q 0 4.6, 1.8 2.6 M 0 3.4 L 0 6"
+                        fill="none" stroke="#3f5b46" stroke-width="1.2" stroke-linecap="round"/>
+                </g>
+
+                <!-- small drifting petal -->
+                <path id="wo-driftpetal" d="M 0 -2.6 C 1.9 -1.5, 2.1 1.1, 0 2.6 C -2.1 1.1, -1.9 -1.5, 0 -2.6 Z"/>
               </defs>
 
-              <!-- ambient ring -->
-              <circle cx="240" cy="240" r="212" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="1.5"/>
-              <circle cx="240" cy="240" r="164" fill="none" stroke="rgba(255,255,255,0.04)" stroke-width="1.5"/>
-
-              <!-- volunteer constellation -->
-              <g fill="#35d07f">
-                <circle class="twinkle" cx="366" cy="96" r="3.4" style="animation-delay:.2s"/>
-                <circle class="twinkle" cx="418" cy="176" r="2.6" style="animation-delay:1.1s"/>
-                <circle class="twinkle" cx="330" cy="52" r="2.4" style="animation-delay:2s"/>
-                <circle class="twinkle" cx="72" cy="120" r="2.6" style="animation-delay:.7s"/>
-                <circle class="twinkle" cx="130" cy="60" r="2.2" style="animation-delay:1.6s"/>
-                <circle class="twinkle" cx="52" cy="252" r="2.8" style="animation-delay:2.5s"/>
-                <circle class="twinkle" cx="440" cy="300" r="2.6" style="animation-delay:.4s"/>
-                <circle class="twinkle" cx="398" cy="420" r="2.4" style="animation-delay:1.9s"/>
+              <!-- sky: stars (upper-left) + moon (upper-right) -->
+              <g fill="rgba(234,244,238,0.5)">
+                <circle class="wo-twinkle" cx="58" cy="78" r="2"/>
+                <circle class="wo-twinkle wo-tw2" cx="118" cy="48" r="1.6"/>
+                <circle class="wo-twinkle wo-tw3" cx="38" cy="176" r="1.8"/>
               </g>
 
-              <!-- the wall -->
-              <g fill="#20332a">
-                <rect x="218" y="64"  width="15" height="52" rx="5"/>
-                <rect x="218" y="128" width="15" height="52" rx="5"/>
-                <rect x="218" y="192" width="15" height="52" rx="5"/>
-                <rect x="218" y="256" width="15" height="52" rx="5"/>
-                <rect x="218" y="320" width="15" height="52" rx="5"/>
-                <rect x="218" y="384" width="15" height="42" rx="5"/>
-              </g>
-
-              <!-- rungs climbing over the wall -->
-              <g fill="url(#rung-g)">
-                <rect x="96"  y="316" width="62" height="12" rx="6"/>
-                <rect x="148" y="270" width="62" height="12" rx="6"/>
-                <rect x="200" y="224" width="62" height="12" rx="6"/>
-                <rect x="252" y="178" width="62" height="12" rx="6"/>
-              </g>
-
-              <!-- phone -->
+              <!-- moon: flat woodblock disc with a double ring; never animates -->
               <g>
-                <rect x="74" y="330" width="58" height="104" rx="13" fill="#0d1f16" stroke="rgba(255,255,255,0.22)" stroke-width="1.6"/>
-                <rect x="81" y="342" width="44" height="80" rx="7" fill="url(#screen-g)"/>
-                <rect x="93" y="335" width="20" height="3.5" rx="1.75" fill="rgba(255,255,255,0.28)"/>
-                <g transform="translate(103 382) scale(0.09)" opacity="0.95">
-                  <g fill="#35d07f" transform="rotate(18 0 0) translate(-128 -128)">
-                    <rect x="101" y="52" width="13" height="38" rx="3"/>
-                    <rect x="101" y="94" width="13" height="47" rx="3"/>
-                    <rect x="101" y="145" width="13" height="59" rx="3"/>
-                    <rect x="142" y="52" width="13" height="38" rx="3"/>
-                    <rect x="142" y="94" width="13" height="47" rx="3"/>
-                    <rect x="142" y="145" width="13" height="59" rx="3"/>
-                    <rect x="101" y="60" width="54" height="13" rx="3"/>
-                    <rect x="101" y="111" width="54" height="13" rx="3"/>
-                    <rect x="101" y="162" width="54" height="13" rx="3"/>
+                <circle cx="400" cy="72" r="42" fill="rgba(240,246,240,0.07)"/>
+                <circle cx="400" cy="72" r="42" fill="none" stroke="rgba(255,236,224,0.30)" stroke-width="1.5"/>
+                <circle cx="400" cy="72" r="35" fill="none" stroke="rgba(255,236,224,0.10)" stroke-width="1"/>
+              </g>
+
+              <!-- 春色: garden glow leaking past the wall -->
+              <g class="wo-garden-breathe">
+                <ellipse cx="110" cy="330" rx="190" ry="120" fill="url(#wo-garden1)"/>
+                <ellipse cx="120" cy="296" rx="140" ry="34" fill="url(#wo-garden2)"/>
+              </g>
+
+              <!-- wall: bold flat paper-cut silhouette, lit only on top -->
+              <g>
+                <!-- wall face: one flat cut of dark paper, no texture -->
+                <rect x="-16" y="310" width="286" height="170" fill="#1c3529"/>
+                <!-- darker vertical end of the wall; open sky to its right -->
+                <rect x="267" y="310" width="3" height="170" fill="rgba(0,0,0,0.35)"/>
+                <!-- coping -->
+                <rect x="-16" y="294" width="294" height="16" rx="7" fill="#2a4a3a"/>
+                <!-- tile-end scallops (瓦当) with paper-cut center dots -->
+                <g fill="none" stroke="rgba(234,244,238,0.18)" stroke-width="1.2">
+                  <path d="M 33 310 a 7 7 0 0 0 14 0"/>
+                  <path d="M 71 310 a 7 7 0 0 0 14 0"/>
+                  <path d="M 109 310 a 7 7 0 0 0 14 0"/>
+                  <path d="M 147 310 a 7 7 0 0 0 14 0"/>
+                  <path d="M 185 310 a 7 7 0 0 0 14 0"/>
+                  <path d="M 223 310 a 7 7 0 0 0 14 0"/>
+                  <path d="M 261 310 a 7 7 0 0 0 14 0"/>
+                </g>
+                <g fill="rgba(234,244,238,0.18)">
+                  <circle cx="40" cy="313" r="1.2"/>
+                  <circle cx="78" cy="313" r="1.2"/>
+                  <circle cx="116" cy="313" r="1.2"/>
+                  <circle cx="154" cy="313" r="1.2"/>
+                  <circle cx="192" cy="313" r="1.2"/>
+                  <circle cx="230" cy="313" r="1.2"/>
+                  <circle cx="268" cy="313" r="1.2"/>
+                </g>
+                <!-- the moonlit line that IS the wall -->
+                <path d="M -10 294.8 L 272 294.8" stroke="rgba(234,244,238,0.30)" stroke-width="1.5" stroke-linecap="round"/>
+              </g>
+
+              <!-- 一枝: the branch — tapered layered brush-cuts -->
+              <g fill="none" stroke-linecap="round">
+                <!-- main spine, three overlapping widths (10 → 5.5 → 2.5) with one angular kink at (150,222) -->
+                <path stroke="#4f4038" stroke-width="10"  d="M 85 302 C 95 268, 118 240, 150 222"/>
+                <path stroke="#4f4038" stroke-width="5.5" d="M 148 223 C 200 206, 246 172, 296 150"/>
+                <path stroke="#6b564a" stroke-width="2.5" d="M 294 151 C 316 142, 336 137, 352 129"/>
+                <!-- spur A: hangs a cluster back over the garden side -->
+                <path stroke="#4f4038" stroke-width="4"   d="M 148 226 C 138 210, 126 198, 114 188"/>
+                <path stroke="#6b564a" stroke-width="1.8" d="M 126 202 C 118 203, 110 202, 104 200"/>
+                <!-- spur B: carries the focal cluster into open sky past the wall's end -->
+                <path stroke="#4f4038" stroke-width="3.5" d="M 238 172 C 246 158, 254 146, 260 134"/>
+                <path stroke="#6b564a" stroke-width="1.5" d="M 256 142 C 250 138, 246 134, 242 131"/>
+                <path stroke="#6b564a" stroke-width="1.5" d="M 258 138 C 266 136, 272 137, 278 138"/>
+                <!-- tip twigs: terminal bud aimed at the moon, one bud hanging -->
+                <path stroke="#6b564a" stroke-width="2"   d="M 330 136 C 336 131, 342 127, 348 122"/>
+                <path stroke="#6b564a" stroke-width="1.4" d="M 332 135 C 336 138, 338 140, 340 141"/>
+                <!-- single 1px moonlit upper edge on the main spine -->
+                <path stroke="rgba(255,214,196,0.12)" stroke-width="1"
+                      d="M 88 298 C 98 265, 120 237, 152 219 C 201 203, 247 169, 294 147"/>
+              </g>
+
+              <!-- 紅杏: six blossoms, four buds -->
+              <!-- cluster A — garden side, spur A -->
+              <g transform="translate(112,186) rotate(10) scale(1.06)">
+                <use class="wo-breathe wo-breathe-2" href="#wo-flower"/>
+              </g>
+              <g transform="translate(134,206) rotate(-64) scale(0.87)">
+                <use href="#wo-flower-side"/>
+              </g>
+              <g transform="translate(102,200) rotate(-30)">
+                <use href="#wo-bud"/>
+              </g>
+
+              <!-- cluster B — focal, in open sky past the wall's end -->
+              <circle class="wo-glow" cx="252" cy="148" r="26" fill="url(#wo-halo)"/>
+              <g transform="translate(252,148) rotate(-6) scale(1.35)">
+                <use class="wo-breathe" href="#wo-flower"/>
+              </g>
+              <g transform="translate(272,158) rotate(22) scale(1.06)">
+                <use href="#wo-flower"/>
+              </g>
+              <g transform="translate(240,130) rotate(48) scale(0.87)">
+                <use href="#wo-flower"/>
+              </g>
+              <g transform="translate(280,138) rotate(30)">
+                <use href="#wo-bud"/>
+              </g>
+
+              <!-- cluster C — the tip, reaching for the moon and stopping short -->
+              <g transform="translate(330,130) rotate(-18) scale(0.77)">
+                <use href="#wo-flower"/>
+              </g>
+              <g transform="translate(350,121) rotate(44)">
+                <use href="#wo-bud"/>
+              </g>
+              <g transform="translate(340,142) rotate(120)">
+                <use href="#wo-bud"/>
+              </g>
+
+              <!-- 出牆來: three petals loosen and sail into the open -->
+              <g filter="url(#wo-soft)">
+                <!-- P1: crosses the moon disc -->
+                <g>
+                  <animateMotion dur="14s" begin="0s" repeatCount="indefinite" rotate="auto"
+                    path="M 256 146 C 300 122, 340 104, 388 92 S 448 74, 478 66"/>
+                  <g>
+                    <animateTransform attributeName="transform" type="rotate"
+                      values="-40;40;-40" dur="7s" repeatCount="indefinite"/>
+                    <g>
+                      <animateTransform attributeName="transform" type="scale"
+                        values="1;1;0.6" keyTimes="0;0.67;1" dur="14s" begin="0s" repeatCount="indefinite"/>
+                      <use href="#wo-driftpetal" fill="#ff8a7a" opacity="0">
+                        <animate attributeName="opacity" values="0;0.95;0.95;0"
+                          keyTimes="0;0.15;0.85;1" dur="14s" begin="0s" repeatCount="indefinite"/>
+                        <animate attributeName="fill" values="#ff8a7a;#ff8a7a;#ffd3c9"
+                          keyTimes="0;0.7;1" dur="14s" begin="0s" repeatCount="indefinite"/>
+                      </use>
+                    </g>
+                  </g>
+                </g>
+                <!-- P2 -->
+                <g>
+                  <animateMotion dur="11s" begin="4s" repeatCount="indefinite" rotate="auto"
+                    path="M 268 158 C 310 152, 360 146, 410 132 S 456 116, 476 108"/>
+                  <g>
+                    <animateTransform attributeName="transform" type="rotate"
+                      values="35;-35;35" dur="6s" repeatCount="indefinite"/>
+                    <g>
+                      <animateTransform attributeName="transform" type="scale"
+                        values="1;1;0.6" keyTimes="0;0.67;1" dur="11s" begin="4s" repeatCount="indefinite"/>
+                      <use href="#wo-driftpetal" fill="#ff8a7a" opacity="0">
+                        <animate attributeName="opacity" values="0;0.95;0.95;0"
+                          keyTimes="0;0.15;0.85;1" dur="11s" begin="4s" repeatCount="indefinite"/>
+                        <animate attributeName="fill" values="#ff8a7a;#ff8a7a;#ffd3c9"
+                          keyTimes="0;0.7;1" dur="11s" begin="4s" repeatCount="indefinite"/>
+                      </use>
+                    </g>
+                  </g>
+                </g>
+                <!-- P3 -->
+                <g>
+                  <animateMotion dur="9s" begin="7.5s" repeatCount="indefinite" rotate="auto"
+                    path="M 336 128 C 366 116, 398 104, 430 96"/>
+                  <g>
+                    <animateTransform attributeName="transform" type="rotate"
+                      values="-30;30;-30" dur="5s" repeatCount="indefinite"/>
+                    <g>
+                      <animateTransform attributeName="transform" type="scale"
+                        values="1;1;0.6" keyTimes="0;0.67;1" dur="9s" begin="7.5s" repeatCount="indefinite"/>
+                      <use href="#wo-driftpetal" fill="#ff8a7a" opacity="0">
+                        <animate attributeName="opacity" values="0;0.95;0.95;0"
+                          keyTimes="0;0.15;0.85;1" dur="9s" begin="7.5s" repeatCount="indefinite"/>
+                        <animate attributeName="fill" values="#ff8a7a;#ff8a7a;#ffd3c9"
+                          keyTimes="0;0.7;1" dur="9s" begin="7.5s" repeatCount="indefinite"/>
+                      </use>
+                    </g>
                   </g>
                 </g>
               </g>
-
-              <!-- broker (control plane) -->
-              <g opacity="0.85">
-                <circle cx="118" cy="106" r="15" fill="none" stroke="rgba(255,255,255,0.3)" stroke-width="1.6"/>
-                <path d="M118 96l4.5 10.5L118 116l-4.5-9.5z" fill="rgba(255,255,255,0.55)"/>
-                <path class="dash-march" d="M112 120 C 96 190, 92 260, 100 324" fill="none" stroke="rgba(255,255,255,0.22)" stroke-width="1.6" stroke-dasharray="3 8" stroke-linecap="round"/>
-                <path class="dash-march" d="M132 114 C 210 120, 268 128, 300 150" fill="none" stroke="rgba(255,255,255,0.22)" stroke-width="1.6" stroke-dasharray="3 8" stroke-linecap="round" style="animation-delay:.8s"/>
-              </g>
-
-              <!-- relay node on top of the wall -->
-              <g>
-                <circle class="pulse-ring" cx="308" cy="164" r="22" fill="none" stroke="#35d07f" stroke-width="2"/>
-                <circle class="pulse-ring" cx="308" cy="164" r="22" fill="none" stroke="#35d07f" stroke-width="2" style="animation-delay:1.3s"/>
-                <circle cx="308" cy="164" r="12" fill="#35d07f" filter="url(#soft-glow)"/>
-                <circle cx="308" cy="164" r="5" fill="#06130c"/>
-              </g>
-
-              <!-- open internet globe -->
-              <g>
-                <circle cx="392" cy="330" r="56" fill="url(#globe-g)" stroke="#2e5c44" stroke-width="1.6"/>
-                <ellipse cx="392" cy="330" rx="24" ry="56" fill="none" stroke="#2e5c44" stroke-width="1.2"/>
-                <ellipse cx="392" cy="330" rx="44" ry="56" fill="none" stroke="rgba(46,92,68,0.5)" stroke-width="1"/>
-                <path d="M338 312h108M336 348h112" stroke="#2e5c44" stroke-width="1.2" fill="none"/>
-                <circle class="shimmer" cx="392" cy="330" r="56" fill="none" stroke="rgba(53,208,127,0.5)" stroke-width="1.6" stroke-dasharray="10 50" stroke-linecap="round"/>
-              </g>
-
-              <!-- the tunnel: phone, up the rungs, over the wall, to the globe -->
-              <path id="tunnel" d="M103 328 C 130 290, 180 250, 252 190 C 292 158, 330 180, 358 220 C 374 244, 384 268, 390 292"
-                fill="none" stroke="rgba(53,208,127,0.16)" stroke-width="9" stroke-linecap="round"/>
-              <path d="M103 328 C 130 290, 180 250, 252 190 C 292 158, 330 180, 358 220 C 374 244, 384 268, 390 292"
-                fill="none" stroke="#35d07f" stroke-width="2.4" stroke-linecap="round" opacity="0.85"/>
-
-              <!-- packets riding the tunnel -->
-              <g filter="url(#soft-glow)">
-                <circle r="5" fill="#8df0bd">
-                  <animateMotion dur="4.2s" repeatCount="indefinite" rotate="0"><mpath href="#tunnel"/></animateMotion>
-                </circle>
-                <circle r="3.6" fill="#35d07f">
-                  <animateMotion dur="4.2s" begin="1.4s" repeatCount="indefinite"><mpath href="#tunnel"/></animateMotion>
-                </circle>
-                <circle r="3" fill="#8df0bd">
-                  <animateMotion dur="4.2s" begin="2.8s" repeatCount="indefinite"><mpath href="#tunnel"/></animateMotion>
-                </circle>
-              </g>
             </svg>
-          </div>
+
+            <!-- vertical inscription: always traditional characters, never translated, never mirrored -->
+            <div class="poem-scroll" lang="zh-Hant" aria-hidden="true">
+              <span class="poem-col">春色滿園關不住</span>
+              <span class="poem-col poem-col--2">一枝紅杏出牆來<svg class="poem-seal" viewBox="0 0 40 72" role="presentation" focusable="false">
+                <rect x="1.5" y="1.5" width="37" height="69" rx="6" fill="var(--seal-red)"/>
+                <rect x="4.5" y="4.5" width="31" height="63" rx="4" fill="none" stroke="#fff3ee" stroke-opacity="0.45" stroke-width="1"/>
+                <text x="20" y="30" text-anchor="middle" font-size="24" fill="#fff3ee">開</text>
+                <text x="20" y="60" text-anchor="middle" font-size="24" fill="#fff3ee">梯</text>
+              </svg></span>
+            </div>
+            </div>
+
+            <figcaption class="poem-caption">
+              <span data-i18n="poemQuote">Spring fills the garden — no wall can shut it in; one branch of red apricot blossom reaches beyond the wall.</span>
+              <span class="poem-attrib" data-i18n="poemAttrib">— Ye Shaoweng, 'Visiting a Garden When the Master Is Away' (Song dynasty, c. 1200)</span>
+            </figcaption>
+          </figure>
         </div>
       </section>
 
@@ -1186,102 +1418,14 @@
             <p data-i18n="howLead">No complex setup — install, connect, browse.</p>
           </div>
           <div class="hiw-grid">
-            <!-- Scroll-driven diagram -->
-            <div class="hiw-visual" id="hiw-visual" data-stage="1" aria-hidden="true" data-reveal>
-              <svg class="animated" viewBox="0 0 560 440" xmlns="http://www.w3.org/2000/svg">
-                <defs>
-                  <linearGradient id="d-rung-g" x1="0" y1="0" x2="1" y2="0">
-                    <stop offset="0" stop-color="#1d8a4f"/>
-                    <stop offset="1" stop-color="#35d07f"/>
-                  </linearGradient>
-                  <filter id="d-glow" x="-60%" y="-60%" width="220%" height="220%">
-                    <feGaussianBlur stdDeviation="5" result="b"/>
-                    <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
-                  </filter>
-                </defs>
-
-                <!-- wall -->
-                <g fill="#22362c">
-                  <rect x="268" y="30"  width="14" height="46" rx="5"/>
-                  <rect x="268" y="88"  width="14" height="46" rx="5"/>
-                  <rect x="268" y="146" width="14" height="46" rx="5"/>
-                  <rect x="268" y="204" width="14" height="46" rx="5"/>
-                  <rect x="268" y="262" width="14" height="46" rx="5"/>
-                </g>
-                <text x="275" y="340" text-anchor="middle" class="diag-label" opacity="0.75" data-i18n="diagWall">Network filter</text>
-
-                <!-- STAGE 1: the phone -->
-                <g class="st st-1">
-                  <rect x="62" y="196" width="64" height="116" rx="14" fill="#0d1f16" stroke="rgba(255,255,255,0.28)" stroke-width="1.8"/>
-                  <rect x="70" y="209" width="48" height="90" rx="8" fill="#123626"/>
-                  <rect x="83" y="201" width="22" height="4" rx="2" fill="rgba(255,255,255,0.3)"/>
-                  <g transform="translate(94 254) scale(0.10)">
-                    <g fill="#35d07f" transform="rotate(18 0 0) translate(-128 -128)">
-                      <rect x="101" y="52" width="13" height="38" rx="3"/>
-                      <rect x="101" y="94" width="13" height="47" rx="3"/>
-                      <rect x="101" y="145" width="13" height="59" rx="3"/>
-                      <rect x="142" y="52" width="13" height="38" rx="3"/>
-                      <rect x="142" y="94" width="13" height="47" rx="3"/>
-                      <rect x="142" y="145" width="13" height="59" rx="3"/>
-                      <rect x="101" y="60" width="54" height="13" rx="3"/>
-                      <rect x="101" y="111" width="54" height="13" rx="3"/>
-                      <rect x="101" y="162" width="54" height="13" rx="3"/>
-                    </g>
-                  </g>
-                  <text x="94" y="340" text-anchor="middle" class="diag-label" data-i18n="diagYou">You</text>
-                </g>
-
-                <!-- STAGE 2: broker matchmaking -->
-                <g class="st st-2">
-                  <circle cx="280" cy="392" r="17" fill="none" stroke="rgba(255,255,255,0.4)" stroke-width="1.8"/>
-                  <path d="M280 380l5.5 12.5L280 404l-5.5-11.5z" fill="rgba(255,255,255,0.65)"/>
-                  <text x="280" y="432" text-anchor="middle" class="diag-label" data-i18n="diagBroker">Broker — matchmaking only</text>
-                  <path class="dash-march" d="M126 296 C 170 340, 214 368, 258 386" fill="none" stroke="rgba(255,255,255,0.35)" stroke-width="1.8" stroke-dasharray="4 9" stroke-linecap="round"/>
-                  <path class="dash-march" d="M302 384 C 352 366, 396 316, 414 232" fill="none" stroke="rgba(255,255,255,0.35)" stroke-width="1.8" stroke-dasharray="4 9" stroke-linecap="round" style="animation-delay:.7s"/>
-                </g>
-
-                <!-- STAGE 3: tunnel + relay + open internet -->
-                <g class="st st-3">
-                  <!-- rungs -->
-                  <g fill="url(#d-rung-g)">
-                    <rect x="130" y="186" width="54" height="11" rx="5.5"/>
-                    <rect x="176" y="148" width="54" height="11" rx="5.5"/>
-                    <rect x="222" y="110" width="54" height="11" rx="5.5"/>
-                  </g>
-                  <!-- tunnel -->
-                  <path id="d-tunnel" d="M96 192 C 130 150, 190 100, 278 74 C 340 56, 396 96, 418 170 C 428 202, 432 212, 438 224"
-                    fill="none" stroke="rgba(53,208,127,0.16)" stroke-width="9" stroke-linecap="round"/>
-                  <path d="M96 192 C 130 150, 190 100, 278 74 C 340 56, 396 96, 418 170 C 428 202, 432 212, 438 224"
-                    fill="none" stroke="#35d07f" stroke-width="2.4" stroke-linecap="round" opacity="0.9"/>
-                  <g filter="url(#d-glow)">
-                    <circle r="5" fill="#8df0bd">
-                      <animateMotion dur="3.8s" repeatCount="indefinite"><mpath href="#d-tunnel"/></animateMotion>
-                    </circle>
-                    <circle r="3.4" fill="#35d07f">
-                      <animateMotion dur="3.8s" begin="1.3s" repeatCount="indefinite"><mpath href="#d-tunnel"/></animateMotion>
-                    </circle>
-                    <circle r="3" fill="#8df0bd">
-                      <animateMotion dur="3.8s" begin="2.6s" repeatCount="indefinite"><mpath href="#d-tunnel"/></animateMotion>
-                    </circle>
-                  </g>
-                  <!-- relay -->
-                  <circle class="pulse-ring" cx="306" cy="80" r="20" fill="none" stroke="#35d07f" stroke-width="2"/>
-                  <circle cx="306" cy="80" r="10" fill="#35d07f" filter="url(#d-glow)"/>
-                  <circle cx="306" cy="80" r="4" fill="#06130c"/>
-                  <text x="306" y="42" text-anchor="middle" class="diag-label" data-i18n="diagRelay">Volunteer relay</text>
-                  <!-- globe -->
-                  <circle cx="452" cy="270" r="46" fill="rgba(53,208,127,0.07)" stroke="#2e5c44" stroke-width="1.6"/>
-                  <ellipse cx="452" cy="270" rx="19" ry="46" fill="none" stroke="#2e5c44" stroke-width="1.1"/>
-                  <path d="M408 256h88M406 286h92" stroke="#2e5c44" stroke-width="1.1" fill="none"/>
-                  <circle class="shimmer" cx="452" cy="270" r="46" fill="none" stroke="rgba(53,208,127,0.5)" stroke-width="1.6" stroke-dasharray="9 46" stroke-linecap="round"/>
-                  <text x="452" y="340" text-anchor="middle" class="diag-label" data-i18n="diagWeb">Open internet</text>
-                </g>
-              </svg>
+            <!-- Animated diagram -->
+            <div class="hiw-visual" aria-hidden="true" data-reveal>
+              <img src="openrung-how-it-works-animated.svg" alt="" width="1200" height="675" decoding="async">
             </div>
 
             <!-- Steps -->
             <div class="hiw-steps">
-              <div class="hiw-step active" data-step="1" data-reveal>
+              <div class="hiw-step" data-step="1" data-reveal>
                 <div class="num">1</div>
                 <h3 data-i18n="step1Title">Download &amp; install</h3>
                 <p data-i18n="step1Body">Get the Android app and open it. No account, no configuration — the app is ready the moment it launches.</p>
@@ -1477,6 +1621,7 @@
       <section class="cta-band" aria-labelledby="cta-title">
         <div class="wrap" data-reveal>
           <svg class="cta-mark" aria-hidden="true"><use href="#ladder"/></svg>
+          <p class="cta-poem" lang="zh-Hant" dir="ltr" aria-hidden="true">春色滿園關不住　一枝紅杏出牆來</p>
           <h2 id="cta-title" data-i18n="ctaTitle">The open internet is worth reaching.</h2>
           <p class="cta-lead" data-i18n="ctaLead">Free, private, and powered by people.</p>
           <div class="cta-row">
@@ -1563,6 +1708,8 @@
           heroLead: "OpenRung helps people facing network restrictions reach public websites and apps through a worldwide volunteer relay network. Always free, privacy-first, and run by a Delaware nonprofit foundation.",
           heroDownload: "Download for Android",
           heroHow: "See how it works",
+          poemQuote: "Spring fills the garden — no wall can shut it in; one branch of red apricot blossom reaches beyond the wall.",
+          poemAttrib: "— Ye Shaoweng, 'Visiting a Garden When the Master Is Away' (Song dynasty, c. 1200)",
           promiseFree: "Always free",
           promiseNoSignup: "No sign-up",
           promiseNoLog: "No browsing logs",
@@ -1664,11 +1811,13 @@
           navVolunteer: "志愿者",
           navFaq: "常见问题",
           heroEyebrow: "抢先体验",
-          heroHeadline: "互联网访问是一项",
-          heroHeadlineHl: "权利，而非特权。",
+          heroHeadline: "互联网访问是",
+          heroHeadlineHl: "基本人权，而非特权。",
           heroLead: "OpenRung 通过遍布世界各地的志愿者中继，帮助身处网络限制中的人访问公共网站与应用。永久免费、注重隐私，由一家特拉华州非营利基金会运营。",
           heroDownload: "下载 Android 版",
           heroHow: "了解工作原理",
+          poemQuote: "「春色满园关不住，一枝红杏出墙来。」",
+          poemAttrib: "——宋·叶绍翁《游园不值》",
           promiseFree: "永久免费",
           promiseNoSignup: "无需注册",
           promiseNoLog: "不留存浏览记录",
@@ -1775,6 +1924,8 @@
           heroLead: "OpenRung به افرادی که با محدودیت‌های شبکه روبه‌رو هستند کمک می‌کند تا از طریق شبکهٔ جهانی رله‌های داوطلبانه به وب‌سایت‌ها و برنامه‌های عمومی دسترسی پیدا کنند. همیشه رایگان، با حفظ حریم خصوصی و زیر نظر یک بنیاد غیرانتفاعی در ایالت دلاور.",
           heroDownload: "دانلود برای اندروید",
           heroHow: "چگونه کار می‌کند",
+          poemQuote: "بهارِ باغ را پشتِ هیچ دیواری نتوان بست؛ شاخه‌ای شکوفهٔ سرخ، سر از دیوار برآورده است.",
+          poemAttrib: "— یِه شائو‌ونگ، «دیدار از باغی که صاحبش نبود»، دودمان سونگ",
           promiseFree: "همیشه رایگان",
           promiseNoSignup: "بدون ثبت‌نام",
           promiseNoLog: "بدون ثبت سابقهٔ مرور",
@@ -1881,6 +2032,8 @@
           heroLead: "OpenRung помогает людям с ограничениями доступа открывать публичные сайты и приложения через всемирную волонтёрскую сеть ретрансляторов. Всегда бесплатно, с заботой о приватности, под управлением некоммерческого фонда из штата Делавэр.",
           heroDownload: "Скачать для Android",
           heroHow: "Как это работает",
+          poemQuote: "«Весну, что полнит сад, не запереть на ключ — ветвь абрикоса в алом цвету перебралась через стену».",
+          poemAttrib: "— Е Шаовэн, «Пришёл в сад, но не застал хозяина» (эпоха Сун)",
           promiseFree: "Всегда бесплатно",
           promiseNoSignup: "Без регистрации",
           promiseNoLog: "Без журналов посещений",
@@ -2082,38 +2235,23 @@
         revealInView(false); // already on screen (deep link, restored scroll): show instantly
       }
 
-      /* ============================================================
-         "How it works": diagram follows the step in view (and clicks)
-         ============================================================ */
-      const hiwVisual = document.getElementById("hiw-visual");
-      const hiwSteps = Array.from(document.querySelectorAll(".hiw-step"));
-      function setStage(stage) {
-        hiwVisual.setAttribute("data-stage", String(stage));
-        hiwSteps.forEach((s) => s.classList.toggle("active", s.dataset.step === String(stage)));
-      }
-      hiwSteps.forEach((stepEl) => {
-        stepEl.addEventListener("click", () => setStage(stepEl.dataset.step));
-      });
-      function syncStage() {
-        const vh = viewportH();
-        let current = "1";
-        hiwSteps.forEach((s) => {
-          if (s.getBoundingClientRect().top < vh * 0.58) current = s.dataset.step;
-        });
-        if (hiwVisual.getAttribute("data-stage") !== current) setStage(current);
-      }
-
-      window.addEventListener("scroll", () => { revealInView(true); syncStage(); }, { passive: true });
+      window.addEventListener("scroll", () => { revealInView(true); }, { passive: true });
       window.addEventListener("resize", () => { revealInView(true); }, { passive: true });
-      syncStage();
 
       /* ============================================================
-         Respect reduced motion for SVG (SMIL) animations
+         Respect reduced motion for SVG (SMIL) animations — kept in
+         sync live, so toggling the OS setting takes effect at once
          ============================================================ */
-      if (reduceMotion) {
+      const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+      function syncSmilAnimations() {
         document.querySelectorAll("svg.animated").forEach((svg) => {
-          if (typeof svg.pauseAnimations === "function") svg.pauseAnimations();
+          const fn = motionQuery.matches ? svg.pauseAnimations : svg.unpauseAnimations;
+          if (typeof fn === "function") fn.call(svg);
         });
+      }
+      syncSmilAnimations();
+      if (typeof motionQuery.addEventListener === "function") {
+        motionQuery.addEventListener("change", syncSmilAnimations);
       }
     </script>
   </body>
