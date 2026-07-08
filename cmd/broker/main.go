@@ -198,6 +198,23 @@ func splitAndTrim(value string) []string {
 	return out
 }
 
+// pruneTelemetryPartitions drops aged-out telemetry partitions when the sink
+// supports it (the Postgres store); the JSONL sink prunes on write, so this is
+// a no-op for it. Partial progress is logged even when a later drop fails.
+func pruneTelemetryPartitions(telemetry broker.TelemetryReader, now time.Time) {
+	pruner, ok := telemetry.(broker.TelemetryPruner)
+	if !ok {
+		return
+	}
+	dropped, err := pruner.PruneTelemetry(now)
+	for _, name := range dropped {
+		slog.Info("telemetry partition dropped", "partition", name)
+	}
+	if err != nil {
+		slog.Error("could not prune telemetry partitions", "error", err)
+	}
+}
+
 func maintainBroker(store broker.RelayStore, telemetry broker.TelemetryReader, interval time.Duration, logStatus bool) {
 	const activityWindow = 5 * time.Minute
 	ticker := time.NewTicker(interval)
@@ -213,6 +230,7 @@ func maintainBroker(store broker.RelayStore, telemetry broker.TelemetryReader, i
 		for _, desc := range expired {
 			slog.Info("volunteer expired", "relay_id", desc.ID, "last_heartbeat_at", desc.LastHeartbeatAt)
 		}
+		pruneTelemetryPartitions(telemetry, now)
 		if !logStatus {
 			continue
 		}
