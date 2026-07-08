@@ -120,8 +120,15 @@ func (d *dashboardServer) logout(w http.ResponseWriter, r *http.Request) {
 
 func (d *dashboardServer) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Everything behind the admin gate is private and per-request — the
+		// data API recomputes every few seconds — so no browser or shared
+		// cache may store it. Set before dispatch so it covers the authorized
+		// responses too, not just the redirect/401 below. Without this a plain
+		// refresh (and the in-page Refresh button) could re-render a stale
+		// cached response; only a hard reload, which bypasses the cache,
+		// fetched fresh data.
+		w.Header().Set("Cache-Control", "no-store")
 		if !d.authenticated(r) {
-			w.Header().Set("Cache-Control", "no-store")
 			if strings.HasPrefix(r.URL.Path, "/admin/api/") {
 				writeError(w, http.StatusUnauthorized, "dashboard session expired")
 			} else {
