@@ -305,6 +305,8 @@ type sessionSummary struct {
 	ClientID        string     `json:"client_id"`
 	SourceIP        string     `json:"source_ip"`
 	OperatingSystem string     `json:"operating_system,omitempty"`
+	DeviceInfo      string     `json:"device_info,omitempty"`
+	AppVersion      string     `json:"app_version,omitempty"`
 	Country         string     `json:"country,omitempty"`
 	City            string     `json:"city,omitempty"`
 	ISP             string     `json:"isp,omitempty"`
@@ -331,17 +333,19 @@ type speedTestSummary struct {
 }
 
 type sessionAccumulator struct {
-	summary           sessionSummary
-	isp               string
-	observedClientIP  string
-	reportedClientIP  string
-	fallbackSourceIP  string
-	lastHeartbeatAt   time.Time
-	runningDurationMS int64
-	terminal          bool
-	attempted         bool
-	succeeded         bool
-	failed            bool
+	summary            sessionSummary
+	deviceManufacturer string
+	deviceModel        string
+	isp                string
+	observedClientIP   string
+	reportedClientIP   string
+	fallbackSourceIP   string
+	lastHeartbeatAt    time.Time
+	runningDurationMS  int64
+	terminal           bool
+	attempted          bool
+	succeeded          bool
+	failed             bool
 }
 
 func buildTelemetryOverview(records []TelemetryRecord, now time.Time, window time.Duration) telemetryOverview {
@@ -393,10 +397,24 @@ func buildTelemetryOverview(records []TelemetryRecord, now time.Time, window tim
 		if event.RelayID != "" {
 			session.summary.RelayID = event.RelayID
 		}
+		// Clients report their OS through one of three mutually exclusive keys:
+		// desktop sends a ready-made operating_system label ("macOS (arm64)"),
+		// iOS sends ios_version, and Android sends the android_api level.
 		if operatingSystem := event.Attributes["operating_system"]; operatingSystem != "" {
 			session.summary.OperatingSystem = operatingSystem
+		} else if iosVersion := event.Attributes["ios_version"]; iosVersion != "" {
+			session.summary.OperatingSystem = "iOS " + iosVersion
 		} else if androidAPI := event.Attributes["android_api"]; androidAPI != "" {
 			session.summary.OperatingSystem = "Android (API " + androidAPI + ")"
+		}
+		if manufacturer := event.Attributes["device_manufacturer"]; manufacturer != "" {
+			session.deviceManufacturer = manufacturer
+		}
+		if model := event.Attributes["device_model"]; model != "" {
+			session.deviceModel = model
+		}
+		if appVersion := event.Attributes["app_version"]; appVersion != "" {
+			session.summary.AppVersion = appVersion
 		}
 		if country := firstNonEmpty(event.Attributes["country"], event.Attributes["country_code"]); country != "" {
 			session.summary.Country = country
@@ -491,6 +509,7 @@ func buildTelemetryOverview(records []TelemetryRecord, now time.Time, window tim
 	for _, session := range sessions {
 		session.summary.SourceIP = firstNonEmpty(session.observedClientIP, session.reportedClientIP, session.fallbackSourceIP)
 		session.summary.ISP = firstNonEmpty(session.isp, session.summary.Organization, session.summary.ASN)
+		session.summary.DeviceInfo = deviceInfoLabel(session.deviceManufacturer, session.deviceModel, session.summary.OperatingSystem)
 		// connection_ended carries the final duration; until then, surface the
 		// running duration from heartbeats so active sessions aren't blank.
 		if session.summary.DurationMS == 0 {
@@ -632,6 +651,38 @@ func sortedCounts(values map[string]int, limit int) []countSummary {
 		result = result[:limit]
 	}
 	return result
+}
+
+// deviceInfoLabel combines the hardware identity a client reported (manufacturer
+// plus model, e.g. "Google Pixel 7") with its OS label ("Android (API 34)",
+// "iOS 17.5", "macOS (arm64)") into a single dashboard cell. Desktop clients
+// report no hardware, so it degrades to just the OS label; a client that
+// reported neither yields "" (rendered as "Unknown").
+func deviceInfoLabel(manufacturer, model, operatingSystem string) string {
+	manufacturer = strings.TrimSpace(manufacturer)
+	model = strings.TrimSpace(model)
+	var hardware string
+	switch {
+	case manufacturer != "" && model != "":
+		// Avoid "OnePlus OnePlus 9" when the model already carries the brand.
+		if strings.HasPrefix(strings.ToLower(model), strings.ToLower(manufacturer)) {
+			hardware = model
+		} else {
+			hardware = manufacturer + " " + model
+		}
+	case manufacturer != "":
+		hardware = manufacturer
+	default:
+		hardware = model
+	}
+	parts := make([]string, 0, 2)
+	if hardware != "" {
+		parts = append(parts, hardware)
+	}
+	if os := strings.TrimSpace(operatingSystem); os != "" {
+		parts = append(parts, os)
+	}
+	return strings.Join(parts, " · ")
 }
 
 func incrementNonEmpty(values map[string]int, name string) {
