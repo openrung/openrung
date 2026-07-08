@@ -26,6 +26,8 @@ func run() error {
 	addr := flag.String("addr", envDefault("OPENRUNG_ADDR", ":8080"), "HTTP listen address")
 	leaseTTL := flag.Duration("lease-ttl", 3*time.Minute, "volunteer relay lease TTL")
 	telemetryFile := flag.String("telemetry-file", envDefault("OPENRUNG_TELEMETRY_FILE", "openrung-telemetry.jsonl"), "append-only client telemetry JSONL file (its directory must be writable)")
+	telemetryStore := flag.String("telemetry-store", envDefault("OPENRUNG_TELEMETRY_STORE", "jsonl"), "telemetry storage backend: jsonl or postgres")
+	telemetryDatabaseURL := flag.String("telemetry-database-url", envDefault("OPENRUNG_TELEMETRY_DATABASE_URL", os.Getenv("OPENRUNG_RELAY_DATABASE_URL")), "PostgreSQL database URL for telemetry (defaults to the relay database URL)")
 	statusInterval := flag.Duration("status-interval", time.Minute, "interval for broker network status logs; 0 disables")
 	relayStore := flag.String("relay-store", envDefault("OPENRUNG_RELAY_STORE", "memory"), "relay state backend: memory or postgres")
 	relayDatabaseURL := flag.String("relay-database-url", os.Getenv("OPENRUNG_RELAY_DATABASE_URL"), "PostgreSQL database URL for relay state")
@@ -52,7 +54,7 @@ func run() error {
 	}
 	defer store.Close()
 
-	telemetrySink, err := broker.NewJSONLTelemetrySink(*telemetryFile)
+	telemetrySink, err := newTelemetrySink(*telemetryStore, *telemetryFile, *telemetryDatabaseURL)
 	if err != nil {
 		slog.Error("could not initialize telemetry storage", "error", err)
 		return err
@@ -101,7 +103,7 @@ func run() error {
 		close(shutdownDone)
 	}()
 
-	slog.Info("starting broker", "addr", *addr, "lease_ttl", leaseTTL.String(), "telemetry_file", *telemetryFile, "relay_store", *relayStore, "relay_ranking", rankingMode, "dashboard_enabled", os.Getenv("OPENRUNG_DASHBOARD_TOKEN") != "", "status_interval", statusInterval.String(), "geoip_enabled", geoResolver != nil)
+	slog.Info("starting broker", "addr", *addr, "lease_ttl", leaseTTL.String(), "telemetry_store", *telemetryStore, "telemetry_file", *telemetryFile, "relay_store", *relayStore, "relay_ranking", rankingMode, "dashboard_enabled", os.Getenv("OPENRUNG_DASHBOARD_TOKEN") != "", "status_interval", statusInterval.String(), "geoip_enabled", geoResolver != nil)
 	err = server.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {
 		<-shutdownDone
@@ -111,6 +113,30 @@ func run() error {
 		err = closeErr
 	}
 	return err
+}
+
+// telemetryStorage is what both telemetry backends provide: the write path,
+// the dashboard's read path, and a flush-on-shutdown Close.
+type telemetryStorage interface {
+	broker.TelemetrySink
+	broker.TelemetryReader
+	Close() error
+}
+
+func newTelemetrySink(storeMode, filePath, databaseURL string) (telemetryStorage, error) {
+	switch strings.ToLower(strings.TrimSpace(storeMode)) {
+	case "", "jsonl":
+		return broker.NewJSONLTelemetrySink(filePath)
+	case "postgres":
+		if strings.TrimSpace(databaseURL) == "" {
+			return nil, errors.New("OPENRUNG_TELEMETRY_STORE=postgres requires OPENRUNG_TELEMETRY_DATABASE_URL (or OPENRUNG_RELAY_DATABASE_URL to share the relay database)")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return broker.NewPostgresTelemetrySink(ctx, databaseURL)
+	default:
+		return nil, errors.New("telemetry-store must be jsonl or postgres")
+	}
 }
 
 func newRelayStore(storeMode, databaseURL string, rankingMode broker.RankingMode) (broker.RelayStore, error) {

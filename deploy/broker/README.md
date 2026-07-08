@@ -71,8 +71,9 @@ TLS — see Cloudflare below.
 
 ## Telemetry persistence
 
-The broker appends client telemetry to a JSONL file and periodically compacts it
-in place (7-day retention). The image points `OPENRUNG_TELEMETRY_FILE` at
+By default (`OPENRUNG_TELEMETRY_STORE=jsonl`) the broker appends client
+telemetry to a JSONL file and periodically compacts it in place (7-day
+retention). The image points `OPENRUNG_TELEMETRY_FILE` at
 `/var/lib/openrung/telemetry.jsonl` on a persistent named volume, so dashboard
 history survives restarts. The root filesystem is otherwise read-only.
 
@@ -82,6 +83,15 @@ history survives restarts. The root filesystem is otherwise read-only.
   `openrung` uid first, or the broker will fail to open the telemetry file.
 - **Don't need history?** Point `OPENRUNG_TELEMETRY_FILE` at `/tmp/…` (tmpfs) and
   drop the volume.
+
+For production, set `OPENRUNG_TELEMETRY_STORE=postgres` to write events to a
+partitioned `telemetry_events` table (one partition per day, created
+automatically) instead of the JSONL file. It uses
+`OPENRUNG_TELEMETRY_DATABASE_URL`, falling back to
+`OPENRUNG_RELAY_DATABASE_URL` so a broker already on the Postgres relay store
+needs no extra configuration; the broker refuses to start if neither is set.
+The dashboard still aggregates in memory from the most recent events, so it
+works the same under either backend.
 
 ## Telemetry dashboard
 
@@ -125,7 +135,9 @@ the edge and spoof forwarded headers.
 | `OPENRUNG_RELAY_DATABASE_URL`        | if pg    | —                                   | PostgreSQL URL when `OPENRUNG_RELAY_STORE=postgres`            |
 | `OPENRUNG_RELAY_RANKING`             | no       | `global`                            | Relay ranking mode: `global` or `legacy`                       |
 | `OPENRUNG_GEOIP_ENDPOINT`            | no       | ipwho.is                            | IP-geolocation endpoint for relay city/country; `off` disables |
-| `OPENRUNG_TELEMETRY_FILE`            | no       | `/var/lib/openrung/telemetry.jsonl` | Append-only telemetry JSONL path (its dir must be writable)    |
+| `OPENRUNG_TELEMETRY_STORE`           | no       | `jsonl`                             | Telemetry backend: `jsonl` or `postgres`                       |
+| `OPENRUNG_TELEMETRY_DATABASE_URL`    | no       | relay database URL                  | PostgreSQL URL when `OPENRUNG_TELEMETRY_STORE=postgres`        |
+| `OPENRUNG_TELEMETRY_FILE`            | no       | `/var/lib/openrung/telemetry.jsonl` | Telemetry JSONL path in `jsonl` mode (its dir must be writable) |
 
 \* The broker refuses to start unless either `OPENRUNG_VOLUNTEER_TOKEN` or
 `OPENRUNG_ALLOW_ANONYMOUS_REGISTRATION=true` is set.

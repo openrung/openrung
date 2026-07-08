@@ -139,28 +139,79 @@ type storedTelemetryRecord struct {
 	bytes  int64
 }
 
-type JSONLTelemetrySink struct {
-	mu          sync.RWMutex
-	path        string
-	file        *os.File
-	writer      *bufio.Writer
+// telemetryRetained is the bounded in-memory record set that serves the
+// dashboard's TelemetryReader queries; it is shared by every sink that keeps
+// dashboard reads in memory. None of its methods lock — the owning sink's
+// lock guards all access.
+type telemetryRetained struct {
 	records     []storedTelemetryRecord
 	memoryBytes int64
-	fileBytes   int64
 	memoryLimit int64
-	fileLimit   int64
 	// compactionShifts counts records slid to the front of the slice by
-	// dropOldestOverBudgetLocked. Over-budget loads must keep this O(number of
+	// dropOldestOverBudget. Over-budget loads must keep this O(number of
 	// records) — the per-line trim it replaced made it O(records²) and hung
 	// startup on a large file. Tests assert the linear bound.
 	compactionShifts int64
-	now              func() time.Time
-	stop             chan struct{}
-	done             chan struct{}
-	closeOnce        sync.Once
-	closeErr         error
-	writeErr         error
-	closed           bool
+}
+
+func (r *telemetryRetained) append(record TelemetryRecord, size int64) {
+	r.records = append(r.records, storedTelemetryRecord{record: record, bytes: size})
+	r.memoryBytes += size
+}
+
+func (r *telemetryRetained) prune(cutoff time.Time) {
+	kept := r.records[:0]
+	for _, stored := range r.records {
+		if retentionTime(stored.record).Before(cutoff) {
+			r.memoryBytes -= stored.bytes
+			continue
+		}
+		kept = append(kept, stored)
+	}
+	r.records = kept
+}
+
+// dropOldestOverBudget enforces the in-memory byte budget by discarding the
+// oldest-received records first. This — not the retention window — is what
+// keeps an anonymous telemetry flood from growing broker memory without bound.
+func (r *telemetryRetained) dropOldestOverBudget() {
+	drop := 0
+	for drop < len(r.records) && r.memoryBytes > r.memoryLimit {
+		r.memoryBytes -= r.records[drop].bytes
+		drop++
+	}
+	if drop == 0 {
+		return
+	}
+	r.compactionShifts += int64(len(r.records) - drop)
+	r.records = append(r.records[:0], r.records[drop:]...)
+}
+
+func (r *telemetryRetained) recordsSince(since time.Time) []TelemetryRecord {
+	records := make([]TelemetryRecord, 0, len(r.records))
+	for _, stored := range r.records {
+		if !stored.record.Event.OccurredAt.Before(since) {
+			records = append(records, stored.record)
+		}
+	}
+	return records
+}
+
+type JSONLTelemetrySink struct {
+	mu     sync.RWMutex
+	path   string
+	file   *os.File
+	writer *bufio.Writer
+	telemetryRetained
+	fileBytes int64
+	fileLimit int64
+	now       func() time.Time
+	stop      chan struct{}
+	done      chan struct{}
+	closeOnce sync.Once
+	closeErr  error
+	writeErr  error
+	closed    bool
 }
 
 func NewJSONLTelemetrySink(path string) (*JSONLTelemetrySink, error) {
@@ -193,7 +244,7 @@ func newJSONLTelemetrySinkWithLimits(path string, now func() time.Time, flushInt
 	}
 	sink := &JSONLTelemetrySink{
 		path: path, file: file, now: now, stop: make(chan struct{}), done: make(chan struct{}),
-		memoryLimit: memoryLimit, fileLimit: fileLimit,
+		telemetryRetained: telemetryRetained{memoryLimit: memoryLimit}, fileLimit: fileLimit,
 	}
 	if err := sink.loadRecent(); err != nil {
 		_ = file.Close()
@@ -232,30 +283,22 @@ func (s *JSONLTelemetrySink) loadRecent() error {
 			continue
 		}
 		size := int64(len(scanner.Bytes()) + 1)
-		s.records = append(s.records, storedTelemetryRecord{record: record, bytes: size})
-		s.memoryBytes += size
+		s.append(record, size)
 		// Keep memory bounded during the scan, but trim only after overshooting the
-		// budget by 2×, not on every line. dropOldestOverBudgetLocked re-copies the
-		// surviving slice, so calling it per line made loading an oversized file
-		// O(n²) — a 169 MB file hung broker startup for minutes. Amortising the trim
-		// over a 2× overshoot keeps the whole load O(n) (each record is copied O(1)
-		// times) while memory still peaks at ~2× the budget instead of the whole
-		// file. The final trim below restores the steady-state ≤ budget invariant.
-		// Keep memory bounded during the scan, but trim only after overshooting the
-		// budget by 2×, not on every line. dropOldestOverBudgetLocked re-copies the
+		// budget by 2×, not on every line. dropOldestOverBudget re-copies the
 		// surviving slice, so calling it per line made loading an oversized file
 		// O(n²) — a 169 MB file hung broker startup for minutes. Amortising the trim
 		// over a 2× overshoot keeps the whole load O(n) (each record is copied O(1)
 		// times) while memory still peaks at ~2× the budget instead of the whole
 		// file. The final trim below restores the steady-state ≤ budget invariant.
 		if s.memoryBytes > 2*s.memoryLimit {
-			s.dropOldestOverBudgetLocked()
+			s.dropOldestOverBudget()
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("read telemetry file: %w", err)
 	}
-	s.dropOldestOverBudgetLocked()
+	s.dropOldestOverBudget()
 	_, err = s.file.Seek(0, io.SeekEnd)
 	return err
 }
@@ -309,12 +352,11 @@ func (s *JSONLTelemetrySink) WriteTelemetry(_ context.Context, records []Telemet
 			return s.writeErr
 		}
 		size := int64(len(line))
-		s.records = append(s.records, storedTelemetryRecord{record: record, bytes: size})
-		s.memoryBytes += size
+		s.append(record, size)
 		s.fileBytes += size
 	}
-	s.pruneLocked(s.now().UTC().Add(-telemetryRetention))
-	s.dropOldestOverBudgetLocked()
+	s.prune(s.now().UTC().Add(-telemetryRetention))
+	s.dropOldestOverBudget()
 	if err := s.maybeCompactLocked(); err != nil {
 		s.writeErr = fmt.Errorf("compact telemetry file: %w", err)
 		return s.writeErr
@@ -380,41 +422,7 @@ func (s *JSONLTelemetrySink) flushLocked(syncDisk bool) error {
 func (s *JSONLTelemetrySink) TelemetryRecords(since time.Time) []TelemetryRecord {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	records := make([]TelemetryRecord, 0, len(s.records))
-	for _, stored := range s.records {
-		if !stored.record.Event.OccurredAt.Before(since) {
-			records = append(records, stored.record)
-		}
-	}
-	return records
-}
-
-func (s *JSONLTelemetrySink) pruneLocked(cutoff time.Time) {
-	kept := s.records[:0]
-	for _, stored := range s.records {
-		if retentionTime(stored.record).Before(cutoff) {
-			s.memoryBytes -= stored.bytes
-			continue
-		}
-		kept = append(kept, stored)
-	}
-	s.records = kept
-}
-
-// dropOldestOverBudgetLocked enforces the in-memory byte budget by discarding
-// the oldest-received records first. This — not the retention window — is what
-// keeps an anonymous telemetry flood from growing broker memory without bound.
-func (s *JSONLTelemetrySink) dropOldestOverBudgetLocked() {
-	drop := 0
-	for drop < len(s.records) && s.memoryBytes > s.memoryLimit {
-		s.memoryBytes -= s.records[drop].bytes
-		drop++
-	}
-	if drop == 0 {
-		return
-	}
-	s.compactionShifts += int64(len(s.records) - drop)
-	s.records = append(s.records[:0], s.records[drop:]...)
+	return s.recordsSince(since)
 }
 
 // compactLocked rewrites the JSONL file to contain only the records still
