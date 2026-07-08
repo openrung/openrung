@@ -7,6 +7,7 @@ import (
 	_ "embed"
 	"encoding/base64"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -31,17 +32,17 @@ var dashboardHTML []byte
 
 type dashboardServer struct {
 	tokenHash   [32]byte
-	reader      TelemetryReader
+	querier     TelemetryQuerier
 	relayLabels func() map[string]string
 	now         func() time.Time
 	mu          sync.Mutex
 	sessions    map[string]time.Time
 }
 
-func newDashboardServer(token string, reader TelemetryReader) *dashboardServer {
+func newDashboardServer(token string, querier TelemetryQuerier) *dashboardServer {
 	return &dashboardServer{
 		tokenHash: sha256.Sum256([]byte(token)),
-		reader:    reader,
+		querier:   querier,
 		now:       time.Now,
 		sessions:  make(map[string]time.Time),
 	}
@@ -175,7 +176,12 @@ func (d *dashboardServer) overview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := d.now().UTC()
-	ov := buildTelemetryOverview(d.reader.TelemetryRecords(now.Add(-window)), now, window)
+	ov, err := d.querier.TelemetryOverview(now, window)
+	if err != nil {
+		slog.Error("could not build telemetry overview", "error", err)
+		writeError(w, http.StatusInternalServerError, "could not build telemetry overview")
+		return
+	}
 	if len(ov.Recent) > overviewRecentSessions {
 		ov.Recent = ov.Recent[:overviewRecentSessions]
 	}
@@ -213,13 +219,15 @@ func (d *dashboardServer) listSessions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := d.now().UTC()
-	ov := buildTelemetryOverview(d.reader.TelemetryRecords(now.Add(-window)), now, window)
-	total := len(ov.Recent)
+	page, total, err := d.querier.TelemetrySessions(now, window, offset, limit)
+	if err != nil {
+		slog.Error("could not list telemetry sessions", "error", err)
+		writeError(w, http.StatusInternalServerError, "could not list telemetry sessions")
+		return
+	}
 	if offset > total {
 		offset = total
 	}
-	end := min(offset+limit, total)
-	page := append([]sessionSummary{}, ov.Recent[offset:end]...)
 	if d.relayLabels != nil {
 		applySessionRelayLabels(page, d.relayLabels())
 	}
@@ -346,6 +354,36 @@ type sessionAccumulator struct {
 	attempted          bool
 	succeeded          bool
 	failed             bool
+}
+
+// finalize derives the presentation fields from the accumulated raw ones. It
+// is shared by the in-memory aggregator and the Postgres querier so both
+// backends resolve source-IP/ISP precedence, device labels, status, and
+// activity identically.
+func (a *sessionAccumulator) finalize(now time.Time) sessionSummary {
+	summary := a.summary
+	summary.SourceIP = firstNonEmpty(a.observedClientIP, a.reportedClientIP, a.fallbackSourceIP)
+	summary.ISP = firstNonEmpty(a.isp, summary.Organization, summary.ASN)
+	summary.DeviceInfo = deviceInfoLabel(a.deviceManufacturer, a.deviceModel, summary.OperatingSystem)
+	// connection_ended carries the final duration; until then, surface the
+	// running duration from heartbeats so active sessions aren't blank.
+	if summary.DurationMS == 0 {
+		summary.DurationMS = a.runningDurationMS
+	}
+	switch {
+	case a.failed:
+		summary.Status = "failed"
+	case a.succeeded:
+		summary.Status = "succeeded"
+	case a.attempted:
+		summary.Status = "attempting"
+	}
+	if !a.lastHeartbeatAt.IsZero() {
+		lastHeartbeatAt := a.lastHeartbeatAt
+		summary.LastHeartbeatAt = &lastHeartbeatAt
+	}
+	summary.Active = !a.terminal && a.lastHeartbeatAt.After(now.Add(-activeSessionTimeout))
+	return summary
 }
 
 func buildTelemetryOverview(records []TelemetryRecord, now time.Time, window time.Duration) telemetryOverview {
@@ -507,22 +545,7 @@ func buildTelemetryOverview(records []TelemetryRecord, now time.Time, window tim
 	activeISPs := make(map[string]int)
 	activeOS := make(map[string]int)
 	for _, session := range sessions {
-		session.summary.SourceIP = firstNonEmpty(session.observedClientIP, session.reportedClientIP, session.fallbackSourceIP)
-		session.summary.ISP = firstNonEmpty(session.isp, session.summary.Organization, session.summary.ASN)
-		session.summary.DeviceInfo = deviceInfoLabel(session.deviceManufacturer, session.deviceModel, session.summary.OperatingSystem)
-		// connection_ended carries the final duration; until then, surface the
-		// running duration from heartbeats so active sessions aren't blank.
-		if session.summary.DurationMS == 0 {
-			session.summary.DurationMS = session.runningDurationMS
-		}
-		switch {
-		case session.failed:
-			session.summary.Status = "failed"
-		case session.succeeded:
-			session.summary.Status = "succeeded"
-		case session.attempted:
-			session.summary.Status = "attempting"
-		}
+		summary := session.finalize(now)
 		if session.attempted {
 			overview.Totals.Attempts++
 		}
@@ -532,24 +555,19 @@ func buildTelemetryOverview(records []TelemetryRecord, now time.Time, window tim
 		if session.failed {
 			overview.Totals.Failures++
 		}
-		incrementNonEmpty(countryCounts, session.summary.Country)
-		incrementNonEmpty(cityCounts, session.summary.City)
-		incrementNonEmpty(ispCounts, session.summary.ISP)
-		if !session.lastHeartbeatAt.IsZero() {
-			lastHeartbeatAt := session.lastHeartbeatAt
-			session.summary.LastHeartbeatAt = &lastHeartbeatAt
-		}
-		session.summary.Active = !session.terminal && session.lastHeartbeatAt.After(now.Add(-activeSessionTimeout))
-		if session.summary.Active {
+		incrementNonEmpty(countryCounts, summary.Country)
+		incrementNonEmpty(cityCounts, summary.City)
+		incrementNonEmpty(ispCounts, summary.ISP)
+		if summary.Active {
 			overview.Totals.ActiveSessions++
-			activeClients[session.summary.ClientID] = struct{}{}
-			incrementNonEmpty(activeRelays, session.summary.RelayID)
-			incrementNonEmpty(activeCountries, session.summary.Country)
-			incrementNonEmpty(activeCities, session.summary.City)
-			incrementNonEmpty(activeISPs, session.summary.ISP)
-			incrementNonEmpty(activeOS, session.summary.OperatingSystem)
+			activeClients[summary.ClientID] = struct{}{}
+			incrementNonEmpty(activeRelays, summary.RelayID)
+			incrementNonEmpty(activeCountries, summary.Country)
+			incrementNonEmpty(activeCities, summary.City)
+			incrementNonEmpty(activeISPs, summary.ISP)
+			incrementNonEmpty(activeOS, summary.OperatingSystem)
 		}
-		overview.Recent = append(overview.Recent, session.summary)
+		overview.Recent = append(overview.Recent, summary)
 	}
 	overview.Totals.ActiveClients = len(activeClients)
 	if overview.Totals.Attempts > 0 {
@@ -571,9 +589,7 @@ func buildTelemetryOverview(records []TelemetryRecord, now time.Time, window tim
 	for _, relay := range relays {
 		overview.TopRelays = append(overview.TopRelays, *relay)
 	}
-	sort.Slice(overview.TopRelays, func(i, j int) bool {
-		return overview.TopRelays[i].Successes+overview.TopRelays[i].Failures > overview.TopRelays[j].Successes+overview.TopRelays[j].Failures
-	})
+	sortTopRelays(overview.TopRelays)
 	if len(overview.TopRelays) > 10 {
 		overview.TopRelays = overview.TopRelays[:10]
 	}
@@ -590,8 +606,20 @@ func buildTelemetryOverview(records []TelemetryRecord, now time.Time, window tim
 	for relayID, speed := range speeds {
 		overview.SpeedTests = append(overview.SpeedTests, speedTestSummary{RelayID: relayID, Tests: speed.tests, AverageMbps: float64(speed.mbps) / float64(speed.tests) / 1000, AverageTTFBMS: float64(speed.ttfb) / float64(speed.tests)})
 	}
-	sort.Slice(overview.SpeedTests, func(i, j int) bool { return overview.SpeedTests[i].AverageMbps > overview.SpeedTests[j].AverageMbps })
+	sortSpeedTests(overview.SpeedTests)
 	return overview
+}
+
+// sortTopRelays and sortSpeedTests are shared by the in-memory aggregator and
+// the Postgres querier so both rank identically.
+func sortTopRelays(relays []relaySummary) {
+	sort.Slice(relays, func(i, j int) bool {
+		return relays[i].Successes+relays[i].Failures > relays[j].Successes+relays[j].Failures
+	})
+}
+
+func sortSpeedTests(speedTests []speedTestSummary) {
+	sort.Slice(speedTests, func(i, j int) bool { return speedTests[i].AverageMbps > speedTests[j].AverageMbps })
 }
 
 func applyRelayLabels(ov *telemetryOverview, labels map[string]string) {

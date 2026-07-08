@@ -111,7 +111,7 @@ func TestDashboardLoginOverviewAndLogout(t *testing.T) {
 
 func TestDashboardRejectsExpiredSessionAndInvalidWindow(t *testing.T) {
 	store := &dashboardTelemetryStore{}
-	dashboard := newDashboardServer("secret", store)
+	dashboard := newDashboardServer("secret", newTelemetryReaderQuerier(store))
 	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
 	dashboard.now = func() time.Time { return now }
 	dashboard.sessions["expired"] = now.Add(-time.Second)
@@ -326,7 +326,7 @@ func TestDashboardSessionsPagination(t *testing.T) {
 			t.Fatalf("write telemetry: %v", err)
 		}
 	}
-	dashboard := newDashboardServer("secret", store)
+	dashboard := newDashboardServer("secret", newTelemetryReaderQuerier(store))
 	dashboard.now = func() time.Time { return now }
 	dashboard.relayLabels = func() map[string]string { return map[string]string{"relay-1": "proud-falcon"} }
 	dashboard.sessions["valid"] = now.Add(time.Hour)

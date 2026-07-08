@@ -22,8 +22,12 @@ type Config struct {
 	RegistrationToken string
 	VolunteerLeaseTTL time.Duration
 	TelemetrySink     TelemetrySink
-	TelemetryReader   TelemetryReader
-	DashboardToken    string
+	// TelemetryReader backs the dashboard by aggregating records in Go on
+	// every request (the JSONL sink's path). TelemetryQuerier backs it with
+	// pre-aggregated queries (the Postgres store) and wins when both are set.
+	TelemetryReader  TelemetryReader
+	TelemetryQuerier TelemetryQuerier
+	DashboardToken   string
 	// TrustedProxyCIDRs are additional CIDRs (beyond Cloudflare's published ranges) whose forwarded
 	// CF-Connecting-IP / X-Forwarded-For headers the broker will trust for the real client IP.
 	TrustedProxyCIDRs []string
@@ -58,8 +62,12 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 	mux.HandleFunc("GET /api/v1/relays", rateLimited(relayListLimiter, clientIP, 10, listRelaysHandler(store, cfg.TelemetrySink, clientIP, clientSeen)))
 	mux.HandleFunc("POST /api/v1/telemetry/events", rateLimited(telemetryLimiter, clientIP, 10, telemetryHandler(cfg.TelemetrySink, store, clientIP)))
 	mux.HandleFunc("GET /api/v1/speed-test", rateLimited(speedTestLimiter, clientIP, 30, speedTestHandler(speedTestMaxConcurrent)))
-	if cfg.DashboardToken != "" && cfg.TelemetryReader != nil {
-		dashboard := newDashboardServer(cfg.DashboardToken, cfg.TelemetryReader)
+	querier := cfg.TelemetryQuerier
+	if querier == nil && cfg.TelemetryReader != nil {
+		querier = newTelemetryReaderQuerier(cfg.TelemetryReader)
+	}
+	if cfg.DashboardToken != "" && querier != nil {
+		dashboard := newDashboardServer(cfg.DashboardToken, querier)
 		dashboard.relayLabels = relayLabelResolver(store)
 		dashboard.register(mux)
 	}
