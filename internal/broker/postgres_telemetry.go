@@ -31,16 +31,27 @@ const (
 
 	postgresTelemetryFlushTimeout = 15 * time.Second
 	postgresTelemetryQueryTimeout = 30 * time.Second
+
+	// telemetryPartitionPrefix is the fixed prefix of a daily partition's
+	// table name; the suffix is the UTC day as YYYYMMDD. Both creating a
+	// partition and finding aged-out ones to drop route through it, so the
+	// naming scheme lives in exactly one place.
+	telemetryPartitionPrefix = "telemetry_events_"
 )
+
+// PostgresTelemetrySink drops whole aged-out daily partitions rather than
+// pruning on write, so it satisfies TelemetryPruner for the maintenance loop.
+var _ TelemetryPruner = (*PostgresTelemetrySink)(nil)
 
 // The envelope every query filters or sorts on lives in real columns; the
 // flexible remainder (attributes, measurements, destination, app identity,
 // schema_version) rides in one jsonb payload. Daily partitions on received_at
-// make the future retention job a cheap DROP TABLE instead of a bulk DELETE;
-// partitions themselves are created on demand (see ensurePartition), since
-// CREATE TABLE cannot be templated here. Indexes are defined on the parent so
-// every partition inherits them. Deliberately NO GIN index on payload — the
-// production box is small and nothing queries into the payload yet.
+// make retention a cheap DROP TABLE instead of a bulk DELETE (see
+// PruneTelemetry); partitions themselves are created on demand (see
+// ensurePartition), since CREATE TABLE cannot be templated here. Indexes are
+// defined on the parent so every partition inherits them. Deliberately NO GIN
+// index on payload — the production box is small and nothing queries into the
+// payload yet.
 const postgresTelemetrySchema = `
 CREATE TABLE IF NOT EXISTS telemetry_events (
 	received_at timestamptz NOT NULL,
@@ -421,9 +432,28 @@ func telemetryPartitionDay(at time.Time) time.Time {
 	return at.UTC().Truncate(24 * time.Hour)
 }
 
+func telemetryPartitionName(day time.Time) string {
+	return telemetryPartitionPrefix + telemetryPartitionDay(day).Format("20060102")
+}
+
+// telemetryPartitionNameDay recovers the UTC day a partition covers from its
+// table name, reporting false for any name that is not one of ours (so a
+// hand-created or unrelated child table is never mistaken for a drop target).
+func telemetryPartitionNameDay(name string) (time.Time, bool) {
+	suffix, ok := strings.CutPrefix(name, telemetryPartitionPrefix)
+	if !ok {
+		return time.Time{}, false
+	}
+	day, err := time.ParseInLocation("20060102", suffix, time.UTC)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return day, true
+}
+
 func (s *PostgresTelemetrySink) ensurePartition(ctx context.Context, at time.Time) error {
 	day := telemetryPartitionDay(at)
-	name := "telemetry_events_" + day.Format("20060102")
+	name := telemetryPartitionName(day)
 
 	s.mu.Lock()
 	_, ensured := s.partitions[name]
@@ -454,6 +484,68 @@ func (s *PostgresTelemetrySink) ensurePartition(ctx context.Context, at time.Tim
 	s.partitions[name] = struct{}{}
 	s.mu.Unlock()
 	return nil
+}
+
+// PruneTelemetry drops the daily partitions whose entire received_at range has
+// aged out of the retention window, reclaiming their storage with a cheap DROP
+// TABLE rather than a bulk DELETE. It returns the names of the partitions it
+// dropped. Today's and any partition still holding a row inside the window are
+// left untouched, so the dashboard's 7-day view and the status-log reader
+// never lose data they would query.
+func (s *PostgresTelemetrySink) PruneTelemetry(now time.Time) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), postgresTelemetryQueryTimeout)
+	defer cancel()
+
+	// A partition covers [day, day+24h). It is safe to drop once its upper
+	// bound has reached the retention cutoff: every row it can hold is then
+	// strictly older than the window anything ever reads.
+	cutoff := now.UTC().Add(-telemetryRetention)
+	expired, err := s.expiredPartitions(ctx, cutoff)
+	if err != nil {
+		return nil, err
+	}
+
+	var dropped []string
+	for _, name := range expired {
+		// name came from the catalog and matched the daily-partition pattern,
+		// so interpolating it into the DDL is safe (DROP takes no parameters).
+		if _, err := s.pool.Exec(ctx, `DROP TABLE IF EXISTS `+name); err != nil {
+			return dropped, fmt.Errorf("drop telemetry partition %s: %w", name, err)
+		}
+		dropped = append(dropped, name)
+		s.mu.Lock()
+		delete(s.partitions, name)
+		s.mu.Unlock()
+	}
+	return dropped, nil
+}
+
+// expiredPartitions lists the telemetry partitions whose day is fully older
+// than cutoff. It enumerates the catalog rather than the in-process cache so
+// partitions left behind by an earlier broker process are collected too.
+func (s *PostgresTelemetrySink) expiredPartitions(ctx context.Context, cutoff time.Time) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT c.relname
+		FROM pg_inherits i
+		JOIN pg_class c ON c.oid = i.inhrelid
+		WHERE i.inhparent = 'telemetry_events'::regclass
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list telemetry partitions: %w", err)
+	}
+	defer rows.Close()
+
+	var expired []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("scan telemetry partition: %w", err)
+		}
+		if day, ok := telemetryPartitionNameDay(name); ok && !day.Add(24*time.Hour).After(cutoff) {
+			expired = append(expired, name)
+		}
+	}
+	return expired, rows.Err()
 }
 
 func (s *PostgresTelemetrySink) Close() error {

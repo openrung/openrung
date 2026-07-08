@@ -132,6 +132,15 @@ type TelemetryReader interface {
 	TelemetryRecords(time.Time) []TelemetryRecord
 }
 
+// TelemetryPruner is implemented by telemetry stores whose retention is a
+// distinct reclamation step the broker's maintenance loop drives on its tick.
+// The Postgres store drops daily partitions that have aged out of the window
+// and returns their names; the JSONL sink prunes on write and does not
+// implement this.
+type TelemetryPruner interface {
+	PruneTelemetry(now time.Time) ([]string, error)
+}
+
 // storedTelemetryRecord pairs a record with its encoded JSONL size so the
 // memory and file budgets can be enforced without re-marshalling.
 type storedTelemetryRecord struct {

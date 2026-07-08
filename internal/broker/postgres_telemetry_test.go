@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -235,6 +237,127 @@ func TestPostgresTelemetrySinkPendingCapDropsOldest(t *testing.T) {
 	}
 }
 
+func TestPostgresTelemetrySinkPruneDropsAgedPartitions(t *testing.T) {
+	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+	sink := newTestPostgresTelemetrySink(t, now)
+	dropAllTelemetryPartitions(t, sink)
+
+	// retention is 7 days, so d8/d10 have aged out while today/d3 have not.
+	records := []TelemetryRecord{
+		validTelemetryRecord(now, "today"),
+		validTelemetryRecord(now.Add(-3*24*time.Hour), "d3"),
+		validTelemetryRecord(now.Add(-8*24*time.Hour), "d8"),
+		validTelemetryRecord(now.Add(-10*24*time.Hour), "d10"),
+	}
+	if err := sink.WriteTelemetry(context.Background(), records); err != nil {
+		t.Fatalf("write telemetry: %v", err)
+	}
+	if err := sink.flush(); err != nil {
+		t.Fatalf("flush telemetry: %v", err)
+	}
+	if got := countTelemetryRows(t, sink); got != 4 {
+		t.Fatalf("expected 4 rows before prune, got %d", got)
+	}
+
+	dropped, err := sink.PruneTelemetry(now)
+	if err != nil {
+		t.Fatalf("prune telemetry: %v", err)
+	}
+	sort.Strings(dropped)
+	want := []string{"telemetry_events_20260614", "telemetry_events_20260616"}
+	if !slices.Equal(dropped, want) {
+		t.Fatalf("dropped = %v, want %v", dropped, want)
+	}
+	for _, day := range []string{"20260614", "20260616"} {
+		if telemetryPartitionExists(t, sink, day) {
+			t.Fatalf("expected partition %s dropped", day)
+		}
+	}
+	for _, day := range []string{"20260621", "20260624"} {
+		if !telemetryPartitionExists(t, sink, day) {
+			t.Fatalf("expected partition %s kept", day)
+		}
+	}
+	if got := countTelemetryRows(t, sink); got != 2 {
+		t.Fatalf("expected 2 rows after prune, got %d", got)
+	}
+
+	// Dropped partitions must leave the in-process cache so it never reports a
+	// partition that no longer exists.
+	sink.mu.RLock()
+	_, cached := sink.partitions["telemetry_events_20260616"]
+	sink.mu.RUnlock()
+	if cached {
+		t.Fatal("expected dropped partition removed from the cache")
+	}
+
+	// Nothing else has aged out, so a second prune drops nothing.
+	again, err := sink.PruneTelemetry(now)
+	if err != nil {
+		t.Fatalf("second prune: %v", err)
+	}
+	if len(again) != 0 {
+		t.Fatalf("expected no further drops, got %v", again)
+	}
+}
+
+func TestPostgresTelemetrySinkPruneBoundaryIsInclusive(t *testing.T) {
+	// Midnight now lands the retention cutoff exactly on a partition boundary.
+	now := time.Date(2026, 6, 24, 0, 0, 0, 0, time.UTC)
+	sink := newTestPostgresTelemetrySink(t, now)
+	dropAllTelemetryPartitions(t, sink)
+
+	// cutoff = now - 7d = 2026-06-17 00:00. Partition 20260616 spans
+	// [06-16, 06-17): its upper bound equals the cutoff, so every row it can
+	// hold is older than retention and it must be dropped. Partition 20260617
+	// spans [06-17, 06-18): it still overlaps the window, so it must be kept.
+	records := []TelemetryRecord{
+		validTelemetryRecord(time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC), "edge-old"),
+		validTelemetryRecord(time.Date(2026, 6, 17, 0, 0, 0, 0, time.UTC), "edge-keep"),
+	}
+	if err := sink.WriteTelemetry(context.Background(), records); err != nil {
+		t.Fatalf("write telemetry: %v", err)
+	}
+	if err := sink.flush(); err != nil {
+		t.Fatalf("flush telemetry: %v", err)
+	}
+
+	dropped, err := sink.PruneTelemetry(now)
+	if err != nil {
+		t.Fatalf("prune telemetry: %v", err)
+	}
+	if !slices.Equal(dropped, []string{"telemetry_events_20260616"}) {
+		t.Fatalf("dropped = %v, want [telemetry_events_20260616]", dropped)
+	}
+	if telemetryPartitionExists(t, sink, "20260616") {
+		t.Fatal("expected boundary-old partition dropped")
+	}
+	if !telemetryPartitionExists(t, sink, "20260617") {
+		t.Fatal("expected boundary-keep partition retained")
+	}
+}
+
+func TestTelemetryPartitionNameDay(t *testing.T) {
+	day, ok := telemetryPartitionNameDay("telemetry_events_20260624")
+	if !ok || !day.Equal(time.Date(2026, 6, 24, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("parse valid name: ok=%v day=%s", ok, day)
+	}
+	// A partition name always round-trips through the day helper.
+	if got := telemetryPartitionName(day); got != "telemetry_events_20260624" {
+		t.Fatalf("round-trip name = %q", got)
+	}
+	for _, name := range []string{
+		"telemetry_events",          // the parent table, no day suffix
+		"relay_metrics",             // an unrelated child table
+		"telemetry_events_2026june", // malformed suffix
+		"telemetry_events_",         // empty suffix
+	} {
+		if _, ok := telemetryPartitionNameDay(name); ok {
+			t.Errorf("expected %q to be rejected", name)
+		}
+	}
+}
+
 func validTelemetryRecord(at time.Time, eventID string) TelemetryRecord {
 	return TelemetryRecord{
 		ReceivedAt: at,
@@ -286,6 +409,42 @@ func cleanupPostgresTelemetry(t *testing.T, sink *PostgresTelemetrySink) {
 	sink.mu.Lock()
 	sink.pending = nil
 	sink.pendingBytes = 0
+	sink.mu.Unlock()
+}
+
+// dropAllTelemetryPartitions gives a test a clean partition slate regardless of
+// what earlier tests left in the shared database, keeping the in-process cache
+// in step so subsequent writes recreate partitions on demand.
+func dropAllTelemetryPartitions(t *testing.T, sink *PostgresTelemetrySink) {
+	t.Helper()
+	rows, err := sink.pool.Query(context.Background(), `
+		SELECT c.relname
+		FROM pg_inherits i
+		JOIN pg_class c ON c.oid = i.inhrelid
+		WHERE i.inhparent = 'telemetry_events'::regclass`)
+	if err != nil {
+		t.Fatalf("list telemetry partitions: %v", err)
+	}
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			t.Fatalf("scan telemetry partition: %v", err)
+		}
+		names = append(names, name)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatalf("list telemetry partitions: %v", err)
+	}
+	for _, name := range names {
+		if _, err := sink.pool.Exec(context.Background(), `DROP TABLE IF EXISTS `+name); err != nil {
+			t.Fatalf("drop telemetry partition %s: %v", name, err)
+		}
+	}
+	sink.mu.Lock()
+	sink.partitions = map[string]struct{}{}
 	sink.mu.Unlock()
 }
 
