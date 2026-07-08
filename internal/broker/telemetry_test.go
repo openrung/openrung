@@ -397,6 +397,102 @@ func TestJSONLTelemetrySinkEnforcesMemoryBudget(t *testing.T) {
 	}
 }
 
+func TestJSONLTelemetrySinkLoadTrimsToNewestWithinBudget(t *testing.T) {
+	now := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "telemetry.jsonl")
+
+	// A pre-existing file with far more records than the budget can hold, oldest
+	// first (append-only order).
+	const total = 50
+	var buf bytes.Buffer
+	var recordSize int64
+	for index := 0; index < total; index++ {
+		line, err := json.Marshal(telemetryRecordAt(now, fmt.Sprintf("event-%03d", index)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		buf.Write(line)
+		buf.WriteByte('\n')
+		recordSize = int64(len(line) + 1)
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Budget holds 10 records; loading must keep the 10 newest and honour the
+	// budget invariant despite the mid-scan 2× overshoot.
+	const want = 10
+	sink, err := newJSONLTelemetrySinkWithLimits(path, func() time.Time { return now }, time.Hour, time.Hour, want*recordSize, maxTelemetryFileBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sink.Close()
+
+	if sink.memoryBytes > sink.memoryLimit {
+		t.Fatalf("loaded set exceeds budget: %d > %d", sink.memoryBytes, sink.memoryLimit)
+	}
+	records := sink.TelemetryRecords(time.Time{})
+	if len(records) != want {
+		t.Fatalf("expected %d newest records retained, got %d", want, len(records))
+	}
+	for i, record := range records {
+		wantID := fmt.Sprintf("event-%03d", total-want+i)
+		if record.Event.EventID != wantID {
+			t.Fatalf("retained record %d = %q, want %q (oldest should be dropped)", i, record.Event.EventID, wantID)
+		}
+	}
+}
+
+func TestJSONLTelemetrySinkLoadCompactionStaysLinear(t *testing.T) {
+	now := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "telemetry.jsonl")
+
+	// Many more records than the budget retains, so loading must trim repeatedly.
+	const total = 20_000
+	sample, err := json.Marshal(telemetryRecordAt(now, "event-000000"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordSize := int64(len(sample) + 1)
+
+	var buf bytes.Buffer
+	buf.Grow(int(recordSize) * total)
+	for index := 0; index < total; index++ {
+		line, err := json.Marshal(telemetryRecordAt(now, fmt.Sprintf("event-%06d", index)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		buf.Write(line)
+		buf.WriteByte('\n')
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// The old per-line trim shifted the whole retained slice on every over-budget
+	// line, so total shifts were ~O(total²) (here ~1000× this bound) and startup
+	// hung on a large file. The amortised trim moves each record a constant number
+	// of times, keeping shifts O(total). This is a deterministic, hardware-
+	// independent guard against reintroducing the quadratic load.
+	const retain = 2000
+	sink, err := newJSONLTelemetrySinkWithLimits(path, func() time.Time { return now }, time.Hour, time.Hour, retain*recordSize, maxTelemetryFileBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sink.Close()
+
+	if sink.memoryBytes > sink.memoryLimit {
+		t.Fatalf("loaded set exceeds budget: %d > %d", sink.memoryBytes, sink.memoryLimit)
+	}
+	records := sink.TelemetryRecords(time.Time{})
+	if len(records) == 0 || records[len(records)-1].Event.EventID != "event-019999" {
+		t.Fatalf("expected newest record retained last, got %d records", len(records))
+	}
+	if sink.compactionShifts > 4*int64(total) {
+		t.Fatalf("load shifted %d records for %d total; expected O(total) — possible O(n²) regression", sink.compactionShifts, total)
+	}
+}
+
 func TestJSONLTelemetrySinkCompactsOversizedFile(t *testing.T) {
 	now := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
 	path := filepath.Join(t.TempDir(), "telemetry.jsonl")

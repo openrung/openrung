@@ -149,13 +149,18 @@ type JSONLTelemetrySink struct {
 	fileBytes   int64
 	memoryLimit int64
 	fileLimit   int64
-	now         func() time.Time
-	stop        chan struct{}
-	done        chan struct{}
-	closeOnce   sync.Once
-	closeErr    error
-	writeErr    error
-	closed      bool
+	// compactionShifts counts records slid to the front of the slice by
+	// dropOldestOverBudgetLocked. Over-budget loads must keep this O(number of
+	// records) — the per-line trim it replaced made it O(records²) and hung
+	// startup on a large file. Tests assert the linear bound.
+	compactionShifts int64
+	now              func() time.Time
+	stop             chan struct{}
+	done             chan struct{}
+	closeOnce        sync.Once
+	closeErr         error
+	writeErr         error
+	closed           bool
 }
 
 func NewJSONLTelemetrySink(path string) (*JSONLTelemetrySink, error) {
@@ -167,6 +172,13 @@ func newJSONLTelemetrySink(path string, now func() time.Time) (*JSONLTelemetrySi
 }
 
 func newJSONLTelemetrySinkWithIntervals(path string, now func() time.Time, flushInterval, syncInterval time.Duration) (*JSONLTelemetrySink, error) {
+	return newJSONLTelemetrySinkWithLimits(path, now, flushInterval, syncInterval, maxTelemetryMemoryBytes, maxTelemetryFileBytes)
+}
+
+// newJSONLTelemetrySinkWithLimits is the full constructor; the byte budgets are
+// parameters so tests can exercise the load- and write-time trimming paths
+// without materialising a multi-megabyte file.
+func newJSONLTelemetrySinkWithLimits(path string, now func() time.Time, flushInterval, syncInterval time.Duration, memoryLimit, fileLimit int64) (*JSONLTelemetrySink, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("telemetry file path is required")
 	}
@@ -181,7 +193,7 @@ func newJSONLTelemetrySinkWithIntervals(path string, now func() time.Time, flush
 	}
 	sink := &JSONLTelemetrySink{
 		path: path, file: file, now: now, stop: make(chan struct{}), done: make(chan struct{}),
-		memoryLimit: maxTelemetryMemoryBytes, fileLimit: maxTelemetryFileBytes,
+		memoryLimit: memoryLimit, fileLimit: fileLimit,
 	}
 	if err := sink.loadRecent(); err != nil {
 		_ = file.Close()
@@ -222,13 +234,28 @@ func (s *JSONLTelemetrySink) loadRecent() error {
 		size := int64(len(scanner.Bytes()) + 1)
 		s.records = append(s.records, storedTelemetryRecord{record: record, bytes: size})
 		s.memoryBytes += size
-		// Enforce the budget while scanning so loading an oversized file cannot
-		// balloon memory before a post-load trim.
-		s.dropOldestOverBudgetLocked()
+		// Keep memory bounded during the scan, but trim only after overshooting the
+		// budget by 2×, not on every line. dropOldestOverBudgetLocked re-copies the
+		// surviving slice, so calling it per line made loading an oversized file
+		// O(n²) — a 169 MB file hung broker startup for minutes. Amortising the trim
+		// over a 2× overshoot keeps the whole load O(n) (each record is copied O(1)
+		// times) while memory still peaks at ~2× the budget instead of the whole
+		// file. The final trim below restores the steady-state ≤ budget invariant.
+		// Keep memory bounded during the scan, but trim only after overshooting the
+		// budget by 2×, not on every line. dropOldestOverBudgetLocked re-copies the
+		// surviving slice, so calling it per line made loading an oversized file
+		// O(n²) — a 169 MB file hung broker startup for minutes. Amortising the trim
+		// over a 2× overshoot keeps the whole load O(n) (each record is copied O(1)
+		// times) while memory still peaks at ~2× the budget instead of the whole
+		// file. The final trim below restores the steady-state ≤ budget invariant.
+		if s.memoryBytes > 2*s.memoryLimit {
+			s.dropOldestOverBudgetLocked()
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("read telemetry file: %w", err)
 	}
+	s.dropOldestOverBudgetLocked()
 	_, err = s.file.Seek(0, io.SeekEnd)
 	return err
 }
@@ -386,6 +413,7 @@ func (s *JSONLTelemetrySink) dropOldestOverBudgetLocked() {
 	if drop == 0 {
 		return
 	}
+	s.compactionShifts += int64(len(s.records) - drop)
 	s.records = append(s.records[:0], s.records[drop:]...)
 }
 
