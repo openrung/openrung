@@ -109,6 +109,37 @@ func TestDashboardLoginOverviewAndLogout(t *testing.T) {
 	}
 }
 
+func TestDashboardAPIResponsesSetNoStore(t *testing.T) {
+	store := &dashboardTelemetryStore{}
+	dashboard := newDashboardServer("secret", newTelemetryReaderQuerier(store))
+	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+	dashboard.now = func() time.Time { return now }
+	dashboard.sessions["valid"] = now.Add(time.Hour)
+
+	// The dashboard's data changes every few seconds; a cached API response is
+	// what forced users to hard-reload to see fresh numbers.
+	cases := []struct {
+		name    string
+		path    string
+		handler http.HandlerFunc
+	}{
+		{"overview", "/admin/api/telemetry/overview?window=24h", dashboard.overview},
+		{"sessions", "/admin/api/telemetry/sessions?window=24h", dashboard.listSessions},
+	}
+	for _, tc := range cases {
+		request := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		request.AddCookie(&http.Cookie{Name: dashboardCookieName, Value: "valid"})
+		response := httptest.NewRecorder()
+		dashboard.requireAuth(tc.handler).ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s: expected 200, got %d", tc.name, response.Code)
+		}
+		if got := response.Header().Get("Cache-Control"); got != "no-store" {
+			t.Errorf("%s: Cache-Control = %q, want no-store", tc.name, got)
+		}
+	}
+}
+
 func TestDashboardRejectsExpiredSessionAndInvalidWindow(t *testing.T) {
 	store := &dashboardTelemetryStore{}
 	dashboard := newDashboardServer("secret", newTelemetryReaderQuerier(store))
