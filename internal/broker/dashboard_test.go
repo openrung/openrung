@@ -139,6 +139,7 @@ func TestBuildTelemetryOverview(t *testing.T) {
 	clientOneAttributes := map[string]string{
 		"android_api": "37", "country": "US", "city": "Austin",
 		"isp": "Google Fiber Inc.", "organization": "Google Fiber Inc", "asn": "AS16591",
+		"device_manufacturer": "Google", "device_model": "Pixel 7", "app_version": "1.4.0",
 	}
 	records := []TelemetryRecord{
 		dashboardRecord(now.Add(-30*time.Minute), "attempt-1", "connection_attempted", "client-1", "session-1", "", clientOneAttributes, nil),
@@ -190,6 +191,9 @@ func TestBuildTelemetryOverview(t *testing.T) {
 	if firstSession.OperatingSystem != "Android (API 37)" || firstSession.City != "Austin" || firstSession.ISP != "Google Fiber Inc." || firstSession.Organization != "Google Fiber Inc" || firstSession.ASN != "AS16591" {
 		t.Fatalf("unexpected enriched session: %+v", firstSession)
 	}
+	if firstSession.DeviceInfo != "Google Pixel 7 · Android (API 37)" || firstSession.AppVersion != "1.4.0" {
+		t.Fatalf("unexpected device info: info=%q version=%q", firstSession.DeviceInfo, firstSession.AppVersion)
+	}
 	if !firstSession.Active || firstSession.LastHeartbeatAt == nil {
 		t.Fatalf("expected first session to be active: %+v", firstSession)
 	}
@@ -203,6 +207,51 @@ func TestBuildTelemetryOverview(t *testing.T) {
 	encoded, err := json.Marshal(overview)
 	if err != nil || !strings.Contains(string(encoded), `"recent_sessions"`) {
 		t.Fatalf("overview JSON failed: %v %s", err, encoded)
+	}
+}
+
+func TestDeviceInfoLabel(t *testing.T) {
+	cases := []struct {
+		name                        string
+		manufacturer, model, osName string
+		want                        string
+	}{
+		{"android", "Google", "Pixel 7", "Android (API 34)", "Google Pixel 7 · Android (API 34)"},
+		{"ios", "Apple", "iPhone15,2", "iOS 17.5", "Apple iPhone15,2 · iOS 17.5"},
+		{"brand in model deduped", "OnePlus", "OnePlus 9 Pro", "Android (API 33)", "OnePlus 9 Pro · Android (API 33)"},
+		{"desktop has no hardware", "", "", "macOS (arm64)", "macOS (arm64)"},
+		{"manufacturer only", "Samsung", "", "Android (API 31)", "Samsung · Android (API 31)"},
+		{"model only", "", "SM-G991B", "Android (API 31)", "SM-G991B · Android (API 31)"},
+		{"hardware without os", "Google", "Pixel 7", "", "Google Pixel 7"},
+		{"nothing reported", "", "", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := deviceInfoLabel(tc.manufacturer, tc.model, tc.osName); got != tc.want {
+				t.Fatalf("deviceInfoLabel(%q, %q, %q) = %q, want %q", tc.manufacturer, tc.model, tc.osName, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildTelemetryOverviewDerivesiOSDeviceInfo(t *testing.T) {
+	now := time.Date(2026, 7, 7, 12, 30, 0, 0, time.UTC)
+	attrs := map[string]string{
+		"ios_version": "17.5", "device_manufacturer": "Apple", "device_model": "iPhone15,2", "app_version": "1.4.0",
+	}
+	records := []TelemetryRecord{
+		dashboardRecord(now.Add(-time.Minute), "attempt", "connection_attempted", "client-ios", "session-ios", "", attrs, nil),
+	}
+	overview := buildTelemetryOverview(records, now, time.Hour)
+	if len(overview.Recent) != 1 {
+		t.Fatalf("expected one session, got %d", len(overview.Recent))
+	}
+	session := overview.Recent[0]
+	if session.OperatingSystem != "iOS 17.5" {
+		t.Fatalf("expected iOS OS label, got %q", session.OperatingSystem)
+	}
+	if session.DeviceInfo != "Apple iPhone15,2 · iOS 17.5" {
+		t.Fatalf("expected composed device info, got %q", session.DeviceInfo)
 	}
 }
 
