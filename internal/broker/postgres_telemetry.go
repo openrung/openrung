@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -29,6 +30,7 @@ const (
 	maxTelemetryPendingBytes = 16 << 20
 
 	postgresTelemetryFlushTimeout = 15 * time.Second
+	postgresTelemetryQueryTimeout = 30 * time.Second
 )
 
 // The envelope every query filters or sorts on lives in real columns; the
@@ -76,15 +78,15 @@ type telemetryEventPayload struct {
 
 // PostgresTelemetrySink persists telemetry events to a partitioned Postgres
 // table. Writes are buffered and inserted in batches (flushed every
-// telemetryFlushInterval, or immediately at a full HTTP batch); the dashboard
-// still reads from the same bounded in-memory retained set the JSONL sink
-// keeps, backfilled from the newest rows at startup.
+// telemetryFlushInterval, or immediately at a full HTTP batch). Reads happen
+// in Postgres too — TelemetryQuerier aggregation for the dashboard and a
+// short-window SELECT for the operational status log — so broker memory never
+// scales with telemetry volume and startup reads no old events.
 type PostgresTelemetrySink struct {
 	pool *pgxpool.Pool
 	now  func() time.Time
 
-	mu sync.RWMutex
-	telemetryRetained
+	mu           sync.RWMutex
 	pending      []storedTelemetryRecord
 	pendingBytes int64
 	pendingLimit int64
@@ -103,14 +105,12 @@ type PostgresTelemetrySink struct {
 }
 
 func NewPostgresTelemetrySink(ctx context.Context, databaseURL string) (*PostgresTelemetrySink, error) {
-	return newPostgresTelemetrySink(ctx, databaseURL, time.Now, telemetryFlushInterval, maxTelemetryMemoryBytes)
+	return newPostgresTelemetrySink(ctx, databaseURL, time.Now, telemetryFlushInterval)
 }
 
-// newPostgresTelemetrySink is the full constructor; the flush interval and
-// memory budget are parameters so tests can exercise flushing and the
-// backfill trim without waiting on production intervals or materialising
-// tens of megabytes.
-func newPostgresTelemetrySink(ctx context.Context, databaseURL string, now func() time.Time, flushInterval time.Duration, memoryLimit int64) (*PostgresTelemetrySink, error) {
+// newPostgresTelemetrySink is the full constructor; the flush interval is a
+// parameter so tests can keep the ticker out of the way and flush explicitly.
+func newPostgresTelemetrySink(ctx context.Context, databaseURL string, now func() time.Time, flushInterval time.Duration) (*PostgresTelemetrySink, error) {
 	if strings.TrimSpace(databaseURL) == "" {
 		return nil, errors.New("telemetry database URL is required")
 	}
@@ -119,13 +119,12 @@ func newPostgresTelemetrySink(ctx context.Context, databaseURL string, now func(
 		return nil, fmt.Errorf("open telemetry database: %w", err)
 	}
 	sink := &PostgresTelemetrySink{
-		pool:              pool,
-		now:               now,
-		telemetryRetained: telemetryRetained{memoryLimit: memoryLimit},
-		pendingLimit:      maxTelemetryPendingBytes,
-		partitions:        make(map[string]struct{}),
-		stop:              make(chan struct{}),
-		done:              make(chan struct{}),
+		pool:         pool,
+		now:          now,
+		pendingLimit: maxTelemetryPendingBytes,
+		partitions:   make(map[string]struct{}),
+		stop:         make(chan struct{}),
+		done:         make(chan struct{}),
 	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
@@ -145,93 +144,12 @@ func newPostgresTelemetrySink(ctx context.Context, databaseURL string, now func(
 			return nil, err
 		}
 	}
-	if err := sink.loadRecent(ctx); err != nil {
-		pool.Close()
-		return nil, err
-	}
 	go sink.flushLoop(flushInterval)
 	return sink, nil
 }
 
-// loadRecent backfills the in-memory retained set from the newest rows inside
-// the retention window. Reading newest-first and cancelling the query once the
-// memory budget is reached keeps startup O(rows-loaded) no matter how much
-// history the table holds.
-func (s *PostgresTelemetrySink) loadRecent(ctx context.Context) error {
-	loadCtx, cancelLoad := context.WithCancel(ctx)
-	defer cancelLoad()
-
-	cutoff := s.now().UTC().Add(-telemetryRetention)
-	rows, err := s.pool.Query(loadCtx, `
-		SELECT received_at, COALESCE(host(source_ip), ''), event_id, event, occurred_at, client_id, session_id, COALESCE(relay_id, ''), payload
-		FROM telemetry_events
-		WHERE received_at > $1
-		ORDER BY received_at DESC
-	`, cutoff)
-	if err != nil {
-		return fmt.Errorf("load telemetry events: %w", err)
-	}
-	defer rows.Close()
-
-	var loaded []storedTelemetryRecord
-	var loadedBytes int64
-	truncated := false
-	for rows.Next() {
-		var record TelemetryRecord
-		var payload []byte
-		if err := rows.Scan(
-			&record.ReceivedAt,
-			&record.SourceIP,
-			&record.Event.EventID,
-			&record.Event.Event,
-			&record.Event.OccurredAt,
-			&record.Event.ClientID,
-			&record.Event.SessionID,
-			&record.Event.RelayID,
-			&payload,
-		); err != nil {
-			return fmt.Errorf("scan telemetry event: %w", err)
-		}
-		var remainder telemetryEventPayload
-		if err := json.Unmarshal(payload, &remainder); err != nil {
-			return fmt.Errorf("decode telemetry payload: %w", err)
-		}
-		record.Event.SchemaVersion = remainder.SchemaVersion
-		record.Event.Application = remainder.Application
-		record.Event.ApplicationID = remainder.ApplicationID
-		record.Event.DestinationIP = remainder.DestinationIP
-		record.Event.DestinationPort = remainder.DestinationPort
-		record.Event.Protocol = remainder.Protocol
-		record.Event.Attributes = remainder.Attributes
-		record.Event.Measurements = remainder.Measurements
-
-		size := telemetryRecordSize(record)
-		if loadedBytes+size > s.memoryLimit {
-			truncated = true
-			cancelLoad()
-			break
-		}
-		loaded = append(loaded, storedTelemetryRecord{record: record, bytes: size})
-		loadedBytes += size
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil && !(truncated && errors.Is(err, context.Canceled)) {
-		return fmt.Errorf("read telemetry events: %w", err)
-	}
-
-	// Rows arrived newest-first; the retained set is kept oldest-first like
-	// the JSONL sink's, so appends and budget drops stay append/trim-front.
-	for left, right := 0, len(loaded)-1; left < right; left, right = left+1, right-1 {
-		loaded[left], loaded[right] = loaded[right], loaded[left]
-	}
-	s.records = loaded
-	s.memoryBytes = loadedBytes
-	return nil
-}
-
-// telemetryRecordSize is the record's encoded JSON size — the same accounting
-// unit the JSONL sink uses, so the memory budget means the same thing under
-// both backends.
+// telemetryRecordSize is the record's encoded JSON size, used to bound the
+// unflushed write buffer.
 func telemetryRecordSize(record TelemetryRecord) int64 {
 	line, err := json.Marshal(record)
 	if err != nil {
@@ -248,12 +166,9 @@ func (s *PostgresTelemetrySink) WriteTelemetry(ctx context.Context, records []Te
 	}
 	for _, record := range records {
 		size := telemetryRecordSize(record)
-		s.append(record, size)
 		s.pending = append(s.pending, storedTelemetryRecord{record: record, bytes: size})
 		s.pendingBytes += size
 	}
-	s.prune(s.now().UTC().Add(-telemetryRetention))
-	s.dropOldestOverBudget()
 	shouldFlush := len(s.pending) >= postgresTelemetryFlushThreshold
 	s.mu.Unlock()
 
@@ -268,10 +183,80 @@ func (s *PostgresTelemetrySink) WriteTelemetry(ctx context.Context, records []Te
 	return nil
 }
 
+// TelemetryRecords satisfies TelemetryReader for the periodic operational
+// status log, which reads a short (minutes-wide) activity window; result size
+// scales with that window, not with stored history. The dashboard does NOT go
+// through this — it uses the aggregated TelemetryQuerier methods. Reads are
+// best-effort like the JSONL sink's: on query failure it logs and reports no
+// activity rather than failing the caller.
 func (s *PostgresTelemetrySink) TelemetryRecords(since time.Time) []TelemetryRecord {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.recordsSince(since)
+	if err := s.flush(); err != nil {
+		slog.Error("could not flush telemetry before read", "error", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), postgresTelemetryQueryTimeout)
+	defer cancel()
+
+	// received_at prunes partitions; the extra hour mirrors
+	// maxTelemetryFutureSkew so no event the occurred_at filter keeps is lost.
+	rows, err := s.pool.Query(ctx, `
+		SELECT received_at, COALESCE(host(source_ip), ''), event_id, event, occurred_at, client_id, session_id, COALESCE(relay_id, ''), payload
+		FROM telemetry_events
+		WHERE received_at > $1 AND occurred_at >= $2
+		ORDER BY received_at
+	`, since.Add(-maxTelemetryFutureSkew), since)
+	if err != nil {
+		slog.Error("could not read telemetry records", "error", err)
+		return nil
+	}
+	defer rows.Close()
+
+	var records []TelemetryRecord
+	for rows.Next() {
+		record, err := scanTelemetryRecord(rows)
+		if err != nil {
+			slog.Error("could not scan telemetry record", "error", err)
+			return nil
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("could not read telemetry records", "error", err)
+		return nil
+	}
+	return records
+}
+
+func scanTelemetryRecord(row pgx.Row) (TelemetryRecord, error) {
+	var record TelemetryRecord
+	var payload []byte
+	if err := row.Scan(
+		&record.ReceivedAt,
+		&record.SourceIP,
+		&record.Event.EventID,
+		&record.Event.Event,
+		&record.Event.OccurredAt,
+		&record.Event.ClientID,
+		&record.Event.SessionID,
+		&record.Event.RelayID,
+		&payload,
+	); err != nil {
+		return TelemetryRecord{}, fmt.Errorf("scan telemetry event: %w", err)
+	}
+	var remainder telemetryEventPayload
+	if err := json.Unmarshal(payload, &remainder); err != nil {
+		return TelemetryRecord{}, fmt.Errorf("decode telemetry payload: %w", err)
+	}
+	record.ReceivedAt = record.ReceivedAt.UTC()
+	record.Event.OccurredAt = record.Event.OccurredAt.UTC()
+	record.Event.SchemaVersion = remainder.SchemaVersion
+	record.Event.Application = remainder.Application
+	record.Event.ApplicationID = remainder.ApplicationID
+	record.Event.DestinationIP = remainder.DestinationIP
+	record.Event.DestinationPort = remainder.DestinationPort
+	record.Event.Protocol = remainder.Protocol
+	record.Event.Attributes = remainder.Attributes
+	record.Event.Measurements = remainder.Measurements
+	return record, nil
 }
 
 func (s *PostgresTelemetrySink) flushLoop(flushInterval time.Duration) {

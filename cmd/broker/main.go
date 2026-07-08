@@ -59,16 +59,23 @@ func run() error {
 		slog.Error("could not initialize telemetry storage", "error", err)
 		return err
 	}
-	handler := broker.NewServer(store, broker.Config{
+	cfg := broker.Config{
 		RegistrationToken: registrationToken,
 		VolunteerLeaseTTL: *leaseTTL,
 		TelemetrySink:     telemetrySink,
-		TelemetryReader:   telemetrySink,
 		DashboardToken:    os.Getenv("OPENRUNG_DASHBOARD_TOKEN"),
 		// Cloudflare's published ranges are trusted by default; add more (e.g. an upstream LB) here.
 		TrustedProxyCIDRs: splitAndTrim(os.Getenv("OPENRUNG_TRUSTED_PROXY_CIDRS")),
 		GeoIP:             geoResolver,
-	})
+	}
+	// The Postgres store aggregates dashboard queries in SQL; the JSONL sink's
+	// dashboard is aggregated in Go from its in-memory record set.
+	if querier, ok := telemetrySink.(broker.TelemetryQuerier); ok {
+		cfg.TelemetryQuerier = querier
+	} else {
+		cfg.TelemetryReader = telemetrySink
+	}
+	handler := broker.NewServer(store, cfg)
 	maintenanceInterval := *statusInterval
 	if maintenanceInterval <= 0 {
 		maintenanceInterval = time.Minute

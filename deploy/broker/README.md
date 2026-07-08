@@ -90,8 +90,9 @@ automatically) instead of the JSONL file. It uses
 `OPENRUNG_TELEMETRY_DATABASE_URL`, falling back to
 `OPENRUNG_RELAY_DATABASE_URL` so a broker already on the Postgres relay store
 needs no extra configuration; the broker refuses to start if neither is set.
-The dashboard still aggregates in memory from the most recent events, so it
-works the same under either backend.
+In postgres mode the admin dashboard aggregates in SQL, bounded by the
+selected time window, so dashboard cost and broker memory stay flat as event
+history grows.
 
 ## Telemetry dashboard
 
