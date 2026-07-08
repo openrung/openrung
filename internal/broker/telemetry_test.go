@@ -614,3 +614,33 @@ func telemetryRecordAt(occurredAt time.Time, eventID string) TelemetryRecord {
 		},
 	}
 }
+
+func TestTelemetryRetainedBudgetPruneAndSince(t *testing.T) {
+	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+	retained := telemetryRetained{memoryLimit: 30}
+	for i := 0; i < 4; i++ {
+		at := now.Add(time.Duration(i) * time.Minute)
+		retained.append(TelemetryRecord{
+			ReceivedAt: at,
+			Event:      TelemetryEvent{EventID: fmt.Sprintf("event-%d", i), OccurredAt: at},
+		}, 10)
+	}
+
+	retained.dropOldestOverBudget()
+	if retained.memoryBytes != 30 || len(retained.records) != 3 {
+		t.Fatalf("unexpected retained state after budget drop: %d bytes, %d records", retained.memoryBytes, len(retained.records))
+	}
+	if retained.records[0].record.Event.EventID != "event-1" {
+		t.Fatalf("expected oldest record dropped first, got %q", retained.records[0].record.Event.EventID)
+	}
+
+	retained.prune(now.Add(2 * time.Minute))
+	if retained.memoryBytes != 20 || len(retained.records) != 2 {
+		t.Fatalf("unexpected retained state after prune: %d bytes, %d records", retained.memoryBytes, len(retained.records))
+	}
+
+	since := retained.recordsSince(now.Add(3 * time.Minute))
+	if len(since) != 1 || since[0].Event.EventID != "event-3" {
+		t.Fatalf("unexpected recordsSince result: %+v", since)
+	}
+}
