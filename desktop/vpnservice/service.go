@@ -327,6 +327,10 @@ func (s *Service) applySystemProxy(conn *connection, port int) {
 	}
 	if err := s.proxy.Set("127.0.0.1", port); err != nil {
 		s.appendLog(fmt.Sprintf("system proxy set failed; set manual proxy 127.0.0.1:%d", port))
+		if restoreErr := s.proxy.Restore(snap); restoreErr != nil {
+			s.appendLog("system proxy restore after failed set failed; will retry on next launch")
+			return
+		}
 		if s.store != nil {
 			_ = s.store.ClearProxySnapshot()
 		}

@@ -1,10 +1,12 @@
 package vpnservice
 
 import (
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
+	"openrung/desktop/proxymode"
 	"openrung/internal/relay"
 )
 
@@ -175,5 +177,57 @@ func TestGetIdentityWithoutSession(t *testing.T) {
 	}
 	if id.SessionID != nil {
 		t.Fatalf("sessionID should be nil when idle, got %v", *id.SessionID)
+	}
+}
+
+type fakeProxyController struct {
+	supported bool
+	snap      proxymode.Snapshot
+	setErr    error
+	restores  []proxymode.Snapshot
+}
+
+func (f *fakeProxyController) Supported() bool { return f.supported }
+
+func (f *fakeProxyController) Snapshot() (proxymode.Snapshot, error) {
+	return f.snap, nil
+}
+
+func (f *fakeProxyController) Set(host string, port int) error {
+	return f.setErr
+}
+
+func (f *fakeProxyController) Restore(snap proxymode.Snapshot) error {
+	f.restores = append(f.restores, snap)
+	return nil
+}
+
+func TestApplySystemProxyRestoresSnapshotWhenSetFails(t *testing.T) {
+	snap := proxymode.Snapshot{
+		Platform: "windows",
+		Windows: &proxymode.WindowsProxyState{
+			ProxyEnable: true,
+			ProxyServer: "10.0.0.1:3128",
+		},
+	}
+	proxy := &fakeProxyController{
+		supported: true,
+		snap:      snap,
+		setErr:    errors.New("notify failed after write"),
+	}
+	s := New()
+	s.proxy = proxy
+	conn := &connection{}
+
+	s.applySystemProxy(conn, 7890)
+
+	if conn.proxySet {
+		t.Fatal("connection should not be marked proxySet when Set fails")
+	}
+	if len(proxy.restores) != 1 {
+		t.Fatalf("expected failed Set to restore snapshot once, got %d restores", len(proxy.restores))
+	}
+	if got := proxy.restores[0]; got.Platform != snap.Platform || got.Windows == nil || *got.Windows != *snap.Windows {
+		t.Fatalf("restored snapshot = %+v, want %+v", got, snap)
 	}
 }

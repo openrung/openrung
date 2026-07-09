@@ -19,12 +19,26 @@ type ServiceProxyState struct {
 	SecurePort    int    `json:"secure_port"`
 }
 
+// WindowsProxyState is the user's global WinInet proxy configuration (a single
+// per-user setting, not one entry per network service like macOS), captured
+// verbatim so a Restore reproduces it exactly — including a chained upstream
+// proxy or PAC URL a censorship user may depend on.
+type WindowsProxyState struct {
+	ProxyEnable   bool   `json:"proxy_enable"`
+	ProxyServer   string `json:"proxy_server"`
+	ProxyOverride string `json:"proxy_override"`
+	AutoConfigURL string `json:"auto_config_url"`
+}
+
 // Snapshot is a restorable capture of the OS proxy state. It is persisted to
 // disk while connected so a crash can be cleaned up on the next launch. Platform
 // tags the snapshot so a restore refuses to apply cross-platform data.
 type Snapshot struct {
 	Platform string              `json:"platform"`
 	Services []ServiceProxyState `json:"services,omitempty"`
+	// Windows carries the global WinInet capture; set only on Windows
+	// snapshots, nil elsewhere.
+	Windows *WindowsProxyState `json:"windows,omitempty"`
 }
 
 // Controller sets and restores the OS system proxy on one platform.
