@@ -32,6 +32,11 @@ const (
 	postgresTelemetryFlushTimeout = 15 * time.Second
 	postgresTelemetryQueryTimeout = 30 * time.Second
 
+	// telemetryDashboardWorkMem is the per-connection work_mem for the telemetry
+	// pool, raised from the 4MB default so the dashboard's aggregation sorts stay
+	// in memory instead of spilling to disk (see newPostgresTelemetrySink).
+	telemetryDashboardWorkMem = "32MB"
+
 	// telemetryPartitionPrefix is the fixed prefix of a daily partition's
 	// table name; the suffix is the UTC day as YYYYMMDD. Both creating a
 	// partition and finding aged-out ones to drop route through it, so the
@@ -125,7 +130,19 @@ func newPostgresTelemetrySink(ctx context.Context, databaseURL string, now func(
 	if strings.TrimSpace(databaseURL) == "" {
 		return nil, errors.New("telemetry database URL is required")
 	}
-	pool, err := pgxpool.New(ctx, databaseURL)
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse telemetry database URL: %w", err)
+	}
+	// The dashboard aggregation sorts a lot: the sessions CTE runs ~15
+	// array_agg(... ORDER BY ...) per session group and the window's CTEs
+	// materialize, both of which spill to disk at the stock 4MB work_mem and
+	// dominate the multi-second query time. Raise it pool-wide — the insert
+	// path never sorts, so it consumes none of this, and dashboard concurrency
+	// is tiny (one admin, a 30s refresh), so the extra memory ceiling is safe
+	// on the small production box.
+	config.ConnConfig.RuntimeParams["work_mem"] = telemetryDashboardWorkMem
+	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("open telemetry database: %w", err)
 	}
