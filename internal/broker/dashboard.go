@@ -20,9 +20,8 @@ const (
 	dashboardCookieName = "openrung_admin_session"
 	dashboardSessionTTL = 12 * time.Hour
 
-	// The overview keeps a small embedded preview of recent sessions; the
-	// dedicated sessions endpoint pages through the full window.
-	overviewRecentSessions  = 25
+	// The dedicated sessions endpoint pages through the full window; the
+	// overview no longer embeds a session preview.
 	sessionsDefaultPageSize = 25
 	sessionsMaxPageSize     = 100
 )
@@ -189,9 +188,6 @@ func (d *dashboardServer) overview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not build telemetry overview")
 		return
 	}
-	if len(ov.Recent) > overviewRecentSessions {
-		ov.Recent = ov.Recent[:overviewRecentSessions]
-	}
 	if d.relayLabels != nil {
 		applyRelayLabels(&ov, d.relayLabels())
 	}
@@ -265,24 +261,29 @@ func dashboardWindow(raw string) (time.Duration, bool) {
 }
 
 type telemetryOverview struct {
-	GeneratedAt     time.Time          `json:"generated_at"`
-	Window          string             `json:"window"`
-	Totals          overviewTotals     `json:"totals"`
-	Trend           []trendPoint       `json:"trend"`
-	TopRelays       []relaySummary     `json:"top_relays"`
-	TopApps         []countSummary     `json:"top_applications"`
-	TopCountries    []countSummary     `json:"top_countries"`
-	TopCities       []countSummary     `json:"top_cities"`
-	TopISPs         []countSummary     `json:"top_isps"`
-	ActiveRelays    []countSummary     `json:"active_by_relay"`
-	ActiveCountries []countSummary     `json:"active_by_country"`
-	ActiveCities    []countSummary     `json:"active_by_city"`
-	ActiveISPs      []countSummary     `json:"active_by_isp"`
-	ActiveOS        []countSummary     `json:"active_by_os"`
-	FailureStages   []countSummary     `json:"failure_stages"`
-	FailureReasons  []countSummary     `json:"failure_reasons"`
-	Recent          []sessionSummary   `json:"recent_sessions"`
-	SpeedTests      []speedTestSummary `json:"speed_tests"`
+	GeneratedAt     time.Time      `json:"generated_at"`
+	Window          string         `json:"window"`
+	Totals          overviewTotals `json:"totals"`
+	Trend           []trendPoint   `json:"trend"`
+	TopRelays       []relaySummary `json:"top_relays"`
+	TopApps         []countSummary `json:"top_applications"`
+	TopCountries    []countSummary `json:"top_countries"`
+	TopCities       []countSummary `json:"top_cities"`
+	TopISPs         []countSummary `json:"top_isps"`
+	ActiveRelays    []countSummary `json:"active_by_relay"`
+	ActiveCountries []countSummary `json:"active_by_country"`
+	ActiveCities    []countSummary `json:"active_by_city"`
+	ActiveISPs      []countSummary `json:"active_by_isp"`
+	ActiveOS        []countSummary `json:"active_by_os"`
+	FailureStages   []countSummary `json:"failure_stages"`
+	FailureReasons  []countSummary `json:"failure_reasons"`
+	// Recent is the window's full session list, ordered newest-last-seen first.
+	// It is not serialized (the dashboard reads sessions from the dedicated
+	// endpoint): it exists only so the in-memory querier can paginate its
+	// TelemetrySessions pages out of a single buildTelemetryOverview pass. The
+	// Postgres querier leaves it nil and pages sessions with its own query.
+	Recent     []sessionSummary   `json:"-"`
+	SpeedTests []speedTestSummary `json:"speed_tests"`
 }
 
 type overviewTotals struct {
@@ -670,7 +671,8 @@ func applyRelayLabels(ov *telemetryOverview, labels map[string]string) {
 			ov.TopRelays[i].Label = label
 		}
 	}
-	applySessionRelayLabels(ov.Recent, labels)
+	// ov.Recent is not part of the overview response; the sessions endpoint
+	// labels its own page via applySessionRelayLabels.
 	for i := range ov.ActiveRelays {
 		if label := labels[ov.ActiveRelays[i].Name]; label != "" {
 			ov.ActiveRelays[i].Label = label

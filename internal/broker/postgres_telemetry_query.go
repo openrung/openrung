@@ -131,68 +131,109 @@ const telemetrySessionISPLabel = `
 		ELSE ''
 	END`
 
-const telemetryTotalsQuery = `WITH ` + telemetryEventsCTE + `, ` + telemetrySessionsCTE + `
+// telemetryEventAggregatesQuery collapses every event-grain panel — trend, the
+// event-level count groups, relay failure reasons, and speed tests — into a
+// single scan of the events CTE. Because all branches reference `events`, the
+// CTE is materialized once, so the ~25-field JSONB extraction runs one time per
+// overview rather than once per panel. Rows are discriminated by `kind` and
+// share a generic column shape so heterogeneous panels can travel together:
+//
+//	kind  the panel this row feeds
+//	k1    first text key    — count name / relay_id; NULL for trend
+//	k2    second text key   — relay failure reason; NULL otherwise
+//	v1    first value       — count, tests, or (for trend) the hour as epoch
+//	                          seconds in a bigint
+//	v2..v4  extra values    — trend success/failure counts, speed-test sums
+//
+// The Go dispatcher feeds each kind through the same helpers the in-memory path
+// uses (trend bucket filling, sortedCounts, topRelaySummaries, sortSpeedTests)
+// so ranking and tiebreaks stay byte-identical.
+const telemetryEventAggregatesQuery = `WITH ` + telemetryEventsCTE + `
+-- trend: hourly attempt/success/failure counts. The bucket key rides in v1 as
+-- epoch seconds (date_trunc is UTC-aligned like the Go buckets); the caller
+-- rebuilds the hour and slots it by index into the pre-filled bucket slice.
 SELECT
-	(SELECT COUNT(DISTINCT client_id) FROM events) AS clients,
-	COUNT(*) AS sessions,
-	COUNT(*) FILTER (WHERE attempted) AS attempts,
-	COUNT(*) FILTER (WHERE succeeded) AS successes,
-	COUNT(*) FILTER (WHERE failed) AS failures,
-	COUNT(DISTINCT client_id) FILTER (WHERE active) AS active_clients,
-	COUNT(*) FILTER (WHERE active) AS active_sessions
-FROM sessions`
-
-const telemetryTrendQuery = `WITH ` + telemetryEventsCTE + `
-SELECT
-	date_trunc('hour', occurred_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS hour,
-	COUNT(*) FILTER (WHERE event = 'connection_attempted') AS attempts,
-	COUNT(*) FILTER (WHERE event = 'connection_succeeded') AS successes,
-	COUNT(*) FILTER (WHERE event = 'connection_failed') AS failures
+	'trend'::text AS kind,
+	NULL::text AS k1,
+	NULL::text AS k2,
+	extract(epoch FROM date_trunc('hour', occurred_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')::bigint AS v1,
+	COUNT(*) FILTER (WHERE event = 'connection_attempted')::bigint AS v2,
+	COUNT(*) FILTER (WHERE event = 'connection_succeeded')::bigint AS v3,
+	COUNT(*) FILTER (WHERE event = 'connection_failed')::bigint AS v4
 FROM events
 WHERE event IN ('connection_attempted', 'connection_succeeded', 'connection_failed')
-GROUP BY 1`
-
-// Event-level count groups, discriminated by kind; the caller feeds each kind
-// through sortedCounts (or the relay merge) so top-N selection and tiebreaks
-// stay identical to the in-memory path.
-const telemetryEventCountsQuery = `WITH ` + telemetryEventsCTE + `
-SELECT 'top_applications' AS kind, application AS name, COUNT(*) AS count
+GROUP BY 4
+UNION ALL
+-- top_applications through relay_failures: the event-level count groups, each a
+-- (name, count) pair that sortedCounts / topRelaySummaries rank and truncate.
+SELECT 'top_applications', application, NULL::text, COUNT(*)::bigint, NULL::bigint, NULL::bigint, NULL::bigint
 FROM events WHERE application IS NOT NULL GROUP BY application
 UNION ALL
 SELECT 'failure_stages',
 	CASE WHEN btrim(COALESCE(failure_stage, '')) <> '' THEN failure_stage ELSE 'unknown' END,
-	COUNT(*)
+	NULL::text, COUNT(*)::bigint, NULL::bigint, NULL::bigint, NULL::bigint
 FROM events WHERE event = 'connection_failed' GROUP BY 2
 UNION ALL
 SELECT 'failure_reasons',
 	(CASE WHEN btrim(COALESCE(failure_stage, '')) <> '' THEN failure_stage ELSE 'unknown' END)
 		|| ' · ' ||
 		(CASE WHEN btrim(COALESCE(failure_reason, '')) <> '' THEN failure_reason ELSE 'unknown' END),
-	COUNT(*)
+	NULL::text, COUNT(*)::bigint, NULL::bigint, NULL::bigint, NULL::bigint
 FROM events WHERE event = 'connection_failed' GROUP BY 2
 UNION ALL
-SELECT 'relay_successes', relay_id, COUNT(*)
+SELECT 'relay_successes', relay_id, NULL::text, COUNT(*)::bigint, NULL::bigint, NULL::bigint, NULL::bigint
 FROM events WHERE event = 'connection_succeeded' AND relay_id <> '' GROUP BY relay_id
 UNION ALL
-SELECT 'relay_failures', relay_id, COUNT(*)
-FROM events WHERE event = 'relay_attempt_failed' AND relay_id <> '' GROUP BY relay_id`
+SELECT 'relay_failures', relay_id, NULL::text, COUNT(*)::bigint, NULL::bigint, NULL::bigint, NULL::bigint
+FROM events WHERE event = 'relay_attempt_failed' AND relay_id <> '' GROUP BY relay_id
+UNION ALL
+-- relay_failure_reasons: per (relay_id, reason) counts feeding topFailureReason;
+-- the reason falls back to 'unknown' exactly as the in-memory
+-- firstNonEmpty(failure_reason, error_type, "unknown"), and ties resolve
+-- lexicographically in Go.
+SELECT 'relay_failure_reasons', relay_id,
+	CASE WHEN btrim(COALESCE(failure_reason, '')) <> '' THEN failure_reason ELSE 'unknown' END,
+	COUNT(*)::bigint, NULL::bigint, NULL::bigint, NULL::bigint
+FROM events WHERE event = 'relay_attempt_failed' AND relay_id <> '' GROUP BY 2, 3
+UNION ALL
+-- speed_tests: per-relay test count plus the sums the caller averages. v1=tests,
+-- v2=Σ download_mbps_milli, v3=Σ ttfb_ms.
+SELECT 'speed_tests', relay_id, NULL::text,
+	COUNT(*)::bigint,
+	SUM(COALESCE(download_mbps_milli, 0))::bigint,
+	SUM(COALESCE(ttfb_ms, 0))::bigint,
+	NULL::bigint
+FROM events WHERE event = 'speed_test_completed' AND relay_id <> '' GROUP BY relay_id`
 
-// telemetryRelayFailureReasonsQuery counts relay_attempt_failed events per
-// (relay_id, reason), the reason falling back to 'unknown' exactly as the
-// in-memory firstNonEmpty(failure_reason, error_type, "unknown"). The rows feed
-// topFailureReason per relay, which resolves ties lexicographically.
-const telemetryRelayFailureReasonsQuery = `WITH ` + telemetryEventsCTE + `
-SELECT
-	relay_id,
-	CASE WHEN btrim(COALESCE(failure_reason, '')) <> '' THEN failure_reason ELSE 'unknown' END AS reason,
-	COUNT(*) AS count
-FROM events
-WHERE event = 'relay_attempt_failed' AND relay_id <> ''
-GROUP BY 1, 2`
-
-const telemetrySessionCountsQuery = `WITH ` + telemetryEventsCTE + `, ` + telemetrySessionsCTE + `
-SELECT 'top_countries' AS kind, country AS name, COUNT(*) AS count
-FROM sessions WHERE btrim(country) <> '' GROUP BY country
+// telemetrySessionAggregatesQuery collapses the headline totals and every
+// session-grain count panel into one scan of the sessions CTE (itself one scan
+// of events). Both CTEs are referenced by several branches, so each materializes
+// once and the per-session array_agg work runs a single time per overview. Rows
+// share the (kind, name, count) shape of the event count groups, so
+// queryTelemetryCounts scans this query too; the totals ride along as
+// kind='totals' rows keyed by metric name.
+const telemetrySessionAggregatesQuery = `WITH ` + telemetryEventsCTE + `, ` + telemetrySessionsCTE + `
+-- totals: one row per headline metric. clients counts distinct client_ids over
+-- the raw events (a client seen only outside a session still counts), matching
+-- the in-memory clients set; the rest reduce the sessions CTE, and
+-- active_clients is the distinct-client count among active sessions.
+SELECT 'totals'::text AS kind, 'clients'::text AS name, COUNT(DISTINCT client_id)::bigint AS count FROM events
+UNION ALL
+SELECT 'totals', 'sessions', COUNT(*) FROM sessions
+UNION ALL
+SELECT 'totals', 'attempts', COUNT(*) FILTER (WHERE attempted) FROM sessions
+UNION ALL
+SELECT 'totals', 'successes', COUNT(*) FILTER (WHERE succeeded) FROM sessions
+UNION ALL
+SELECT 'totals', 'failures', COUNT(*) FILTER (WHERE failed) FROM sessions
+UNION ALL
+SELECT 'totals', 'active_clients', COUNT(DISTINCT client_id) FILTER (WHERE active) FROM sessions
+UNION ALL
+SELECT 'totals', 'active_sessions', COUNT(*) FILTER (WHERE active) FROM sessions
+UNION ALL
+-- session-grain count groups, one distinct value per session (btrim mirrors the
+-- accumulator's non-empty test); sortedCounts ranks and truncates each kind.
+SELECT 'top_countries', country, COUNT(*) FROM sessions WHERE btrim(country) <> '' GROUP BY country
 UNION ALL
 SELECT 'top_cities', city, COUNT(*) FROM sessions WHERE btrim(city) <> '' GROUP BY city
 UNION ALL
@@ -210,18 +251,14 @@ FROM sessions WHERE active AND btrim(` + telemetrySessionISPLabel + `) <> '' GRO
 UNION ALL
 SELECT 'active_by_os', operating_system, COUNT(*) FROM sessions WHERE active AND btrim(operating_system) <> '' GROUP BY operating_system`
 
-const telemetrySpeedTestsQuery = `WITH ` + telemetryEventsCTE + `
-SELECT
-	relay_id,
-	COUNT(*) AS tests,
-	SUM(COALESCE(download_mbps_milli, 0)) AS mbps_milli,
-	SUM(COALESCE(ttfb_ms, 0)) AS ttfb_ms
-FROM events
-WHERE event = 'speed_test_completed' AND relay_id <> ''
-GROUP BY relay_id`
-
 // The (last_seen_at DESC, session_id) order matches the in-memory sort so
 // pages stay stable across requests when batched uploads share a received_at.
+// COUNT(*) OVER () rides on every returned row: window functions are evaluated
+// before LIMIT/OFFSET, so it is the window's full session count, folding what
+// used to be a separate telemetrySessionCountQuery into this one statement. It
+// is absent only when the page itself is empty (offset at/past the end, or a
+// window with no sessions), which the caller handles by falling back to the
+// standalone count.
 const telemetrySessionPageQuery = `WITH ` + telemetryEventsCTE + `, ` + telemetrySessionsCTE + `
 SELECT
 	session_id, client_id, started_at, last_seen_at, relay_id, operating_system,
@@ -229,11 +266,14 @@ SELECT
 	failure_stage, failure_reason, failure_detail,
 	observed_client_ip, reported_client_ip, fallback_source_ip,
 	last_heartbeat_at, running_duration_ms, ended_duration_ms, bytes_sent, bytes_received,
-	attempted, succeeded, failed, terminal
+	attempted, succeeded, failed, terminal,
+	COUNT(*) OVER () AS total_count
 FROM sessions
 ORDER BY last_seen_at DESC, session_id
 LIMIT $5 OFFSET $6`
 
+// telemetrySessionCountQuery is the empty-page fallback for the window count
+// that telemetrySessionPageQuery normally carries inline.
 const telemetrySessionCountQuery = `WITH ` + telemetryEventsCTE + `, ` + telemetrySessionsCTE + `
 SELECT COUNT(*) FROM sessions`
 
@@ -247,8 +287,11 @@ func telemetryWindowArgs(now time.Time, window time.Duration) (eventArgs, sessio
 }
 
 // TelemetryOverview implements TelemetryQuerier by aggregating the window in
-// Postgres. Only per-group counts and the newest sessions travel back to Go,
-// so response size tracks the diversity of the window, not its event count.
+// Postgres with just two statements — one session-grain, one event-grain — each
+// scanning (and materializing) its CTE once. Only per-group counts travel back
+// to Go, so response size tracks the diversity of the window, not its event
+// count. The sessions themselves come from the dedicated sessions endpoint, so
+// the overview no longer queries or returns them.
 func (s *PostgresTelemetrySink) TelemetryOverview(now time.Time, window time.Duration) (telemetryOverview, error) {
 	if err := s.flush(); err != nil {
 		slog.Error("could not flush telemetry before read", "error", err)
@@ -258,44 +301,26 @@ func (s *PostgresTelemetrySink) TelemetryOverview(now time.Time, window time.Dur
 	eventArgs, sessionArgs := telemetryWindowArgs(now, window)
 
 	overview := telemetryOverview{GeneratedAt: now, Window: window.String()}
-	if err := s.pool.QueryRow(ctx, telemetryTotalsQuery, sessionArgs...).Scan(
-		&overview.Totals.Clients,
-		&overview.Totals.Sessions,
-		&overview.Totals.Attempts,
-		&overview.Totals.Successes,
-		&overview.Totals.Failures,
-		&overview.Totals.ActiveClients,
-		&overview.Totals.ActiveSessions,
-	); err != nil {
-		return telemetryOverview{}, fmt.Errorf("query telemetry totals: %w", err)
+
+	// Session-grain statement: the headline totals plus every session-level
+	// count panel, all reducing the sessions CTE materialized once here. The
+	// totals arrive as kind='totals' rows keyed by metric name.
+	sessionCounts, err := s.queryTelemetryCounts(ctx, telemetrySessionAggregatesQuery, sessionArgs)
+	if err != nil {
+		return telemetryOverview{}, fmt.Errorf("query telemetry session aggregates: %w", err)
+	}
+	totals := sessionCounts["totals"]
+	overview.Totals = overviewTotals{
+		Clients:        totals["clients"],
+		Sessions:       totals["sessions"],
+		Attempts:       totals["attempts"],
+		Successes:      totals["successes"],
+		Failures:       totals["failures"],
+		ActiveClients:  totals["active_clients"],
+		ActiveSessions: totals["active_sessions"],
 	}
 	if overview.Totals.Attempts > 0 {
 		overview.Totals.SuccessRate = float64(overview.Totals.Successes) / float64(overview.Totals.Attempts)
-	}
-
-	trend, err := s.queryTelemetryTrend(ctx, eventArgs, now, window)
-	if err != nil {
-		return telemetryOverview{}, err
-	}
-	overview.Trend = trend
-
-	eventCounts, err := s.queryTelemetryCounts(ctx, telemetryEventCountsQuery, eventArgs)
-	if err != nil {
-		return telemetryOverview{}, fmt.Errorf("query telemetry event counts: %w", err)
-	}
-	overview.TopApps = sortedCounts(eventCounts["top_applications"], 10)
-	overview.FailureStages = sortedCounts(eventCounts["failure_stages"], 10)
-	overview.FailureReasons = sortedCounts(eventCounts["failure_reasons"], 10)
-
-	relayFailureReasons, err := s.queryRelayFailureReasons(ctx, eventArgs)
-	if err != nil {
-		return telemetryOverview{}, err
-	}
-	overview.TopRelays = topRelaySummaries(eventCounts["relay_successes"], eventCounts["relay_failures"], relayFailureReasons)
-
-	sessionCounts, err := s.queryTelemetryCounts(ctx, telemetrySessionCountsQuery, sessionArgs)
-	if err != nil {
-		return telemetryOverview{}, fmt.Errorf("query telemetry session counts: %w", err)
 	}
 	overview.TopCountries = sortedCounts(sessionCounts["top_countries"], 10)
 	overview.TopCities = sortedCounts(sessionCounts["top_cities"], 10)
@@ -306,24 +331,25 @@ func (s *PostgresTelemetrySink) TelemetryOverview(now time.Time, window time.Dur
 	overview.ActiveISPs = sortedCounts(sessionCounts["active_by_isp"], 10)
 	overview.ActiveOS = sortedCounts(sessionCounts["active_by_os"], 10)
 
-	speedTests, err := s.queryTelemetrySpeedTests(ctx, eventArgs)
+	// Event-grain statement: trend, the event-level count panels, relay failure
+	// reasons, and speed tests, all reducing the events CTE materialized once.
+	trend, eventCounts, relayFailureReasons, speedTests, err := s.queryTelemetryEventAggregates(ctx, eventArgs, now, window)
 	if err != nil {
 		return telemetryOverview{}, err
 	}
+	overview.Trend = trend
+	overview.TopApps = sortedCounts(eventCounts["top_applications"], 10)
+	overview.FailureStages = sortedCounts(eventCounts["failure_stages"], 10)
+	overview.FailureReasons = sortedCounts(eventCounts["failure_reasons"], 10)
+	overview.TopRelays = topRelaySummaries(eventCounts["relay_successes"], eventCounts["relay_failures"], relayFailureReasons)
 	overview.SpeedTests = speedTests
-
-	recent, err := s.queryTelemetrySessionPage(ctx, sessionArgs, now, overviewRecentSessions, 0)
-	if err != nil {
-		return telemetryOverview{}, err
-	}
-	// Match the in-memory path: no sessions marshals as null, not [].
-	if len(recent) > 0 {
-		overview.Recent = recent
-	}
 	return overview, nil
 }
 
 // TelemetrySessions implements TelemetryQuerier with LIMIT/OFFSET pagination.
+// The page query carries the window's total session count inline via
+// COUNT(*) OVER (), so the common case runs a single statement; only an empty
+// page falls back to a standalone count for the handler's offset clamp.
 func (s *PostgresTelemetrySink) TelemetrySessions(now time.Time, window time.Duration, offset, limit int) ([]sessionSummary, int, error) {
 	if err := s.flush(); err != nil {
 		slog.Error("could not flush telemetry before read", "error", err)
@@ -332,47 +358,108 @@ func (s *PostgresTelemetrySink) TelemetrySessions(now time.Time, window time.Dur
 	defer cancel()
 	_, sessionArgs := telemetryWindowArgs(now, window)
 
-	var total int
-	if err := s.pool.QueryRow(ctx, telemetrySessionCountQuery, sessionArgs...).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("count telemetry sessions: %w", err)
-	}
-	page, err := s.queryTelemetrySessionPage(ctx, sessionArgs, now, limit, offset)
+	page, total, err := s.queryTelemetrySessionPage(ctx, sessionArgs, now, limit, offset)
 	if err != nil {
 		return nil, 0, err
 	}
-	if page == nil {
+	if len(page) == 0 {
+		// An empty page carries no COUNT(*) OVER () row, so fetch the total
+		// directly — the handler's offset>total clamp still needs the real
+		// count. Matches the in-memory querier, which reports the full count
+		// even when the requested offset lands past the end.
 		page = []sessionSummary{}
+		if err := s.pool.QueryRow(ctx, telemetrySessionCountQuery, sessionArgs...).Scan(&total); err != nil {
+			return nil, 0, fmt.Errorf("count telemetry sessions: %w", err)
+		}
 	}
 	return page, total, nil
 }
 
-func (s *PostgresTelemetrySink) queryTelemetryTrend(ctx context.Context, args []any, now time.Time, window time.Duration) ([]trendPoint, error) {
+// queryTelemetryEventAggregates runs the single event-grain statement and
+// demultiplexes its kind-tagged rows back into the shapes the overview builder
+// expects: the hourly trend (pre-filled with empty buckets so gaps render as
+// zeros), the event-level count groups, the per-relay failure-reason counts,
+// and the speed-test summaries. Because every panel is derived from one scan,
+// the events CTE — and its ~25-field JSONB extraction — is materialized once.
+func (s *PostgresTelemetrySink) queryTelemetryEventAggregates(ctx context.Context, args []any, now time.Time, window time.Duration) (trend []trendPoint, counts, relayFailureReasons map[string]map[string]int, speedTests []speedTestSummary, err error) {
+	// Pre-fill every hour bucket like the in-memory path so the trend spans the
+	// whole window even where no events landed; matching rows overwrite by index.
 	first := now.Add(-window).Truncate(time.Hour)
-	var trend []trendPoint
 	for bucket := first; !bucket.After(now); bucket = bucket.Add(time.Hour) {
 		trend = append(trend, trendPoint{Time: bucket})
 	}
+	counts = make(map[string]map[string]int)
+	relayFailureReasons = make(map[string]map[string]int)
 
-	rows, err := s.pool.Query(ctx, telemetryTrendQuery, args...)
+	rows, err := s.pool.Query(ctx, telemetryEventAggregatesQuery, args...)
 	if err != nil {
-		return nil, fmt.Errorf("query telemetry trend: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("query telemetry event aggregates: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var hour time.Time
-		var attempts, successes, failures int
-		if err := rows.Scan(&hour, &attempts, &successes, &failures); err != nil {
-			return nil, fmt.Errorf("scan telemetry trend: %w", err)
+		// k1/k2 and v2..v4 are NULL for the panels that do not use them, so scan
+		// into pointers and read them back through the nil-safe helpers.
+		var kind string
+		var k1, k2 *string
+		var v1, v2, v3, v4 *int64
+		if err := rows.Scan(&kind, &k1, &k2, &v1, &v2, &v3, &v4); err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("scan telemetry event aggregate: %w", err)
 		}
-		index := int(hour.UTC().Sub(first) / time.Hour)
-		if index < 0 || index >= len(trend) {
-			continue
+		switch kind {
+		case "trend":
+			// v1 is the bucket hour as epoch seconds; reconstruct the instant and
+			// place it by index into the pre-filled bucket slice.
+			hour := time.Unix(int64Value(v1), 0).UTC()
+			index := int(hour.Sub(first) / time.Hour)
+			if index < 0 || index >= len(trend) {
+				continue
+			}
+			trend[index].Attempts = int(int64Value(v2))
+			trend[index].Successes = int(int64Value(v3))
+			trend[index].Failures = int(int64Value(v4))
+		case "relay_failure_reasons":
+			addCount(relayFailureReasons, stringValue(k1), stringValue(k2), int(int64Value(v1)))
+		case "speed_tests":
+			tests := int(int64Value(v1))
+			speedTests = append(speedTests, speedTestSummary{
+				RelayID:       stringValue(k1),
+				Tests:         tests,
+				AverageMbps:   float64(int64Value(v2)) / float64(tests) / 1000,
+				AverageTTFBMS: float64(int64Value(v3)) / float64(tests),
+			})
+		default:
+			// The remaining kinds are the event-level count groups: (name, count).
+			addCount(counts, kind, stringValue(k1), int(int64Value(v1)))
 		}
-		trend[index].Attempts = attempts
-		trend[index].Successes = successes
-		trend[index].Failures = failures
 	}
-	return trend, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, nil, nil, nil, err
+	}
+	sortSpeedTests(speedTests)
+	return trend, counts, relayFailureReasons, speedTests, nil
+}
+
+// addCount records counts[outer][inner] = count, allocating the inner map on
+// first use. Shared by the count-group demultiplexers.
+func addCount(counts map[string]map[string]int, outer, inner string, count int) {
+	if counts[outer] == nil {
+		counts[outer] = make(map[string]int)
+	}
+	counts[outer][inner] = count
+}
+
+func stringValue(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+func int64Value(p *int64) int64 {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 func (s *PostgresTelemetrySink) queryTelemetryCounts(ctx context.Context, query string, args []any) (map[string]map[string]int, error) {
@@ -420,70 +507,25 @@ func topRelaySummaries(successes, failures map[string]int, failureReasons map[st
 	return top
 }
 
-// queryRelayFailureReasons returns, per relay, the count of each
-// relay_attempt_failed reason in the window, feeding topRelaySummaries.
-func (s *PostgresTelemetrySink) queryRelayFailureReasons(ctx context.Context, args []any) (map[string]map[string]int, error) {
-	rows, err := s.pool.Query(ctx, telemetryRelayFailureReasonsQuery, args...)
-	if err != nil {
-		return nil, fmt.Errorf("query relay failure reasons: %w", err)
-	}
-	defer rows.Close()
-	reasons := make(map[string]map[string]int)
-	for rows.Next() {
-		var relayID, reason string
-		var count int
-		if err := rows.Scan(&relayID, &reason, &count); err != nil {
-			return nil, fmt.Errorf("scan relay failure reason: %w", err)
-		}
-		if reasons[relayID] == nil {
-			reasons[relayID] = make(map[string]int)
-		}
-		reasons[relayID][reason] = count
-	}
-	return reasons, rows.Err()
-}
-
-func (s *PostgresTelemetrySink) queryTelemetrySpeedTests(ctx context.Context, args []any) ([]speedTestSummary, error) {
-	rows, err := s.pool.Query(ctx, telemetrySpeedTestsQuery, args...)
-	if err != nil {
-		return nil, fmt.Errorf("query telemetry speed tests: %w", err)
-	}
-	defer rows.Close()
-	var speedTests []speedTestSummary
-	for rows.Next() {
-		var relayID string
-		var tests int
-		var mbpsMilli, ttfbMS int64
-		if err := rows.Scan(&relayID, &tests, &mbpsMilli, &ttfbMS); err != nil {
-			return nil, fmt.Errorf("scan telemetry speed tests: %w", err)
-		}
-		speedTests = append(speedTests, speedTestSummary{
-			RelayID:       relayID,
-			Tests:         tests,
-			AverageMbps:   float64(mbpsMilli) / float64(tests) / 1000,
-			AverageTTFBMS: float64(ttfbMS) / float64(tests),
-		})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	sortSpeedTests(speedTests)
-	return speedTests, nil
-}
-
-func (s *PostgresTelemetrySink) queryTelemetrySessionPage(ctx context.Context, args []any, now time.Time, limit, offset int) ([]sessionSummary, error) {
+// queryTelemetrySessionPage returns one ordered page of the window's sessions
+// and the window's total session count. The total rides on each row via
+// COUNT(*) OVER () in telemetrySessionPageQuery, so it is only meaningful when
+// the page is non-empty; the caller supplies the count for an empty page.
+func (s *PostgresTelemetrySink) queryTelemetrySessionPage(ctx context.Context, args []any, now time.Time, limit, offset int) ([]sessionSummary, int, error) {
 	rows, err := s.pool.Query(ctx, telemetrySessionPageQuery, append(append([]any{}, args...), limit, offset)...)
 	if err != nil {
-		return nil, fmt.Errorf("query telemetry sessions: %w", err)
+		return nil, 0, fmt.Errorf("query telemetry sessions: %w", err)
 	}
 	defer rows.Close()
 
 	var sessions []sessionSummary
+	var total int
 	for rows.Next() {
 		var acc sessionAccumulator
 		var startedAt, lastSeenAt time.Time
 		var lastHeartbeatAt *time.Time
 		var endedDurationMS int64
+		var rowTotal int64
 		if err := rows.Scan(
 			&acc.summary.SessionID,
 			&acc.summary.ClientID,
@@ -514,9 +556,12 @@ func (s *PostgresTelemetrySink) queryTelemetrySessionPage(ctx context.Context, a
 			&acc.succeeded,
 			&acc.failed,
 			&acc.terminal,
+			&rowTotal,
 		); err != nil {
-			return nil, fmt.Errorf("scan telemetry session: %w", err)
+			return nil, 0, fmt.Errorf("scan telemetry session: %w", err)
 		}
+		// Every row of a non-empty page carries the same window total.
+		total = int(rowTotal)
 		acc.summary.Status = "seen"
 		acc.summary.StartedAt = startedAt.UTC()
 		acc.summary.LastSeenAt = lastSeenAt.UTC()
@@ -526,5 +571,5 @@ func (s *PostgresTelemetrySink) queryTelemetrySessionPage(ctx context.Context, a
 		}
 		sessions = append(sessions, acc.finalize(now))
 	}
-	return sessions, rows.Err()
+	return sessions, total, rows.Err()
 }
