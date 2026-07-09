@@ -1,13 +1,13 @@
-//go:build !darwin
+//go:build !darwin && !windows
 
 package proxymode
 
 import "errors"
 
-// New returns a not-yet-supported controller on non-darwin platforms. Windows
-// (HKCU Internet Settings + InternetSetOption) and Linux (gsettings for GNOME,
-// env vars elsewhere) land in a later phase; until then the app advertises the
-// loopback proxy address for manual configuration.
+// New returns a not-yet-supported controller on platforms without a proxy
+// implementation. macOS (networksetup) and Windows (WinInet) are implemented;
+// Linux (gsettings for GNOME, env vars elsewhere) lands in a later phase, until
+// then the app advertises the loopback proxy address for manual configuration.
 func New() Controller {
 	return unsupportedController{}
 }
