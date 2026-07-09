@@ -26,4 +26,5 @@ openrung-telemetry.jsonl
 .wrangler/
 
 # Claude Code local worktrees (may contain absolute paths / local branch content)
+.claude/agents/
 .claude/worktrees/
