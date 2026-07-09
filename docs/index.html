@@ -866,30 +866,6 @@
       .faq-item .faq-body p { margin: 0; }
 
       /* ============================================================
-         Contact
-         ============================================================ */
-      .contact-card {
-        background: var(--panel);
-        border: 1px solid var(--line);
-        border-radius: var(--radius);
-        padding: 30px 32px;
-        box-shadow: var(--shadow-sm);
-        max-width: 760px;
-      }
-      .contact-mail {
-        display: inline-flex;
-        align-items: center;
-        gap: 10px;
-        font-size: 1.2rem;
-        font-weight: 800;
-        text-decoration: none;
-        color: var(--accent-strong);
-        direction: ltr;
-      }
-      .contact-mail svg { width: 21px; height: 21px; }
-      .contact-mail:hover { text-decoration: underline; }
-
-      /* ============================================================
          Final CTA band
          ============================================================ */
       .cta-band {
@@ -1419,7 +1395,7 @@
                 <rect x="1.5" y="1.5" width="37" height="69" rx="6" fill="var(--seal-red)"/>
                 <rect x="4.5" y="4.5" width="31" height="63" rx="4" fill="none" stroke="#fff3ee" stroke-opacity="0.45" stroke-width="1"/>
                 <text x="20" y="30" text-anchor="middle" font-size="24" fill="#fff3ee">開</text>
-                <text x="20" y="60" text-anchor="middle" font-size="24" fill="#fff3ee">梯</text>
+                <text x="20" y="60" text-anchor="middle" font-size="24" fill="#fff3ee">潤</text>
               </svg></span>
             </div>
             </div>
@@ -1666,23 +1642,6 @@
         </div>
       </section>
 
-      <!-- ================= Contact ================= -->
-      <section class="band alt" id="contact" aria-labelledby="contact-title">
-        <div class="wrap">
-          <div class="section-head" data-reveal>
-            <p class="kicker" data-i18n="contactKicker">Contact</p>
-            <h2 id="contact-title" data-i18n="contactTitle">Get in touch</h2>
-            <p data-i18n="contactBody">Access help, volunteer hosting, donor conversations, security reports, and governance questions are all welcome by email:</p>
-          </div>
-          <div class="contact-card" data-reveal>
-            <a class="contact-mail" href="mailto:admin@openrung.org">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>
-              admin@openrung.org
-            </a>
-          </div>
-        </div>
-      </section>
-
       <!-- ================= Final CTA ================= -->
       <section class="cta-band" aria-labelledby="cta-title">
         <div class="wrap" data-reveal>
@@ -1750,7 +1709,11 @@
       // Reveal-on-scroll styles only engage when JS actually runs.
       document.documentElement.classList.add("js");
 
-      const APP_VERSION = "0.2.3";
+      // Fallback version — shown instantly and whenever GitHub is unreachable.
+      // The updater at the end of this script overwrites it with the latest
+      // published release of openrung-mobile-app, so this only needs bumping to
+      // keep the offline/rate-limited fallback honest.
+      const APP_VERSION = "0.2.5";
       // Permanent "latest release" link — GitHub redirects it to the newest published APK, so it
       // never needs a per-release edit. openrung-android.apk is the stable-named asset attached by
       // the openrung-mobile-app release workflow.
@@ -1858,9 +1821,6 @@
           faq5A: "OpenRung is in early access while we harden the network. The Android APK and desktop builds on this site are official releases built by us. The iOS app is in TestFlight beta — request an invite in the Download section. App-store releases are on the roadmap.",
           faq6Q: "Is it safe to run a volunteer relay?",
           faq6A: "Honest answer: it depends on where you live and your comfort level. Relays currently act as exits, so websites see the volunteer's IP address — much like a Tor exit node. Read the security notes on GitHub before volunteering; entry-relay modes that lower this risk are on the roadmap.",
-          contactKicker: "Contact",
-          contactTitle: "Get in touch",
-          contactBody: "Access help, volunteer hosting, donor conversations, security reports, and governance questions are all welcome by email:",
           ctaTitle: "The open internet is worth reaching.",
           ctaLead: "Free, private, and powered by people.",
           ctaVolunteer: "Become a volunteer",
@@ -1973,9 +1933,6 @@
           faq5A: "OpenRung 处于抢先体验阶段，我们正在加固网络。本站提供的 Android APK 与桌面版均为我们构建的官方版本。iOS 应用正在 TestFlight 测试中——可在下载区申请邀请。应用商店上架已在路线图中。",
           faq6Q: "运行志愿者中继安全吗？",
           faq6A: "坦率地说：取决于你所在的地区和你的接受程度。目前中继作为出口节点，网站会看到志愿者的 IP 地址——与 Tor 出口节点类似。志愿之前请先阅读 GitHub 上的安全须知；降低此风险的入口中继模式已在路线图中。",
-          contactKicker: "联系",
-          contactTitle: "联系我们",
-          contactBody: "使用帮助、志愿托管、捐赠沟通、安全报告与治理问题，都欢迎通过邮件联系：",
           ctaTitle: "开放的互联网，值得抵达。",
           ctaLead: "免费、私密，由人们共同支撑。",
           ctaVolunteer: "成为志愿者",
@@ -2088,9 +2045,6 @@
           faq5A: "OpenRung در مرحلهٔ دسترسی زودهنگام است و ما در حال مقاوم‌سازی شبکه هستیم. فایل APK اندروید و نسخه‌های دسکتاپ این سایت، نسخه‌های رسمی ساخته‌شده توسط ما هستند. برنامهٔ iOS در بتای TestFlight است — در بخش دانلود درخواست دعوت‌نامه بدهید. انتشار در فروشگاه‌های اپ در نقشهٔ راه قرار دارد.",
           faq6Q: "آیا اجرای رلهٔ داوطلب امن است؟",
           faq6A: "پاسخ صادقانه: بستگی به محل زندگی و میزان پذیرش ریسک شما دارد. رله‌ها در حال حاضر به‌عنوان خروجی عمل می‌کنند، بنابراین وب‌سایت‌ها نشانی IP داوطلب را می‌بینند — مشابه گرهٔ خروجی Tor. پیش از داوطلب‌شدن، نکات امنیتی را در GitHub بخوانید؛ حالت‌های رلهٔ ورودی برای کاهش این ریسک در نقشهٔ راه قرار دارند.",
-          contactKicker: "تماس",
-          contactTitle: "با ما در تماس باشید",
-          contactBody: "برای راهنمایی استفاده، میزبانی داوطلبانه، گفت‌وگو با حامیان، گزارش مسائل امنیتی و پرسش‌های مربوط به مدیریت، از طریق ایمیل با ما در تماس باشید:",
           ctaTitle: "اینترنت آزاد ارزش رسیدن را دارد.",
           ctaLead: "رایگان، خصوصی و با نیروی مردم.",
           ctaVolunteer: "داوطلب شوید",
@@ -2203,9 +2157,6 @@
           faq5A: "OpenRung находится в раннем доступе, пока мы укрепляем сеть. APK для Android и настольные сборки на этом сайте — официальные выпуски, собранные нами. Приложение для iOS в бете TestFlight — запросите приглашение в разделе «Скачать». Публикация в магазинах приложений есть в планах.",
           faq6Q: "Безопасно ли запускать волонтёрский ретранслятор?",
           faq6A: "Честный ответ: зависит от того, где вы живёте, и от вашей готовности к риску. Сейчас ретрансляторы работают как выходные узлы, поэтому сайты видят IP-адрес волонтёра — как у выходного узла Tor. Перед тем как стать волонтёром, прочитайте заметки о безопасности на GitHub; режимы входных ретрансляторов, снижающие этот риск, есть в планах.",
-          contactKicker: "Контакты",
-          contactTitle: "Свяжитесь с нами",
-          contactBody: "Помощь с использованием, волонтёрский хостинг, общение с донорами, сообщения о безопасности и вопросы управления — пишите нам:",
           ctaTitle: "Открытый интернет стоит того, чтобы до него добраться.",
           ctaLead: "Бесплатно, приватно и силами людей.",
           ctaVolunteer: "Стать волонтёром",
@@ -2273,9 +2224,29 @@
       /* ============================================================
          Version + APK link (single source of truth)
          ============================================================ */
-      document.querySelectorAll("[data-version]").forEach((el) => {
-        el.textContent = (el.textContent.trim().startsWith("v") ? "v" : "") + APP_VERSION;
-      });
+      const applyVersion = (version) => {
+        const v = String(version).replace(/^v/, "");
+        document.querySelectorAll("[data-version]").forEach((el) => {
+          // Remember, per element, whether the authored markup wanted a "v" prefix,
+          // so repeated calls stay idempotent (fallback first, live release after).
+          const prefix = el.dataset.versionPrefix
+            ?? (el.dataset.versionPrefix = el.textContent.trim().startsWith("v") ? "v" : "");
+          el.textContent = prefix + v;
+        });
+      };
+
+      // Render the bundled fallback immediately (no flash), then upgrade to the
+      // latest published release if GitHub is reachable. api.github.com sends
+      // permissive CORS headers, and the request is per-visitor so the 60/hr
+      // unauthenticated limit is a non-issue. On any failure we keep the fallback.
+      applyVersion(APP_VERSION);
+      fetch("https://api.github.com/repos/openrung/openrung-mobile-app/releases/latest", {
+        headers: { Accept: "application/vnd.github+json" },
+      })
+        .then((res) => (res.ok ? res.json() : Promise.reject(res.status)))
+        .then((data) => { if (data && data.tag_name) applyVersion(data.tag_name); })
+        .catch(() => { /* offline or rate-limited: keep the bundled fallback */ });
+
       const apkLink = document.getElementById("apk-link");
       if (apkLink) apkLink.href = APK_URL;
 
