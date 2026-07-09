@@ -280,6 +280,7 @@ type telemetryOverview struct {
 	ActiveISPs      []countSummary     `json:"active_by_isp"`
 	ActiveOS        []countSummary     `json:"active_by_os"`
 	FailureStages   []countSummary     `json:"failure_stages"`
+	FailureReasons  []countSummary     `json:"failure_reasons"`
 	Recent          []sessionSummary   `json:"recent_sessions"`
 	SpeedTests      []speedTestSummary `json:"speed_tests"`
 }
@@ -313,23 +314,31 @@ type relaySummary struct {
 	Label     string `json:"label,omitempty"`
 	Successes int    `json:"successes"`
 	Failures  int    `json:"failures"`
+	// TopFailureReason is the modal relay_attempt_failed reason for this relay,
+	// empty when the relay logged no failed attempts in the window.
+	TopFailureReason string `json:"top_failure_reason,omitempty"`
 }
 
 type sessionSummary struct {
-	SessionID       string     `json:"session_id"`
-	ClientID        string     `json:"client_id"`
-	SourceIP        string     `json:"source_ip"`
-	OperatingSystem string     `json:"operating_system,omitempty"`
-	DeviceInfo      string     `json:"device_info,omitempty"`
-	AppVersion      string     `json:"app_version,omitempty"`
-	Country         string     `json:"country,omitempty"`
-	City            string     `json:"city,omitempty"`
-	ISP             string     `json:"isp,omitempty"`
-	Organization    string     `json:"organization,omitempty"`
-	ASN             string     `json:"asn,omitempty"`
-	RelayID         string     `json:"relay_id,omitempty"`
-	RelayLabel      string     `json:"relay_label,omitempty"`
-	Status          string     `json:"status"`
+	SessionID       string `json:"session_id"`
+	ClientID        string `json:"client_id"`
+	SourceIP        string `json:"source_ip"`
+	OperatingSystem string `json:"operating_system,omitempty"`
+	DeviceInfo      string `json:"device_info,omitempty"`
+	AppVersion      string `json:"app_version,omitempty"`
+	Country         string `json:"country,omitempty"`
+	City            string `json:"city,omitempty"`
+	ISP             string `json:"isp,omitempty"`
+	Organization    string `json:"organization,omitempty"`
+	ASN             string `json:"asn,omitempty"`
+	RelayID         string `json:"relay_id,omitempty"`
+	RelayLabel      string `json:"relay_label,omitempty"`
+	Status          string `json:"status"`
+	// Failure fields are populated only from connection_failed events; per field
+	// the latest non-empty value wins, like the attribute accumulation above.
+	FailureStage    string     `json:"failure_stage,omitempty"`
+	FailureReason   string     `json:"failure_reason,omitempty"`
+	FailureDetail   string     `json:"failure_detail,omitempty"`
 	StartedAt       time.Time  `json:"started_at"`
 	LastSeenAt      time.Time  `json:"last_seen_at"`
 	DurationMS      int64      `json:"duration_ms,omitempty"`
@@ -399,7 +408,9 @@ func buildTelemetryOverview(records []TelemetryRecord, now time.Time, window tim
 	sessions := make(map[string]*sessionAccumulator)
 	apps := make(map[string]int)
 	failures := make(map[string]int)
+	failureReasons := make(map[string]int)
 	relays := make(map[string]*relaySummary)
+	relayFailureReasons := make(map[string]map[string]int)
 	type speedAccumulator struct {
 		tests      int
 		mbps, ttfb int64
@@ -509,10 +520,29 @@ func buildTelemetryOverview(records []TelemetryRecord, now time.Time, window tim
 			if bucket != nil {
 				bucket.Failures++
 			}
-			failures[firstNonEmpty(event.Attributes["failure_stage"], "unknown")]++
+			stageLabel := firstNonEmpty(event.Attributes["failure_stage"], "unknown")
+			// New-style classified reason preferred; fall back to the error_type
+			// mobile/CLI already send today.
+			reason := firstNonEmpty(event.Attributes["failure_reason"], event.Attributes["error_type"])
+			failures[stageLabel]++
+			failureReasons[stageLabel+" · "+firstNonEmpty(reason, "unknown")]++
+			if stage := event.Attributes["failure_stage"]; stage != "" {
+				session.summary.FailureStage = stage
+			}
+			if reason != "" {
+				session.summary.FailureReason = reason
+			}
+			if detail := event.Attributes["failure_detail"]; detail != "" {
+				session.summary.FailureDetail = detail
+			}
 		case "relay_attempt_failed":
 			if event.RelayID != "" {
 				relayFor(relays, event.RelayID).Failures++
+				reason := firstNonEmpty(event.Attributes["failure_reason"], event.Attributes["error_type"], "unknown")
+				if relayFailureReasons[event.RelayID] == nil {
+					relayFailureReasons[event.RelayID] = make(map[string]int)
+				}
+				relayFailureReasons[event.RelayID][reason]++
 			}
 		case "connection_ended":
 			session.terminal = true
@@ -594,6 +624,7 @@ func buildTelemetryOverview(records []TelemetryRecord, now time.Time, window tim
 		return overview.Recent[i].LastSeenAt.After(overview.Recent[j].LastSeenAt)
 	})
 	for _, relay := range relays {
+		relay.TopFailureReason = topFailureReason(relayFailureReasons[relay.RelayID])
 		overview.TopRelays = append(overview.TopRelays, *relay)
 	}
 	sortTopRelays(overview.TopRelays)
@@ -610,6 +641,7 @@ func buildTelemetryOverview(records []TelemetryRecord, now time.Time, window tim
 	overview.ActiveISPs = sortedCounts(activeISPs, 10)
 	overview.ActiveOS = sortedCounts(activeOS, 10)
 	overview.FailureStages = sortedCounts(failures, 10)
+	overview.FailureReasons = sortedCounts(failureReasons, 10)
 	for relayID, speed := range speeds {
 		overview.SpeedTests = append(overview.SpeedTests, speedTestSummary{RelayID: relayID, Tests: speed.tests, AverageMbps: float64(speed.mbps) / float64(speed.tests) / 1000, AverageTTFBMS: float64(speed.ttfb) / float64(speed.tests)})
 	}
@@ -669,6 +701,19 @@ func relayFor(relays map[string]*relaySummary, id string) *relaySummary {
 		relays[id] = relay
 	}
 	return relay
+}
+
+// topFailureReason returns the most frequent reason in counts. Ties resolve to
+// the lexicographically smallest reason so the result is deterministic and the
+// Postgres querier can reproduce it. Returns "" for an empty (or nil) map.
+func topFailureReason(counts map[string]int) string {
+	best, bestCount := "", 0
+	for reason, count := range counts {
+		if count > bestCount || (count == bestCount && reason < best) {
+			best, bestCount = reason, count
+		}
+	}
+	return best
 }
 
 func sortedCounts(values map[string]int, limit int) []countSummary {
