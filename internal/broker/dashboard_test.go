@@ -33,7 +33,6 @@ func TestApplyRelayLabelsCoversAllRelayViews(t *testing.T) {
 		TopRelays:    []relaySummary{{RelayID: "relay_a"}, {RelayID: "relay_x"}},
 		ActiveRelays: []countSummary{{Name: "relay_a", Count: 3}, {Name: "relay_x", Count: 1}},
 		SpeedTests:   []speedTestSummary{{RelayID: "relay_a"}},
-		Recent:       []sessionSummary{{RelayID: "relay_a"}},
 	}
 	applyRelayLabels(&ov, map[string]string{"relay_a": "proud-falcon"})
 
@@ -48,9 +47,6 @@ func TestApplyRelayLabelsCoversAllRelayViews(t *testing.T) {
 	}
 	if ov.SpeedTests[0].Label != "proud-falcon" {
 		t.Errorf("speed_tests label = %q, want proud-falcon", ov.SpeedTests[0].Label)
-	}
-	if ov.Recent[0].RelayLabel != "proud-falcon" {
-		t.Errorf("recent_sessions label = %q, want proud-falcon", ov.Recent[0].RelayLabel)
 	}
 	if ov.ActiveRelays[1].Label != "" {
 		t.Errorf("unmatched relay should stay unlabeled, got %q", ov.ActiveRelays[1].Label)
@@ -235,9 +231,15 @@ func TestBuildTelemetryOverview(t *testing.T) {
 	if secondSession.ISP != "Fallback Network" {
 		t.Fatalf("expected organization ISP fallback, got %+v", secondSession)
 	}
+	// The overview no longer serializes its session list; the dashboard reads
+	// sessions from the dedicated endpoint. Recent stays populated in memory so
+	// the in-memory querier can page from it, but it must not appear in the JSON.
+	if len(overview.Recent) == 0 {
+		t.Fatal("expected the in-memory session list to stay populated for pagination")
+	}
 	encoded, err := json.Marshal(overview)
-	if err != nil || !strings.Contains(string(encoded), `"recent_sessions"`) {
-		t.Fatalf("overview JSON failed: %v %s", err, encoded)
+	if err != nil || strings.Contains(string(encoded), "recent_sessions") {
+		t.Fatalf("recent_sessions must be omitted from overview JSON: %v %s", err, encoded)
 	}
 }
 

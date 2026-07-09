@@ -273,8 +273,14 @@ func TestPostgresTelemetryFailureDiagnostics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("postgres overview: %v", err)
 	}
+	// The overview no longer carries the session list; the per-session failure
+	// fields come from the sessions endpoint the dashboard reads.
+	sessions, _, err := sink.TelemetrySessions(now, time.Hour, 0, 100)
+	if err != nil {
+		t.Fatalf("postgres sessions: %v", err)
+	}
 
-	session := recentByID(overview.Recent)["session-a"]
+	session := recentByID(sessions)["session-a"]
 	if session.Status != "failed" {
 		t.Fatalf("session-a status = %q, want failed", session.Status)
 	}
