@@ -133,8 +133,14 @@ func runConnect(args []string) error {
 
 	relayTCPMs, err := tcpReachMs(ctx, connectHost, connectPort)
 	if err != nil {
-		mgr.Record("relay_attempt_failed", selected.ID,
-			map[string]string{"error_type": errorType(err)},
+		attemptAttrs := map[string]string{"error_type": errorType(err)}
+		if reason := clienttelemetry.ClassifyError(err); reason != "" {
+			attemptAttrs["failure_reason"] = reason
+		}
+		if detail := clienttelemetry.ErrorDetail(err); detail != "" {
+			attemptAttrs["failure_detail"] = detail
+		}
+		mgr.Record("relay_attempt_failed", selected.ID, attemptAttrs,
 			map[string]int64{"attempt": 1})
 		recordConnectFailure(ctx, mgr, "relay_connect", selected.ID, err)
 		return fmt.Errorf("relay %s unreachable at %s:%d: %w", selected.ID, connectHost, connectPort, err)
@@ -210,10 +216,17 @@ func sessionIdentity(session *clienttelemetry.Session) (clientID, sessionID stri
 
 // recordConnectFailure emits connection_failed, ends the session, and flushes.
 func recordConnectFailure(ctx context.Context, mgr *clienttelemetry.Manager, stage, relayID string, err error) {
-	mgr.Record("connection_failed", relayID, map[string]string{
+	attrs := map[string]string{
 		"failure_stage": stage,
 		"error_type":    errorType(err),
-	}, nil)
+	}
+	if reason := clienttelemetry.ClassifyError(err); reason != "" {
+		attrs["failure_reason"] = reason
+	}
+	if detail := clienttelemetry.ErrorDetail(err); detail != "" {
+		attrs["failure_detail"] = detail
+	}
+	mgr.Record("connection_failed", relayID, attrs, nil)
 	mgr.EndSession("connection_failed")
 	flushOnShutdown(mgr)
 }

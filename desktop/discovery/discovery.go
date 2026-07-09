@@ -48,6 +48,10 @@ func (e *RateLimitedError) Error() string {
 	return fmt.Sprintf("broker %s rate-limited", e.BrokerURL)
 }
 
+// HTTPStatus reports the 429 status so error classification labels a
+// rate-limited fetch as rate_limited without importing this concrete type.
+func (e *RateLimitedError) HTTPStatus() int { return http.StatusTooManyRequests }
+
 // Options identify the caller to the broker. When ClientID and SessionID are
 // both set they are sent as identity headers so the broker records a
 // client_seen telemetry event for the request.
@@ -166,5 +170,5 @@ func brokerStatusError(resp *http.Response) error {
 	if apiErr.Error == "" {
 		apiErr.Error = resp.Status
 	}
-	return fmt.Errorf("broker list relays: %s", apiErr.Error)
+	return &client.BrokerStatusError{StatusCode: resp.StatusCode, Message: apiErr.Error}
 }
