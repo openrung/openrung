@@ -437,6 +437,114 @@ func TestBuildTelemetryOverviewSourceIPFallbacks(t *testing.T) {
 	}
 }
 
+func TestBuildTelemetryOverviewSurfacesFailureDiagnostics(t *testing.T) {
+	now := time.Date(2026, 7, 9, 12, 30, 0, 0, time.UTC)
+	records := []TelemetryRecord{
+		dashboardRecord(now.Add(-3*time.Minute), "attempt", "connection_attempted", "client-1", "session-1", "", nil, nil),
+		dashboardRecord(now.Add(-2*time.Minute), "failed", "connection_failed", "client-1", "session-1", "", map[string]string{
+			"failure_stage": "handshake", "failure_reason": "timeout", "failure_detail": "dial tcp 10.0.0.1:443: i/o timeout",
+		}, nil),
+	}
+	overview := buildTelemetryOverview(records, now, time.Hour)
+	session := recentByID(overview.Recent)["session-1"]
+	if session.FailureStage != "handshake" || session.FailureReason != "timeout" || session.FailureDetail != "dial tcp 10.0.0.1:443: i/o timeout" {
+		t.Fatalf("unexpected failure fields: %+v", session)
+	}
+	// The classified failure_reason is preferred over any error_type.
+	if got := countByName(overview.FailureReasons, "handshake · timeout"); got != 1 {
+		t.Fatalf("failure_reasons should key on 'handshake · timeout', got %+v", overview.FailureReasons)
+	}
+}
+
+func TestBuildTelemetryOverviewFailureReasonFallsBackToErrorType(t *testing.T) {
+	now := time.Date(2026, 7, 9, 12, 30, 0, 0, time.UTC)
+	// The shape mobile/CLI send today: failure_stage plus error_type, no
+	// classified failure_reason yet.
+	records := []TelemetryRecord{
+		dashboardRecord(now.Add(-time.Minute), "failed", "connection_failed", "client-1", "session-1", "", map[string]string{
+			"failure_stage": "broker_fetch", "error_type": "connection_refused",
+		}, nil),
+	}
+	overview := buildTelemetryOverview(records, now, time.Hour)
+	session := recentByID(overview.Recent)["session-1"]
+	if session.FailureStage != "broker_fetch" || session.FailureReason != "connection_refused" {
+		t.Fatalf("expected error_type fallback, got %+v", session)
+	}
+	if session.FailureDetail != "" {
+		t.Fatalf("failure detail should stay empty, got %q", session.FailureDetail)
+	}
+	if got := countByName(overview.FailureReasons, "broker_fetch · connection_refused"); got != 1 {
+		t.Fatalf("panel key should use error_type fallback, got %+v", overview.FailureReasons)
+	}
+}
+
+func TestBuildTelemetryOverviewFailureWithoutAttributes(t *testing.T) {
+	now := time.Date(2026, 7, 9, 12, 30, 0, 0, time.UTC)
+	records := []TelemetryRecord{
+		dashboardRecord(now.Add(-time.Minute), "failed", "connection_failed", "client-1", "session-1", "", nil, nil),
+	}
+	overview := buildTelemetryOverview(records, now, time.Hour)
+	session := recentByID(overview.Recent)["session-1"]
+	if session.FailureStage != "" || session.FailureReason != "" || session.FailureDetail != "" {
+		t.Fatalf("failure fields should stay empty, got %+v", session)
+	}
+	encoded, err := json.Marshal(session)
+	if err != nil || strings.Contains(string(encoded), "failure_stage") || strings.Contains(string(encoded), "failure_reason") || strings.Contains(string(encoded), "failure_detail") {
+		t.Fatalf("empty failure fields must be omitted from JSON: %v %s", err, encoded)
+	}
+	// Both the stage and reason fall back to "unknown".
+	if got := countByName(overview.FailureReasons, "unknown · unknown"); got != 1 {
+		t.Fatalf("panel should count 'unknown · unknown', got %+v", overview.FailureReasons)
+	}
+}
+
+func TestBuildTelemetryOverviewRelayTopFailureReason(t *testing.T) {
+	now := time.Date(2026, 7, 9, 12, 30, 0, 0, time.UTC)
+	records := []TelemetryRecord{
+		// relay-modal: timeout twice, connection_refused once → modal is timeout,
+		// even though connection_refused sorts first. Count beats the tiebreak.
+		dashboardRecord(now.Add(-6*time.Minute), "m1", "relay_attempt_failed", "client-1", "session-1", "relay-modal", map[string]string{"error_type": "timeout"}, nil),
+		dashboardRecord(now.Add(-5*time.Minute), "m2", "relay_attempt_failed", "client-2", "session-2", "relay-modal", map[string]string{"error_type": "timeout"}, nil),
+		dashboardRecord(now.Add(-4*time.Minute), "m3", "relay_attempt_failed", "client-3", "session-3", "relay-modal", map[string]string{"failure_reason": "connection_refused"}, nil),
+		// relay-tie: one of each → lexicographically smallest reason wins.
+		dashboardRecord(now.Add(-3*time.Minute), "t1", "relay_attempt_failed", "client-4", "session-4", "relay-tie", map[string]string{"error_type": "timeout"}, nil),
+		dashboardRecord(now.Add(-2*time.Minute), "t2", "relay_attempt_failed", "client-5", "session-5", "relay-tie", map[string]string{"error_type": "connection_refused"}, nil),
+		// relay-clean only succeeded, so it has no failure reason to report.
+		dashboardRecord(now.Add(-time.Minute), "ok", "connection_succeeded", "client-6", "session-6", "relay-clean", nil, nil),
+	}
+	overview := buildTelemetryOverview(records, now, time.Hour)
+	byRelay := make(map[string]relaySummary)
+	for _, relay := range overview.TopRelays {
+		byRelay[relay.RelayID] = relay
+	}
+	if got := byRelay["relay-modal"].TopFailureReason; got != "timeout" {
+		t.Fatalf("modal relay reason = %q, want timeout", got)
+	}
+	if got := byRelay["relay-tie"].TopFailureReason; got != "connection_refused" {
+		t.Fatalf("tie should resolve to the lexicographically smallest reason, got %q", got)
+	}
+	if got := byRelay["relay-clean"].TopFailureReason; got != "" {
+		t.Fatalf("relay without failed attempts should have no top failure reason, got %q", got)
+	}
+}
+
+func recentByID(sessions []sessionSummary) map[string]sessionSummary {
+	byID := make(map[string]sessionSummary, len(sessions))
+	for _, session := range sessions {
+		byID[session.SessionID] = session
+	}
+	return byID
+}
+
+func countByName(counts []countSummary, name string) int {
+	for _, count := range counts {
+		if count.Name == name {
+			return count.Count
+		}
+	}
+	return 0
+}
+
 func postLogin(server http.Handler, token string) *httptest.ResponseRecorder {
 	form := url.Values{"token": {token}}
 	request := httptest.NewRequest(http.MethodPost, "/admin/telemetry/login", strings.NewReader(form.Encode()))

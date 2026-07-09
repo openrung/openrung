@@ -37,7 +37,20 @@ events AS (
 		COALESCE(relay_id, '') AS relay_id,
 		host(source_ip) AS source_ip,
 		NULLIF(payload->>'application_package', '') AS application,
-		payload->'attributes'->>'failure_stage' AS failure_stage,
+		-- failure_stage/detail use NULLIF so the sessions CTE IS NOT NULL
+		-- filter mirrors the accumulator's plain != "" test (a present-but-
+		-- empty later connection_failed must not clobber an earlier non-empty
+		-- value). NULLIF leaves the failure_stages count unchanged: its CASE
+		-- already treats '' as 'unknown'.
+		NULLIF(payload->'attributes'->>'failure_stage', '') AS failure_stage,
+		NULLIF(payload->'attributes'->>'failure_detail', '') AS failure_detail,
+		-- failure_reason mirrors firstNonEmpty(failure_reason, error_type):
+		-- the btrim CASE tests the trimmed value but keeps the original, and
+		-- yields NULL when both are empty (like country above).
+		CASE
+			WHEN btrim(COALESCE(payload->'attributes'->>'failure_reason', '')) <> '' THEN payload->'attributes'->>'failure_reason'
+			WHEN btrim(COALESCE(payload->'attributes'->>'error_type', '')) <> '' THEN payload->'attributes'->>'error_type'
+		END AS failure_reason,
 		COALESCE(
 			NULLIF(payload->'attributes'->>'operating_system', ''),
 			'iOS ' || NULLIF(payload->'attributes'->>'ios_version', ''),
@@ -87,6 +100,11 @@ sessions AS (
 		COALESCE((array_agg(organization ORDER BY received_at DESC, occurred_at DESC) FILTER (WHERE organization IS NOT NULL))[1], '') AS organization,
 		COALESCE((array_agg(asn ORDER BY received_at DESC, occurred_at DESC) FILTER (WHERE asn IS NOT NULL))[1], '') AS asn,
 		COALESCE((array_agg(isp ORDER BY received_at DESC, occurred_at DESC) FILTER (WHERE isp IS NOT NULL))[1], '') AS isp,
+		-- Failure fields come only from connection_failed events; latest
+		-- non-empty wins, matching sessionSummary's per-field accumulation.
+		COALESCE((array_agg(failure_stage ORDER BY received_at DESC, occurred_at DESC) FILTER (WHERE event = 'connection_failed' AND failure_stage IS NOT NULL))[1], '') AS failure_stage,
+		COALESCE((array_agg(failure_reason ORDER BY received_at DESC, occurred_at DESC) FILTER (WHERE event = 'connection_failed' AND failure_reason IS NOT NULL))[1], '') AS failure_reason,
+		COALESCE((array_agg(failure_detail ORDER BY received_at DESC, occurred_at DESC) FILTER (WHERE event = 'connection_failed' AND failure_detail IS NOT NULL))[1], '') AS failure_detail,
 		COALESCE((array_agg(source_ip ORDER BY received_at DESC, occurred_at DESC) FILTER (WHERE event = 'client_seen' AND source_ip IS NOT NULL))[1], '') AS observed_client_ip,
 		COALESCE((array_agg(reported_client_ip ORDER BY received_at DESC, occurred_at DESC) FILTER (WHERE reported_client_ip IS NOT NULL))[1], '') AS reported_client_ip,
 		COALESCE((array_agg(source_ip ORDER BY received_at DESC, occurred_at DESC) FILTER (WHERE source_ip IS NOT NULL))[1], '') AS fallback_source_ip,
@@ -146,11 +164,31 @@ SELECT 'failure_stages',
 	COUNT(*)
 FROM events WHERE event = 'connection_failed' GROUP BY 2
 UNION ALL
+SELECT 'failure_reasons',
+	(CASE WHEN btrim(COALESCE(failure_stage, '')) <> '' THEN failure_stage ELSE 'unknown' END)
+		|| ' · ' ||
+		(CASE WHEN btrim(COALESCE(failure_reason, '')) <> '' THEN failure_reason ELSE 'unknown' END),
+	COUNT(*)
+FROM events WHERE event = 'connection_failed' GROUP BY 2
+UNION ALL
 SELECT 'relay_successes', relay_id, COUNT(*)
 FROM events WHERE event = 'connection_succeeded' AND relay_id <> '' GROUP BY relay_id
 UNION ALL
 SELECT 'relay_failures', relay_id, COUNT(*)
 FROM events WHERE event = 'relay_attempt_failed' AND relay_id <> '' GROUP BY relay_id`
+
+// telemetryRelayFailureReasonsQuery counts relay_attempt_failed events per
+// (relay_id, reason), the reason falling back to 'unknown' exactly as the
+// in-memory firstNonEmpty(failure_reason, error_type, "unknown"). The rows feed
+// topFailureReason per relay, which resolves ties lexicographically.
+const telemetryRelayFailureReasonsQuery = `WITH ` + telemetryEventsCTE + `
+SELECT
+	relay_id,
+	CASE WHEN btrim(COALESCE(failure_reason, '')) <> '' THEN failure_reason ELSE 'unknown' END AS reason,
+	COUNT(*) AS count
+FROM events
+WHERE event = 'relay_attempt_failed' AND relay_id <> ''
+GROUP BY 1, 2`
 
 const telemetrySessionCountsQuery = `WITH ` + telemetryEventsCTE + `, ` + telemetrySessionsCTE + `
 SELECT 'top_countries' AS kind, country AS name, COUNT(*) AS count
@@ -188,6 +226,7 @@ const telemetrySessionPageQuery = `WITH ` + telemetryEventsCTE + `, ` + telemetr
 SELECT
 	session_id, client_id, started_at, last_seen_at, relay_id, operating_system,
 	device_manufacturer, device_model, app_version, country, city, organization, asn, isp,
+	failure_stage, failure_reason, failure_detail,
 	observed_client_ip, reported_client_ip, fallback_source_ip,
 	last_heartbeat_at, running_duration_ms, ended_duration_ms, bytes_sent, bytes_received,
 	attempted, succeeded, failed, terminal
@@ -246,7 +285,13 @@ func (s *PostgresTelemetrySink) TelemetryOverview(now time.Time, window time.Dur
 	}
 	overview.TopApps = sortedCounts(eventCounts["top_applications"], 10)
 	overview.FailureStages = sortedCounts(eventCounts["failure_stages"], 10)
-	overview.TopRelays = topRelaySummaries(eventCounts["relay_successes"], eventCounts["relay_failures"])
+	overview.FailureReasons = sortedCounts(eventCounts["failure_reasons"], 10)
+
+	relayFailureReasons, err := s.queryRelayFailureReasons(ctx, eventArgs)
+	if err != nil {
+		return telemetryOverview{}, err
+	}
+	overview.TopRelays = topRelaySummaries(eventCounts["relay_successes"], eventCounts["relay_failures"], relayFailureReasons)
 
 	sessionCounts, err := s.queryTelemetryCounts(ctx, telemetrySessionCountsQuery, sessionArgs)
 	if err != nil {
@@ -352,8 +397,10 @@ func (s *PostgresTelemetrySink) queryTelemetryCounts(ctx context.Context, query 
 }
 
 // topRelaySummaries mirrors the in-memory relay ranking: entries exist for any
-// relay with a success or failure, ordered by total volume, top ten kept.
-func topRelaySummaries(successes, failures map[string]int) []relaySummary {
+// relay with a success or failure, ordered by total volume, top ten kept. The
+// modal failure reason reuses the shared topFailureReason helper so ties resolve
+// lexicographically just like the in-memory path.
+func topRelaySummaries(successes, failures map[string]int, failureReasons map[string]map[string]int) []relaySummary {
 	relays := make(map[string]*relaySummary)
 	for relayID, count := range successes {
 		relayFor(relays, relayID).Successes = count
@@ -363,6 +410,7 @@ func topRelaySummaries(successes, failures map[string]int) []relaySummary {
 	}
 	var top []relaySummary
 	for _, relay := range relays {
+		relay.TopFailureReason = topFailureReason(failureReasons[relay.RelayID])
 		top = append(top, *relay)
 	}
 	sortTopRelays(top)
@@ -370,6 +418,29 @@ func topRelaySummaries(successes, failures map[string]int) []relaySummary {
 		top = top[:10]
 	}
 	return top
+}
+
+// queryRelayFailureReasons returns, per relay, the count of each
+// relay_attempt_failed reason in the window, feeding topRelaySummaries.
+func (s *PostgresTelemetrySink) queryRelayFailureReasons(ctx context.Context, args []any) (map[string]map[string]int, error) {
+	rows, err := s.pool.Query(ctx, telemetryRelayFailureReasonsQuery, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query relay failure reasons: %w", err)
+	}
+	defer rows.Close()
+	reasons := make(map[string]map[string]int)
+	for rows.Next() {
+		var relayID, reason string
+		var count int
+		if err := rows.Scan(&relayID, &reason, &count); err != nil {
+			return nil, fmt.Errorf("scan relay failure reason: %w", err)
+		}
+		if reasons[relayID] == nil {
+			reasons[relayID] = make(map[string]int)
+		}
+		reasons[relayID][reason] = count
+	}
+	return reasons, rows.Err()
 }
 
 func (s *PostgresTelemetrySink) queryTelemetrySpeedTests(ctx context.Context, args []any) ([]speedTestSummary, error) {
@@ -428,6 +499,9 @@ func (s *PostgresTelemetrySink) queryTelemetrySessionPage(ctx context.Context, a
 			&acc.summary.Organization,
 			&acc.summary.ASN,
 			&acc.isp,
+			&acc.summary.FailureStage,
+			&acc.summary.FailureReason,
+			&acc.summary.FailureDetail,
 			&acc.observedClientIP,
 			&acc.reportedClientIP,
 			&acc.fallbackSourceIP,
