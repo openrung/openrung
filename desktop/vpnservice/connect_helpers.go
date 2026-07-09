@@ -2,7 +2,7 @@ package vpnservice
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"net"
 	"os"
 	"strings"
@@ -14,8 +14,6 @@ import (
 	"openrung/internal/clienttelemetry"
 	"openrung/internal/relay"
 )
-
-var errNoMatchingRelay = errors.New("no usable relay matched the request")
 
 // newManager builds a best-effort telemetry manager (parity with the mobile
 // apps). A nil result means telemetry is unavailable; every call site guards
@@ -66,13 +64,19 @@ func selectRelay(resp relay.ListResponse, targetCountry, targetRelayID string) (
 		now = time.Now()
 	}
 
+	// Distinguish "broker returned nothing" up front from the narrower
+	// no-match cases below, so telemetry can tell them apart.
+	if len(resp.Relays) == 0 {
+		return relay.Descriptor{}, client.ErrNoRelaysAvailable
+	}
+
 	if id := strings.TrimSpace(targetRelayID); id != "" {
 		for _, candidate := range resp.Relays {
 			if candidate.ID == id && client.IsUsableRelay(candidate, now) {
 				return candidate, nil
 			}
 		}
-		return relay.Descriptor{}, errNoMatchingRelay
+		return relay.Descriptor{}, fmt.Errorf("relay %q: %w", id, client.ErrRelayNotInList)
 	}
 
 	if cc := strings.ToUpper(strings.TrimSpace(targetCountry)); cc != "" {
@@ -82,7 +86,7 @@ func selectRelay(resp relay.ListResponse, targetCountry, targetRelayID string) (
 				return candidate, nil
 			}
 		}
-		return relay.Descriptor{}, errNoMatchingRelay
+		return relay.Descriptor{}, fmt.Errorf("country %s: %w", cc, client.ErrNoRelayInCountry)
 	}
 
 	return client.SelectRelayForFamily(resp, client.RelayFamilyAuto)

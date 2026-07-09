@@ -361,7 +361,14 @@ func (s *Service) failConnect(conn *connection, stage string, err error) {
 	s.appendLog("connect failed: " + msg)
 	s.setStatus(StatusFailed, keepLabel, setError(msg))
 	if conn.mgr != nil {
-		conn.mgr.Record("connection_failed", "", map[string]string{"failure_stage": stage}, nil)
+		attrs := map[string]string{"failure_stage": stage}
+		if reason := clienttelemetry.ClassifyError(err); reason != "" {
+			attrs["failure_reason"] = reason
+		}
+		if detail := clienttelemetry.ErrorDetail(err); detail != "" {
+			attrs["failure_detail"] = detail
+		}
+		conn.mgr.Record("connection_failed", "", attrs, nil)
 		conn.mgr.EndSession("connection_failed")
 		flushOnShutdown(conn.mgr)
 	}

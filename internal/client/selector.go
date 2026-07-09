@@ -7,7 +7,14 @@ import (
 	"openrung/internal/relay"
 )
 
-var ErrNoUsableRelay = errors.New("no usable relay")
+// Relay-selection sentinels. Kept in this package (not desktop) so
+// clienttelemetry.ClassifyError can map them without importing a GUI package.
+var (
+	ErrNoUsableRelay     = errors.New("no usable relay")
+	ErrNoRelaysAvailable = errors.New("broker returned no relays")
+	ErrRelayNotInList    = errors.New("target relay not offered by the broker")
+	ErrNoRelayInCountry  = errors.New("no usable relay in the requested country")
+)
 
 type RelayFamily string
 

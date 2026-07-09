@@ -131,6 +131,22 @@ func hostIsLoopback(host string) bool {
 	return false
 }
 
+// BrokerStatusError reports a broker non-2xx response and carries the status
+// code so error classification can label it (429 → rate_limited, otherwise
+// http_<code>) without matching on the message string. The discovery fetch path
+// reuses this type for the same reason.
+type BrokerStatusError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *BrokerStatusError) Error() string {
+	return fmt.Sprintf("broker list relays: %s", e.Message)
+}
+
+// HTTPStatus exposes the broker response status for error classification.
+func (e *BrokerStatusError) HTTPStatus() int { return e.StatusCode }
+
 func brokerStatusError(resp *http.Response) error {
 	var apiErr relay.ErrorResponse
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -141,5 +157,5 @@ func brokerStatusError(resp *http.Response) error {
 	if apiErr.Error == "" {
 		apiErr.Error = resp.Status
 	}
-	return fmt.Errorf("broker list relays: %s", apiErr.Error)
+	return &BrokerStatusError{StatusCode: resp.StatusCode, Message: apiErr.Error}
 }
