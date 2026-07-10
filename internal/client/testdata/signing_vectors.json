@@ -1,0 +1,30 @@
+{
+  "spec": "openrung-relay-list-signing-v1",
+  "signature_header": "X-OpenRung-Relays-Signature",
+  "spec_vector": {
+    "comment": "SPEC v1 §2.3 shared test vector. The seed is 32 bytes of 0x42 — TEST ONLY, never a production key. body is the exact signed bytes, no trailing newline.",
+    "seed_b64": "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=",
+    "pubkey_hex": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12",
+    "key_id": "3097e2dee2cb4a34",
+    "body": "{\"count\":1,\"server_time\":\"2026-07-10T00:00:00Z\",\"not_after\":\"2026-07-10T00:30:00Z\",\"key_id\":\"3097e2dee2cb4a34\",\"channel\":\"api\",\"limit\":1,\"relays\":[]}",
+    "signature_b64": "K5UmJWzoEZ1YHOqZFf5E+ocNOITSe3WPvOo0GuyCRoiAxUk4eo/jcfqiuaPhrNeYrK3i8QcYI3LIv+zbVYq9Bw==",
+    "header": "ed25519;3097e2dee2cb4a34;K5UmJWzoEZ1YHOqZFf5E+ocNOITSe3WPvOo0GuyCRoiAxUk4eo/jcfqiuaPhrNeYrK3i8QcYI3LIv+zbVYq9Bw=="
+  },
+  "pinned_keys": [
+    {
+      "comment": "Production operator public keys (raw 32-byte Ed25519, hex) with their §11 promotion vectors: a fixed message signed under each key's offline seed. The CI guard verifies each embedded pinned constant against its vector so a truncated or typo'd constant fails CI, not promotion day.",
+      "role": "active",
+      "pubkey_hex": "176c03cbc70833285abcea75f2a0e137bd687629142408c22806a86308bd4974",
+      "key_id": "627405615601c589",
+      "vector_message": "openrung-signing-key-vector:active",
+      "vector_signature_b64": "mELBVRsBe2+aeKYMniZ2F0HEV7n+8VcokBgailoLQW7JAleX6q8RQypVOO0y0p0+g/u89Uu+aaYpVfvpIAMRBQ=="
+    },
+    {
+      "role": "standby",
+      "pubkey_hex": "5b2698cfa7a796c671a30aabd5475d55095b91464221f051837eb8fe01f36ea2",
+      "key_id": "672f79aa99a573cd",
+      "vector_message": "openrung-signing-key-vector:standby",
+      "vector_signature_b64": "KyYhv/R46Wmi1M4y+KPT4CUz40mVXzwG3hYG5U22v7qpxri0pj4wYCgxqjrGmh2hlFNcx8gZpIBFO1PhD7xABw=="
+    }
+  ]
+}

@@ -24,7 +24,13 @@ func TestRelayListURL(t *testing.T) {
 }
 
 func TestBrokerClientListRelays(t *testing.T) {
-	now := time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC)
+	// Non-loopback responses must be signed (signing.go), so the stub signs
+	// with the shared test-vector key pinned for the test's duration.
+	vectors := loadVectors(t)
+	restore := PinRelayListKeysForTest(vectors.SpecVector.PubKeyHex)
+	defer restore()
+
+	now := time.Now().UTC()
 	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Path != "/api/v1/relays" {
 			t.Fatalf("unexpected path %q", r.URL.Path)
@@ -32,19 +38,22 @@ func TestBrokerClientListRelays(t *testing.T) {
 		if r.URL.Query().Get("limit") != "3" {
 			t.Fatalf("unexpected limit %q", r.URL.Query().Get("limit"))
 		}
-		body, err := json.Marshal(relay.ListResponse{
+		body, header := signedListBody(t, vectorSigner(t, vectors), vectors.SpecVector.KeyID, relay.ListResponse{
 			Count:      1,
 			ServerTime: now,
+			NotAfter:   now.Add(30 * time.Minute),
+			KeyID:      vectors.SpecVector.KeyID,
+			Channel:    relay.ChannelAPI,
+			Limit:      3,
 			Relays:     []relay.Descriptor{validRelay(now)},
 		})
-		if err != nil {
-			t.Fatalf("marshal response: %v", err)
-		}
+		h := make(http.Header)
+		h.Set(RelaySignatureHeader, header)
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Status:     "200 OK",
 			Body:       io.NopCloser(strings.NewReader(string(body))),
-			Header:     make(http.Header),
+			Header:     h,
 			Request:    r,
 		}, nil
 	})}
@@ -80,21 +89,31 @@ func TestBrokerClientListRelaysNon2xx(t *testing.T) {
 }
 
 func TestBrokerClientListRelaysSetsIdentityHeaders(t *testing.T) {
-	now := time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC)
+	vectors := loadVectors(t)
+	restore := PinRelayListKeysForTest(vectors.SpecVector.PubKeyHex)
+	defer restore()
+
+	now := time.Now().UTC()
 	var gotClientID, gotSessionID, gotAppVersion string
 	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		gotClientID = r.Header.Get("X-OpenRung-Client-ID")
 		gotSessionID = r.Header.Get("X-OpenRung-Session-ID")
 		gotAppVersion = r.Header.Get("X-OpenRung-App-Version")
-		body, err := json.Marshal(relay.ListResponse{Count: 0, ServerTime: now})
-		if err != nil {
-			t.Fatalf("marshal response: %v", err)
-		}
+		body, header := signedListBody(t, vectorSigner(t, vectors), vectors.SpecVector.KeyID, relay.ListResponse{
+			Count:      0,
+			ServerTime: now,
+			NotAfter:   now.Add(30 * time.Minute),
+			KeyID:      vectors.SpecVector.KeyID,
+			Channel:    relay.ChannelAPI,
+			Limit:      5,
+		})
+		h := make(http.Header)
+		h.Set(RelaySignatureHeader, header)
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Status:     "200 OK",
 			Body:       io.NopCloser(strings.NewReader(string(body))),
-			Header:     make(http.Header),
+			Header:     h,
 			Request:    r,
 		}, nil
 	})}

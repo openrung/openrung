@@ -15,6 +15,17 @@ import (
 
 const defaultRelayLimit = 5
 
+// effectiveRelayLimit is the limit actually sent to the broker: callers pass
+// zero or negative for "default". RelayListURL and the signature limit-echo
+// check (signing.go) MUST share this normalization, or verification would
+// reject every default-limit fetch as a limit mismatch.
+func effectiveRelayLimit(limit int) int {
+	if limit < 1 {
+		return defaultRelayLimit
+	}
+	return limit
+}
+
 type BrokerClient struct {
 	BaseURL    string
 	HTTPClient *http.Client
@@ -22,7 +33,9 @@ type BrokerClient struct {
 
 // ListRelays fetches relay candidates from the broker. When clientID and
 // sessionID are non-empty they are sent as identity headers so the broker can
-// auto-record a client_seen telemetry event for the request.
+// auto-record a client_seen telemetry event for the request. Successful
+// responses pass through ReadVerifiedRelayList (signing.go): any non-loopback
+// broker must sign the list with a pinned operator key or the fetch fails.
 func (c BrokerClient) ListRelays(ctx context.Context, limit int, clientID, sessionID string) (relay.ListResponse, error) {
 	endpoint, err := RelayListURL(c.BaseURL, limit)
 	if err != nil {
@@ -54,17 +67,11 @@ func (c BrokerClient) ListRelays(ctx context.Context, limit int, clientID, sessi
 		return relay.ListResponse{}, brokerStatusError(resp)
 	}
 
-	var out relay.ListResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return relay.ListResponse{}, fmt.Errorf("decode relay list: %w", err)
-	}
-	return out, nil
+	return ReadVerifiedRelayList(resp, endpoint, limit)
 }
 
 func RelayListURL(baseURL string, limit int) (string, error) {
-	if limit < 1 {
-		limit = defaultRelayLimit
-	}
+	limit = effectiveRelayLimit(limit)
 
 	parsed, err := EnforceSecureBrokerURL(baseURL)
 	if err != nil {

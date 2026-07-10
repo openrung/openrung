@@ -2,16 +2,28 @@ package discovery
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"openrung/internal/client"
+	"openrung/internal/relay"
 )
 
+// relayBody is unsigned: every httptest server here is a loopback host, which
+// the shared verification shim (client.ReadVerifiedRelayList) exempts from the
+// relay-list signature requirement — the same dev-flow allowance as
+// EnforceSecureBrokerURL's loopback http. The signed path is exercised against
+// a non-loopback stub in TestListRelaysSignatureNonLoopback.
 const relayBody = `{"count":1,"server_time":"2026-07-06T00:00:00Z","relays":[{"id":"r1","public_host":"1.2.3.4","public_port":443}]}`
 
 func TestListRelaysSuccess(t *testing.T) {
@@ -36,6 +48,76 @@ func TestListRelaysSuccess(t *testing.T) {
 	if gotPlatform == "" {
 		t.Error("X-OpenRung-Desktop header not sent")
 	}
+}
+
+// TestListRelaysSignatureNonLoopback drives this package's own entry point —
+// it wraps the shared shim with its own request/429 handling, so it needs its
+// own coverage — against a non-loopback broker: an unsigned list must fail
+// with the distinguishable "unsigned/invalid relay list" error, and the same
+// body signed under a (test-)pinned key must verify.
+func TestListRelaysSignatureNonLoopback(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate test key: %v", err)
+	}
+	restore := client.PinRelayListKeysForTest(hex.EncodeToString(pub))
+	defer restore()
+
+	now := time.Now().UTC()
+	body, err := json.Marshal(relay.ListResponse{
+		Count:      1,
+		ServerTime: now,
+		NotAfter:   now.Add(30 * time.Minute),
+		Channel:    relay.ChannelAPI,
+		Limit:      20,
+		Relays:     []relay.Descriptor{{ID: "r1", PublicHost: "1.2.3.4", PublicPort: 443}},
+	})
+	if err != nil {
+		t.Fatalf("marshal relay list: %v", err)
+	}
+	sigHeader := "ed25519;anyadvisoryid;" + base64.StdEncoding.EncodeToString(ed25519.Sign(priv, body))
+
+	stub := func(signed bool) *http.Client {
+		return &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			h := make(http.Header)
+			if signed {
+				h.Set(client.RelaySignatureHeader, sigHeader)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader(string(body))),
+				Header:     h,
+				Request:    r,
+			}, nil
+		})}
+	}
+
+	t.Run("unsigned fails distinguishably", func(t *testing.T) {
+		_, err := ListRelays(context.Background(), "https://broker.example.com", Options{Limit: 20, HTTPClient: stub(false)})
+		if err == nil {
+			t.Fatal("unsigned non-loopback response must fail")
+		}
+		if !strings.Contains(err.Error(), "unsigned/invalid relay list") {
+			t.Fatalf("want the unsigned/invalid marker, got: %v", err)
+		}
+	})
+
+	t.Run("signed verifies", func(t *testing.T) {
+		resp, err := ListRelays(context.Background(), "https://broker.example.com", Options{Limit: 20, HTTPClient: stub(true)})
+		if err != nil {
+			t.Fatalf("signed response must verify: %v", err)
+		}
+		if len(resp.Relays) != 1 || resp.Relays[0].ID != "r1" {
+			t.Fatalf("unexpected relays: %+v", resp.Relays)
+		}
+	})
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
 }
 
 func TestListRelaysRateLimited(t *testing.T) {
