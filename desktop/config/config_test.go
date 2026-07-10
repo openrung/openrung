@@ -3,7 +3,16 @@ package config
 import (
 	"reflect"
 	"testing"
+	"time"
 )
+
+func TestDiscoveryStaggerMatchesMobile(t *testing.T) {
+	// Cross-client tuning constant: must equal the mobile AppConfig's
+	// DISCOVERY_STAGGER_MS so every client races discovery identically.
+	if DiscoveryStagger != 2500*time.Millisecond {
+		t.Fatalf("DiscoveryStagger = %v, want 2.5s (keep in sync with DISCOVERY_STAGGER_MS)", DiscoveryStagger)
+	}
+}
 
 func TestBrokerCandidates(t *testing.T) {
 	https := "https://broker.openrung.org/"

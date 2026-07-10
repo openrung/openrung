@@ -39,10 +39,21 @@ const (
 	// MinDirectoryRefreshInterval throttles automatic map refreshes so the GUI
 	// cannot trip the broker's per-IP rate limit on its own (see broker PR #5).
 	MinDirectoryRefreshInterval = 30 * time.Second
+
+	// DiscoveryStagger is the head start each discovery candidate gets over the
+	// next one in discovery.FirstReachable's staggered race: candidate[0] starts
+	// immediately and, until an attempt succeeds, the next candidate joins every
+	// DiscoveryStagger. Long enough that a healthy primary almost always wins
+	// outright (so fallback fronts see no extra traffic), short enough that a
+	// blocked or hung primary delays discovery by one interval instead of a full
+	// request timeout. Must stay in sync with the mobile AppConfig's
+	// DISCOVERY_STAGGER_MS so every client races identically.
+	DiscoveryStagger = 2500 * time.Millisecond
 )
 
-// DefaultBrokerURLs are the ordered discovery candidates, tried in order until
-// one returns relays (see discovery.FirstReachable).
+// DefaultBrokerURLs are the ordered discovery candidates. They are raced with
+// a staggered start — each entry gets a DiscoveryStagger head start over the
+// next, and the first to return relays wins (see discovery.FirstReachable).
 //
 // Every entry MUST be HTTPS. The relay list is not yet signed, so it is
 // authenticated only by the TLS certificate of the host that serves it; a
