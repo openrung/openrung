@@ -115,7 +115,12 @@ chmod 600 /etc/openrung/broker.env
 # persists on disk under /var/lib/cloud. Production: replace with the pinned
 # active seed (scp) and restart the container; every redeploy must keep using
 # --env-file so the seed is never hand-typed inline.
+# set +x for exactly this line: set -eux (above) would otherwise trace the
+# EXPANDED command — i.e. the generated seed in cleartext — into the
+# world-readable /var/log/openrung-init.log.
+set +x
 echo "OPENRUNG_RELAY_SIGNING_KEY=\$(openssl rand -base64 32)" >> /etc/openrung/broker.env
+set -x
 
 docker pull ${IMAGE}
 docker rm -f openrung-broker 2>/dev/null || true
