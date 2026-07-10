@@ -76,16 +76,33 @@ var DefaultBrokerURLs = []string{
 	//   "https://openrung-broker.<other-cdn>/",   // EXAMPLE — second CDN provider
 }
 
+// Candidates are the ordered discovery endpoints for one request, plus
+// whether URLs[0] is a genuine user override. Built by BrokerCandidates and
+// consumed by discovery.FirstReachable; carrying the flag alongside the list
+// keeps the two from being computed inconsistently.
+type Candidates struct {
+	URLs []string
+	// OverrideFirst marks URLs[0] as a genuine user override — a non-blank
+	// primary that is not one of DefaultBrokerURLs. discovery.FirstReachable
+	// then tries it strictly first (full per-attempt timeout) and only races
+	// the remaining defaults after it fails, so a custom broker that is merely
+	// slower than the stagger is never silently outrun by a default front.
+	OverrideFirst bool
+}
+
 // BrokerCandidates returns the ordered, de-duplicated discovery candidates for
-// a request: a genuine primary override first, then the built-in defaults.
+// a request: a genuine primary override first (with OverrideFirst set), then
+// the built-in defaults.
 //
 // Ported from the mobile app's candidates() (src/net/brokerClient.ts): a
 // non-blank primary is tried FIRST only when it is a genuine override, i.e.
-// not already one of the defaults. A persisted value that merely echoes a
-// default must not reorder the defaults' HTTPS-first preference, otherwise an
-// upgrader whose last-used default was the raw IP would keep hitting the IP
-// before the Cloudflare-fronted endpoint.
-func BrokerCandidates(primary string) []string {
+// not already one of the defaults — and only such an override sets
+// OverrideFirst, giving it the strict head phase described on Candidates. A
+// persisted value that merely echoes a default must not reorder the defaults'
+// HTTPS-first preference (or claim the override phase), otherwise an upgrader
+// whose last-used default was the raw IP would keep hitting the IP before the
+// Cloudflare-fronted endpoint.
+func BrokerCandidates(primary string) Candidates {
 	ordered := make([]string, 0, len(DefaultBrokerURLs)+1)
 	seen := make(map[string]struct{}, len(DefaultBrokerURLs)+1)
 	add := func(value string) {
@@ -96,6 +113,7 @@ func BrokerCandidates(primary string) []string {
 		ordered = append(ordered, value)
 	}
 
+	overrideFirst := false
 	trimmedPrimary := strings.TrimSpace(primary)
 	if trimmedPrimary != "" {
 		isDefault := false
@@ -107,6 +125,7 @@ func BrokerCandidates(primary string) []string {
 		}
 		if !isDefault {
 			add(trimmedPrimary)
+			overrideFirst = true
 		}
 	}
 	for _, fallback := range DefaultBrokerURLs {
@@ -114,5 +133,5 @@ func BrokerCandidates(primary string) []string {
 			add(trimmed)
 		}
 	}
-	return ordered
+	return Candidates{URLs: ordered, OverrideFirst: overrideFirst}
 }

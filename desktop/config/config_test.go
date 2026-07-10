@@ -20,27 +20,27 @@ func TestBrokerCandidates(t *testing.T) {
 	tests := []struct {
 		name    string
 		primary string
-		want    []string
+		want    Candidates
 	}{
 		{
 			name:    "empty primary yields the HTTPS default",
 			primary: "",
-			want:    []string{https},
+			want:    Candidates{URLs: []string{https}},
 		},
 		{
 			name:    "blank primary is ignored",
 			primary: "   ",
-			want:    []string{https},
+			want:    Candidates{URLs: []string{https}},
 		},
 		{
-			name:    "genuine override is tried first",
+			name:    "genuine override is tried first and flagged as an override",
 			primary: "https://mirror.example/",
-			want:    []string{"https://mirror.example/", https},
+			want:    Candidates{URLs: []string{"https://mirror.example/", https}, OverrideFirst: true},
 		},
 		{
-			name:    "primary echoing a default does not duplicate it",
+			name:    "primary echoing a default does not duplicate it or claim the override phase",
 			primary: https,
-			want:    []string{https},
+			want:    Candidates{URLs: []string{https}},
 		},
 	}
 
