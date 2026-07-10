@@ -7,6 +7,16 @@ name: uptime
 # UNCENSORED vantage). A green run proves the endpoints are *available*;
 # it does NOT prove they are reachable from censored networks.
 #
+# Front 403s are expected from this vantage: the Cloudflare edge serves
+# 403 to datacenter IPs on this zone (verified on the first real-runner
+# run, 2026-07-10) — the same behavior that forces volunteers to register
+# against the origin. A front 403 therefore says nothing about real-client
+# availability and is downgraded to a warning; every other front failure
+# (5xx, timeout, staleness) still fails the job. If a WAF exception for
+# GET /healthz + GET /api/v1/relays is ever added (not possible if the
+# block comes from free-plan Bot Fight Mode, which supports no
+# exceptions), the 403 branch simply goes dead.
+#
 # Notifications: when a run fails, GitHub emails the workflow author
 # (Actions failure notifications). No extra alerting wiring is required.
 #
@@ -56,11 +66,20 @@ jobs:
 
           fail=0
 
+          # See the header comment: CDN-edge 403s against this datacenter
+          # vantage are expected and are not a front outage signal.
+          vantage_warn() {
+            echo "WARN  $1 -> HTTP 403 (datacenter vantage blocked by the CDN edge; not an outage signal)"
+            echo "::warning::$1 returned 403 from the GitHub-runner vantage (expected: the edge blocks datacenter IPs)"
+          }
+
           probe_health() {
-            local base=$1 code
+            local base=$1 kind=${2:-front} code
             code=$(curl "${CURL_OPTS[@]}" -o /dev/null -w '%{http_code}' "$base/healthz") || code=000
             if [[ "$code" == "200" ]]; then
               echo "ok    $base/healthz -> 200"
+            elif [[ "$kind" == "front" && "$code" == "403" ]]; then
+              vantage_warn "$base/healthz"
             else
               echo "FAIL  $base/healthz -> HTTP $code (expected 200)"
               fail=1
@@ -72,6 +91,10 @@ jobs:
             hdrs=$(mktemp)
             body=$(mktemp)
             code=$(curl "${CURL_OPTS[@]}" -D "$hdrs" -o "$body" -w '%{http_code}' "$base/api/v1/relays?limit=1") || code=000
+            if [[ "$code" == "403" ]]; then
+              vantage_warn "$base/api/v1/relays"
+              return
+            fi
             if [[ "$code" != "200" ]]; then
               echo "FAIL  $base/api/v1/relays -> HTTP $code (expected 200)"
               fail=1
@@ -103,12 +126,12 @@ jobs:
           }
 
           for base in "${FRONTS[@]}"; do
-            probe_health "$base"
+            probe_health "$base" front
             probe_relays_fresh "$base"
           done
 
           for base in "${ORIGINS[@]}"; do
-            probe_health "$base"
+            probe_health "$base" origin
           done
 
           if (( fail )); then
