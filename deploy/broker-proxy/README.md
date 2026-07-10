@@ -34,11 +34,13 @@ An origin blip must not take relay discovery down — this front is the only dis
 apps ship. For `GET /api/v1/relays` (exact path) only, the Worker:
 
 - proxies to the origin with a **10 s timeout**;
-- on a **2xx**, returns the origin response to the client unchanged and stores a copy in the
-  colo's Cache API with `Cache-Control: public, s-maxage=180` (the origin's `no-store` still
-  reaches clients; the override applies only to this deliberately stored fallback copy);
-- on **failure** (timeout, network error, or origin ≥ 500), serves that stored copy with
-  **`X-OpenRung-Stale: 1`** and `Cache-Control: no-store`;
+- on a **200**, returns the origin response to the client unchanged and stores a complete copy —
+  body **and all headers** — in the colo's Cache API with `Cache-Control: public, max-age=900`
+  (the origin's `no-store` still reaches clients; the override applies only to this deliberately
+  stored fallback copy). Only a full `200` is stored: a `206` partial body would poison the
+  fallback, so any other 2xx passes through to the client unchanged but is never cached;
+- on **failure** (timeout, network error, or origin ≥ 500), serves that stored copy — original
+  headers intact — with **`X-OpenRung-Stale: 1`** and `Cache-Control: no-store, no-transform`;
 - on failure with a **cold cache**, passes an origin 5xx through, and turns a network error into
   a JSON `502` (previously the exception surfaced as an opaque Cloudflare error page);
 - passes **4xx through unmasked** — a `429`/`404` is a semantic answer, not an outage.
@@ -48,10 +50,17 @@ Notes:
 - **The freshness path is unchanged.** Healthy responses always come straight from the origin.
   The cached copy is written on every success but only ever *read* on failure; no healthy
   response is served from cache.
-- **Why 180 s.** Relay leases are ~3 min, and all clients validate `expires_at` against the
-  `server_time` carried in the *same* response body — so a stale cached list passes client-side
-  expiry checks self-consistently and clients cannot detect the staleness themselves. The edge
-  must bound it: 180 s keeps a served-stale list within roughly one lease of reality.
+- **Why 900 s (15 min).** All clients validate relay `expires_at` against the `server_time`
+  carried in the *same* response body — a stale cached list passes client-side expiry checks
+  self-consistently, so client-side expiry checks cannot bound edge staleness either way. The
+  bound has to live at the edge, and the relay-list signing spec fixes it: a **15-minute stale
+  window** inside a 30-minute signed `not_after`. The edge cap is 900 s to match.
+- **Signing-ready.** The stored copy preserves *all* origin headers (only `Cache-Control` is
+  overridden and `Set-Cookie` dropped), so the upcoming `X-OpenRung-Relays-Signature` — computed
+  over the exact body bytes — survives a stale serve intact; signature-requiring clients would
+  reject a stale body served without it. The cache key is version-namespaced
+  (`__or_cache_v=1`); bump it to `2` when the signing broker deploys so pre-signing headerless
+  bodies can never replay to signature-requiring clients.
 - **Per-colo.** The Cache API is colo-local, so the stale copy exists only in Cloudflare colos
   that recently served a fresh response. A colo that never saw a healthy response has nothing to
   fall back on and returns the error as before.

@@ -4,15 +4,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { createHandler, DEFAULT_ORIGIN } from "../src/handler.js";
+import { createHandler, DEFAULT_ORIGIN, STALE_TTL_SECONDS } from "../src/handler.js";
 
 const EDGE = "https://broker.openrung.org";
 const RELAYS_URL = `${EDGE}/api/v1/relays?limit=1`;
+// The handler namespaces its cache key with a version param (bumped when the signing broker
+// deploys, so pre-signing bodies cannot replay to signature-requiring clients).
+const CACHE_KEY_URL = `${RELAYS_URL}&__or_cache_v=1`;
 
-// Minimal Cache API fake: stores immutable snapshots keyed by URL, counts interactions.
+// Minimal Cache API fake: stores immutable snapshots keyed by URL, counts interactions, and —
+// like the real Cache API — honors the stored copy's max-age/s-maxage on match (against an
+// injectable clock), so the handler's stale-TTL bound is actually exercised by tests.
 class FakeCache {
-  constructor() {
-    this.entries = new Map(); // url -> { status, headers, body: ArrayBuffer }
+  constructor(clock = () => 0) {
+    this.clock = clock; // milliseconds
+    this.entries = new Map(); // url -> { status, headers, body: ArrayBuffer, storedAt }
     this.putCalls = [];
     this.matchCalls = 0;
   }
@@ -21,7 +27,12 @@ class FakeCache {
     const url = key instanceof Request ? key.url : String(key);
     const method = key instanceof Request ? key.method : "GET";
     const body = await response.arrayBuffer();
-    const entry = { status: response.status, headers: new Headers(response.headers), body };
+    const entry = {
+      status: response.status,
+      headers: new Headers(response.headers),
+      body,
+      storedAt: this.clock(),
+    };
     this.putCalls.push({ url, method, ...entry });
     this.entries.set(url, entry);
   }
@@ -31,6 +42,13 @@ class FakeCache {
     const url = key instanceof Request ? key.url : String(key);
     const hit = this.entries.get(url);
     if (!hit) return undefined;
+    // Freshness check, s-maxage winning over max-age as in the real Cache API. An entry past
+    // its lifetime no longer matches.
+    const cacheControl = hit.headers.get("Cache-Control") ?? "";
+    const ttl = /s-maxage=(\d+)/i.exec(cacheControl) ?? /max-age=(\d+)/i.exec(cacheControl);
+    if (ttl && this.clock() - hit.storedAt > Number(ttl[1]) * 1000) {
+      return undefined;
+    }
     return new Response(hit.body.slice(0), { status: hit.status, headers: hit.headers });
   }
 
@@ -39,9 +57,10 @@ class FakeCache {
       status: 200,
       headers: new Headers({
         "Content-Type": contentType,
-        "Cache-Control": "public, s-maxage=180",
+        "Cache-Control": `public, max-age=${STALE_TTL_SECONDS}`,
       }),
       body: new TextEncoder().encode(body).buffer,
+      storedAt: this.clock(),
     });
   }
 }
@@ -69,15 +88,15 @@ function recordingFetch(responder) {
   return impl;
 }
 
-function setup(responder) {
-  const cache = new FakeCache();
+function setup(responder, { clock } = {}) {
+  const cache = new FakeCache(clock);
   const ctx = new FakeCtx();
   const fetchImpl = recordingFetch(responder);
   const handler = createHandler({ fetchImpl, cache });
   return { handler, cache, ctx, fetchImpl };
 }
 
-test("fresh 2xx: returned unchanged, proxied with timeout, cache populated via waitUntil", async () => {
+test("fresh 200: returned unchanged, proxied with timeout, cache populated via waitUntil", async () => {
   const body = JSON.stringify({ server_time: "2026-07-10T00:00:00Z", relays: [{ id: "r1" }] });
   const { handler, cache, ctx, fetchImpl } = setup(
     () =>
@@ -111,17 +130,18 @@ test("fresh 2xx: returned unchanged, proxied with timeout, cache populated via w
   assert.equal(proxied.headers.get("X-Forwarded-For"), "203.0.113.7");
   assert.equal(proxied.headers.get("X-Forwarded-Proto"), "https");
 
-  // The cached copy is written via ctx.waitUntil, keyed on the bare-GET edge URL, with the
-  // origin's no-store replaced by a 180 s cap and the Content-Type preserved.
+  // The cached copy is written via ctx.waitUntil, keyed on the version-namespaced bare-GET edge
+  // URL, with the origin's no-store replaced by the stale-TTL cap and the Content-Type
+  // preserved.
   await ctx.settle();
   assert.equal(cache.putCalls.length, 1);
   const put = cache.putCalls[0];
-  assert.equal(put.url, RELAYS_URL);
+  assert.equal(put.url, CACHE_KEY_URL);
   assert.equal(put.method, "GET");
   assert.equal(put.status, 200);
-  assert.equal(put.headers.get("Cache-Control"), "public, s-maxage=180");
+  assert.equal(put.headers.get("Cache-Control"), `public, max-age=${STALE_TTL_SECONDS}`);
   assert.equal(put.headers.get("Content-Type"), "application/json");
-  const stored = await cache.match(new Request(RELAYS_URL));
+  const stored = await cache.match(new Request(CACHE_KEY_URL));
   assert.equal(await stored.text(), body);
 });
 
@@ -139,14 +159,14 @@ test("ORIGIN env var overrides the proxy target", async () => {
 test("origin 500 with warm cache: 200 + X-OpenRung-Stale, Content-Type preserved", async () => {
   const staleBody = '{"server_time":"2026-07-10T00:00:00Z","relays":[{"id":"stale"}]}';
   const { handler, cache, ctx } = setup(() => new Response("boom", { status: 500 }));
-  cache.seed(RELAYS_URL, staleBody);
+  cache.seed(CACHE_KEY_URL, staleBody);
 
   const response = await handler(new Request(RELAYS_URL), undefined, ctx);
 
   assert.equal(response.status, 200);
   assert.equal(await response.text(), staleBody);
   assert.equal(response.headers.get("X-OpenRung-Stale"), "1");
-  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  assert.equal(response.headers.get("Cache-Control"), "no-store, no-transform");
   assert.equal(response.headers.get("Content-Type"), "application/json");
   await ctx.settle();
   assert.equal(cache.putCalls.length, 0, "a failed response must not be cached");
@@ -157,7 +177,7 @@ test("origin timeout (fetch rejects) with warm cache: stale copy served", async 
   const { handler, cache, ctx } = setup(() => {
     throw new DOMException("The operation timed out.", "TimeoutError");
   });
-  cache.seed(RELAYS_URL, staleBody);
+  cache.seed(CACHE_KEY_URL, staleBody);
 
   const response = await handler(new Request(RELAYS_URL), undefined, ctx);
 
@@ -197,7 +217,7 @@ test("origin 4xx passes through unmasked, even with a warm cache", async () => {
     const { handler, cache, ctx } = setup(
       () => new Response(`err ${status}`, { status, headers: { "Retry-After": "30" } }),
     );
-    cache.seed(RELAYS_URL, '{"relays":[{"id":"stale"}]}');
+    cache.seed(CACHE_KEY_URL, '{"relays":[{"id":"stale"}]}');
 
     const response = await handler(new Request(RELAYS_URL), undefined, ctx);
 
@@ -209,6 +229,113 @@ test("origin 4xx passes through unmasked, even with a warm cache", async () => {
     await ctx.settle();
     assert.equal(cache.putCalls.length, 0);
   }
+});
+
+test("non-200 2xx (204, 206) passes through and is never cached", async () => {
+  // A 206 partial body would poison the fallback with a truncated relay list; a 204 has no
+  // body worth serving. Both reach the client unchanged but must not trigger cache.put.
+  for (const status of [204, 206]) {
+    const body = status === 204 ? null : "partial body";
+    const { handler, cache, ctx } = setup(() => new Response(body, { status }));
+
+    const response = await handler(new Request(RELAYS_URL), undefined, ctx);
+
+    assert.equal(response.status, status);
+    if (body !== null) {
+      assert.equal(await response.text(), body);
+    }
+    assert.equal(response.headers.get("X-OpenRung-Stale"), null);
+    await ctx.settle();
+    assert.equal(cache.putCalls.length, 0, `a ${status} must never be cached`);
+    assert.equal(cache.matchCalls, 0, `a ${status} must not trigger a stale lookup`);
+  }
+});
+
+test("stored copy preserves ALL origin headers; signature survives a stale serve intact", async () => {
+  // The broker will soon send X-OpenRung-Relays-Signature over the exact body bytes; a
+  // stale-served response must keep body + signature intact or signature-requiring clients
+  // will reject it.
+  const body = '{"server_time":"2026-07-10T00:00:00Z","relays":[{"id":"r1"}]}';
+  let calls = 0;
+  const { handler, cache, ctx } = setup(() => {
+    calls += 1;
+    if (calls === 1) {
+      return new Response(body, {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store",
+          "X-OpenRung-Relays-Signature": "test-sig",
+          "Set-Cookie": "session=abc",
+        },
+      });
+    }
+    return new Response("boom", { status: 500 });
+  });
+
+  // Warm the cache through the real fresh path.
+  const fresh = await handler(new Request(RELAYS_URL), undefined, ctx);
+  assert.equal(await fresh.text(), body);
+  await ctx.settle();
+
+  // Stored copy: every origin header preserved except the Cache-Control override and the
+  // dropped Set-Cookie.
+  assert.equal(cache.putCalls.length, 1);
+  const put = cache.putCalls[0];
+  assert.equal(put.headers.get("X-OpenRung-Relays-Signature"), "test-sig");
+  assert.equal(put.headers.get("Content-Type"), "application/json");
+  assert.equal(put.headers.get("Cache-Control"), `public, max-age=${STALE_TTL_SECONDS}`);
+  assert.equal(put.headers.get("Set-Cookie"), null, "cookies must never be stored");
+
+  // Origin now fails: the stale serve must carry the identical body byte-for-byte alongside
+  // the signature header.
+  const stale = await handler(new Request(RELAYS_URL), undefined, ctx);
+  assert.equal(stale.status, 200);
+  assert.equal(await stale.text(), body);
+  assert.equal(stale.headers.get("X-OpenRung-Relays-Signature"), "test-sig");
+  assert.equal(stale.headers.get("Content-Type"), "application/json");
+  assert.equal(stale.headers.get("X-OpenRung-Stale"), "1");
+  assert.equal(stale.headers.get("Cache-Control"), "no-store, no-transform");
+  await ctx.settle();
+});
+
+test("stale copy no longer matches once older than STALE_TTL_SECONDS", async () => {
+  // The FakeCache honors max-age against an injected clock, and the entry is written by the
+  // real fresh path — coupling the stored Cache-Control header to the exported TTL constant so
+  // neither can drift without this test failing.
+  let nowMs = 0;
+  let calls = 0;
+  const { handler, cache, ctx } = setup(
+    () => {
+      calls += 1;
+      return calls === 1
+        ? new Response('{"relays":[{"id":"r1"}]}', {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          })
+        : new Response("boom", { status: 500 });
+    },
+    { clock: () => nowMs },
+  );
+
+  await handler(new Request(RELAYS_URL), undefined, ctx);
+  await ctx.settle();
+  assert.equal(cache.putCalls.length, 1);
+
+  // Just inside the TTL: the warm copy is still served on failure.
+  nowMs = (STALE_TTL_SECONDS - 1) * 1000;
+  const inside = await handler(new Request(RELAYS_URL), undefined, ctx);
+  assert.equal(inside.status, 200);
+  assert.equal(inside.headers.get("X-OpenRung-Stale"), "1");
+  await inside.text();
+
+  // Just past the TTL: the entry no longer matches, so the origin failure passes through.
+  nowMs = (STALE_TTL_SECONDS + 1) * 1000;
+  const past = await handler(new Request(RELAYS_URL), undefined, ctx);
+  assert.equal(past.status, 500);
+  assert.equal(await past.text(), "boom");
+  assert.equal(past.headers.get("X-OpenRung-Stale"), null);
+  await ctx.settle();
 });
 
 test("non-relays path: exact passthrough, no timeout, cache never touched", async () => {

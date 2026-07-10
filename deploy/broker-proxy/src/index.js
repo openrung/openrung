@@ -11,8 +11,8 @@
 // discovery CLOSED. The real fixes are front diversity (an independent second front, not
 // same-zone) and relay-list signing — see README.md. What this Worker adds in the meantime is
 // stale-on-error for GET /api/v1/relays: an origin blip (timeout, network error, 5xx) is
-// answered with this colo's last healthy relay list (≤ 180 s old, marked X-OpenRung-Stale: 1)
-// instead of an error.
+// answered with this colo's last healthy relay list (≤ 900 s old — the 15-minute stale window
+// fixed by the relay-list signing spec — marked X-OpenRung-Stale: 1) instead of an error.
 //
 // The freshness path is unchanged: healthy responses are never served from cache — relay
 // candidates are short-lived (≈3 min lease) — and every other endpoint is a plain passthrough.

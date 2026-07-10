@@ -2,13 +2,14 @@
 // can be unit-tested under Node with injected fetch/cache fakes (see test/handler.test.mjs).
 //
 // Behavior:
-//   - GET /api/v1/relays (exact path): proxied to the origin with a 10 s timeout. Every 2xx
-//     response is returned to the client unchanged AND a copy is stored in this colo's Cache API
-//     for 180 s. If the origin times out, errors at the network layer, or returns >= 500, the
-//     stored copy is served with `X-OpenRung-Stale: 1` instead of the failure. 3xx/4xx responses
-//     (404, 429 back-pressure) are semantic answers and pass through unmasked. A network error
-//     with a cold cache returns a JSON 502 (previously the exception bubbled up as an opaque
-//     Cloudflare error page).
+//   - GET /api/v1/relays (exact path): proxied to the origin with a 10 s timeout. A 200 response
+//     is returned to the client unchanged AND a complete copy (body + ALL headers) is stored in
+//     this colo's Cache API for 900 s. If the origin times out, errors at the network layer, or
+//     returns >= 500, the stored copy is served with `X-OpenRung-Stale: 1` instead of the
+//     failure. Non-200 2xx (a 206 partial body would poison the fallback), 3xx, and 4xx
+//     responses (404, 429 back-pressure) are semantic answers and pass through unmasked, never
+//     stored. A network error with a cold cache returns a JSON 502 (previously the exception
+//     bubbled up as an opaque Cloudflare error page).
 //   - Everything else: byte-for-byte passthrough with fetch-layer caching disabled and NO
 //     timeout (the speed-test endpoint deliberately holds the connection open).
 
@@ -17,12 +18,18 @@ export const DEFAULT_ORIGIN = "http://broker-origin.openrung.org:8080";
 const RELAYS_PATH = "/api/v1/relays";
 const ORIGIN_TIMEOUT_MS = 10_000;
 
-// How long a stale copy may be served after the last healthy response. Relay leases are ~3 min,
-// and every client validates `expires_at` against the `server_time` carried in the SAME response
-// body — so a stale cached list passes client-side expiry checks self-consistently and the
-// client CANNOT detect the staleness. The edge must bound it instead: 180 s keeps a served-stale
-// list within roughly one lease of reality.
-const STALE_TTL_SECONDS = 180;
+// How long a stale copy may be served after the last healthy 200. Every client validates relay
+// `expires_at` against the `server_time` carried in the SAME response body, so client-side
+// expiry checks are self-consistent and CANNOT bound edge staleness either way — the bound has
+// to live at the edge. The relay-list signing spec fixes the stale window at 15 minutes inside
+// a 30-minute signed `not_after`, so the edge cap is 900 s to match. Exported so the tests can
+// couple the header value and the TTL bound to this one constant.
+export const STALE_TTL_SECONDS = 900;
+
+// Version namespace for stored fallback copies, appended to the cache-key URL as
+// `__or_cache_v`. Bump to 2 when the signing broker deploys, so pre-signing headerless bodies
+// can never replay to signature-requiring clients.
+const CACHE_KEY_VERSION = "1";
 
 // Never let Cloudflare's fetch layer cache origin responses. The Cache API copy above is the
 // only cache, and it is only ever READ on origin failure — the freshness path always hits the
@@ -71,9 +78,13 @@ function buildProxiedRequest(request, url, originBase) {
 }
 
 async function relaysWithStaleFallback(proxied, requestUrl, ctx, fetchImpl, cache) {
-  // Cache key: a bare GET on the full client URL. Query string included — `limit` etc. vary
-  // the response body.
-  const cacheKey = new Request(requestUrl, { method: "GET" });
+  // Cache key: a bare GET on the full client URL (query string included — `limit` etc. vary the
+  // response body) plus the version-namespace param (see CACHE_KEY_VERSION: bump to 2 when the
+  // signing broker deploys, so pre-signing headerless bodies can never replay to
+  // signature-requiring clients).
+  const keyUrl = new URL(requestUrl);
+  keyUrl.searchParams.set("__or_cache_v", CACHE_KEY_VERSION);
+  const cacheKey = new Request(keyUrl, { method: "GET" });
 
   let originResponse = null;
   try {
@@ -85,24 +96,17 @@ async function relaysWithStaleFallback(proxied, requestUrl, ctx, fetchImpl, cach
     // Network error or 10 s timeout — fall through to the stale path below.
   }
 
-  if (originResponse !== null && originResponse.ok) {
-    // Healthy: hand the origin response to the client unchanged and stash a copy for later.
-    // The stored copy must override the origin's `no-store` (the Cache API refuses to store a
-    // no-store response) with a hard 180 s cap; it is only ever read on origin failure.
-    const copy = originResponse.clone();
-    const headers = new Headers({
-      "Cache-Control": `public, s-maxage=${STALE_TTL_SECONDS}`,
-    });
-    const contentType = copy.headers.get("Content-Type");
-    if (contentType) {
-      headers.set("Content-Type", contentType);
-    }
-    ctx.waitUntil(cache.put(cacheKey, new Response(copy.body, { status: 200, headers })));
+  if (originResponse !== null && originResponse.status === 200) {
+    // Healthy: hand the origin response to the client unchanged and stash a complete copy for
+    // later. Only a full 200 may be stored — a 206 partial body would poison the fallback with
+    // a truncated relay list.
+    ctx.waitUntil(storeFallbackCopy(cache, cacheKey, originResponse.clone()));
     return originResponse;
   }
 
   if (originResponse !== null && originResponse.status < 500) {
-    // 3xx/4xx are semantic answers (404, 429 back-pressure): never mask them with stale data.
+    // Non-200 2xx (204, 206) and 3xx/4xx are semantic answers (404, 429 back-pressure): pass
+    // them through unchanged, never store them, never mask them with stale data.
     return originResponse;
   }
 
@@ -110,15 +114,18 @@ async function relaysWithStaleFallback(proxied, requestUrl, ctx, fetchImpl, cach
   // still holds one.
   const cached = await cache.match(cacheKey);
   if (cached) {
-    const headers = new Headers({
-      "X-OpenRung-Stale": "1",
-      "Cache-Control": "no-store",
-    });
-    const contentType = cached.headers.get("Content-Type");
-    if (contentType) {
-      headers.set("Content-Type", contentType);
+    if (originResponse !== null) {
+      // Discard the unconsumed 5xx body we are about to drop on the floor; leaving the stream
+      // unread leaks it in workerd ("response body not consumed").
+      ctx.waitUntil(Promise.resolve(originResponse.body?.cancel()).catch(() => {}));
     }
-    return new Response(cached.body, { status: 200, headers });
+    // Serve the stored copy with ALL of its headers intact — body + X-OpenRung-Relays-Signature
+    // must survive byte-for-byte (see storeFallbackCopy) — re-marked so nothing downstream
+    // re-caches or rewrites it, and so clients/telemetry can detect the degraded serve.
+    const stale = new Response(cached.body, cached);
+    stale.headers.set("Cache-Control", "no-store, no-transform");
+    stale.headers.set("X-OpenRung-Stale", "1");
+    return stale;
   }
 
   if (originResponse !== null) {
@@ -135,4 +142,19 @@ async function relaysWithStaleFallback(proxied, requestUrl, ctx, fetchImpl, cach
       "Cache-Control": "no-store",
     },
   });
+}
+
+// Store a fallback copy of a healthy 200, preserving ALL origin headers — not just
+// Content-Type: the broker will soon send X-OpenRung-Relays-Signature computed over the exact
+// body bytes, and a stale-served response must keep body + signature intact or
+// signature-requiring clients will reject it. Two edits only: the origin's `no-store` is
+// replaced with the hard stale cap (the Cache API refuses to store a no-store response; the
+// stored copy is only ever read on origin failure), and Set-Cookie is dropped so no per-client
+// cookie can be replayed to other clients.
+async function storeFallbackCopy(cache, cacheKey, copy) {
+  const buf = await copy.arrayBuffer();
+  const cached = new Response(buf, copy);
+  cached.headers.set("Cache-Control", `public, max-age=${STALE_TTL_SECONDS}`);
+  cached.headers.delete("Set-Cookie");
+  await cache.put(cacheKey, cached);
 }
