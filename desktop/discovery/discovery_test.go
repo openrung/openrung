@@ -5,8 +5,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"openrung/internal/client"
 )
 
 const relayBody = `{"count":1,"server_time":"2026-07-06T00:00:00Z","relays":[{"id":"r1","public_host":"1.2.3.4","public_port":443}]}`
@@ -53,8 +56,9 @@ func TestListRelaysRateLimited(t *testing.T) {
 }
 
 func TestFirstReachableFailsOverToSecond(t *testing.T) {
-	// First candidate 429s, second serves relays. Discovery must fall through
-	// so a rate-limited primary never takes the map offline.
+	// First candidate 429s, second serves relays. The race must let the second
+	// candidate win after its staggered start, so a rate-limited primary never
+	// takes the map offline.
 	limited := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
@@ -64,7 +68,7 @@ func TestFirstReachableFailsOverToSecond(t *testing.T) {
 	}))
 	defer good.Close()
 
-	fetch, err := FirstReachable(context.Background(), []string{limited.URL, good.URL}, Options{})
+	fetch, err := FirstReachable(context.Background(), []string{limited.URL, good.URL}, Options{Stagger: 100 * time.Millisecond})
 	if err != nil {
 		t.Fatalf("FirstReachable: %v", err)
 	}
@@ -76,17 +80,295 @@ func TestFirstReachableFailsOverToSecond(t *testing.T) {
 	}
 }
 
-func TestFirstReachableAllFailReturnsLastError(t *testing.T) {
-	limited := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func TestFirstReachableHealthyPrimaryWinsWithoutStartingFallback(t *testing.T) {
+	// A healthy primary answers well inside the stagger, so the fallback must
+	// never see a request — neither before the winner returns nor from a stray
+	// timer afterwards.
+	const stagger = 500 * time.Millisecond
+
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(relayBody))
+	}))
+	defer primary.Close()
+	var fallbackHits atomic.Int64
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHits.Add(1)
+		w.Write([]byte(relayBody))
+	}))
+	defer fallback.Close()
+
+	fetch, err := FirstReachable(context.Background(), []string{primary.URL, fallback.URL}, Options{Stagger: stagger})
+	if err != nil {
+		t.Fatalf("FirstReachable: %v", err)
+	}
+	if fetch.BrokerURL != primary.URL {
+		t.Fatalf("served by %q, want primary %q", fetch.BrokerURL, primary.URL)
+	}
+	if hits := fallbackHits.Load(); hits != 0 {
+		t.Fatalf("fallback received %d request(s) before the stagger elapsed, want 0", hits)
+	}
+	// The race ended with the primary's success; the stagger timer must be dead.
+	time.Sleep(2 * stagger)
+	if hits := fallbackHits.Load(); hits != 0 {
+		t.Fatalf("fallback received %d request(s) after the race ended, want 0", hits)
+	}
+}
+
+func TestFirstReachableHangingPrimaryLosesToSecondAfterStagger(t *testing.T) {
+	// The primary accepts the request and hangs. The race must start the second
+	// candidate one stagger later and return its success without waiting out
+	// the primary's request timeout.
+	const stagger = 300 * time.Millisecond
+
+	hung := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done() // hang until the race aborts this attempt
+	}))
+	defer hung.Close()
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(relayBody))
+	}))
+	defer good.Close()
+
+	begun := time.Now()
+	fetch, err := FirstReachable(context.Background(), []string{hung.URL, good.URL}, Options{Stagger: stagger})
+	elapsed := time.Since(begun)
+	if err != nil {
+		t.Fatalf("FirstReachable: %v", err)
+	}
+	if fetch.BrokerURL != good.URL {
+		t.Fatalf("served by %q, want %q", fetch.BrokerURL, good.URL)
+	}
+	if elapsed < stagger {
+		t.Fatalf("second candidate won after %v, before the %v stagger", elapsed, stagger)
+	}
+	if elapsed > 10*stagger {
+		t.Fatalf("second candidate won after %v, want shortly after the %v stagger", elapsed, stagger)
+	}
+}
+
+func TestFirstReachableAllFailReturnsPrimaryError(t *testing.T) {
+	// Both candidates fail, the secondary strictly after the primary (it starts
+	// one stagger later). The primary's error is the meaningful diagnostic, so
+	// it must win over the last-observed one.
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte(`{"error":"primary exploded"}`))
+	}))
+	defer primary.Close()
+	secondary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "5")
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
-	defer limited.Close()
+	defer secondary.Close()
 
-	_, err := FirstReachable(context.Background(), []string{limited.URL, limited.URL}, Options{})
+	_, err := FirstReachable(context.Background(), []string{primary.URL, secondary.URL}, Options{Stagger: 50 * time.Millisecond})
+	if err == nil {
+		t.Fatal("want error when every candidate fails")
+	}
 	var rl *RateLimitedError
-	if !errors.As(err, &rl) {
-		t.Fatalf("want *RateLimitedError from exhausted candidates, got %v", err)
+	if errors.As(err, &rl) {
+		t.Fatalf("got the secondary's rate-limit error %v, want the primary's error", err)
+	}
+	var statusErr *client.BrokerStatusError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("want the primary's 503, got %v", err)
+	}
+}
+
+func TestFirstReachableSingleCandidateBehavesSequentially(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		var hits atomic.Int64
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			hits.Add(1)
+			w.Write([]byte(relayBody))
+		}))
+		defer srv.Close()
+
+		fetch, err := FirstReachable(context.Background(), []string{srv.URL}, Options{})
+		if err != nil {
+			t.Fatalf("FirstReachable: %v", err)
+		}
+		if fetch.BrokerURL != srv.URL || len(fetch.Response.Relays) != 1 {
+			t.Fatalf("unexpected fetch: %+v", fetch)
+		}
+		if got := hits.Load(); got != 1 {
+			t.Fatalf("candidate received %d requests, want exactly 1", got)
+		}
+	})
+
+	t.Run("failure propagates unchanged without stagger wait", func(t *testing.T) {
+		var hits atomic.Int64
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			hits.Add(1)
+			w.Header().Set("Retry-After", "7")
+			w.WriteHeader(http.StatusTooManyRequests)
+		}))
+		defer srv.Close()
+
+		begun := time.Now()
+		// Default stagger on purpose: a lone failing candidate must return
+		// immediately, not wait out config.DiscoveryStagger.
+		_, err := FirstReachable(context.Background(), []string{srv.URL}, Options{})
+		elapsed := time.Since(begun)
+
+		var rl *RateLimitedError
+		if !errors.As(err, &rl) {
+			t.Fatalf("want *RateLimitedError, got %v", err)
+		}
+		if rl.BrokerURL != srv.URL || rl.RetryAfter != 7*time.Second {
+			t.Fatalf("error lost detail: %+v", rl)
+		}
+		if got := hits.Load(); got != 1 {
+			t.Fatalf("candidate received %d requests, want exactly 1", got)
+		}
+		if elapsed >= 2*time.Second {
+			t.Fatalf("single-candidate failure took %v, want an immediate return", elapsed)
+		}
+	})
+}
+
+func TestFirstReachableCancelsLosersOnceWinnerReturns(t *testing.T) {
+	// The hanging loser's request must be aborted (observed server-side via the
+	// request context) as soon as the winner's response is in.
+	const stagger = 200 * time.Millisecond
+
+	loserCanceled := make(chan struct{})
+	loser := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+		close(loserCanceled)
+	}))
+	defer loser.Close()
+	winner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(relayBody))
+	}))
+	defer winner.Close()
+
+	fetch, err := FirstReachable(context.Background(), []string{loser.URL, winner.URL}, Options{Stagger: stagger})
+	if err != nil {
+		t.Fatalf("FirstReachable: %v", err)
+	}
+	if fetch.BrokerURL != winner.URL {
+		t.Fatalf("served by %q, want %q", fetch.BrokerURL, winner.URL)
+	}
+	select {
+	case <-loserCanceled:
+		// The losing attempt's HTTP request was aborted.
+	case <-time.After(5 * time.Second):
+		t.Fatal("losing attempt was not canceled after the winner returned")
+	}
+}
+
+func TestFirstReachableParentCancelDrainsStartedAttempts(t *testing.T) {
+	// Both candidates hang. Once BOTH attempts are in flight the caller cancels;
+	// the ctx.Done() drain must reap both aborted attempts and return promptly
+	// with the primary's context.Canceled — not deadlock, and not wait out the
+	// 15s per-attempt request timeout.
+	const stagger = 100 * time.Millisecond
+
+	primaryStarted := make(chan struct{})
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(primaryStarted)
+		<-r.Context().Done() // hang until the aborted attempt lands
+	}))
+	defer primary.Close()
+	secondaryStarted := make(chan struct{})
+	secondary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(secondaryStarted)
+		<-r.Context().Done()
+	}))
+	defer secondary.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	type outcome struct {
+		fetch Fetch
+		err   error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		fetch, err := FirstReachable(ctx, []string{primary.URL, secondary.URL}, Options{Stagger: stagger})
+		done <- outcome{fetch: fetch, err: err}
+	}()
+
+	// Only cancel once both attempts have reached their servers, so the drain
+	// branch runs with two in-flight attempts to reap.
+	select {
+	case <-primaryStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("primary attempt never reached its server")
+	}
+	select {
+	case <-secondaryStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("secondary attempt never reached its server")
+	}
+	cancel()
+
+	select {
+	case res := <-done:
+		if !errors.Is(res.err, context.Canceled) {
+			t.Fatalf("want context.Canceled, got %v (fetch %+v)", res.err, res.fetch)
+		}
+	case <-time.After(5 * time.Second):
+		// Well under the 15s per-attempt timeout: a return only after that
+		// timeout would mean cancellation did not propagate.
+		t.Fatal("FirstReachable did not return within 5s of parent cancellation")
+	}
+}
+
+func TestFirstReachableParentCancelBeforeStaggerSkipsUnstartedCandidate(t *testing.T) {
+	// The caller cancels while only candidate[0] is in flight (the stagger is
+	// far from elapsing). The drain must reap exactly the one started attempt —
+	// not block waiting on results from candidates that never started — and the
+	// fallback must never see a request.
+	const stagger = time.Minute // never elapses within the test's lifetime
+
+	primaryStarted := make(chan struct{})
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(primaryStarted)
+		<-r.Context().Done()
+	}))
+	defer primary.Close()
+	var fallbackHits atomic.Int64
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHits.Add(1)
+		w.Write([]byte(relayBody))
+	}))
+	defer fallback.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	type outcome struct {
+		fetch Fetch
+		err   error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		fetch, err := FirstReachable(ctx, []string{primary.URL, fallback.URL}, Options{Stagger: stagger})
+		done <- outcome{fetch: fetch, err: err}
+	}()
+
+	select {
+	case <-primaryStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("primary attempt never reached its server")
+	}
+	cancel()
+
+	select {
+	case res := <-done:
+		if !errors.Is(res.err, context.Canceled) {
+			t.Fatalf("want context.Canceled, got %v (fetch %+v)", res.err, res.fetch)
+		}
+	case <-time.After(5 * time.Second):
+		// A hang here would mean the drain waited for the never-started
+		// fallback's result, which can never arrive.
+		t.Fatal("FirstReachable did not return within 5s of parent cancellation")
+	}
+	if hits := fallbackHits.Load(); hits != 0 {
+		t.Fatalf("fallback received %d request(s), want 0 — it must never start after cancellation", hits)
 	}
 }
 

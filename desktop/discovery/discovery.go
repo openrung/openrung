@@ -1,5 +1,5 @@
-// Package discovery fetches relay candidates from the broker with multi-URL
-// failover and 429/Retry-After awareness.
+// Package discovery fetches relay candidates from the broker with staggered
+// multi-URL failover (see FirstReachable) and 429/Retry-After awareness.
 //
 // It reuses internal/client's URL builder and the relay wire types, but issues
 // the HTTP request itself so it can read the status code and Retry-After header
@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"time"
 
+	"openrung/desktop/config"
 	"openrung/internal/client"
 	"openrung/internal/relay"
 )
@@ -62,6 +63,10 @@ type Options struct {
 	// HTTPClient overrides the default client (tests inject a stub). When nil a
 	// client with requestTimeout is used.
 	HTTPClient *http.Client
+	// Stagger overrides the interval at which FirstReachable starts additional
+	// candidates (tests shorten it). Zero or negative means
+	// config.DiscoveryStagger.
+	Stagger time.Duration
 }
 
 // ListRelays fetches from a single broker endpoint. A 429 returns a
@@ -118,29 +123,103 @@ func ListRelays(ctx context.Context, brokerURL string, opts Options) (relay.List
 	return out, nil
 }
 
-// FirstReachable tries each candidate in order and returns the first success
-// with the endpoint that served it, mirroring the mobile app's firstReachable.
-// A blocked or rate-limited primary therefore never takes discovery offline as
-// long as one candidate answers. If every candidate fails, the last error is
-// returned (so a caller can surface a Retry-After when the whole list is
-// rate-limited).
+// FirstReachable races the candidates with a staggered start (happy-eyeballs
+// style), mirroring the mobile app's firstReachable. candidate[0] starts
+// immediately; every stagger interval (config.DiscoveryStagger unless
+// Options.Stagger overrides it) with no success yet, the next candidate joins
+// the race. The first SUCCESS wins: its fetch is returned with the endpoint
+// that served it — so the caller can pin later requests to the same broker —
+// and every other in-flight attempt is aborted via context cancellation.
+// Priority is expressed only through the head start: a later candidate that
+// answers first wins even while an earlier one is still pending. A blocked or
+// rate-limited primary therefore never takes discovery offline as long as one
+// candidate answers, and a hung primary costs one stagger interval instead of
+// a full request timeout. If EVERY candidate fails, the FIRST candidate's
+// error is returned — the primary's failure is the meaningful diagnostic (and
+// carries a Retry-After when the primary was rate-limited). With a single
+// candidate this reduces to exactly one attempt whose error propagates
+// unchanged.
 func FirstReachable(ctx context.Context, candidates []string, opts Options) (Fetch, error) {
 	if len(candidates) == 0 {
 		return Fetch{}, errors.New("no broker endpoints configured")
 	}
-	var lastErr error
-	for _, brokerURL := range candidates {
-		response, err := ListRelays(ctx, brokerURL, opts)
-		if err != nil {
-			lastErr = err
-			continue
+
+	stagger := opts.Stagger
+	if stagger <= 0 {
+		stagger = config.DiscoveryStagger
+	}
+
+	// raceCtx aborts every in-flight loser the moment a winner returns (or the
+	// caller gives up); each attempt's HTTP request is bound to it.
+	raceCtx, cancelRace := context.WithCancel(ctx)
+	defer cancelRace()
+
+	type attemptResult struct {
+		index int
+		fetch Fetch
+		err   error
+	}
+	// Buffered so a late loser never blocks sending after the winner returned.
+	results := make(chan attemptResult, len(candidates))
+	start := func(index int) {
+		brokerURL := candidates[index]
+		go func() {
+			response, err := ListRelays(raceCtx, brokerURL, opts)
+			if err != nil {
+				results <- attemptResult{index: index, err: err}
+				return
+			}
+			results <- attemptResult{index: index, fetch: Fetch{BrokerURL: brokerURL, Response: response}}
+		}()
+	}
+
+	start(0)
+	started := 1
+	var tick <-chan time.Time
+	if len(candidates) > 1 {
+		ticker := time.NewTicker(stagger)
+		defer ticker.Stop()
+		tick = ticker.C
+	}
+
+	failed := 0
+	errs := make([]error, len(candidates))
+	for {
+		select {
+		case <-tick:
+			start(started)
+			started++
+			if started == len(candidates) {
+				tick = nil
+			}
+		case res := <-results:
+			if res.err == nil {
+				cancelRace() // first success wins: abort the losers' requests
+				return res.fetch, nil
+			}
+			errs[res.index] = res.err
+			failed++
+			if failed == len(candidates) {
+				return Fetch{}, errs[0]
+			}
+		case <-ctx.Done():
+			// The caller gave up. raceCtx is a child of ctx, so every in-flight
+			// attempt aborts promptly; drain them and surface the primary's error
+			// (candidate[0] always started), matching what the attempt itself
+			// observed. Candidates that never started are skipped — they could
+			// only fail on the dead context.
+			for pending := started - failed; pending > 0; pending-- {
+				res := <-results
+				if res.err == nil {
+					// The response completed before the cancellation landed; a
+					// success still wins.
+					return res.fetch, nil
+				}
+				errs[res.index] = res.err
+			}
+			return Fetch{}, errs[0]
 		}
-		return Fetch{BrokerURL: brokerURL, Response: response}, nil
 	}
-	if lastErr == nil {
-		lastErr = errors.New("no broker endpoints reachable")
-	}
-	return Fetch{}, lastErr
 }
 
 // parseRetryAfter handles both Retry-After forms: delta-seconds (RFC 9110) and
