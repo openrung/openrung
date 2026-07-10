@@ -258,6 +258,120 @@ func TestFirstReachableCancelsLosersOnceWinnerReturns(t *testing.T) {
 	}
 }
 
+func TestFirstReachableParentCancelDrainsStartedAttempts(t *testing.T) {
+	// Both candidates hang. Once BOTH attempts are in flight the caller cancels;
+	// the ctx.Done() drain must reap both aborted attempts and return promptly
+	// with the primary's context.Canceled — not deadlock, and not wait out the
+	// 15s per-attempt request timeout.
+	const stagger = 100 * time.Millisecond
+
+	primaryStarted := make(chan struct{})
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(primaryStarted)
+		<-r.Context().Done() // hang until the aborted attempt lands
+	}))
+	defer primary.Close()
+	secondaryStarted := make(chan struct{})
+	secondary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(secondaryStarted)
+		<-r.Context().Done()
+	}))
+	defer secondary.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	type outcome struct {
+		fetch Fetch
+		err   error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		fetch, err := FirstReachable(ctx, []string{primary.URL, secondary.URL}, Options{Stagger: stagger})
+		done <- outcome{fetch: fetch, err: err}
+	}()
+
+	// Only cancel once both attempts have reached their servers, so the drain
+	// branch runs with two in-flight attempts to reap.
+	select {
+	case <-primaryStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("primary attempt never reached its server")
+	}
+	select {
+	case <-secondaryStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("secondary attempt never reached its server")
+	}
+	cancel()
+
+	select {
+	case res := <-done:
+		if !errors.Is(res.err, context.Canceled) {
+			t.Fatalf("want context.Canceled, got %v (fetch %+v)", res.err, res.fetch)
+		}
+	case <-time.After(5 * time.Second):
+		// Well under the 15s per-attempt timeout: a return only after that
+		// timeout would mean cancellation did not propagate.
+		t.Fatal("FirstReachable did not return within 5s of parent cancellation")
+	}
+}
+
+func TestFirstReachableParentCancelBeforeStaggerSkipsUnstartedCandidate(t *testing.T) {
+	// The caller cancels while only candidate[0] is in flight (the stagger is
+	// far from elapsing). The drain must reap exactly the one started attempt —
+	// not block waiting on results from candidates that never started — and the
+	// fallback must never see a request.
+	const stagger = time.Minute // never elapses within the test's lifetime
+
+	primaryStarted := make(chan struct{})
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(primaryStarted)
+		<-r.Context().Done()
+	}))
+	defer primary.Close()
+	var fallbackHits atomic.Int64
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHits.Add(1)
+		w.Write([]byte(relayBody))
+	}))
+	defer fallback.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	type outcome struct {
+		fetch Fetch
+		err   error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		fetch, err := FirstReachable(ctx, []string{primary.URL, fallback.URL}, Options{Stagger: stagger})
+		done <- outcome{fetch: fetch, err: err}
+	}()
+
+	select {
+	case <-primaryStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("primary attempt never reached its server")
+	}
+	cancel()
+
+	select {
+	case res := <-done:
+		if !errors.Is(res.err, context.Canceled) {
+			t.Fatalf("want context.Canceled, got %v (fetch %+v)", res.err, res.fetch)
+		}
+	case <-time.After(5 * time.Second):
+		// A hang here would mean the drain waited for the never-started
+		// fallback's result, which can never arrive.
+		t.Fatal("FirstReachable did not return within 5s of parent cancellation")
+	}
+	if hits := fallbackHits.Load(); hits != 0 {
+		t.Fatalf("fallback received %d request(s), want 0 — it must never start after cancellation", hits)
+	}
+}
+
 func TestFirstReachableNoCandidates(t *testing.T) {
 	_, err := FirstReachable(context.Background(), nil, Options{})
 	if err == nil {
