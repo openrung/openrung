@@ -1,0 +1,114 @@
+name: uptime
+
+# External uptime monitoring for the OpenRung broker, probed from
+# GitHub-hosted runners.
+#
+# Vantage point caveat: runners sit in ordinary datacenter networks (an
+# UNCENSORED vantage). A green run proves the endpoints are *available*;
+# it does NOT prove they are reachable from censored networks.
+#
+# Notifications: when a run fails, GitHub emails the workflow author
+# (Actions failure notifications). No extra alerting wiring is required.
+#
+# Note: GitHub disables cron schedules on public repos after ~60 days
+# without repo activity; any push re-enables them.
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Probe broker endpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # ------------------------------------------------------------------
+          # Endpoint inventory. Adding a front or origin is a one-line change.
+          # ------------------------------------------------------------------
+
+          # CDN fronts: each gets a /healthz check plus a relay-list freshness
+          # check (catches the stale-on-error worker being engaged and any
+          # CDN-cache staleness regression like the 2026-07-06 incident).
+          FRONTS=(
+            "https://broker.openrung.org"
+            # "https://dXXXXXXXXXXXXXX.cloudfront.net"  # upcoming independent CloudFront front
+          )
+
+          # Origins: direct broker endpoints, bypassing the CDN. /healthz only.
+          ORIGINS=(
+            "http://broker-origin.openrung.org:8080"
+          )
+
+          # Relay-list freshness budget: |runner time - server_time| in seconds.
+          MAX_SKEW_SECONDS=600
+
+          # Retries absorb single network hiccups so one blip does not page.
+          CURL_OPTS=(--silent --show-error --max-time 15 --retry 2 --retry-delay 5 --retry-all-errors)
+
+          fail=0
+
+          probe_health() {
+            local base=$1 code
+            code=$(curl "${CURL_OPTS[@]}" -o /dev/null -w '%{http_code}' "$base/healthz") || code=000
+            if [[ "$code" == "200" ]]; then
+              echo "ok    $base/healthz -> 200"
+            else
+              echo "FAIL  $base/healthz -> HTTP $code (expected 200)"
+              fail=1
+            fi
+          }
+
+          probe_relays_fresh() {
+            local base=$1 hdrs body code server_time skew
+            hdrs=$(mktemp)
+            body=$(mktemp)
+            code=$(curl "${CURL_OPTS[@]}" -D "$hdrs" -o "$body" -w '%{http_code}' "$base/api/v1/relays?limit=1") || code=000
+            if [[ "$code" != "200" ]]; then
+              echo "FAIL  $base/api/v1/relays -> HTTP $code (expected 200)"
+              fail=1
+              return
+            fi
+            if grep -qi '^x-openrung-stale:' "$hdrs"; then
+              echo "FAIL  $base/api/v1/relays served stale data (X-OpenRung-Stale header present)"
+              fail=1
+              return
+            fi
+            server_time=$(jq -r '.server_time // empty' "$body")
+            if ! skew=$(jq -rn --arg st "$server_time" --argjson now "$(date +%s)" '
+                  ($st | sub("\\.[0-9]+"; "") | fromdateiso8601) as $s
+                  | ($now - $s) | if . < 0 then -. else . end' 2>/dev/null); then
+              echo "FAIL  $base/api/v1/relays -> unparseable server_time '${server_time:-<missing>}'"
+              fail=1
+              return
+            fi
+            if (( skew > MAX_SKEW_SECONDS )); then
+              echo "FAIL  $base/api/v1/relays -> server_time skew ${skew}s exceeds ${MAX_SKEW_SECONDS}s (stale relay list)"
+              fail=1
+              return
+            fi
+            echo "ok    $base/api/v1/relays -> 200, fresh (skew ${skew}s, no stale header)"
+          }
+
+          for base in "${FRONTS[@]}"; do
+            probe_health "$base"
+            probe_relays_fresh "$base"
+          done
+
+          for base in "${ORIGINS[@]}"; do
+            probe_health "$base"
+          done
+
+          if (( fail )); then
+            echo "one or more uptime checks failed"
+            exit 1
+          fi
+          echo "all uptime checks passed"
