@@ -31,6 +31,7 @@ func (r SingBoxRunner) Run(ctx context.Context, configPath string) error {
 	}
 
 	cmd := exec.Command(resolved, "run", "-c", configPath)
+	configureSingBoxProcess(cmd)
 	cmd.Stdout = r.Stdout
 	if cmd.Stdout == nil {
 		cmd.Stdout = io.Discard
