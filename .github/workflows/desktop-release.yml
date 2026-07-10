@@ -46,9 +46,12 @@ jobs:
 
       - name: Install Linux webview deps
         if: runner.os == 'Linux'
+        # webkit2gtk 4.1 (not 4.0): modern distros (Ubuntu 24.04+, Debian 13,
+        # Fedora 40+) dropped the 4.0 runtime. The 22.04 runner still has an old
+        # enough glibc that the resulting binary also runs on those newer distros.
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libgtk-3-dev libwebkit2gtk-4.0-dev
+          sudo apt-get install -y build-essential libgtk-3-dev libwebkit2gtk-4.1-dev
 
       - name: Fetch sing-box (unix)
         if: runner.os != 'Windows'
@@ -75,7 +78,8 @@ jobs:
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
-        run: ./desktop/scripts/package-linux.sh
+        # -tags webkit2_41 links libwebkit2gtk-4.1.so.0 instead of the 4.0 soname.
+        run: ./desktop/scripts/package-linux.sh -tags webkit2_41
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
