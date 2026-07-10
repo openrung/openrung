@@ -50,7 +50,10 @@ jobs:
           # CDN-cache staleness regression like the 2026-07-06 incident).
           FRONTS=(
             "https://broker.openrung.org"
-            # "https://dXXXXXXXXXXXXXX.cloudfront.net"  # upcoming independent CloudFront front
+            # Independent second front (AWS CloudFront, dist E2PLKW8FO3JZSA). Unlike
+            # Cloudflare it does not block datacenter IPs, so the runner gets a real
+            # 200 here — a genuine health signal rather than the vantage-warned 403.
+            "https://d2r7mdpyevvs1m.cloudfront.net"
           )
 
           # Origins: direct broker endpoints, bypassing the CDN. /healthz only.
