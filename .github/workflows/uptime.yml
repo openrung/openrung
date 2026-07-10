@@ -82,7 +82,11 @@ jobs:
               fail=1
               return
             fi
-            server_time=$(jq -r '.server_time // empty' "$body")
+            if ! server_time=$(jq -r '.server_time // empty' "$body" 2>/dev/null); then
+              echo "FAIL  $base/api/v1/relays -> HTTP 200 but body is not valid relay JSON"
+              fail=1
+              return
+            fi
             if ! skew=$(jq -rn --arg st "$server_time" --argjson now "$(date +%s)" '
                   ($st | sub("\\.[0-9]+"; "") | fromdateiso8601) as $s
                   | ($now - $s) | if . < 0 then -. else . end' 2>/dev/null); then
