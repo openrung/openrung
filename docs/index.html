@@ -1547,6 +1547,10 @@
               <span><svg aria-hidden="true"><use href="#check"/></svg><span data-i18n="downloadSigned">Official builds released by the OpenRung Foundation</span></span>
             </p>
             <div class="dl-early">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
+              <span><span data-i18n="dlTelegramNote">If this site is blocked where you are, our Telegram bot always has working download links:</span> <a href="https://t.me/openrung_bot" rel="noopener">@openrung_bot</a></span>
+            </div>
+            <div class="dl-early">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l2.5 2.5"/></svg>
               <span data-i18n="downloadEarly">Early-access builds: they improve every week, and short interruptions are possible while the network grows. Installing the APK may require allowing installs from your browser in Android settings. Desktop builds are not yet code-signed: on macOS, right-click the app and choose Open the first time; Windows may show a SmartScreen warning.</span>
             </div>
@@ -1684,6 +1688,8 @@
             <ul>
               <li><a href="#volunteer" data-i18n="navVolunteer">Volunteer</a></li>
               <li><a href="#donate" data-i18n="donateTitle">Donate</a></li>
+              <li><a href="https://t.me/openrung" id="tg-channel-link" rel="noopener" data-i18n="footTelegram">Telegram channel</a></li>
+              <li><a href="https://t.me/openrung_bot" rel="noopener" data-i18n="footTelegramBot">Download bot (Telegram)</a></li>
               <li><a href="mailto:admin@openrung.org" data-i18n="footContact">Contact</a></li>
             </ul>
           </div>
@@ -1726,6 +1732,10 @@
         en: {
           lang: "en",
           dir: "ltr",
+          telegramChannelUrl: "https://t.me/openrung",
+          footTelegram: "Telegram channel",
+          footTelegramBot: "Download bot (Telegram)",
+          dlTelegramNote: "If this site is blocked where you are, our Telegram bot always has working download links:",
           pageTitle: "OpenRung — Reach the open internet",
           pageDescription: "OpenRung helps people facing network restrictions reach public websites and apps through a worldwide volunteer relay network. Always free, privacy-first, open source, and run by a nonprofit foundation.",
           skip: "Skip to main content",
@@ -1838,6 +1848,10 @@
         zh: {
           lang: "zh-CN",
           dir: "ltr",
+          telegramChannelUrl: "https://t.me/openrung_zh",
+          footTelegram: "Telegram 频道",
+          footTelegramBot: "Telegram 下载机器人",
+          dlTelegramNote: "如果本站在您所在的地区被封锁，我们的 Telegram 机器人始终提供有效的下载链接：",
           pageTitle: "OpenRung — 自由访问开放互联网",
           pageDescription: "OpenRung 通过遍布世界各地的志愿者中继，帮助身处网络限制中的人访问公共网站与应用。永久免费、注重隐私、完全开源、由非营利基金会运营。",
           skip: "跳到主要内容",
@@ -1949,6 +1963,10 @@
         },
         fa: {
           lang: "fa",
+          telegramChannelUrl: "https://t.me/openrung_fa",
+          footTelegram: "کانال تلگرام",
+          footTelegramBot: "ربات دانلود در تلگرام",
+          dlTelegramNote: "اگر این سایت در منطقهٔ شما مسدود است، ربات تلگرام ما همیشه لینک دانلود سالم دارد:",
           dir: "rtl",
           pageTitle: "OpenRung — دسترسی به اینترنت آزاد",
           pageDescription: "OpenRung به افرادی که با محدودیت‌های شبکه روبه‌رو هستند کمک می‌کند تا از طریق شبکهٔ جهانی رله‌های داوطلبانه به وب‌سایت‌ها و برنامه‌های عمومی دسترسی پیدا کنند. همیشه رایگان، با حفظ حریم خصوصی، متن‌باز و زیر نظر یک بنیاد غیرانتفاعی.",
@@ -2061,6 +2079,10 @@
         },
         ru: {
           lang: "ru",
+          telegramChannelUrl: "https://t.me/openrung_ru",
+          footTelegram: "Канал в Telegram",
+          footTelegramBot: "Бот для скачивания в Telegram",
+          dlTelegramNote: "Если сайт заблокирован там, где вы находитесь, в нашем Telegram-боте всегда рабочие ссылки:",
           dir: "ltr",
           pageTitle: "OpenRung — доступ к открытому интернету",
           pageDescription: "OpenRung помогает людям с ограничениями доступа открывать публичные сайты и приложения через всемирную волонтёрскую сеть ретрансляторов. Всегда бесплатно, с заботой о приватности, с открытым кодом, под управлением некоммерческого фонда.",
@@ -2193,6 +2215,10 @@
           const key = el.dataset.i18n;
           if (copy[key] !== undefined) el.textContent = copy[key];
         });
+
+        // The Telegram channel is per-language; swap the link target too.
+        const tgChannel = document.getElementById("tg-channel-link");
+        if (tgChannel && copy.telegramChannelUrl) tgChannel.href = copy.telegramChannelUrl;
 
         langButtons.forEach((btn) => {
           btn.setAttribute("aria-pressed", String(btn.dataset.lang === active));
