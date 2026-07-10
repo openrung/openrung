@@ -189,9 +189,14 @@ Response:
 
 ```json
 {
-  "ok": true
+  "ok": true,
+  "signing_key_id": "3097e2dee2cb4a34"
 }
 ```
+
+`signing_key_id` identifies the active relay-list signing key (see List Relays)
+so a monitor can assert the expected key is live without parsing a relay body;
+it is public data that already ships in every relay-list response.
 
 When the broker uses PostgreSQL relay state, `/healthz` also verifies database
 connectivity. If relay state is unavailable, it returns `503` with an error
@@ -304,12 +309,34 @@ that are still experimental: `relay_descriptors.attributes`,
 `relay_sessions.attributes`, and `relay_metrics.measurements`. Public API fields
 remain explicit columns/JSON properties until an experimental field graduates.
 
+Every `2xx` relay-list response is signed: the header
+
+```http
+X-OpenRung-Relays-Signature: ed25519;<key_id>;<base64 signature>
+```
+
+carries a detached Ed25519 signature over the exact raw body bytes, so clients
+can authenticate the directory even on non-TLS channels (the direct-IP
+fallback, static mirrors). Signing covers channel integrity only — a censor can
+still block or inject errors, which clients treat as a failed candidate. Error
+responses are never signed. The signed body carries its own freshness and
+shape: `not_after` (`server_time` + 30 minutes on this channel), `key_id`
+(lowercase hex of the first 8 bytes of SHA-256 over the raw 32-byte public key,
+advisory routing between pinned keys), `channel` (`"api"` here), and `limit`
+(the effective request limit echoed back so a signed body cannot be replayed
+for a differently-shaped request). Responses are sent with
+`Cache-Control: no-store, no-transform` and an explicit `Content-Length`.
+
 Response:
 
 ```json
 {
   "count": 1,
   "server_time": "2026-06-09T07:00:00Z",
+  "not_after": "2026-06-09T07:30:00Z",
+  "key_id": "3097e2dee2cb4a34",
+  "channel": "api",
+  "limit": 5,
   "relays": [
     {
       "id": "relay_...",
@@ -337,3 +364,19 @@ Response:
   ]
 }
 ```
+
+## Mirror Relay List
+
+```http
+GET /api/v1/relays.mirror
+```
+
+The mirror-channel relay list: the full directory page (the API's maximum page
+size) signed exactly like `GET /api/v1/relays`, but with `channel` set to
+`"mirror"`, `not_after` set to `server_time` + 24 hours, and no `limit` field —
+the mirror body is not request-shaped, so there is nothing to echo. An hourly
+cron on the broker host fetches this endpoint and publishes the exact body
+bytes (`relays.json`) plus the signature header value (`relays.json.sig`) to
+static mirrors; clients try mirrors only after every API candidate fails and
+check `channel` so a long-lived mirror artifact can never be replayed into an
+API slot.

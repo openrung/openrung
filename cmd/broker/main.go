@@ -47,6 +47,17 @@ func run() error {
 	if registrationToken == "" && !envTrue("OPENRUNG_ALLOW_ANONYMOUS_REGISTRATION") {
 		return errors.New("OPENRUNG_VOLUNTEER_TOKEN is empty: refusing to start an open broker where anyone can register relays. Set OPENRUNG_VOLUNTEER_TOKEN, or set OPENRUNG_ALLOW_ANONYMOUS_REGISTRATION=true to run open intentionally")
 	}
+
+	// Fail closed on the signing key too: a missing or malformed seed must
+	// crash-loop (an ordinary, visible outage) rather than serve unsigned relay
+	// lists, which healthz and old clients would never notice while every
+	// verifying client silently lost discovery.
+	signingSeed, err := broker.ParseSigningSeed(os.Getenv("OPENRUNG_RELAY_SIGNING_KEY"))
+	if err != nil {
+		return err
+	}
+	signingKeyID := broker.SigningKeyID(signingSeed)
+	slog.Info("relay list signing enabled", "key_id", signingKeyID)
 	geoResolver := newGeoIPResolver(*geoIPEndpoint)
 	store, err := newRelayStore(*relayStore, *relayDatabaseURL, rankingMode)
 	if err != nil {
@@ -67,6 +78,7 @@ func run() error {
 		// Cloudflare's published ranges are trusted by default; add more (e.g. an upstream LB) here.
 		TrustedProxyCIDRs: splitAndTrim(os.Getenv("OPENRUNG_TRUSTED_PROXY_CIDRS")),
 		GeoIP:             geoResolver,
+		SigningSeed:       signingSeed,
 	}
 	// The Postgres store aggregates dashboard queries in SQL; the JSONL sink's
 	// dashboard is aggregated in Go from its in-memory record set.

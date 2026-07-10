@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"openrung/desktop/config"
 	"openrung/internal/client"
 	"openrung/internal/relay"
 )
@@ -25,6 +26,18 @@ import (
 // EnforceSecureBrokerURL's loopback http. The signed path is exercised against
 // a non-loopback stub in TestListRelaysSignatureNonLoopback.
 const relayBody = `{"count":1,"server_time":"2026-07-06T00:00:00Z","relays":[{"id":"r1","public_host":"1.2.3.4","public_port":443}]}`
+
+// noOverride wraps urls as a pure-race candidate list — what
+// config.BrokerCandidates builds when no genuine user override is set.
+func noOverride(urls ...string) config.Candidates {
+	return config.Candidates{URLs: urls}
+}
+
+// withOverride wraps urls as a candidate list whose FIRST entry is a genuine
+// user override, matching what config.BrokerCandidates builds for one.
+func withOverride(urls ...string) config.Candidates {
+	return config.Candidates{URLs: urls, OverrideFirst: true}
+}
 
 func TestListRelaysSuccess(t *testing.T) {
 	var gotVersion, gotPlatform string
@@ -150,7 +163,7 @@ func TestFirstReachableFailsOverToSecond(t *testing.T) {
 	}))
 	defer good.Close()
 
-	fetch, err := FirstReachable(context.Background(), []string{limited.URL, good.URL}, Options{Stagger: 100 * time.Millisecond})
+	fetch, err := FirstReachable(context.Background(), noOverride(limited.URL, good.URL), Options{Stagger: 100 * time.Millisecond})
 	if err != nil {
 		t.Fatalf("FirstReachable: %v", err)
 	}
@@ -179,7 +192,7 @@ func TestFirstReachableHealthyPrimaryWinsWithoutStartingFallback(t *testing.T) {
 	}))
 	defer fallback.Close()
 
-	fetch, err := FirstReachable(context.Background(), []string{primary.URL, fallback.URL}, Options{Stagger: stagger})
+	fetch, err := FirstReachable(context.Background(), noOverride(primary.URL, fallback.URL), Options{Stagger: stagger})
 	if err != nil {
 		t.Fatalf("FirstReachable: %v", err)
 	}
@@ -212,7 +225,7 @@ func TestFirstReachableHangingPrimaryLosesToSecondAfterStagger(t *testing.T) {
 	defer good.Close()
 
 	begun := time.Now()
-	fetch, err := FirstReachable(context.Background(), []string{hung.URL, good.URL}, Options{Stagger: stagger})
+	fetch, err := FirstReachable(context.Background(), noOverride(hung.URL, good.URL), Options{Stagger: stagger})
 	elapsed := time.Since(begun)
 	if err != nil {
 		t.Fatalf("FirstReachable: %v", err)
@@ -243,7 +256,7 @@ func TestFirstReachableAllFailReturnsPrimaryError(t *testing.T) {
 	}))
 	defer secondary.Close()
 
-	_, err := FirstReachable(context.Background(), []string{primary.URL, secondary.URL}, Options{Stagger: 50 * time.Millisecond})
+	_, err := FirstReachable(context.Background(), noOverride(primary.URL, secondary.URL), Options{Stagger: 50 * time.Millisecond})
 	if err == nil {
 		t.Fatal("want error when every candidate fails")
 	}
@@ -266,7 +279,7 @@ func TestFirstReachableSingleCandidateBehavesSequentially(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		fetch, err := FirstReachable(context.Background(), []string{srv.URL}, Options{})
+		fetch, err := FirstReachable(context.Background(), noOverride(srv.URL), Options{})
 		if err != nil {
 			t.Fatalf("FirstReachable: %v", err)
 		}
@@ -290,7 +303,7 @@ func TestFirstReachableSingleCandidateBehavesSequentially(t *testing.T) {
 		begun := time.Now()
 		// Default stagger on purpose: a lone failing candidate must return
 		// immediately, not wait out config.DiscoveryStagger.
-		_, err := FirstReachable(context.Background(), []string{srv.URL}, Options{})
+		_, err := FirstReachable(context.Background(), noOverride(srv.URL), Options{})
 		elapsed := time.Since(begun)
 
 		var rl *RateLimitedError
@@ -325,7 +338,7 @@ func TestFirstReachableCancelsLosersOnceWinnerReturns(t *testing.T) {
 	}))
 	defer winner.Close()
 
-	fetch, err := FirstReachable(context.Background(), []string{loser.URL, winner.URL}, Options{Stagger: stagger})
+	fetch, err := FirstReachable(context.Background(), noOverride(loser.URL, winner.URL), Options{Stagger: stagger})
 	if err != nil {
 		t.Fatalf("FirstReachable: %v", err)
 	}
@@ -369,7 +382,7 @@ func TestFirstReachableParentCancelDrainsStartedAttempts(t *testing.T) {
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		fetch, err := FirstReachable(ctx, []string{primary.URL, secondary.URL}, Options{Stagger: stagger})
+		fetch, err := FirstReachable(ctx, noOverride(primary.URL, secondary.URL), Options{Stagger: stagger})
 		done <- outcome{fetch: fetch, err: err}
 	}()
 
@@ -428,7 +441,7 @@ func TestFirstReachableParentCancelBeforeStaggerSkipsUnstartedCandidate(t *testi
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		fetch, err := FirstReachable(ctx, []string{primary.URL, fallback.URL}, Options{Stagger: stagger})
+		fetch, err := FirstReachable(ctx, noOverride(primary.URL, fallback.URL), Options{Stagger: stagger})
 		done <- outcome{fetch: fetch, err: err}
 	}()
 
@@ -454,8 +467,167 @@ func TestFirstReachableParentCancelBeforeStaggerSkipsUnstartedCandidate(t *testi
 	}
 }
 
+func TestFirstReachableOverrideSlowerThanStaggerStillWins(t *testing.T) {
+	// A GENUINE user override that is merely slower than the stagger must not
+	// be outrun by a default front: the override phase runs alone with its full
+	// per-attempt timeout, so the default is never contacted — neither while
+	// the override is pending nor after it wins.
+	const stagger = 100 * time.Millisecond
+
+	override := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(4 * stagger) // slower than the stagger, well inside the 15s attempt timeout
+		w.Write([]byte(relayBody))
+	}))
+	defer override.Close()
+	var defaultHits atomic.Int64
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defaultHits.Add(1)
+		w.Write([]byte(relayBody))
+	}))
+	defer fallback.Close()
+
+	fetch, err := FirstReachable(context.Background(), withOverride(override.URL, fallback.URL), Options{Stagger: stagger})
+	if err != nil {
+		t.Fatalf("FirstReachable: %v", err)
+	}
+	if fetch.BrokerURL != override.URL {
+		t.Fatalf("served by %q, want the override %q", fetch.BrokerURL, override.URL)
+	}
+	if hits := defaultHits.Load(); hits != 0 {
+		t.Fatalf("default front received %d request(s) while the override was pending, want 0", hits)
+	}
+}
+
+func TestFirstReachableOverrideFailureRacesRemainingDefaults(t *testing.T) {
+	// Once the override FAILS, the staggered race starts over the remaining
+	// candidates with the usual semantics: the first default immediately, the
+	// next one stagger later, first success wins.
+	const stagger = 200 * time.Millisecond
+
+	override := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer override.Close()
+	hangingDefault := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done() // hang until the race aborts this attempt
+	}))
+	defer hangingDefault.Close()
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(relayBody))
+	}))
+	defer good.Close()
+
+	fetch, err := FirstReachable(context.Background(), withOverride(override.URL, hangingDefault.URL, good.URL), Options{Stagger: stagger})
+	if err != nil {
+		t.Fatalf("FirstReachable: %v", err)
+	}
+	if fetch.BrokerURL != good.URL {
+		t.Fatalf("served by %q, want %q", fetch.BrokerURL, good.URL)
+	}
+}
+
+func TestFirstReachableOverrideAllFailSurfacesOverrideError(t *testing.T) {
+	// The override is candidates[0]: when it and every default fail, ITS error
+	// is the surfaced diagnostic — the user configured that broker, so its
+	// failure is what they need to see, not a default front's.
+	override := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte(`{"error":"override exploded"}`))
+	}))
+	defer override.Close()
+	rateLimited := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "5")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer rateLimited.Close()
+
+	_, err := FirstReachable(context.Background(), withOverride(override.URL, rateLimited.URL), Options{Stagger: 50 * time.Millisecond})
+	if err == nil {
+		t.Fatal("want error when every candidate fails")
+	}
+	var rl *RateLimitedError
+	if errors.As(err, &rl) {
+		t.Fatalf("got the default front's rate-limit error %v, want the override's error", err)
+	}
+	var statusErr *client.BrokerStatusError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("want the override's 503, got %v", err)
+	}
+}
+
+func TestFirstReachableOverrideSingleCandidateFailurePropagatesUnchanged(t *testing.T) {
+	// A lone override reduces to exactly one attempt whose error keeps its
+	// detail — there is no remainder to race and no stagger wait.
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Retry-After", "7")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	_, err := FirstReachable(context.Background(), withOverride(srv.URL), Options{})
+	var rl *RateLimitedError
+	if !errors.As(err, &rl) {
+		t.Fatalf("want *RateLimitedError, got %v", err)
+	}
+	if rl.BrokerURL != srv.URL || rl.RetryAfter != 7*time.Second {
+		t.Fatalf("error lost detail: %+v", rl)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("override received %d requests, want exactly 1", got)
+	}
+}
+
+func TestFirstReachableOverrideParentCancelMidRaceSurfacesCancellation(t *testing.T) {
+	// The override fails fast, the remaining default hangs, then the caller
+	// cancels. The surfaced error must be the cancellation — what the caller
+	// classifies on — not the override's stale failure.
+	const stagger = 100 * time.Millisecond
+
+	override := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer override.Close()
+	defaultStarted := make(chan struct{})
+	hangingDefault := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(defaultStarted)
+		<-r.Context().Done()
+	}))
+	defer hangingDefault.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	type outcome struct {
+		fetch Fetch
+		err   error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		fetch, err := FirstReachable(ctx, withOverride(override.URL, hangingDefault.URL), Options{Stagger: stagger})
+		done <- outcome{fetch: fetch, err: err}
+	}()
+
+	select {
+	case <-defaultStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("default attempt never reached its server")
+	}
+	cancel()
+
+	select {
+	case res := <-done:
+		if !errors.Is(res.err, context.Canceled) {
+			t.Fatalf("want context.Canceled, got %v (fetch %+v)", res.err, res.fetch)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("FirstReachable did not return within 5s of parent cancellation")
+	}
+}
+
 func TestFirstReachableNoCandidates(t *testing.T) {
-	_, err := FirstReachable(context.Background(), nil, Options{})
+	_, err := FirstReachable(context.Background(), config.Candidates{}, Options{})
 	if err == nil {
 		t.Fatal("want error for empty candidate list")
 	}

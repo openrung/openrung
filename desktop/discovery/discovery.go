@@ -138,11 +138,50 @@ func ListRelays(ctx context.Context, brokerURL string, opts Options) (relay.List
 // carries a Retry-After when the primary was rate-limited). With a single
 // candidate this reduces to exactly one attempt whose error propagates
 // unchanged.
-func FirstReachable(ctx context.Context, candidates []string, opts Options) (Fetch, error) {
-	if len(candidates) == 0 {
+//
+// When candidates.OverrideFirst is set, URLs[0] is a GENUINE user override
+// (see config.BrokerCandidates) and racing it would betray the user's choice:
+// a custom broker that is merely slower than the stagger would silently lose
+// to a default front. The override is therefore attempted strictly first,
+// alone, with its full per-attempt timeout — no default is contacted while it
+// is pending — and it wins on any success, exactly like the old sequential
+// loop. Only when the override FAILS does the staggered race above start over
+// the REMAINING candidates (the first of them immediately, the next one
+// stagger later, and so on). If the override and every remaining candidate
+// fail, the override's error is surfaced — it is candidates.URLs[0], so the
+// all-fail diagnostic is unchanged — except when the caller's ctx was
+// cancelled mid-race, which still surfaces the cancellation.
+func FirstReachable(ctx context.Context, candidates config.Candidates, opts Options) (Fetch, error) {
+	urls := candidates.URLs
+	if len(urls) == 0 {
 		return Fetch{}, errors.New("no broker endpoints configured")
 	}
 
+	if candidates.OverrideFirst {
+		response, overrideErr := ListRelays(ctx, urls[0], opts)
+		if overrideErr == nil {
+			return Fetch{BrokerURL: urls[0], Response: response}, nil
+		}
+		if len(urls) == 1 || ctx.Err() != nil {
+			return Fetch{}, overrideErr
+		}
+		fetch, raceErr := race(ctx, urls[1:], opts)
+		if raceErr == nil {
+			return fetch, nil
+		}
+		if ctx.Err() != nil {
+			// The caller gave up mid-race; its error wraps the cancellation,
+			// which callers classify on — the override's earlier failure does not.
+			return Fetch{}, raceErr
+		}
+		return Fetch{}, overrideErr
+	}
+	return race(ctx, urls, opts)
+}
+
+// race is the staggered-race core behind FirstReachable, running the pure
+// no-override semantics over the given endpoint list.
+func race(ctx context.Context, candidates []string, opts Options) (Fetch, error) {
 	stagger := opts.Stagger
 	if stagger <= 0 {
 		stagger = config.DiscoveryStagger

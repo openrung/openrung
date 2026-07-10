@@ -35,12 +35,18 @@ type Config struct {
 	// can show where volunteer relays are located. Nil disables lookups;
 	// descriptors then carry empty geo fields.
 	GeoIP GeoIPResolver
+	// SigningSeed is the 32-byte Ed25519 seed that signs every relay-list
+	// response body. Required: cmd/broker validates OPENRUNG_RELAY_SIGNING_KEY
+	// with ParseSigningSeed and refuses to start without it, because serving
+	// unsigned lists is an invisible outage for verifying clients.
+	SigningSeed []byte
 }
 
 func NewServer(store RelayStore, cfg Config) http.Handler {
 	if cfg.VolunteerLeaseTTL == 0 {
 		cfg.VolunteerLeaseTTL = 3 * time.Minute
 	}
+	relaySigner := newSigner(cfg.SigningSeed)
 	clientIP := newClientIPResolver(cfg.TrustedProxyCIDRs)
 	clientSeen := newClientSeenDeduper(clientSeenDedupWindow, clientSeenDedupMaxEntries)
 	relayListLimiter := newIPRateLimiter(relayListRatePerSecond, relayListBurst, rateLimiterMaxTrackedIPs)
@@ -55,11 +61,14 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 			writeError(w, http.StatusServiceUnavailable, "broker storage unavailable")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		// signing_key_id is public data (it ships in every relay-list body) and
+		// lets the monitor assert the active key without parsing a relay list.
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "signing_key_id": relaySigner.keyID})
 	})
 	mux.HandleFunc("POST /api/v1/volunteers/register", rateLimited(volunteerLimiter, clientIP, 10, registerHandler(store, cfg)))
 	mux.HandleFunc("POST /api/v1/volunteers/", rateLimited(volunteerLimiter, clientIP, 10, heartbeatHandler(store, cfg)))
-	mux.HandleFunc("GET /api/v1/relays", rateLimited(relayListLimiter, clientIP, 10, listRelaysHandler(store, cfg.TelemetrySink, clientIP, clientSeen)))
+	mux.HandleFunc("GET /api/v1/relays", rateLimited(relayListLimiter, clientIP, 10, listRelaysHandler(store, cfg.TelemetrySink, clientIP, clientSeen, relaySigner)))
+	mux.HandleFunc("GET /api/v1/relays.mirror", rateLimited(relayListLimiter, clientIP, 10, listRelaysMirrorHandler(store, relaySigner)))
 	mux.HandleFunc("POST /api/v1/telemetry/events", rateLimited(telemetryLimiter, clientIP, 10, telemetryHandler(cfg.TelemetrySink, store, clientIP)))
 	mux.HandleFunc("GET /api/v1/speed-test", rateLimited(speedTestLimiter, clientIP, 30, speedTestHandler(speedTestMaxConcurrent)))
 	querier := cfg.TelemetryQuerier
@@ -179,11 +188,12 @@ func geoLookupHost(desc *relay.Descriptor) string {
 	return desc.PublicHost
 }
 
-func listRelaysHandler(store RelayStore, telemetrySink TelemetrySink, clientIP *clientIPResolver, clientSeen *clientSeenDeduper) http.HandlerFunc {
+func listRelaysHandler(store RelayStore, telemetrySink TelemetrySink, clientIP *clientIPResolver, clientSeen *clientSeenDeduper, s signer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Relay availability is real-time: shared caches (Cloudflare's edge in
 		// production) must never store a copy, and clients cannot bust an edge
-		// cache from their side. Set on every path so errors aren't cached either.
+		// cache from their side. Set on every path so errors aren't cached
+		// either; the signed success path upgrades it to no-store, no-transform.
 		w.Header().Set("Cache-Control", "no-store")
 		recordClientSeen(r, telemetrySink, clientIP, clientSeen)
 		limit := 5
@@ -203,9 +213,48 @@ func listRelaysHandler(store RelayStore, telemetrySink TelemetrySink, clientIP *
 			writeError(w, http.StatusServiceUnavailable, "could not list relays")
 			return
 		}
-		writeJSON(w, http.StatusOK, relay.ListResponse{
+		s.writeSigned(w, relay.ListResponse{
 			Count:      len(relays),
 			ServerTime: now,
+			NotAfter:   now.Add(apiNotAfterWindow),
+			KeyID:      s.keyID,
+			Channel:    relay.ChannelAPI,
+			// Echo the effective limit so clients can reject a signed body
+			// replayed from a differently-shaped request.
+			Limit:  limit,
+			Relays: relays,
+		})
+	}
+}
+
+// mirrorRelayLimit is the mirror channel's page size: the API's maximum page
+// (the desktop directory's full-list fetch), so a mirror artifact carries
+// every relay a client could see through the API.
+const mirrorRelayLimit = 20
+
+// listRelaysMirrorHandler serves the mirror-channel relay list: the full
+// directory page with a 24 h validity window, signed exactly like the API
+// channel. An hourly cron on the broker host fetches it and publishes the
+// exact body bytes plus the signature header value to static mirrors, which
+// clients try only after every API candidate fails. The body carries no limit
+// field — the mirror is not request-shaped, so there is nothing to echo.
+func listRelaysMirrorHandler(store RelayStore, s signer) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Same caching rule as the API list: errors must not be cached either.
+		w.Header().Set("Cache-Control", "no-store")
+		now := time.Now().UTC()
+		relays, err := store.List(now, mirrorRelayLimit)
+		if err != nil {
+			slog.Error("could not list relays for mirror", "error", err)
+			writeError(w, http.StatusServiceUnavailable, "could not list relays")
+			return
+		}
+		s.writeSigned(w, relay.ListResponse{
+			Count:      len(relays),
+			ServerTime: now,
+			NotAfter:   now.Add(mirrorNotAfterWindow),
+			KeyID:      s.keyID,
+			Channel:    relay.ChannelMirror,
 			Relays:     relays,
 		})
 	}
@@ -265,6 +314,9 @@ func authorized(r *http.Request, token string) bool {
 	return subtle.ConstantTimeCompare([]byte(presented), []byte(expected)) == 1
 }
 
+// writeJSON streams v via Encode, which appends a trailing newline. Signed
+// relay-list responses must use signer.writeSigned instead, so the bytes on
+// the wire are exactly the bytes that were signed.
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

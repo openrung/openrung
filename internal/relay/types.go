@@ -21,12 +21,10 @@ const (
 	TransportDirect = "direct"
 	TransportTunnel = "tunnel"
 
-	// ChannelAPI and ChannelMirror label the two signed relay-list channels
-	// (relay-list signing SPEC v1 §2.2): broker fronts and the direct origin
-	// serve "api", static mirror artifacts serve "mirror". The channel lives
-	// inside the signed body so a verifier can reject a validly signed body
-	// replayed across channels (a mirror artifact fed into an API slot would
-	// otherwise pass with a 24 h freshness window instead of 30 min).
+	// ChannelAPI and ChannelMirror name the two signed relay-list channels.
+	// The value lives inside the signed body so a long-lived mirror artifact
+	// can never be replayed into an API slot (or vice versa): clients check it
+	// against the channel they actually fetched from.
 	ChannelAPI    = "api"
 	ChannelMirror = "mirror"
 )
@@ -109,28 +107,28 @@ type Descriptor struct {
 	ExpiresAt        time.Time `json:"expires_at"`
 }
 
+// ListResponse is the signed relay directory. The whole marshaled body is
+// covered by the detached Ed25519 signature in the X-OpenRung-Relays-Signature
+// response header, so NotAfter/KeyID/Channel/Limit must live here — carried in
+// plain headers an attacker could rewrite them.
 type ListResponse struct {
 	Count      int       `json:"count"`
 	ServerTime time.Time `json:"server_time"`
-	// Signing fields (relay-list signing SPEC v1 §2.2), added by the broker to
-	// every signed 2xx list response. Pre-signing brokers omit them, and the Go
-	// zero values fail every client verification check closed. NotAfter bounds
-	// how long a signed body may be replayed (server_time + 30 min on the API
-	// channel, publish time + 24 h on the mirror channel). KeyID is lowercase
-	// hex of the first 8 bytes of SHA-256 over the raw signing public key —
-	// advisory routing into the client's pinned key set, never trusted. Channel
-	// binds the body to the channel it was fetched from (ChannelAPI or
-	// ChannelMirror). Limit echoes the effective request limit on the API
-	// channel and is absent on the mirror channel; clients reject a mismatch so
-	// a validly signed limit=1 body cannot be steered into a limit=20 request.
-	// Field order matters: the broker signs json.Marshal output, and the shared
-	// test vector pins count, server_time, not_after, key_id, channel, limit,
-	// relays.
-	NotAfter time.Time    `json:"not_after,omitzero"`
-	KeyID    string       `json:"key_id,omitempty"`
-	Channel  string       `json:"channel,omitempty"`
-	Limit    int          `json:"limit,omitempty"`
-	Relays   []Descriptor `json:"relays"`
+	// NotAfter bounds replay of a validly signed body: ServerTime + 30 min on
+	// the API channel, publish time + 24 h on the mirror channel. Clients
+	// reject responses past it (with a small clock-skew allowance).
+	NotAfter time.Time `json:"not_after"`
+	// KeyID is lowercase hex of the first 8 bytes of SHA-256 over the raw
+	// 32-byte Ed25519 signing public key. Advisory routing only: clients fall
+	// back to trying every pinned key when it matches none of them.
+	KeyID string `json:"key_id"`
+	// Channel is ChannelAPI or ChannelMirror (see the constants above).
+	Channel string `json:"channel"`
+	// Limit echoes the effective request limit on the API channel so clients
+	// can reject a signed body replayed from a differently-shaped request.
+	// Absent on the mirror channel, which is not request-shaped.
+	Limit  int          `json:"limit,omitempty"`
+	Relays []Descriptor `json:"relays"`
 }
 
 type HeartbeatResponse struct {

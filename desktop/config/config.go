@@ -55,37 +55,53 @@ const (
 // a staggered start — each entry gets a DiscoveryStagger head start over the
 // next, and the first to return relays wins (see discovery.FirstReachable).
 //
-// Every entry MUST be HTTPS. The relay list is not yet signed, so it is
-// authenticated only by the TLS certificate of the host that serves it; a
-// cleartext or bare-IP entry would let an on-path censor read or rewrite the
-// relay list — and observe the client identity headers — exactly the adversary
-// this tool exists to defeat (EnforceSecureBrokerURL rejects non-HTTPS hosts).
+// Every entry MUST be HTTPS. The relay list is now Ed25519-signed (see
+// signing.go), which detaches its authenticity from the transport — but
+// discovery still runs BEFORE the tunnel and the client-identity headers ride
+// these requests, so a cleartext or bare-IP entry would expose them to an
+// on-path censor. EnforceSecureBrokerURL rejects non-HTTPS hosts.
 //
-// Only one front is deployed today, so a censor who blocks broker.openrung.org
-// fails discovery CLOSED (offline). Closing that single point of failure is the
-// front-diversity resilience layer: adding more *HTTPS* fronts on independent
-// CDNs/domains is safe right now (still TLS-authenticated) and just needs the
-// extra fronts stood up — see deploy/broker-proxy. Non-TLS or out-of-band
-// channels (raw IP, cached/gossiped blobs) stay OFF this list until the broker
-// signs the relay list. Keep this list in sync with the mobile clients'
-// AppConfig so every client discovers identically.
+// Two independent fronts are deployed: the Cloudflare Worker
+// (broker.openrung.org) and an AWS CloudFront distribution on a different
+// provider AND DNS zone, so a single CDN/zone/account failure no longer fails
+// discovery CLOSED. Both proxy the one signing origin, so both serve signed
+// lists. Now that the list is signed, non-TLS / out-of-band channels (signed
+// static mirrors, a pinned direct-IP fallback) become safe to add in a later
+// step. Keep this list in sync with the mobile clients' AppConfig so every
+// client discovers identically.
 var DefaultBrokerURLs = []string{
 	"https://broker.openrung.org/",
-	// Additional HTTPS fronts go here once deployed, e.g. a second CDN or domain:
-	//   "https://broker2.openrung.org/",          // EXAMPLE — second domain
-	//   "https://openrung-broker.<other-cdn>/",   // EXAMPLE — second CDN provider
+	// Independent second front: AWS CloudFront (different provider + DNS zone).
+	"https://d2r7mdpyevvs1m.cloudfront.net/",
+}
+
+// Candidates are the ordered discovery endpoints for one request, plus
+// whether URLs[0] is a genuine user override. Built by BrokerCandidates and
+// consumed by discovery.FirstReachable; carrying the flag alongside the list
+// keeps the two from being computed inconsistently.
+type Candidates struct {
+	URLs []string
+	// OverrideFirst marks URLs[0] as a genuine user override — a non-blank
+	// primary that is not one of DefaultBrokerURLs. discovery.FirstReachable
+	// then tries it strictly first (full per-attempt timeout) and only races
+	// the remaining defaults after it fails, so a custom broker that is merely
+	// slower than the stagger is never silently outrun by a default front.
+	OverrideFirst bool
 }
 
 // BrokerCandidates returns the ordered, de-duplicated discovery candidates for
-// a request: a genuine primary override first, then the built-in defaults.
+// a request: a genuine primary override first (with OverrideFirst set), then
+// the built-in defaults.
 //
 // Ported from the mobile app's candidates() (src/net/brokerClient.ts): a
 // non-blank primary is tried FIRST only when it is a genuine override, i.e.
-// not already one of the defaults. A persisted value that merely echoes a
-// default must not reorder the defaults' HTTPS-first preference, otherwise an
-// upgrader whose last-used default was the raw IP would keep hitting the IP
-// before the Cloudflare-fronted endpoint.
-func BrokerCandidates(primary string) []string {
+// not already one of the defaults — and only such an override sets
+// OverrideFirst, giving it the strict head phase described on Candidates. A
+// persisted value that merely echoes a default must not reorder the defaults'
+// HTTPS-first preference (or claim the override phase), otherwise an upgrader
+// whose last-used default was the raw IP would keep hitting the IP before the
+// Cloudflare-fronted endpoint.
+func BrokerCandidates(primary string) Candidates {
 	ordered := make([]string, 0, len(DefaultBrokerURLs)+1)
 	seen := make(map[string]struct{}, len(DefaultBrokerURLs)+1)
 	add := func(value string) {
@@ -96,6 +112,7 @@ func BrokerCandidates(primary string) []string {
 		ordered = append(ordered, value)
 	}
 
+	overrideFirst := false
 	trimmedPrimary := strings.TrimSpace(primary)
 	if trimmedPrimary != "" {
 		isDefault := false
@@ -107,6 +124,7 @@ func BrokerCandidates(primary string) []string {
 		}
 		if !isDefault {
 			add(trimmedPrimary)
+			overrideFirst = true
 		}
 	}
 	for _, fallback := range DefaultBrokerURLs {
@@ -114,5 +132,5 @@ func BrokerCandidates(primary string) []string {
 			add(trimmed)
 		}
 	}
-	return ordered
+	return Candidates{URLs: ordered, OverrideFirst: overrideFirst}
 }
