@@ -8,8 +8,9 @@ single plaintext IP that a one-line ACL can null-route.
 China client ──HTTPS──► Cloudflare edge ──Worker──HTTP:8080──► broker-origin.openrung.org ──► 54.238.185.205
 ```
 
-- The broker is a stateless JSON control-plane API; the Worker just forwards bytes and forces
-  no-caching (relay candidates are short-lived).
+- The broker is a stateless JSON control-plane API; the Worker forwards bytes and never serves
+  cached data on the freshness path (relay candidates are short-lived). The one exception is
+  stale-on-error for relay discovery — see below.
 - This Cloudflare front is currently the **only** discovery endpoint the apps ship: every client's
   `DEFAULT_BROKER_URLS` / `defaultBrokerURLs` contains just this one HTTPS URL. There is **no raw-IP
   fallback** — the relay list is unsigned, so the clients refuse any non-HTTPS broker URL
@@ -26,6 +27,40 @@ Cloudflare error **1003 "Direct IP Access Not Allowed"**, which the Worker passe
 **`broker-origin.openrung.org`**, a **DNS-only (grey-cloud) A record → 54.238.185.205** in the
 zone. It must stay DNS-only; proxying (orange-cloud) it would loop the subrequest back into the
 edge. If you ever change the origin IP, update that DNS record (not the Worker).
+
+## Stale-on-error (`GET /api/v1/relays`)
+
+An origin blip must not take relay discovery down — this front is the only discovery path the
+apps ship. For `GET /api/v1/relays` (exact path) only, the Worker:
+
+- proxies to the origin with a **10 s timeout**;
+- on a **2xx**, returns the origin response to the client unchanged and stores a copy in the
+  colo's Cache API with `Cache-Control: public, s-maxage=180` (the origin's `no-store` still
+  reaches clients; the override applies only to this deliberately stored fallback copy);
+- on **failure** (timeout, network error, or origin ≥ 500), serves that stored copy with
+  **`X-OpenRung-Stale: 1`** and `Cache-Control: no-store`;
+- on failure with a **cold cache**, passes an origin 5xx through, and turns a network error into
+  a JSON `502` (previously the exception surfaced as an opaque Cloudflare error page);
+- passes **4xx through unmasked** — a `429`/`404` is a semantic answer, not an outage.
+
+Notes:
+
+- **The freshness path is unchanged.** Healthy responses always come straight from the origin.
+  The cached copy is written on every success but only ever *read* on failure; no healthy
+  response is served from cache.
+- **Why 180 s.** Relay leases are ~3 min, and all clients validate `expires_at` against the
+  `server_time` carried in the *same* response body — so a stale cached list passes client-side
+  expiry checks self-consistently and clients cannot detect the staleness themselves. The edge
+  must bound it: 180 s keeps a served-stale list within roughly one lease of reality.
+- **Per-colo.** The Cache API is colo-local, so the stale copy exists only in Cloudflare colos
+  that recently served a fresh response. A colo that never saw a healthy response has nothing to
+  fall back on and returns the error as before.
+- Degraded responses are detectable (by clients and in telemetry) via `X-OpenRung-Stale: 1`.
+- All other paths and methods remain untouched passthrough with **no timeout** (the speed-test
+  endpoint is long-lived by design).
+
+Unit tests: `npm test` (Node's built-in runner) from this directory covers the fresh, stale,
+cold-cache, 4xx-unmasked, and passthrough paths with injected fetch/cache fakes.
 
 ## Deploy
 
