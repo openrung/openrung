@@ -847,6 +847,21 @@ button {
   color: var(--or-body-text, #d8ffe0);
   font-size: 13px;
   line-height: 1.5;
+  user-select: text;
+}
+
+/* pinned-header variant: the header stays put, only the license text scrolls */
+.or-screen.is-pinned-header {
+  overflow-y: hidden;
+}
+
+.or-license-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .or-license-text {
@@ -856,4 +871,5 @@ button {
   line-height: 1.45;
   white-space: pre-wrap;
   overflow-wrap: break-word;
+  user-select: text;
 }

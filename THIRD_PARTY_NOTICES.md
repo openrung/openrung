@@ -238,9 +238,10 @@ Runtime `dependencies` of `desktop/frontend/package.json`:
 
 - `react`, `react-dom` (+ `scheduler`) — MIT — Copyright (c) Meta Platforms,
   Inc. and affiliates
-- `maplibre-gl` — BSD-3-Clause — Copyright (c) MapLibre contributors; portions
-  Copyright (c) 2016-2020 Mapbox, Inc. (its published bundle vendors its own
-  permissive-licensed dependencies)
+- `maplibre-gl` — BSD-3-Clause — Copyright (c) 2023, MapLibre contributors;
+  Copyright (c) 2020, Mapbox. Its `LICENSE.txt` additionally covers bundled
+  portions: glfx.js (MIT, Copyright (C) 2011 by Evan Wallace) and d3-color
+  (BSD-3-Clause, Copyright 2010-2016 Mike Bostock)
 - `topojson-client` — ISC — Copyright 2012-2019 Michael Bostock
 - `world-atlas` — ISC — Copyright 2013-2019 Michael Bostock; data derived from
   Natural Earth (public domain)
