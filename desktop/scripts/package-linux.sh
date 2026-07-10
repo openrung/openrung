@@ -4,7 +4,11 @@
 # tar.gz. Run this ON Linux (Wails cannot cross-compile from macOS/Windows).
 #
 # Prereqs (Debian/Ubuntu): Go, Node >=22, the Wails CLI, and
-#   sudo apt-get install -y build-essential libgtk-3-dev libwebkit2gtk-4.0-dev
+#   sudo apt-get install -y build-essential libgtk-3-dev libwebkit2gtk-4.1-dev
+#
+# Build against webkit2gtk 4.1 (not the removed-on-modern-distros 4.0) by passing
+# the Wails tag through to this script:
+#   ./package-linux.sh -tags webkit2_41
 #
 # Provide a Linux sing-box binary via SING_BOX=/path/to/sing-box (matching the
 # target arch), or have sing-box on PATH.
