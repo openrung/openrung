@@ -1,0 +1,16 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "OpenRungVolunteer",
+  "outputfilename": "OpenRungVolunteer",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "OpenRung contributors"
+  },
+  "info": {
+    "productName": "OpenRung Volunteer",
+    "copyright": "OpenRung contributors. GPL-3.0-or-later."
+  }
+}

@@ -1,0 +1,5 @@
+node_modules/
+frontend/dist/
+build/bin/
+frontend/wailsjs/
+frontend/package.json.md5
