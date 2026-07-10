@@ -21,7 +21,11 @@ const HOW_STEPS = [
   },
 ];
 
-export function AboutScreen() {
+interface Props {
+  onOpenLicenses: () => void;
+}
+
+export function AboutScreen({ onOpenLicenses }: Props) {
   return (
     <div className="or-screen">
       <h1 className="or-screen-title">About us</h1>
@@ -61,7 +65,7 @@ export function AboutScreen() {
       <SettingRow
         title="Open-source licenses"
         subtitle="Licenses and attribution for bundled software."
-        onPress={() => openExternal(`${AppConfig.SOURCE_URL}/blob/main/LICENSE`)}
+        onPress={onOpenLicenses}
       />
 
       <p className="or-about-footnote">
