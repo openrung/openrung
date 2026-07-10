@@ -24,6 +24,13 @@
 # OPENRUNG_BLUEPRINT, OPENRUNG_IMAGE, OPENRUNG_BROKER_PORT, OPENRUNG_VOLUNTEER_TOKEN,
 # OPENRUNG_DASHBOARD_TOKEN, OPENRUNG_RELAY_STORE, OPENRUNG_RELAY_DATABASE_URL,
 # OPENRUNG_TELEMETRY_STORE, OPENRUNG_TELEMETRY_DATABASE_URL, OPENRUNG_GEOIP_ENDPOINT.
+#
+# OPENRUNG_RELAY_SIGNING_KEY is deliberately NOT overridable here: user-data
+# persists world-readable under /var/lib/cloud, so the instance generates a
+# fresh seed for itself instead. Clients pin the production public keys —
+# replace the generated seed with the production active seed (scp it into
+# /etc/openrung/broker.env and restart the container) before pointing pinned
+# clients at this broker.
 set -euo pipefail
 
 REGION="${OPENRUNG_REGION:-ap-northeast-1}"     # Tokyo
@@ -101,6 +108,14 @@ ${TELEMETRY_STORE_ENV}
 ${TELEMETRY_DB_ENV}
 ${GEOIP_ENV}
 ENVEOF
+chmod 600 /etc/openrung/broker.env
+
+# Relay-list signing seed (the broker fails fast without it). Generated ON the
+# instance — the \$(...) is escaped so it never expands into user-data, which
+# persists on disk under /var/lib/cloud. Production: replace with the pinned
+# active seed (scp) and restart the container; every redeploy must keep using
+# --env-file so the seed is never hand-typed inline.
+echo "OPENRUNG_RELAY_SIGNING_KEY=\$(openssl rand -base64 32)" >> /etc/openrung/broker.env
 
 docker pull ${IMAGE}
 docker rm -f openrung-broker 2>/dev/null || true
@@ -162,4 +177,9 @@ echo
 echo "Front it with Cloudflare for TLS, and set the client apps' HTTPS broker URL"
 echo "to the Cloudflare hostname. Telemetry persists in the 'openrung-broker-state'"
 echo "docker volume across restarts."
+echo
+echo "Relay-list signing: the instance generated a FRESH seed in"
+echo "/etc/openrung/broker.env. Clients pin the production public keys, so scp the"
+echo "production active seed over it (and restart the container) before pointing"
+echo "pinned clients at this broker. Confirm with: curl .../healthz (signing_key_id)."
 echo "OPENRUNG_BROKER name=${NAME} ip=${STATIC_IP} port=${PORT}"

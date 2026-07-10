@@ -81,10 +81,14 @@ You need Go 1.25+, and volunteers also need an
 The broker fails closed: it refuses to start unless you either set a shared
 registration token (`OPENRUNG_VOLUNTEER_TOKEN`, matched by hubs/volunteers) or
 explicitly opt into an open, unauthenticated broker. Running open lets anyone
-register a relay into the directory, so only do it on a trusted/private network:
+register a relay into the directory, so only do it on a trusted/private network.
+It also requires `OPENRUNG_RELAY_SIGNING_KEY` — standard base64 of the 32-byte
+Ed25519 seed that signs every relay-list response (generate one with
+`openssl rand -base64 32`):
 
 ```sh
 OPENRUNG_ALLOW_ANONYMOUS_REGISTRATION=true \
+OPENRUNG_RELAY_SIGNING_KEY="$(openssl rand -base64 32)" \
   go run ./cmd/broker -addr :8080
 ```
 
@@ -93,6 +97,7 @@ with shared PostgreSQL relay state (keep the token / anonymous flag):
 
 ```sh
 OPENRUNG_ALLOW_ANONYMOUS_REGISTRATION=true \
+OPENRUNG_RELAY_SIGNING_KEY="$(openssl rand -base64 32)" \
 OPENRUNG_RELAY_STORE=postgres \
 OPENRUNG_RELAY_DATABASE_URL='postgres://openrung:change-me@localhost:5432/openrung?sslmode=disable' \
   go run ./cmd/broker -addr :8080
@@ -106,6 +111,7 @@ before starting the broker, then open `/admin/telemetry`:
 
 ```sh
 OPENRUNG_ALLOW_ANONYMOUS_REGISTRATION=true \
+OPENRUNG_RELAY_SIGNING_KEY="$(openssl rand -base64 32)" \
 OPENRUNG_DASHBOARD_TOKEN='replace-with-a-long-random-token' \
   go run ./cmd/broker -addr :8080
 ```

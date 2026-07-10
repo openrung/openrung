@@ -54,7 +54,7 @@ func TestApplyRelayLabelsCoversAllRelayViews(t *testing.T) {
 }
 
 func TestDashboardRoutesDisabledWithoutToken(t *testing.T) {
-	server := NewServer(NewStore(), Config{TelemetrySink: &dashboardTelemetryStore{}})
+	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed(), TelemetrySink: &dashboardTelemetryStore{}})
 	request := httptest.NewRequest(http.MethodGet, "/admin/telemetry", nil)
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
@@ -65,7 +65,7 @@ func TestDashboardRoutesDisabledWithoutToken(t *testing.T) {
 
 func TestDashboardLoginOverviewAndLogout(t *testing.T) {
 	store := &dashboardTelemetryStore{}
-	server := NewServer(NewStore(), Config{TelemetrySink: store, TelemetryReader: store, DashboardToken: "secret-token"})
+	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed(), TelemetrySink: store, TelemetryReader: store, DashboardToken: "secret-token"})
 
 	bad := postLogin(server, "wrong")
 	if bad.Code != http.StatusUnauthorized {

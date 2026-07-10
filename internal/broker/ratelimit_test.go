@@ -81,7 +81,7 @@ func TestIPRateLimiterSweepsIdleBuckets(t *testing.T) {
 }
 
 func TestServerRateLimitsSpeedTest(t *testing.T) {
-	server := NewServer(NewStore(), Config{})
+	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed()})
 
 	for index := 0; index < speedTestBurst; index++ {
 		recorder := httptest.NewRecorder()
@@ -114,7 +114,7 @@ func TestServerRateLimitsSpeedTest(t *testing.T) {
 }
 
 func TestServerRateLimitsTelemetry(t *testing.T) {
-	server := NewServer(NewStore(), Config{TelemetrySink: &memoryTelemetrySink{}})
+	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed(), TelemetrySink: &memoryTelemetrySink{}})
 
 	status := 0
 	for index := 0; index < telemetryBurst+1; index++ {
