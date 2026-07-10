@@ -71,7 +71,10 @@ type Options struct {
 
 // ListRelays fetches from a single broker endpoint. A 429 returns a
 // *RateLimitedError carrying Retry-After; other non-2xx statuses return a
-// plain error.
+// plain error. Successful responses pass through client.ReadVerifiedRelayList
+// — the shared relay-list signature check — so the GUI and the CLI verify
+// identically: any non-loopback broker must sign the list with a pinned
+// operator key or the candidate fails and the race falls through.
 func ListRelays(ctx context.Context, brokerURL string, opts Options) (relay.ListResponse, error) {
 	endpoint, err := client.RelayListURL(brokerURL, opts.Limit)
 	if err != nil {
@@ -116,11 +119,7 @@ func ListRelays(ctx context.Context, brokerURL string, opts Options) (relay.List
 		return relay.ListResponse{}, brokerStatusError(resp)
 	}
 
-	var out relay.ListResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return relay.ListResponse{}, fmt.Errorf("decode relay list: %w", err)
-	}
-	return out, nil
+	return client.ReadVerifiedRelayList(resp, endpoint, opts.Limit)
 }
 
 // FirstReachable races the candidates with a staggered start (happy-eyeballs

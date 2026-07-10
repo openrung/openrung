@@ -16,6 +16,8 @@ func TestDiscoveryStaggerMatchesMobile(t *testing.T) {
 
 func TestBrokerCandidates(t *testing.T) {
 	https := "https://broker.openrung.org/"
+	// Independent second front (AWS CloudFront); see DefaultBrokerURLs.
+	cf := "https://d2r7mdpyevvs1m.cloudfront.net/"
 
 	tests := []struct {
 		name    string
@@ -23,24 +25,24 @@ func TestBrokerCandidates(t *testing.T) {
 		want    Candidates
 	}{
 		{
-			name:    "empty primary yields the HTTPS default",
+			name:    "empty primary yields the HTTPS defaults",
 			primary: "",
-			want:    Candidates{URLs: []string{https}},
+			want:    Candidates{URLs: []string{https, cf}},
 		},
 		{
 			name:    "blank primary is ignored",
 			primary: "   ",
-			want:    Candidates{URLs: []string{https}},
+			want:    Candidates{URLs: []string{https, cf}},
 		},
 		{
 			name:    "genuine override is tried first and flagged as an override",
 			primary: "https://mirror.example/",
-			want:    Candidates{URLs: []string{"https://mirror.example/", https}, OverrideFirst: true},
+			want:    Candidates{URLs: []string{"https://mirror.example/", https, cf}, OverrideFirst: true},
 		},
 		{
 			name:    "primary echoing a default does not duplicate it or claim the override phase",
 			primary: https,
-			want:    Candidates{URLs: []string{https}},
+			want:    Candidates{URLs: []string{https, cf}},
 		},
 	}
 
