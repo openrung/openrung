@@ -10,9 +10,13 @@ China client ──HTTPS──► Cloudflare edge ──Worker──HTTP:8080─
 
 - The broker is a stateless JSON control-plane API; the Worker just forwards bytes and forces
   no-caching (relay candidates are short-lived).
-- The raw origin IP remains in the apps' broker fallback list
-  (`AppConfig.DEFAULT_BROKER_URLS` / `AppConfig.defaultBrokerURLs`), so a blocked edge degrades to
-  the direct IP rather than failing.
+- This Cloudflare front is currently the **only** discovery endpoint the apps ship: every client's
+  `DEFAULT_BROKER_URLS` / `defaultBrokerURLs` contains just this one HTTPS URL. There is **no raw-IP
+  fallback** — the relay list is unsigned, so the clients refuse any non-HTTPS broker URL
+  (`EnforceSecureBrokerURL`); a bare-IP/plaintext entry would let an on-path censor inject a
+  malicious relay set. A blocked edge therefore fails discovery **closed** (offline). That single
+  point of failure is what the front-diversity work (multiple HTTPS fronts across independent
+  CDNs/domains) and relay-list signing are meant to remove.
 
 ## Origin must be a hostname, not an IP (important)
 
@@ -58,5 +62,8 @@ Logs: `wrangler tail openrung-broker-proxy`.
   is open — low stakes for `client_seen` analytics; close it off with Authenticated Origin Pulls or a
   shared-secret header if that ever matters.
 - **SNI blocking.** A determined censor can SNI-block `broker.openrung.org` specifically (classic
-  domain fronting is dead). This raises cost (the hostname must be discovered first, and the
-  fallback IP still works) but is not absolute. Encrypted Client Hello (ECH) is a future lever.
+  domain fronting is dead). Because this is currently the only front and there is no raw-IP fallback
+  (see above), an SNI block takes discovery fully offline. Mitigations, in order of leverage:
+  additional HTTPS fronts on other CDNs/domains (so one SNI rule no longer suffices), Encrypted
+  Client Hello (ECH) to hide the SNI, and — to unlock non-TLS / out-of-band channels — signing the
+  relay list so a fetched directory is trustworthy regardless of the channel that carried it.

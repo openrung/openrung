@@ -41,13 +41,28 @@ const (
 	MinDirectoryRefreshInterval = 30 * time.Second
 )
 
-// DefaultBrokerURLs are the ordered discovery candidates. HTTPS only: discovery
-// runs BEFORE the tunnel, so a cleartext bare-IP fallback would let an on-path
-// censor read or rewrite the relay list — and observe the client identity
-// headers — exactly the adversary this tool exists to defeat. A pinned bare-IP
-// HTTPS fallback for a blocked edge can be added later.
+// DefaultBrokerURLs are the ordered discovery candidates, tried in order until
+// one returns relays (see discovery.FirstReachable).
+//
+// Every entry MUST be HTTPS. The relay list is not yet signed, so it is
+// authenticated only by the TLS certificate of the host that serves it; a
+// cleartext or bare-IP entry would let an on-path censor read or rewrite the
+// relay list — and observe the client identity headers — exactly the adversary
+// this tool exists to defeat (EnforceSecureBrokerURL rejects non-HTTPS hosts).
+//
+// Only one front is deployed today, so a censor who blocks broker.openrung.org
+// fails discovery CLOSED (offline). Closing that single point of failure is the
+// front-diversity resilience layer: adding more *HTTPS* fronts on independent
+// CDNs/domains is safe right now (still TLS-authenticated) and just needs the
+// extra fronts stood up — see deploy/broker-proxy. Non-TLS or out-of-band
+// channels (raw IP, cached/gossiped blobs) stay OFF this list until the broker
+// signs the relay list. Keep this list in sync with the mobile clients'
+// AppConfig so every client discovers identically.
 var DefaultBrokerURLs = []string{
 	"https://broker.openrung.org/",
+	// Additional HTTPS fronts go here once deployed, e.g. a second CDN or domain:
+	//   "https://broker2.openrung.org/",          // EXAMPLE — second domain
+	//   "https://openrung-broker.<other-cdn>/",   // EXAMPLE — second CDN provider
 }
 
 // BrokerCandidates returns the ordered, de-duplicated discovery candidates for
