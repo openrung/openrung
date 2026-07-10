@@ -56,7 +56,7 @@ func TestTelemetryHandlerStoresSourceIPAndEvents(t *testing.T) {
 
 func TestRelayListRecordsPreTunnelClientIP(t *testing.T) {
 	sink := &memoryTelemetrySink{}
-	server := NewServer(NewStore(), Config{TelemetrySink: sink})
+	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed(), TelemetrySink: sink})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/relays?limit=5", nil)
 	req.RemoteAddr = "198.51.100.19:4242"
 	req.Header.Set("X-OpenRung-Client-ID", "client-1")
@@ -584,7 +584,7 @@ func TestClientSeenDeduperSuppressesRepeatsWithinWindow(t *testing.T) {
 
 func TestRelayListDedupsRepeatClientSeen(t *testing.T) {
 	sink := &memoryTelemetrySink{}
-	server := NewServer(NewStore(), Config{TelemetrySink: sink})
+	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed(), TelemetrySink: sink})
 	for range 3 {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/relays", nil)
 		req.Header.Set("X-OpenRung-Client-ID", "client-1")

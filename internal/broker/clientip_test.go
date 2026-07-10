@@ -46,7 +46,7 @@ func TestClientIPResolver(t *testing.T) {
 
 func TestRelayListHonorsForwardedClientIPFromCloudflare(t *testing.T) {
 	sink := &memoryTelemetrySink{}
-	server := NewServer(NewStore(), Config{TelemetrySink: sink})
+	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed(), TelemetrySink: sink})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/relays?limit=5", nil)
 	req.RemoteAddr = "104.16.0.9:443" // a Cloudflare edge IP
@@ -65,7 +65,7 @@ func TestRelayListHonorsForwardedClientIPFromCloudflare(t *testing.T) {
 
 func TestRelayListIgnoresForwardedClientIPFromUntrustedPeer(t *testing.T) {
 	sink := &memoryTelemetrySink{}
-	server := NewServer(NewStore(), Config{TelemetrySink: sink})
+	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed(), TelemetrySink: sink})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/relays?limit=5", nil)
 	req.RemoteAddr = "203.0.113.42:5000"             // NOT Cloudflare (e.g. a direct hit on the raw origin)

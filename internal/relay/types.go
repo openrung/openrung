@@ -20,6 +20,13 @@ const (
 	// tunnel.
 	TransportDirect = "direct"
 	TransportTunnel = "tunnel"
+
+	// ChannelAPI and ChannelMirror name the two signed relay-list channels.
+	// The value lives inside the signed body so a long-lived mirror artifact
+	// can never be replayed into an API slot (or vice versa): clients check it
+	// against the channel they actually fetched from.
+	ChannelAPI    = "api"
+	ChannelMirror = "mirror"
 )
 
 type RegisterRequest struct {
@@ -100,10 +107,28 @@ type Descriptor struct {
 	ExpiresAt        time.Time `json:"expires_at"`
 }
 
+// ListResponse is the signed relay directory. The whole marshaled body is
+// covered by the detached Ed25519 signature in the X-OpenRung-Relays-Signature
+// response header, so NotAfter/KeyID/Channel/Limit must live here — carried in
+// plain headers an attacker could rewrite them.
 type ListResponse struct {
-	Count      int          `json:"count"`
-	ServerTime time.Time    `json:"server_time"`
-	Relays     []Descriptor `json:"relays"`
+	Count      int       `json:"count"`
+	ServerTime time.Time `json:"server_time"`
+	// NotAfter bounds replay of a validly signed body: ServerTime + 30 min on
+	// the API channel, publish time + 24 h on the mirror channel. Clients
+	// reject responses past it (with a small clock-skew allowance).
+	NotAfter time.Time `json:"not_after"`
+	// KeyID is lowercase hex of the first 8 bytes of SHA-256 over the raw
+	// 32-byte Ed25519 signing public key. Advisory routing only: clients fall
+	// back to trying every pinned key when it matches none of them.
+	KeyID string `json:"key_id"`
+	// Channel is ChannelAPI or ChannelMirror (see the constants above).
+	Channel string `json:"channel"`
+	// Limit echoes the effective request limit on the API channel so clients
+	// can reject a signed body replayed from a differently-shaped request.
+	// Absent on the mirror channel, which is not request-shaped.
+	Limit  int          `json:"limit,omitempty"`
+	Relays []Descriptor `json:"relays"`
 }
 
 type HeartbeatResponse struct {

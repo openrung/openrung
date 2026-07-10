@@ -13,7 +13,7 @@ fronted by Cloudflare with a direct-IP origin fallback on `:8080`.
 ## Quick start
 
 ```sh
-cp .env.example .env          # edit: token/anonymous, dashboard, store
+cp .env.example .env          # edit: signing seed, token/anonymous, dashboard, store
 docker compose up -d --build
 docker compose logs -f
 ```
@@ -68,6 +68,21 @@ through. You must either:
 A token, when set, takes precedence and enforces auth; the anonymous flag then
 becomes a no-op. Generate a token with `openssl rand -hex 32`. Send it only over
 TLS — see Cloudflare below.
+
+## Relay-list signing
+
+Every 2xx relay-list response (`/api/v1/relays` and `/api/v1/relays.mirror`) is
+signed with an Ed25519 key — a detached signature over the exact body bytes in
+the `X-OpenRung-Relays-Signature` header — so clients can verify the directory
+over non-TLS channels (the direct-IP fallback, static mirrors). The broker
+**refuses to start** without `OPENRUNG_RELAY_SIGNING_KEY` (standard base64 of
+the 32-byte seed): serving unsigned lists would keep healthz green while every
+verifying client rejected discovery. Generate a seed with
+`openssl rand -base64 32`, keep it in the env file (root-owned, `0600`), and
+redeploy with `--env-file` — never hand-typed inline `-e` vars. Clients pin the
+matching public keys, so production must run the operator's active seed; the
+startup log line `relay list signing enabled key_id=…` and the `signing_key_id`
+field on `/healthz` confirm which key is live.
 
 ## Telemetry persistence
 
@@ -129,6 +144,7 @@ the edge and spoof forwarded headers.
 | ------------------------------------ | -------- | ----------------------------------- | -------------------------------------------------------------- |
 | `OPENRUNG_VOLUNTEER_TOKEN`           | yes\*    | —                                   | Shared registration token (must match hubs/volunteers)         |
 | `OPENRUNG_ALLOW_ANONYMOUS_REGISTRATION` | yes\* | —                                   | Set `true` to run open when no token is set (\*one of these)   |
+| `OPENRUNG_RELAY_SIGNING_KEY`         | yes      | —                                   | Std-base64 32-byte Ed25519 seed; signs every relay-list response |
 | `OPENRUNG_DASHBOARD_TOKEN`           | no       | —                                   | Enables the protected `/admin/telemetry` dashboard             |
 | `OPENRUNG_ADDR`                      | no       | `:8080`                             | HTTP listen address                                            |
 | `OPENRUNG_TRUSTED_PROXY_CIDRS`       | no       | Cloudflare ranges                   | Extra trusted proxy CIDRs for forwarded client IPs             |

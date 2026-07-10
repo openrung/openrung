@@ -85,7 +85,7 @@ func TestRegisterDefaultsTransportDirect(t *testing.T) {
 }
 
 func TestRegisterStoresAndReturnsLabel(t *testing.T) {
-	server := NewServer(NewStore(), Config{})
+	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed()})
 
 	req := validRegisterRequest()
 	req.Label = "happy-hippo"
@@ -111,7 +111,7 @@ func TestRegisterStoresAndReturnsLabel(t *testing.T) {
 }
 
 func TestRegisterRejectsUnsafeLabel(t *testing.T) {
-	server := NewServer(NewStore(), Config{})
+	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed()})
 
 	req := validRegisterRequest()
 	req.Label = "<script>alert(1)</script>"
@@ -124,7 +124,7 @@ func TestRegisterRejectsUnsafeLabel(t *testing.T) {
 }
 
 func TestRegisterRejectsOversizedBody(t *testing.T) {
-	server := NewServer(NewStore(), Config{})
+	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed()})
 
 	oversized := []byte(`{"public_host":"` + strings.Repeat("a", maxRegisterBodyBytes) + `"}`)
 	recorder := httptest.NewRecorder()
@@ -136,7 +136,7 @@ func TestRegisterRejectsOversizedBody(t *testing.T) {
 
 func TestRegisterResolvesRelayLocation(t *testing.T) {
 	resolver := &stubGeoResolver{geo: relay.GeoLocation{City: "Tokyo", Country: "Japan", CountryCode: "JP", Latitude: 35.6895, Longitude: 139.6917}}
-	server := NewServer(NewStore(), Config{GeoIP: resolver})
+	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed(), GeoIP: resolver})
 
 	body, _ := json.Marshal(validRegisterRequest())
 	recorder := httptest.NewRecorder()
@@ -164,7 +164,7 @@ func TestRegisterResolvesRelayLocation(t *testing.T) {
 
 func TestRegisterGeolocatesTunnelRelayByExitHostWithoutExposingIt(t *testing.T) {
 	resolver := &stubGeoResolver{geo: relay.GeoLocation{City: "Tehran", Country: "Iran", CountryCode: "IR"}}
-	server := NewServer(NewStore(), Config{GeoIP: resolver})
+	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed(), GeoIP: resolver})
 
 	req := validRegisterRequest()
 	req.PublicHost = "203.0.113.1" // relay hub
@@ -196,7 +196,7 @@ func TestRegisterGeolocatesTunnelRelayByExitHostWithoutExposingIt(t *testing.T) 
 
 func TestHeartbeatBackfillsRelayLocation(t *testing.T) {
 	resolver := &stubGeoResolver{err: errors.New("geoip endpoint down")}
-	server := NewServer(NewStore(), Config{GeoIP: resolver})
+	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed(), GeoIP: resolver})
 
 	body, _ := json.Marshal(validRegisterRequest())
 	recorder := httptest.NewRecorder()
@@ -238,7 +238,7 @@ func TestHeartbeatBackfillsRelayLocation(t *testing.T) {
 }
 
 func TestHealthzReportsStoreFailure(t *testing.T) {
-	server := NewServer(failingStore{Store: NewStore(), pingErr: errors.New("database down")}, Config{})
+	server := NewServer(failingStore{Store: NewStore(), pingErr: errors.New("database down")}, Config{SigningSeed: testSigningSeed()})
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 
@@ -248,7 +248,7 @@ func TestHealthzReportsStoreFailure(t *testing.T) {
 }
 
 func TestListRelaysReportsStoreFailure(t *testing.T) {
-	server := NewServer(failingStore{Store: NewStore(), listErr: errors.New("database down")}, Config{})
+	server := NewServer(failingStore{Store: NewStore(), listErr: errors.New("database down")}, Config{SigningSeed: testSigningSeed()})
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/relays?limit=5", nil))
 
@@ -258,17 +258,19 @@ func TestListRelaysReportsStoreFailure(t *testing.T) {
 }
 
 func TestListRelaysIsNeverCacheable(t *testing.T) {
-	server := NewServer(NewStore(), Config{})
+	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed()})
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/relays", nil))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
 	}
-	if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
-		t.Fatalf("expected no-store cache control on relay list, got %q", got)
+	// The signed success path adds no-transform so middleboxes on the cleartext
+	// direct-IP path do not recompress the byte-exact signed body.
+	if got := recorder.Header().Get("Cache-Control"); got != "no-store, no-transform" {
+		t.Fatalf("expected no-store, no-transform cache control on relay list, got %q", got)
 	}
 
-	failingServer := NewServer(failingStore{Store: NewStore(), listErr: errors.New("database down")}, Config{})
+	failingServer := NewServer(failingStore{Store: NewStore(), listErr: errors.New("database down")}, Config{SigningSeed: testSigningSeed()})
 	failRecorder := httptest.NewRecorder()
 	failingServer.ServeHTTP(failRecorder, httptest.NewRequest(http.MethodGet, "/api/v1/relays", nil))
 	if got := failRecorder.Header().Get("Cache-Control"); got != "no-store" {
@@ -277,7 +279,7 @@ func TestListRelaysIsNeverCacheable(t *testing.T) {
 }
 
 func TestHeartbeatMissingRelayStillReturnsNotFound(t *testing.T) {
-	server := NewServer(NewStore(), Config{})
+	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed()})
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/volunteers/relay_missing/heartbeat", nil))
 
