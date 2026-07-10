@@ -125,6 +125,7 @@ func GenerateRealityKeyPair(xrayPath string) (RealityKeyPair, error) {
 		xrayPath = "xray"
 	}
 	cmd := exec.Command(xrayPath, "x25519")
+	ConfigureBackgroundCommand(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return RealityKeyPair{}, fmt.Errorf("run %s x25519: %w: %s", xrayPath, err, strings.TrimSpace(string(out)))

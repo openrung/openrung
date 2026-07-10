@@ -1,11 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -507,7 +504,7 @@ func boolEnv(key string) bool {
 
 func heartbeatOrRegister(ctx context.Context, cfg cliConfig, prepared preparedRuntime, desc relay.Descriptor) (relay.Descriptor, bool, error) {
 	if err := heartbeat(ctx, cfg, desc.ID); err != nil {
-		if !isRelayNotFound(err) {
+		if !volunteer.IsRelayNotFound(err) {
 			return desc, false, err
 		}
 
@@ -601,76 +598,15 @@ func register(ctx context.Context, cfg cliConfig, prepared preparedRuntime) (rel
 		VolunteerVersion: version,
 		Label:            cfg.Label,
 	}
-
-	var desc relay.Descriptor
-	if err := postJSON(ctx, cfg, "/api/v1/volunteers/register", req, &desc); err != nil {
-		return relay.Descriptor{}, err
-	}
-	return desc, nil
+	return cfg.brokerClient().Register(ctx, req)
 }
 
 func heartbeat(ctx context.Context, cfg cliConfig, id string) error {
-	var resp relay.HeartbeatResponse
-	return postJSON(ctx, cfg, "/api/v1/volunteers/"+id+"/heartbeat", map[string]bool{"ok": true}, &resp)
+	return cfg.brokerClient().Heartbeat(ctx, id)
 }
 
-func postJSON(ctx context.Context, cfg cliConfig, path string, body any, out any) error {
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return err
-	}
-
-	url := strings.TrimRight(cfg.BrokerURL, "/") + path
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if cfg.RegistrationToken != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.RegistrationToken)
-	}
-
-	httpClient := cfg.HTTPClient
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var apiErr relay.ErrorResponse
-		_ = json.NewDecoder(resp.Body).Decode(&apiErr)
-		if apiErr.Error == "" {
-			apiErr.Error = resp.Status
-		}
-		return &brokerAPIError{Path: path, StatusCode: resp.StatusCode, Message: apiErr.Error}
-	}
-
-	if out != nil {
-		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-type brokerAPIError struct {
-	Path       string
-	StatusCode int
-	Message    string
-}
-
-func (e *brokerAPIError) Error() string {
-	return fmt.Sprintf("broker %s: %s", e.Path, e.Message)
-}
-
-func isRelayNotFound(err error) bool {
-	var apiErr *brokerAPIError
-	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound && apiErr.Message == "relay not found"
+func (c cliConfig) brokerClient() volunteer.BrokerClient {
+	return volunteer.BrokerClient{BaseURL: c.BrokerURL, Token: c.RegistrationToken, HTTPClient: c.HTTPClient}
 }
 
 func stopProcess(cmd *exec.Cmd, errCh <-chan error) {

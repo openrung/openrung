@@ -24,8 +24,19 @@ type ConnectionObserver struct {
 	TargetHost string
 	TargetPort int
 	Output     io.Writer
+	// Events, when non-nil, receives structured connect/disconnect
+	// notifications alongside the textual Output lines. Callbacks run on the
+	// per-connection goroutine and must not block.
+	Events *ConnectionEvents
 
 	nextID atomic.Uint64
+}
+
+// ConnectionEvents carries optional structured observer callbacks. Either
+// field may be nil.
+type ConnectionEvents struct {
+	Opened func(id uint64, remoteAddr string)
+	Closed func(id uint64, remoteAddr string, duration time.Duration, bytesFromClient, bytesToClient int64)
 }
 
 func ReserveLoopbackTCPPort() (string, int, error) {
@@ -123,11 +134,17 @@ func (o *ConnectionObserver) handle(ctx context.Context, client net.Conn) {
 	clientHost, clientPort := splitAddress(clientAddr)
 
 	fmt.Fprintf(o.Output, "%sclient connected%s id=%d ip=%s port=%s remote=%s\n", ansiGreen, ansiReset, id, clientHost, clientPort, clientAddr)
+	if o.Events != nil && o.Events.Opened != nil {
+		o.Events.Opened(id, clientAddr)
+	}
 
 	target, err := (&net.Dialer{}).DialContext(ctx, "tcp", net.JoinHostPort(o.TargetHost, strconv.Itoa(o.TargetPort)))
 	if err != nil {
 		_ = client.Close()
 		fmt.Fprintf(o.Output, "%sclient disconnected%s id=%d ip=%s port=%s duration=%s error=%q\n", ansiRed, ansiReset, id, clientHost, clientPort, time.Since(started).Round(time.Millisecond), err.Error())
+		if o.Events != nil && o.Events.Closed != nil {
+			o.Events.Closed(id, clientAddr, time.Since(started), 0, 0)
+		}
 		return
 	}
 
@@ -163,6 +180,9 @@ func (o *ConnectionObserver) handle(ctx context.Context, client net.Conn) {
 		fromClient.Count(),
 		toClient.Count(),
 	)
+	if o.Events != nil && o.Events.Closed != nil {
+		o.Events.Closed(id, clientAddr, time.Since(started), fromClient.Count(), toClient.Count())
+	}
 }
 
 func splitAddress(addr string) (string, string) {
