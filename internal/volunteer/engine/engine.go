@@ -519,13 +519,15 @@ func (e *Engine) probeClient(cfg Config) *http.Client {
 	if cfg.HTTPClient != nil {
 		return cfg.HTTPClient
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
-	if cfg.HubInsecure {
-		client.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}, //nolint:gosec // test-only, mirrors cmd/volunteer -hub-insecure
-		}
+	// The reachability probe hits the hub's HTTPS API, which for a self-signed
+	// hub presents the same leaf the tunnel pins. It must apply the SAME trust
+	// policy as the tunnel dial (hubTLSClientConfig) — otherwise the probe fails
+	// certificate validation, auto mode always falls back to tunnel, and a
+	// publicly reachable volunteer never selects direct mode.
+	return &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: hubTLSClientConfig(cfg)},
 	}
-	return client
 }
 
 // startXray writes the generated config (0600) and launches xray bound to
@@ -828,6 +830,9 @@ func (e *Engine) runTunnelSession(ctx context.Context, cfg Config, label string,
 	}
 }
 
+// hubTLSConfig is the TLS config for the tunnel control dial: the shared hub
+// trust policy plus the ServerName the raw TLS dialer needs. nil means plaintext
+// (test/dev only).
 func hubTLSConfig(cfg Config) *tls.Config {
 	if cfg.HubPlaintext {
 		return nil
@@ -836,16 +841,27 @@ func hubTLSConfig(cfg Config) *tls.Config {
 	if err != nil {
 		host = cfg.HubAddr
 	}
-	tc := &tls.Config{
-		ServerName: host,
-		MinVersion: tls.VersionTLS12,
-	}
+	tc := hubTLSClientConfig(cfg)
+	// Explicit for the raw tls.Dialer (the probe's HTTP transport sets this
+	// per-request from the URL instead). Ignored on the pinned path, which
+	// verifies the leaf by fingerprint rather than hostname.
+	tc.ServerName = host
+	return tc
+}
+
+// hubTLSClientConfig is the single source of truth for how the volunteer trusts
+// the hub's TLS certificate, shared by the tunnel control dial (hubTLSConfig)
+// and the reachability probe's HTTP client (probeClient). When a fingerprint is
+// pinned it verifies the exact leaf (the hub self-signs on a bare IP, so
+// CA/hostname verification cannot succeed); otherwise it honours HubInsecure
+// (test-only), else standard verification. It sets no ServerName, so each caller
+// can supply its own. Returns a fresh config per call — callers may mutate it.
+func hubTLSClientConfig(cfg Config) *tls.Config {
+	tc := &tls.Config{MinVersion: tls.VersionTLS12}
 	if pin := normalizeFingerprint(cfg.HubCertFingerprint); pin != "" {
-		// Pin the hub's exact leaf certificate. The hub self-signs on a bare IP,
-		// so CA/hostname verification cannot succeed; instead we skip the chain
-		// check and require the presented leaf to match the expected SHA-256.
-		// This is MITM-proof without a CA — a forged cert has a different key
-		// and therefore a different fingerprint.
+		// Skip the chain/hostname check and require the presented leaf to match
+		// the expected SHA-256. MITM-proof without a CA — a forged cert has a
+		// different key and therefore a different fingerprint.
 		tc.InsecureSkipVerify = true //nolint:gosec // not insecure: VerifyPeerCertificate pins the exact leaf below
 		tc.VerifyPeerCertificate = pinnedLeafVerifier(pin)
 		return tc
