@@ -153,7 +153,11 @@ export function HomeScreen({ state, onStart, onStop }: Props) {
           <div className="vol-stats">
             <div className="vol-stat">
               <span className="vol-stat-value">{state.activeConnections}</span>
-              <span className="vol-stat-label">People connected now</span>
+              {/* Not "people": one person's device opens many parallel
+                  connections (a page pulls from dozens of hosts at once), and
+                  in tunnel mode the hub multiplexes every client so the relay
+                  only ever sees a stream count, never distinct people. */}
+              <span className="vol-stat-label">Active connections</span>
             </div>
             <div className="vol-stat">
               <span className="vol-stat-value">{state.totalConnections}</span>
