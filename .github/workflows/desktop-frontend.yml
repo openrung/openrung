@@ -1,0 +1,42 @@
+# Runs the desktop frontend test suite and typecheck/build. Exists mainly so
+# the license-notices guard (notices.test.ts pins the in-app GPL text
+# byte-for-byte to LICENSE) actually fires in CI, not just on developer
+# machines — the desktop-release workflow only packages, it never tests.
+name: desktop-frontend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "desktop/frontend/**"
+      - "LICENSE"
+      - ".github/workflows/desktop-frontend.yml"
+  pull_request:
+    paths:
+      - "desktop/frontend/**"
+      - "LICENSE"
+      - ".github/workflows/desktop-frontend.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop/frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Typecheck and build
+        run: npm run build

@@ -10,6 +10,10 @@ must surface it:
 - **`openrung-volunteer` / `openrung-relayhub` Docker images** — the file is
   copied to `/usr/local/share/openrung/THIRD_PARTY_NOTICES.md` in each image.
 - **Server binaries on the host** — ship this file alongside the binary.
+- **Desktop app (Wails GUI)** — the in-app "Open-source licenses" screen
+  renders these notices (`desktop/frontend/src/licenses/notices.ts` mirrors
+  section 7 of this file plus `LICENSE`; a frontend test pins the bundled GPL
+  text to `LICENSE`).
 
 The OpenRung mobile app is developed and distributed from its own repository
 and must carry its own third-party notices (in-app "Open Source Licenses"
@@ -18,7 +22,11 @@ commit each release is built against.
 
 > Maintenance: regenerate the Go sections from tooling so the transitive set
 > stays accurate as dependencies drift:
-> `go-licenses report ./cmd/volunteer ./cmd/relayhub` for the server side.
+> `go-licenses report ./cmd/volunteer ./cmd/relayhub` for the server side;
+> for the desktop app, the union of
+> `GOOS={darwin,windows,linux} go list -deps -tags desktop,production .`
+> run inside `desktop/`, plus the runtime `dependencies` of
+> `desktop/frontend/package.json`.
 
 ---
 
@@ -28,8 +36,9 @@ commit each release is built against.
 
 - **Component:** `github.com/SagerNet/sing-box` (the `libbox` mobile library,
   statically linked into the OpenRung mobile app — developed in its own
-  repository; this repository generates sing-box *configuration* but does not
-  link or redistribute the engine)
+  repository — and, since the desktop GUI, the sing-box engine **binary
+  bundled into desktop release packages** and run as a supervised subprocess;
+  the pinned version lives in `.github/workflows/desktop-release.yml`)
 - **License:** GNU General Public License v3.0 or later (**GPL-3.0-or-later**),
   with an additional permitted term.
 - **Upstream:** https://github.com/SagerNet/sing-box
@@ -167,7 +176,75 @@ Statically linked into the Go server binaries:
 
 Listed so they are deliberately **excluded** from the shipped notices: test
 dependencies (`testify`, `objx`, `go-spew`, `go-difflib`, `yaml.v3`,
-`check.v1`), build tools (the `golang` build image), and all GitHub Actions.
+`check.v1`), build tools (the `golang` build image, Vite/TypeScript/vitest and
+the rest of `desktop/frontend`'s `devDependencies`), and all GitHub Actions.
+
+---
+
+## 7. Desktop app (Wails GUI)
+
+The desktop release packages bundle three layers. The in-app "Open-source
+licenses" screen renders this section (via
+`desktop/frontend/src/licenses/notices.ts`) so recipients get the notices
+offline.
+
+### 7.1 Bundled sing-box engine binary — GPL-3.0-or-later
+
+See section 1. The binary embeds, among others: gVisor (Apache-2.0), quic-go
+(MIT), wireguard-go (MIT), utls (BSD-3-Clause), `sagernet/*`. Capture the
+transitive set from the exact sing-box version pinned in
+`.github/workflows/desktop-release.yml`.
+
+### 7.2 Application binary (Go) — statically linked
+
+Union of `GOOS={darwin,windows,linux} go list -deps -tags desktop,production`
+(2026-07-11, versions per `desktop/go.mod`):
+
+**MIT**
+
+- `github.com/wailsapp/wails/v2` — Copyright (c) 2018-Present Lea Anthony
+- `github.com/wailsapp/go-webview2` — Copyright (c) 2020 John Chadwick;
+  portions Copyright (c) 2017 Serge Zaitsev
+- `github.com/wailsapp/mimetype` — Copyright (c) 2018-2020 Gabriel Vasile
+- `github.com/leaanthony/go-ansi-parser`, `…/slicer`, `…/u` — Copyright (c)
+  Lea Anthony
+- `github.com/quic-go/quic-go` — Copyright (c) 2016 the quic-go authors &
+  Google, Inc. (via `internal/punch`)
+- `github.com/rivo/uniseg` — Copyright (c) 2019 Oliver Kuederle
+- `github.com/bep/debounce` — Copyright (c) 2016 Bjørn Erik Pedersen
+- `github.com/go-ole/go-ole` — Copyright (c) 2013-2017 Yasuhiro Matsumoto
+- `github.com/samber/lo` — Copyright (c) 2022-2025 Samuel Berthe
+- `git.sr.ht/~jackmordaunt/go-toast/v2` — dual UNLICENSE / MIT
+
+**BSD-2-Clause**
+
+- `github.com/pkg/errors` — Copyright (c) 2015, Dave Cheney
+- `github.com/pkg/browser` — Copyright (c) 2014, Dave Cheney
+- `github.com/godbus/dbus/v5` — Copyright (c) 2013, Georg Reinke, Google
+
+**BSD-3-Clause**
+
+- `github.com/google/uuid` — Copyright (c) 2009, 2014 Google Inc.
+- `golang.org/x/{crypto,net,sys,text}` + Go standard library / runtime —
+  Copyright (c) The Go Authors
+
+**Apache-2.0**
+
+- `github.com/tkrajina/go-reflector`
+
+### 7.3 Embedded web frontend (Vite bundle)
+
+Runtime `dependencies` of `desktop/frontend/package.json`:
+
+- `react`, `react-dom` (+ `scheduler`) — MIT — Copyright (c) Meta Platforms,
+  Inc. and affiliates
+- `maplibre-gl` — BSD-3-Clause — Copyright (c) 2023, MapLibre contributors;
+  Copyright (c) 2020, Mapbox. Its `LICENSE.txt` additionally covers bundled
+  portions: glfx.js (MIT, Copyright (C) 2011 by Evan Wallace) and d3-color
+  (BSD-3-Clause, Copyright 2010-2016 Mike Bostock)
+- `topojson-client` — ISC — Copyright 2012-2019 Michael Bostock
+- `world-atlas` — ISC — Copyright 2013-2019 Michael Bostock; data derived from
+  Natural Earth (public domain)
 
 ---
 
