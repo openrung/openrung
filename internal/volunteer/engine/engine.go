@@ -421,11 +421,14 @@ func (e *Engine) run(ctx context.Context, done chan struct{}) {
 var errPublicIPChanged = errors.New("public address changed")
 
 // errReresolve restarts the session because auto mode re-evaluated reachability
-// and now prefers a different transport (e.g. the hub recovered, or a hub outage
-// means a directly-reachable machine should stop tunnelling).
+// and now prefers a different transport — e.g. a machine that fell back to the
+// hub (or started while the hub was down) is now confirmed directly reachable,
+// so it should stop tunnelling and serve directly.
 var errReresolve = errors.New("auto mode re-resolved to a different transport")
 
-// detectPublicIPv6 is a package var so tests can stub public-IPv6 detection.
+// detectPublicIPv6 is a package var so tests can stub public-IPv6 detection. It
+// is used for the direct-session public-address checks; auto mode never guesses
+// direct from it (see autoResolve).
 var detectPublicIPv6 = volunteer.DefaultPublicIPv6Address
 
 // autoReprobeInterval is how often auto mode re-evaluates reachability while a
@@ -433,30 +436,27 @@ var detectPublicIPv6 = volunteer.DefaultPublicIPv6Address
 // outage/recovery, a port opening). A var so tests can shorten it.
 var autoReprobeInterval = 3 * time.Minute
 
-// autoResolve decides the transport for auto mode. Crucially, a probe *error*
-// means the hub's HTTP API is unreachable — and since tunnel mode also depends
-// on the hub, tunnelling would be equally dead. So when the hub is unreachable
-// we prefer direct mode if this machine has any public IPv6 to advertise
-// (self-sufficient during a hub outage), and only tunnel as a last resort when
-// there is no public address at all. A definitive "not reachable" (hub up, us
-// unreachable) still means tunnel. Returns ("","") when ctx is cancelled.
+// autoResolve decides the transport for auto mode. Direct mode is chosen ONLY
+// when a probe positively confirms this machine is reachable from the internet
+// — never speculatively. A probe error means the hub's HTTP API is unreachable,
+// so we cannot verify reachability; guessing "direct" there would advertise a
+// possibly-firewalled address (a public IPv6 does not imply inbound reachability
+// through a router/OS firewall) and, if wrong, leave a dead relay in the
+// directory. Since tunnel mode also needs the hub, there is nothing to gain by
+// guessing: we tunnel-and-retry, and the periodic re-probe (watchForModeChange)
+// promotes to direct the instant the hub confirms reachability. Both a probe
+// error and a definitive "not reachable" therefore map to tunnel. Returns
+// ("","") when ctx is cancelled.
 func (e *Engine) autoResolve(ctx context.Context, cfg Config) (mode, publicHost string) {
 	hubHTTP := volunteer.DeriveHubHTTPBase(cfg.HubHTTPURL, cfg.HubAddr, !cfg.HubPlaintext)
 	reachable, observed, err := volunteer.DetectDirectReachable(ctx, hubHTTP, cfg.Token, "::", cfg.ListenPort, e.probeClient(cfg))
 	if ctx.Err() != nil {
 		return "", ""
 	}
-	switch {
-	case err != nil:
-		if ipv6, e2 := detectPublicIPv6(); e2 == nil {
-			return ModeDirect, ipv6
-		}
-		return ModeTunnel, ""
-	case reachable:
+	if err == nil && reachable {
 		return ModeDirect, observed
-	default:
-		return ModeTunnel, ""
 	}
+	return ModeTunnel, ""
 }
 
 // watchForModeChange runs only in auto mode: it periodically re-resolves the
@@ -522,13 +522,10 @@ func (e *Engine) runSession(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			switch {
-			case mode == ModeDirect && publicHost != "":
+			if mode == ModeDirect {
 				e.logf("directly reachable at %s — using direct mode", net.JoinHostPort(publicHost, strconv.Itoa(cfg.ListenPort)))
-			case mode == ModeDirect:
-				e.logf("relay hub unreachable — serving directly on this machine's public IPv6 instead of waiting on the hub")
-			default:
-				e.logf("not directly reachable from the internet — using tunnel mode via the relay hub")
+			} else {
+				e.logf("not directly reachable, or the relay hub is unavailable — using tunnel mode via the relay hub")
 			}
 		}
 	}

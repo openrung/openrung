@@ -76,9 +76,14 @@ IPv4-only homes volunteer too. The hub's self-signed certificate is pinned
 in the binary (see `DefaultHubCertFingerprint`), so the connection is
 authenticated without a CA.
 
-Auto mode re-checks periodically and recovers to direct if the hub becomes
-unreachable, so a hub outage does not strand a publicly reachable volunteer.
-Users who want to run fully independent of the shared hub can pick
-**Direct only** under Settings → Advanced (requires a publicly reachable
-address, e.g. public IPv6). Point `Hub address` at your own hub to use a
-different one (its own TLS trust applies; the built-in pin is dropped).
+Direct mode is only ever chosen when a probe **positively confirms** the
+machine is reachable — never guessed — so the app never advertises a
+possibly-firewalled address. Auto mode re-probes periodically, so a machine
+stuck on the hub is promoted to direct the moment it becomes reachable, and
+an already-direct relay keeps serving through a hub outage (it doesn't touch
+the hub). A machine that (re)starts *during* an outage tunnels-and-retries
+until the hub returns, then re-resolves. Users who want to run fully
+independent of the shared hub can pick **Direct only** under Settings →
+Advanced (requires a publicly reachable address, e.g. public IPv6). Point
+`Hub address` at your own hub to use a different one (its own TLS trust
+applies; the built-in pin is dropped).
