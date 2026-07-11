@@ -99,13 +99,27 @@ func TestRegenerateLabelChangesAndPersists(t *testing.T) {
 
 func TestEngineConfigDerivesModeFromHub(t *testing.T) {
 	s := newTestService(t)
+	// Out of the box a hub is configured (DefaultHubAddress), so the app runs in
+	// auto mode — probe first, direct when reachable, tunnel through the hub when
+	// not — and pins the built-in hub's certificate.
 	s.mu.Lock()
 	cfg := s.engineConfigLocked()
 	s.mu.Unlock()
-	if cfg.Mode != "direct" {
-		t.Fatalf("mode without hub = %q, want direct", cfg.Mode)
+	if cfg.Mode != "auto" {
+		t.Fatalf("default mode = %q, want auto", cfg.Mode)
+	}
+	if cfg.HubAddr != DefaultHubAddress {
+		t.Fatalf("default hub = %q, want %q", cfg.HubAddr, DefaultHubAddress)
+	}
+	if cfg.HubCertFingerprint != DefaultHubCertFingerprint {
+		t.Fatalf("default hub should carry the pinned fingerprint, got %q", cfg.HubCertFingerprint)
+	}
+	if !cfg.PunchCapable {
+		t.Fatal("punch should be offered")
 	}
 
+	// A user-supplied hub is still auto mode, but the built-in pin must NOT be
+	// applied to a different hub (its cert would never match).
 	if _, err := s.SaveSettings(Settings{MaxSessions: 8, MaxMbps: 20, ListenPort: 8443, HubAddress: "hub.example:9443"}); err != nil {
 		t.Fatalf("SaveSettings: %v", err)
 	}
@@ -113,10 +127,10 @@ func TestEngineConfigDerivesModeFromHub(t *testing.T) {
 	cfg = s.engineConfigLocked()
 	s.mu.Unlock()
 	if cfg.Mode != "auto" {
-		t.Fatalf("mode with hub = %q, want auto", cfg.Mode)
+		t.Fatalf("mode with custom hub = %q, want auto", cfg.Mode)
 	}
-	if !cfg.PunchCapable {
-		t.Fatal("punch should be offered")
+	if cfg.HubCertFingerprint != "" {
+		t.Fatalf("custom hub must not inherit the built-in pin, got %q", cfg.HubCertFingerprint)
 	}
 }
 

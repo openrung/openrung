@@ -7,7 +7,11 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +21,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -80,7 +85,14 @@ type Config struct {
 	HubAddr string
 	// HubHTTPURL overrides the hub HTTP API base URL for reachability probing.
 	HubHTTPURL string
-	// HubInsecure skips hub TLS verification (tests against self-signed hubs).
+	// HubCertFingerprint, when set, pins the hub's TLS leaf certificate to this
+	// SHA-256 (hex, colons/case ignored). Relay hubs on bare IPs self-sign, so
+	// standard CA verification cannot work; pinning the exact certificate is
+	// MITM-proof without a CA. This is the production-safe way to trust a
+	// self-signed hub — preferred over HubInsecure, which is test-only.
+	HubCertFingerprint string
+	// HubInsecure skips hub TLS verification entirely (tests against
+	// self-signed hubs). Never set from the GUI; prefer HubCertFingerprint.
 	HubInsecure bool
 	// HubPlaintext dials the hub without TLS (in-process tests only).
 	HubPlaintext bool
@@ -824,10 +836,47 @@ func hubTLSConfig(cfg Config) *tls.Config {
 	if err != nil {
 		host = cfg.HubAddr
 	}
-	return &tls.Config{
-		ServerName:         host,
-		InsecureSkipVerify: cfg.HubInsecure, //nolint:gosec // test-only, mirrors cmd/volunteer -hub-insecure
-		MinVersion:         tls.VersionTLS12,
+	tc := &tls.Config{
+		ServerName: host,
+		MinVersion: tls.VersionTLS12,
+	}
+	if pin := normalizeFingerprint(cfg.HubCertFingerprint); pin != "" {
+		// Pin the hub's exact leaf certificate. The hub self-signs on a bare IP,
+		// so CA/hostname verification cannot succeed; instead we skip the chain
+		// check and require the presented leaf to match the expected SHA-256.
+		// This is MITM-proof without a CA — a forged cert has a different key
+		// and therefore a different fingerprint.
+		tc.InsecureSkipVerify = true //nolint:gosec // not insecure: VerifyPeerCertificate pins the exact leaf below
+		tc.VerifyPeerCertificate = pinnedLeafVerifier(pin)
+		return tc
+	}
+	tc.InsecureSkipVerify = cfg.HubInsecure //nolint:gosec // test-only, mirrors cmd/volunteer -hub-insecure
+	return tc
+}
+
+// normalizeFingerprint lowercases a SHA-256 hex fingerprint and strips the
+// colon/space separators that openssl-style output uses, so "AB:CD:.." and
+// "abcd.." compare equal.
+func normalizeFingerprint(fp string) string {
+	fp = strings.ToLower(strings.TrimSpace(fp))
+	fp = strings.ReplaceAll(fp, ":", "")
+	fp = strings.ReplaceAll(fp, " ", "")
+	return fp
+}
+
+// pinnedLeafVerifier returns a tls VerifyPeerCertificate that accepts the
+// connection only when the leaf certificate's SHA-256 equals want.
+func pinnedLeafVerifier(want string) func([][]byte, [][]*x509.Certificate) error {
+	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+		if len(rawCerts) == 0 {
+			return errors.New("hub presented no TLS certificate")
+		}
+		sum := sha256.Sum256(rawCerts[0])
+		got := hex.EncodeToString(sum[:])
+		if subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
+			return fmt.Errorf("hub certificate fingerprint mismatch (expected %s, got %s)", want, got)
+		}
+		return nil
 	}
 }
 

@@ -28,10 +28,22 @@ const Version = "desktop-volunteer/0.1.0"
 // deliberately not used here.
 const DefaultBrokerURL = "https://broker.openrung.org/"
 
-// DefaultHubAddress is the relay hub for NAT'd volunteers. Empty until a
-// production hub exists; flipping this single constant enables auto mode
-// (probe → direct or tunnel) for every install.
-const DefaultHubAddress = ""
+// DefaultHubAddress is the relay hub for NAT'd volunteers. A non-empty value
+// puts every install in auto mode (probe → direct or tunnel), so IPv4/CGNAT
+// homes — which cannot expose an inbound port — reach the network through the
+// hub instead of being stuck in public-IPv6-only direct mode.
+//
+// This is the production relay hub (ap-northeast-2). It is baked in for now so
+// the app works out of the box; a later change will serve it (and additional
+// hubs) over the broker's signed relay-list channel so the address can rotate
+// without a new release.
+const DefaultHubAddress = "43.201.124.63:9443"
+
+// DefaultHubCertFingerprint pins DefaultHubAddress's self-signed TLS leaf
+// certificate (SHA-256). Relay hubs run on bare IPs and cannot obtain a CA
+// certificate, so the app pins the exact certificate instead of trusting a CA
+// (MITM-proof without a CA; see engine.hubTLSConfig). Empty disables pinning.
+const DefaultHubCertFingerprint = "70c3a26b9ac7315d1975f417eb9eabbecc98ec0e2d5baadb6c224e87fd99c8b5"
 
 const (
 	defaultMaxSessions = 8
@@ -174,17 +186,25 @@ func (s *Service) engineConfigLocked() engine.Config {
 	if settings.HubAddress != "" {
 		mode = engine.ModeAuto
 	}
+	// The pinned fingerprint is for the built-in hub only. If the user points
+	// the app at a different hub in Settings → Advanced, the pin would never
+	// match, so drop it and fall back to that hub's own TLS trust.
+	fingerprint := ""
+	if settings.HubAddress == DefaultHubAddress {
+		fingerprint = DefaultHubCertFingerprint
+	}
 	return engine.Config{
-		BrokerURL:    settings.BrokerURL,
-		Label:        settings.Label,
-		XrayPath:     s.XrayPath,
-		ListenPort:   settings.ListenPort,
-		Mode:         mode,
-		HubAddr:      settings.HubAddress,
-		MaxSessions:  settings.MaxSessions,
-		MaxMbps:      settings.MaxMbps,
-		Version:      Version,
-		PunchCapable: true,
+		BrokerURL:          settings.BrokerURL,
+		Label:              settings.Label,
+		XrayPath:           s.XrayPath,
+		ListenPort:         settings.ListenPort,
+		Mode:               mode,
+		HubAddr:            settings.HubAddress,
+		HubCertFingerprint: fingerprint,
+		MaxSessions:        settings.MaxSessions,
+		MaxMbps:            settings.MaxMbps,
+		Version:            Version,
+		PunchCapable:       true,
 	}
 }
 
