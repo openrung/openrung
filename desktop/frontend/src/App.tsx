@@ -8,12 +8,16 @@ import { ViewModeToggle, type ViewMode } from './components/ViewModeToggle';
 import { HomeIcon, SlidersIcon, InfoIcon } from './components/NavIcons';
 import { SettingsScreen } from './screens/SettingsScreen';
 import { AboutScreen } from './screens/AboutScreen';
+import { LicensesScreen } from './screens/LicensesScreen';
+import { LicenseTextScreen } from './screens/LicenseTextScreen';
 import { Logo } from './components/Logo';
 import { useVpnState } from './state/useVpnState';
 import { refreshDirectory } from './state/store';
 import { isMock } from './native/OpenRungVpn';
 
 type Tab = 'home' | 'settings' | 'about';
+// Sub-screens pushed over the About tab (mirrors the RN app's subRoute stack).
+type SubRoute = 'licenses' | 'licenseText' | null;
 
 const NAV = [
   { key: 'home' as const, label: 'Home', Icon: HomeIcon },
@@ -24,8 +28,14 @@ const NAV = [
 export default function App() {
   const { state, prepareAndConnect } = useVpnState();
   const [tab, setTab] = useState<Tab>('home');
+  const [subRoute, setSubRoute] = useState<SubRoute>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('map');
   const [consoleOpen, setConsoleOpen] = useState(false);
+
+  const onSelectTab = (next: Tab) => {
+    setSubRoute(null);
+    setTab(next);
+  };
 
   // Populate the exit-node map once on mount (Go owns failover/429; the throttle
   // there caps broker hits regardless of how often this is called).
@@ -53,7 +63,7 @@ export default function App() {
           <button
             key={key}
             className={`nav-tab ${tab === key ? 'active' : ''}`}
-            onClick={() => setTab(key)}
+            onClick={() => onSelectTab(key)}
           >
             <Icon size={22} />
             <span className="nav-tab-label">{label}</span>
@@ -115,7 +125,17 @@ export default function App() {
           <SettingsScreen consoleOpen={consoleOpen} onToggleConsole={() => setConsoleOpen(o => !o)} />
         )}
 
-        {tab === 'about' && <AboutScreen />}
+        {tab === 'about' &&
+          (subRoute === 'licenses' ? (
+            <LicensesScreen
+              onBack={() => setSubRoute(null)}
+              onOpenFullText={() => setSubRoute('licenseText')}
+            />
+          ) : subRoute === 'licenseText' ? (
+            <LicenseTextScreen onBack={() => setSubRoute('licenses')} />
+          ) : (
+            <AboutScreen onOpenLicenses={() => setSubRoute('licenses')} />
+          ))}
 
         {/* Console dock floats over any tab; toggled from Settings → Debug. */}
         {consoleOpen && (

@@ -124,7 +124,9 @@ func (m *Manager) SetTrafficCounters(counters TrafficCounters) {
 	m.mu.Unlock()
 }
 
-// MarkConnected records the relay the session connected to and the connect time.
+// MarkConnected records the current relay and, on the first promotion only,
+// the session's connect time. Mid-session relay failover must not reset the
+// connected-duration clock.
 func (m *Manager) MarkConnected(relayID string) {
 	if m == nil {
 		return
@@ -135,7 +137,9 @@ func (m *Manager) MarkConnected(relayID string) {
 		return
 	}
 	m.session.RelayID = relayID
-	m.session.ConnectedAt = m.now()
+	if m.session.ConnectedAt.IsZero() {
+		m.session.ConnectedAt = m.now()
+	}
 }
 
 // Record enqueues a telemetry event for the active session. Device attributes

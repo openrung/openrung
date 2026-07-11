@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -15,6 +16,13 @@ import (
 	"openrung/internal/relay"
 )
 
+// telemetryHTTPTimeout bounds every telemetry request. Without it the manager
+// falls back to http.DefaultClient (no timeout), so a broker that accepts the
+// connection but stalls the response would hang the synchronous Flush on the
+// connect path — and, since Flush runs before supervision starts, disable
+// mid-session recovery. Matches the mobile client's 15s request deadline.
+const telemetryHTTPTimeout = 15 * time.Second
+
 // newManager builds a best-effort telemetry manager (parity with the mobile
 // apps). A nil result means telemetry is unavailable; every call site guards
 // for nil so connecting never fails on telemetry.
@@ -22,7 +30,7 @@ func newManager(brokerURL string) *clienttelemetry.Manager {
 	if brokerURL == "" {
 		brokerURL = config.TelemetryBrokerURL
 	}
-	mgr, err := clienttelemetry.New(brokerURL, client.AppVersion(), nil)
+	mgr, err := clienttelemetry.New(brokerURL, client.AppVersion(), &http.Client{Timeout: telemetryHTTPTimeout})
 	if err != nil {
 		return nil
 	}
@@ -55,41 +63,73 @@ func flushOnShutdown(mgr *clienttelemetry.Manager) {
 	_ = mgr.Flush(ctx)
 }
 
-// selectRelay picks a relay: an exact relay id wins, else the first usable relay
-// in the requested country, else the broker's first usable candidate. Freshness
-// is judged against broker server time, like the CLI and mobile clients.
-func selectRelay(resp relay.ListResponse, targetCountry, targetRelayID string) (relay.Descriptor, error) {
+// usableRelays filters the broker response to usable candidates, preserving
+// broker order — the ordering IS the broker's ranking signal, so clients filter
+// without re-sorting (docs/api.md). Freshness is judged against broker server
+// time, like the CLI and mobile clients.
+func usableRelays(resp relay.ListResponse) []relay.Descriptor {
 	now := resp.ServerTime
 	if now.IsZero() {
 		now = time.Now()
 	}
-
-	// Distinguish "broker returned nothing" up front from the narrower
-	// no-match cases below, so telemetry can tell them apart.
-	if len(resp.Relays) == 0 {
-		return relay.Descriptor{}, client.ErrNoRelaysAvailable
+	usable := make([]relay.Descriptor, 0, len(resp.Relays))
+	for _, candidate := range resp.Relays {
+		if client.IsUsableRelay(candidate, now) {
+			usable = append(usable, candidate)
+		}
 	}
+	return usable
+}
 
+// filterCandidates narrows the usable list to the connect target, mirroring the
+// mobile targeting semantics: an exact relay id is pinned (never silently falls
+// back to a different relay), a country keeps every usable relay in it (geo-less
+// relays are excluded so a targeted connect never lands elsewhere), no target
+// keeps the whole list. The returned stage labels a failure for telemetry.
+func filterCandidates(usable []relay.Descriptor, targetCountry, targetRelayID string) ([]relay.Descriptor, string, error) {
 	if id := strings.TrimSpace(targetRelayID); id != "" {
-		for _, candidate := range resp.Relays {
-			if candidate.ID == id && client.IsUsableRelay(candidate, now) {
-				return candidate, nil
+		matched := make([]relay.Descriptor, 0, 1)
+		for _, candidate := range usable {
+			if candidate.ID == id {
+				matched = append(matched, candidate)
 			}
 		}
-		return relay.Descriptor{}, fmt.Errorf("relay %q: %w", id, client.ErrRelayNotInList)
+		if len(matched) == 0 {
+			return nil, "relay_id_filter", fmt.Errorf("relay %q: %w", id, client.ErrRelayNotInList)
+		}
+		return matched, "", nil
 	}
 
-	if cc := strings.ToUpper(strings.TrimSpace(targetCountry)); cc != "" {
-		for _, candidate := range resp.Relays {
-			if strings.ToUpper(strings.TrimSpace(candidate.CountryCode)) == cc &&
-				client.IsUsableRelay(candidate, now) {
-				return candidate, nil
+	if cc := strings.TrimSpace(targetCountry); cc != "" {
+		matched := make([]relay.Descriptor, 0, len(usable))
+		for _, candidate := range usable {
+			if strings.EqualFold(strings.TrimSpace(candidate.CountryCode), cc) {
+				matched = append(matched, candidate)
 			}
 		}
-		return relay.Descriptor{}, fmt.Errorf("country %s: %w", cc, client.ErrNoRelayInCountry)
+		if len(matched) == 0 {
+			return nil, "relay_geo_filter", fmt.Errorf("country %s: %w", strings.ToUpper(cc), client.ErrNoRelayInCountry)
+		}
+		return matched, "", nil
 	}
 
-	return client.SelectRelayForFamily(resp, client.RelayFamilyAuto)
+	return usable, "", nil
+}
+
+// demoteRelay moves the given relay to the end of the candidate list (order
+// otherwise preserved): a relay that just failed is retried last, never
+// excluded — it may be the only relay there is.
+func demoteRelay(cands []relay.Descriptor, id string) []relay.Descriptor {
+	reordered := make([]relay.Descriptor, 0, len(cands))
+	var demoted []relay.Descriptor
+	for _, cand := range cands {
+		if cand.ID == id {
+			demoted = append(demoted, cand)
+			continue
+		}
+		reordered = append(reordered, cand)
+	}
+	return append(reordered, demoted...)
 }
 
 // freeLoopbackPort returns an unused loopback TCP port for the mixed inbound.

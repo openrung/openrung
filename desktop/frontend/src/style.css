@@ -815,3 +815,61 @@ button {
   font-size: 11px;
   line-height: 1.5;
 }
+
+/* licenses screens (About → Open-source licenses) */
+.or-screen-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.or-screen-header .or-screen-title {
+  margin-bottom: 0;
+}
+
+.or-back-btn {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  border: 1px solid var(--or-glass-border, rgba(41, 79, 53, 0.9));
+  background: var(--or-glass, rgba(7, 17, 11, 0.86));
+  color: var(--or-terminal-green, #65f58a);
+  font-size: 16px;
+  line-height: 1;
+}
+
+.or-back-btn:hover {
+  background: rgba(101, 245, 138, 0.06);
+}
+
+.or-licenses-intro {
+  color: var(--or-body-text, #d8ffe0);
+  font-size: 13px;
+  line-height: 1.5;
+  user-select: text;
+}
+
+/* pinned-header variant: the header stays put, only the license text scrolls */
+.or-screen.is-pinned-header {
+  overflow-y: hidden;
+}
+
+.or-license-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.or-license-text {
+  color: var(--or-body-text, #d8ffe0);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  user-select: text;
+}

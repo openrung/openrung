@@ -66,7 +66,7 @@
       $('activeRelays').innerHTML=ranks(data.active_by_relay);$('activeCountries').innerHTML=ranks(data.active_by_country);$('activeCities').innerHTML=ranks(data.active_by_city);$('activeIsps').innerHTML=ranks(data.active_by_isp);$('activeOs').innerHTML=ranks(data.active_by_os);
       $('relays').innerHTML=data.top_relays?.length?data.top_relays.map(x=>`<tr><td class="truncate" title="${esc(x.relay_id)}">${esc(x.label||x.relay_id)}</td><td>${number(x.successes)}</td><td>${number(x.failures)}</td><td>${esc(x.top_failure_reason||'—')}</td></tr>`).join(''):empty(4);
       $('speeds').innerHTML=data.speed_tests?.length?data.speed_tests.map(x=>`<tr><td class="truncate" title="${esc(x.relay_id)}">${esc(x.label||x.relay_id)}</td><td>${number(x.tests)}</td><td>${x.average_mbps.toFixed(2)}</td><td>${x.average_ttfb_ms.toFixed(0)} ms</td></tr>`).join(''):empty(4);
-      $('meta').textContent=`Updated ${ago(data.generated_at)} · automatic refresh every 30 seconds`;
+      $('meta').textContent=`Updated ${ago(data.generated_at)} · refresh manually for the latest data`;
     }
     function renderSessions(data){
       const rows=data.sessions||[];
@@ -86,7 +86,7 @@
     async function flipPage(delta){if(loading)return;sessionOffset=Math.max(0,sessionOffset+delta*PAGE_SIZE);try{await loadSessions()}catch(error){status('Could not load sessions: '+error.message,true)}}
     $('refresh').addEventListener('click',()=>load(true));$('window').addEventListener('change',()=>load(true));
     $('prevPage').addEventListener('click',()=>flipPage(-1));$('nextPage').addEventListener('click',()=>flipPage(1));
-    load();setInterval(()=>load(),30000);
+    load();
   </script>
 </body>
 </html>

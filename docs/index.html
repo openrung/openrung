@@ -1547,6 +1547,10 @@
               <span><svg aria-hidden="true"><use href="#check"/></svg><span data-i18n="downloadSigned">Official builds released by the OpenRung Foundation</span></span>
             </p>
             <div class="dl-early">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
+              <span><span data-i18n="dlTelegramNote">If this site is blocked where you are, our Telegram bot always has working download links:</span> <a href="https://t.me/openrung_bot" rel="noopener">@openrung_bot</a></span>
+            </div>
+            <div class="dl-early">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l2.5 2.5"/></svg>
               <span data-i18n="downloadEarly">Early-access builds: they improve every week, and short interruptions are possible while the network grows. Installing the APK may require allowing installs from your browser in Android settings. Desktop builds are not yet code-signed: on macOS, right-click the app and choose Open the first time; Windows may show a SmartScreen warning.</span>
             </div>
@@ -1575,8 +1579,8 @@
           <div class="split">
             <div class="promo" data-reveal>
               <h3 data-i18n="volunteerTitle">Become a volunteer</h3>
-              <p data-i18n="volunteerBody">If you're on the open internet, you can run a volunteer relay and give others a path to it. Volunteers run a desktop command-line app. Note: in the current version, volunteers act as direct exit nodes, which carries real legal and privacy risk — please review what's involved first.</p>
-              <a class="button ghost" href="mailto:admin@openrung.org?subject=Volunteer%20with%20OpenRung" data-i18n="volunteerButton">Contact us to volunteer</a>
+              <p data-i18n="volunteerBody">If you're on the open internet, you can run a volunteer relay and give others a path to it. Relays run as a Docker container on any server with a public IP, and the setup guide walks you through it in a few minutes. Note: in the current version, volunteers act as direct exit nodes, which carries real legal and privacy risk — please review what's involved first.</p>
+              <a class="button ghost" href="https://github.com/openrung/openrung/blob/main/deploy/volunteer/README.md" rel="noopener" data-i18n="volunteerButton">Set up a volunteer relay</a>
             </div>
             <div class="promo" id="donate" data-reveal style="--d:.08s">
               <h3 data-i18n="donateTitle">Donate</h3>
@@ -1684,6 +1688,8 @@
             <ul>
               <li><a href="#volunteer" data-i18n="navVolunteer">Volunteer</a></li>
               <li><a href="#donate" data-i18n="donateTitle">Donate</a></li>
+              <li><a href="https://t.me/openrung_official" id="tg-channel-link" rel="noopener" data-i18n="footTelegram">Telegram channel</a></li>
+              <li><a href="https://t.me/openrung_bot" rel="noopener" data-i18n="footTelegramBot">Download bot (Telegram)</a></li>
               <li><a href="mailto:admin@openrung.org" data-i18n="footContact">Contact</a></li>
             </ul>
           </div>
@@ -1726,6 +1732,10 @@
         en: {
           lang: "en",
           dir: "ltr",
+          telegramChannelUrl: "https://t.me/openrung_official",
+          footTelegram: "Telegram channel",
+          footTelegramBot: "Download bot (Telegram)",
+          dlTelegramNote: "If this site is blocked where you are, our Telegram bot always has working download links:",
           pageTitle: "OpenRung — Reach the open internet",
           pageDescription: "OpenRung helps people facing network restrictions reach public websites and apps through a worldwide volunteer relay network. Always free, privacy-first, open source, and run by a nonprofit foundation.",
           skip: "Skip to main content",
@@ -1801,8 +1811,8 @@
           supportTitle: "Help the network grow",
           supportLead: "OpenRung relies on volunteers for relay capacity and donors to keep it running.",
           volunteerTitle: "Become a volunteer",
-          volunteerBody: "If you're on the open internet, you can run a volunteer relay and give others a path to it. Volunteers run a desktop command-line app. Note: in the current version, volunteers act as direct exit nodes, which carries real legal and privacy risk — please review what's involved first.",
-          volunteerButton: "Contact us to volunteer",
+          volunteerBody: "If you're on the open internet, you can run a volunteer relay and give others a path to it. Relays run as a Docker container on any server with a public IP, and the setup guide walks you through it in a few minutes. Note: in the current version, volunteers act as direct exit nodes, which carries real legal and privacy risk — please review what's involved first.",
+          volunteerButton: "Set up a volunteer relay",
           donateTitle: "Donate",
           donateBody: "Your support keeps OpenRung free and funds infrastructure, security, volunteer tools, and user support. Online donations are coming soon.",
           donateButton: "Contact us to donate",
@@ -1838,6 +1848,10 @@
         zh: {
           lang: "zh-CN",
           dir: "ltr",
+          telegramChannelUrl: "https://t.me/openrung_zh",
+          footTelegram: "Telegram 频道",
+          footTelegramBot: "Telegram 下载机器人",
+          dlTelegramNote: "如果本站在您所在的地区被封锁，我们的 Telegram 机器人始终提供有效的下载链接：",
           pageTitle: "OpenRung — 自由访问开放互联网",
           pageDescription: "OpenRung 通过遍布世界各地的志愿者中继，帮助身处网络限制中的人访问公共网站与应用。永久免费、注重隐私、完全开源、由非营利基金会运营。",
           skip: "跳到主要内容",
@@ -1913,8 +1927,8 @@
           supportTitle: "帮助网络成长",
           supportLead: "OpenRung 依靠志愿者提供中继、依靠捐赠者维持运转。",
           volunteerTitle: "成为志愿者",
-          volunteerBody: "如果你身处自由的网络环境，可以运行一个志愿者中继，为他人提供通往开放互联网的通道。志愿者通过桌面命令行程序运行。请注意：在当前阶段，志愿者作为直接出口节点，存在一定的法律与隐私风险，请先了解相关须知。",
-          volunteerButton: "联系我们参与志愿",
+          volunteerBody: "如果你身处自由的网络环境，可以运行一个志愿者中继，为他人提供通往开放互联网的通道。中继以 Docker 容器的形式运行在任何拥有公网 IP 的服务器上，按照部署指南几分钟即可完成。请注意：在当前阶段，志愿者作为直接出口节点，存在一定的法律与隐私风险，请先了解相关须知。",
+          volunteerButton: "部署志愿者中继",
           donateTitle: "捐赠支持",
           donateBody: "你的支持帮助 OpenRung 保持免费，并用于基础设施、安全、志愿者工具与用户支持。在线捐赠通道即将开放。",
           donateButton: "联系我们捐赠",
@@ -1949,6 +1963,10 @@
         },
         fa: {
           lang: "fa",
+          telegramChannelUrl: "https://t.me/openrung_fa",
+          footTelegram: "کانال تلگرام",
+          footTelegramBot: "ربات دانلود در تلگرام",
+          dlTelegramNote: "اگر این سایت در منطقهٔ شما مسدود است، ربات تلگرام ما همیشه لینک دانلود سالم دارد:",
           dir: "rtl",
           pageTitle: "OpenRung — دسترسی به اینترنت آزاد",
           pageDescription: "OpenRung به افرادی که با محدودیت‌های شبکه روبه‌رو هستند کمک می‌کند تا از طریق شبکهٔ جهانی رله‌های داوطلبانه به وب‌سایت‌ها و برنامه‌های عمومی دسترسی پیدا کنند. همیشه رایگان، با حفظ حریم خصوصی، متن‌باز و زیر نظر یک بنیاد غیرانتفاعی.",
@@ -2025,8 +2043,8 @@
           supportTitle: "به رشد شبکه کمک کنید",
           supportLead: "OpenRung برای ظرفیت رله به داوطلبان و برای ادامهٔ فعالیت به حامیان مالی متکی است.",
           volunteerTitle: "داوطلب شوید",
-          volunteerBody: "اگر به اینترنت آزاد دسترسی دارید، می‌توانید یک رلهٔ داوطلب اجرا کنید و راهی به آن را برای دیگران فراهم کنید. داوطلبان از یک برنامهٔ خط فرمان دسکتاپ استفاده می‌کنند. توجه: در نسخهٔ کنونی، داوطلبان به‌عنوان گرهٔ خروجی مستقیم عمل می‌کنند که خطرهای حقوقی و حریم خصوصی واقعی به همراه دارد — لطفاً ابتدا جزئیات را مطالعه کنید.",
-          volunteerButton: "برای داوطلب‌شدن تماس بگیرید",
+          volunteerBody: "اگر به اینترنت آزاد دسترسی دارید، می‌توانید یک رلهٔ داوطلب اجرا کنید و راهی به آن را برای دیگران فراهم کنید. رله به‌صورت یک کانتینر Docker روی هر سروری با IP عمومی اجرا می‌شود و راهنمای راه‌اندازی، مراحل را در چند دقیقه به شما نشان می‌دهد. توجه: در نسخهٔ کنونی، داوطلبان به‌عنوان گرهٔ خروجی مستقیم عمل می‌کنند که خطرهای حقوقی و حریم خصوصی واقعی به همراه دارد — لطفاً ابتدا جزئیات را مطالعه کنید.",
+          volunteerButton: "راه‌اندازی رلهٔ داوطلب",
           donateTitle: "حمایت مالی",
           donateBody: "حمایت شما کمک می‌کند OpenRung رایگان بماند و هزینهٔ زیرساخت، امنیت، ابزارهای داوطلبان و پشتیبانی کاربران را تأمین می‌کند. پرداخت آنلاین به‌زودی فعال می‌شود.",
           donateButton: "برای حمایت تماس بگیرید",
@@ -2061,6 +2079,10 @@
         },
         ru: {
           lang: "ru",
+          telegramChannelUrl: "https://t.me/openrung_ru",
+          footTelegram: "Канал в Telegram",
+          footTelegramBot: "Бот для скачивания в Telegram",
+          dlTelegramNote: "Если сайт заблокирован там, где вы находитесь, в нашем Telegram-боте всегда рабочие ссылки:",
           dir: "ltr",
           pageTitle: "OpenRung — доступ к открытому интернету",
           pageDescription: "OpenRung помогает людям с ограничениями доступа открывать публичные сайты и приложения через всемирную волонтёрскую сеть ретрансляторов. Всегда бесплатно, с заботой о приватности, с открытым кодом, под управлением некоммерческого фонда.",
@@ -2137,8 +2159,8 @@
           supportTitle: "Помогите сети расти",
           supportLead: "OpenRung полагается на волонтёров для пропускной способности и на доноров, чтобы продолжать работу.",
           volunteerTitle: "Стать волонтёром",
-          volunteerBody: "Если у вас есть свободный доступ в интернет, вы можете запустить волонтёрский ретранслятор и открыть путь к нему для других. Волонтёры используют десктопное приложение командной строки. Внимание: в текущей версии волонтёры выступают прямыми выходными узлами, что несёт реальные юридические риски и риски для приватности — сначала ознакомьтесь с деталями.",
-          volunteerButton: "Связаться, чтобы стать волонтёром",
+          volunteerBody: "Если у вас есть свободный доступ в интернет, вы можете запустить волонтёрский ретранслятор и открыть путь к нему для других. Ретранслятор работает как Docker-контейнер на любом сервере с публичным IP — по инструкции установка занимает несколько минут. Внимание: в текущей версии волонтёры выступают прямыми выходными узлами, что несёт реальные юридические риски и риски для приватности — сначала ознакомьтесь с деталями.",
+          volunteerButton: "Запустить волонтёрский ретранслятор",
           donateTitle: "Поддержать",
           donateBody: "Ваша поддержка помогает OpenRung оставаться бесплатным и финансирует инфраструктуру, безопасность, инструменты для волонтёров и поддержку пользователей. Онлайн-пожертвования скоро появятся.",
           donateButton: "Связаться, чтобы поддержать",
@@ -2193,6 +2215,10 @@
           const key = el.dataset.i18n;
           if (copy[key] !== undefined) el.textContent = copy[key];
         });
+
+        // The Telegram channel is per-language; swap the link target too.
+        const tgChannel = document.getElementById("tg-channel-link");
+        if (tgChannel && copy.telegramChannelUrl) tgChannel.href = copy.telegramChannelUrl;
 
         langButtons.forEach((btn) => {
           btn.setAttribute("aria-pressed", String(btn.dataset.lang === active));

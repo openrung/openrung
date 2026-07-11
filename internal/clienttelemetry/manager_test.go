@@ -161,6 +161,29 @@ func TestHeartbeatMeasurementsAndDrain(t *testing.T) {
 	}
 }
 
+func TestMarkConnectedSwitchesRelayWithoutResettingDuration(t *testing.T) {
+	clock := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	m := testManager(&captureTransport{}, func() time.Time { return clock })
+	if _, err := m.BeginSession(); err != nil {
+		t.Fatalf("begin session: %v", err)
+	}
+	clock = clock.Add(10 * time.Second)
+	m.MarkConnected("relay-a")
+	clock = clock.Add(20 * time.Second)
+	m.MarkConnected("relay-b")
+
+	m.mu.Lock()
+	session := *m.session
+	m.mu.Unlock()
+	if session.RelayID != "relay-b" {
+		t.Fatalf("relay id = %q, want relay-b", session.RelayID)
+	}
+	wantConnectedAt := time.Date(2026, 7, 11, 12, 0, 10, 0, time.UTC)
+	if !session.ConnectedAt.Equal(wantConnectedAt) {
+		t.Fatalf("connected at = %s, want %s", session.ConnectedAt, wantConnectedAt)
+	}
+}
+
 func TestTrafficCountersAttachToHeartbeatAndConnectionEnded(t *testing.T) {
 	clock := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)
 	now := func() time.Time { return clock }

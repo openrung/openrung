@@ -219,7 +219,7 @@ func (s *Store) recordRelayTelemetryLocked(record TelemetryRecord, now time.Time
 			TerminalAt:        terminalAt,
 			LastMetricEventAt: observedAt,
 		}
-	case "connection_succeeded":
+	case "connection_succeeded", "relay_failover":
 		if event.RelayID == "" {
 			return
 		}
