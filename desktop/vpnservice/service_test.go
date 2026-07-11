@@ -31,43 +31,93 @@ func listOf(relays ...relay.Descriptor) relay.ListResponse {
 	return relay.ListResponse{Count: len(relays), ServerTime: time.Now(), Relays: relays}
 }
 
-func TestSelectRelayByID(t *testing.T) {
-	resp := listOf(usableRelay("a", "JP", "Tokyo", "Japan"), usableRelay("b", "SG", "", "Singapore"))
-	got, err := selectRelay(resp, "", "b")
-	if err != nil || got.ID != "b" {
-		t.Fatalf("select by id: got %q err %v", got.ID, err)
+func candidateIDs(cands []relay.Descriptor) []string {
+	ids := make([]string, 0, len(cands))
+	for _, cand := range cands {
+		ids = append(ids, cand.ID)
+	}
+	return ids
+}
+
+func TestFilterCandidatesPinnedID(t *testing.T) {
+	usable := []relay.Descriptor{usableRelay("a", "JP", "Tokyo", "Japan"), usableRelay("b", "SG", "", "Singapore")}
+	got, stage, err := filterCandidates(usable, "JP", "b") // id wins over country
+	if err != nil || stage != "" {
+		t.Fatalf("pinned id: stage %q err %v", stage, err)
+	}
+	// Pinned: exactly the target, never a fallback relay.
+	if len(got) != 1 || got[0].ID != "b" {
+		t.Fatalf("pinned id candidates = %v", candidateIDs(got))
 	}
 }
 
-func TestSelectRelayByCountryPrecededByID(t *testing.T) {
-	resp := listOf(usableRelay("a", "JP", "Tokyo", "Japan"), usableRelay("b", "SG", "", "Singapore"))
-	// relay id wins over country when both are given.
-	got, err := selectRelay(resp, "JP", "b")
-	if err != nil || got.ID != "b" {
-		t.Fatalf("id should take precedence: got %q err %v", got.ID, err)
+func TestFilterCandidatesPinnedIDAbsent(t *testing.T) {
+	usable := []relay.Descriptor{usableRelay("a", "JP", "Tokyo", "Japan")}
+	_, stage, err := filterCandidates(usable, "", "zz")
+	if err == nil || stage != "relay_id_filter" {
+		t.Fatalf("absent pinned id: stage %q err %v", stage, err)
 	}
 }
 
-func TestSelectRelayByCountry(t *testing.T) {
-	resp := listOf(usableRelay("a", "JP", "Tokyo", "Japan"), usableRelay("b", "SG", "", "Singapore"))
-	got, err := selectRelay(resp, "sg", "") // case-insensitive
-	if err != nil || got.ID != "b" {
-		t.Fatalf("select by country: got %q err %v", got.ID, err)
+func TestFilterCandidatesCountryKeepsBrokerOrder(t *testing.T) {
+	usable := []relay.Descriptor{
+		usableRelay("a", "SG", "", "Singapore"),
+		usableRelay("b", "JP", "Tokyo", "Japan"),
+		usableRelay("c", "sg", "", "Singapore"), // case-insensitive match
+		usableRelay("d", "", "", ""),            // geo-less: excluded from a targeted connect
+	}
+	got, stage, err := filterCandidates(usable, "sg", "")
+	if err != nil || stage != "" {
+		t.Fatalf("country filter: stage %q err %v", stage, err)
+	}
+	if ids := candidateIDs(got); len(ids) != 2 || ids[0] != "a" || ids[1] != "c" {
+		t.Fatalf("country candidates = %v", ids)
 	}
 }
 
-func TestSelectRelayAutoFallback(t *testing.T) {
-	resp := listOf(usableRelay("a", "JP", "Tokyo", "Japan"))
-	got, err := selectRelay(resp, "", "")
-	if err != nil || got.ID != "a" {
-		t.Fatalf("auto select: got %q err %v", got.ID, err)
+func TestFilterCandidatesCountryAbsent(t *testing.T) {
+	usable := []relay.Descriptor{usableRelay("a", "JP", "Tokyo", "Japan")}
+	_, stage, err := filterCandidates(usable, "US", "")
+	if err == nil || stage != "relay_geo_filter" {
+		t.Fatalf("absent country: stage %q err %v", stage, err)
 	}
 }
 
-func TestSelectRelayNoMatch(t *testing.T) {
-	resp := listOf(usableRelay("a", "JP", "Tokyo", "Japan"))
-	if _, err := selectRelay(resp, "US", ""); err == nil {
-		t.Fatal("expected no-match error for absent country")
+func TestFilterCandidatesAutoKeepsWholeList(t *testing.T) {
+	usable := []relay.Descriptor{usableRelay("a", "JP", "Tokyo", "Japan"), usableRelay("b", "SG", "", "Singapore")}
+	got, stage, err := filterCandidates(usable, "", "")
+	if err != nil || stage != "" {
+		t.Fatalf("auto: stage %q err %v", stage, err)
+	}
+	if ids := candidateIDs(got); len(ids) != 2 || ids[0] != "a" || ids[1] != "b" {
+		t.Fatalf("auto candidates = %v", ids)
+	}
+}
+
+func TestUsableRelaysFiltersWithoutReordering(t *testing.T) {
+	expired := usableRelay("x", "JP", "", "Japan")
+	expired.ExpiresAt = time.Now().Add(-time.Minute)
+	resp := listOf(usableRelay("a", "JP", "Tokyo", "Japan"), expired, usableRelay("b", "SG", "", "Singapore"))
+	got := usableRelays(resp)
+	if ids := candidateIDs(got); len(ids) != 2 || ids[0] != "a" || ids[1] != "b" {
+		t.Fatalf("usable = %v", ids)
+	}
+}
+
+func TestDemoteRelayMovesFailedToEnd(t *testing.T) {
+	cands := []relay.Descriptor{
+		usableRelay("a", "JP", "", "Japan"),
+		usableRelay("b", "SG", "", "Singapore"),
+		usableRelay("c", "DE", "", "Germany"),
+	}
+	got := demoteRelay(cands, "a")
+	if ids := candidateIDs(got); ids[0] != "b" || ids[1] != "c" || ids[2] != "a" {
+		t.Fatalf("demoted order = %v", ids)
+	}
+	// Demoting an id that is not present is a no-op.
+	same := demoteRelay(cands, "zz")
+	if ids := candidateIDs(same); ids[0] != "a" || ids[1] != "b" || ids[2] != "c" {
+		t.Fatalf("no-op demote order = %v", ids)
 	}
 }
 
@@ -219,7 +269,7 @@ func TestApplySystemProxyRestoresSnapshotWhenSetFails(t *testing.T) {
 	s.proxy = proxy
 	conn := &connection{}
 
-	s.applySystemProxy(conn, 7890)
+	s.applyProxy(conn, 7890)
 
 	if conn.proxySet {
 		t.Fatal("connection should not be marked proxySet when Set fails")

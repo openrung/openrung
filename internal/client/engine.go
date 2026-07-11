@@ -14,6 +14,11 @@ type SingBoxRunner struct {
 	Path   string
 	Stdout io.Writer
 	Stderr io.Writer
+	// KillGrace bounds the wait between the interrupt sent on context cancel
+	// and the hard kill. Zero keeps the 5s default. The desktop connect ladder
+	// shortens it: os.Interrupt is unsupported on Windows, so without a short
+	// grace every failed candidate's teardown would cost the full default.
+	KillGrace time.Duration
 }
 
 func (r SingBoxRunner) Run(ctx context.Context, configPath string) error {
@@ -57,11 +62,15 @@ func (r SingBoxRunner) Run(ctx context.Context, configPath string) error {
 		}
 		return errors.New("sing-box exited")
 	case <-ctx.Done():
+		grace := r.KillGrace
+		if grace <= 0 {
+			grace = 5 * time.Second
+		}
 		_ = cmd.Process.Signal(os.Interrupt)
 		select {
 		case <-waitCh:
 			return nil
-		case <-time.After(5 * time.Second):
+		case <-time.After(grace):
 			_ = cmd.Process.Kill()
 			<-waitCh
 			return nil
