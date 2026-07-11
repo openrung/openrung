@@ -67,15 +67,18 @@ func parityTelemetryRecords(now time.Time) []TelemetryRecord {
 		record(78, 78, "connection_failed", "client-ios", "session-ios", "", "198.51.100.20",
 			map[string]string{"failure_stage": "tcp_connect", "error_type": "connection_refused", "failure_detail": "ECONNREFUSED"}, nil),
 
-		// session-desktop: full lifecycle. The heartbeat reports larger byte
-		// counters than the final connection_ended (maxima must win), while
-		// connection_ended's duration overrides the running one. ISP falls
-		// back to organization.
+		// session-desktop: full lifecycle plus a measured relay failover. The
+		// failover credits relay-4 without adding another connection-trend success.
+		// The heartbeat reports larger byte counters than the final
+		// connection_ended (maxima must win), while connection_ended's duration
+		// overrides the running one. ISP falls back to organization.
 		record(30, 30, "client_seen", "client-desktop", "session-desktop", "", "198.51.100.7",
 			map[string]string{"operating_system": "macOS (arm64)", "organization": "Example Org", "asn": "AS64500", "app_version": "0.9.0"}, nil),
 		record(29, 29, "connection_attempted", "client-desktop", "session-desktop", "relay-2", "198.51.100.7", nil, nil),
 		record(28, 28, "connection_succeeded", "client-desktop", "session-desktop", "relay-2", "198.51.100.7",
 			map[string]string{"_app": "com.brave.browser"}, map[string]int64{"bytes_sent": 700}),
+		record(27, 27, "relay_failover", "client-desktop", "session-desktop", "relay-4", "198.51.100.7",
+			map[string]string{"from_relay_id": "relay-2"}, map[string]int64{"relay_tcp_ms": 75, "internet_probe_ms": 140}),
 		record(25, 25, "session_heartbeat", "client-desktop", "session-desktop", "relay-2", "198.51.100.7",
 			nil, map[string]int64{"session_duration_ms": 60000, "bytes_sent": 900, "bytes_received": 1500}),
 		record(20, 20, "connection_ended", "client-desktop", "session-desktop", "relay-2", "198.51.100.7",

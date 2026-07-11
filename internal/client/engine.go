@@ -5,10 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"time"
 )
+
+const singBoxHardKillWait = 2 * time.Second
 
 type SingBoxRunner struct {
 	Path   string
@@ -66,14 +67,21 @@ func (r SingBoxRunner) Run(ctx context.Context, configPath string) error {
 		if grace <= 0 {
 			grace = 5 * time.Second
 		}
-		_ = cmd.Process.Signal(os.Interrupt)
+		_ = interruptSingBoxProcess(cmd)
 		select {
 		case <-waitCh:
 			return nil
 		case <-time.After(grace):
-			_ = cmd.Process.Kill()
-			<-waitCh
-			return nil
+			killErr := killSingBoxProcess(cmd)
+			select {
+			case <-waitCh:
+				return nil
+			case <-time.After(singBoxHardKillWait):
+				if killErr != nil {
+					return fmt.Errorf("kill sing-box after cancellation: %w", killErr)
+				}
+				return errors.New("sing-box did not exit after hard kill")
+			}
 		}
 	}
 }

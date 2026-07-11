@@ -79,7 +79,7 @@ type connection struct {
 	done          chan struct{}
 	disconnecting bool // set under mu before cancel: a clean stop, not a crash
 	finalized     bool // set under mu once finalizeConn owns the terminal status
-	proxySet      bool // OS proxy currently points at our loopback inbound
+	proxySet      bool // OS proxy may differ from the snapshot and still needs restore
 	snapshotTaken bool // snapshot captured once; survives a recovery proxy release
 	snapshot      proxymode.Snapshot
 	mgr           *clienttelemetry.Manager
@@ -267,8 +267,11 @@ func (s *Service) Startup(ctx context.Context) {
 		// Crash recovery: a leftover proxy snapshot means a prior session died
 		// without restoring the OS proxy. Undo it before doing anything else.
 		if snap, ok := store.LoadProxySnapshot(); ok {
-			_ = s.proxy.Restore(snap)
-			_ = store.ClearProxySnapshot()
+			if err := s.proxy.Restore(snap); err == nil {
+				_ = store.ClearProxySnapshot()
+			} else {
+				s.appendLog("could not restore the saved system proxy; will retry on next launch")
+			}
 		}
 		recents := toRecentNodes(store.LoadRecents())
 		s.mu.Lock()
@@ -478,7 +481,7 @@ func (s *Service) connectFlow(ctx context.Context, conn *connection, brokerURL, 
 	// The OS proxy is pointed at the tunnel only once a candidate is proven, so
 	// a fully failing ladder never blackholes the user's traffic — it falls
 	// back to the normal network instead (contract: availability over leak).
-	if !s.promote(ctx, conn, res, fetchMS) {
+	if !s.promote(ctx, conn, res, fetchMS, true) {
 		return "", nil // user disconnected as the winner came up
 	}
 
@@ -632,10 +635,9 @@ func (s *Service) attemptCandidate(ctx context.Context, conn *connection, cand r
 	return res, nil
 }
 
-// connectMeasurements is the winning candidate's timing, reported on
-// connection_succeeded for every promote so the broker's relay ranking and the
-// per-relay dashboard credit the relay that actually carried the connection —
-// including a failover winner.
+// connectMeasurements is the winning candidate's timing, reported on the
+// initial connection_succeeded or a recovery relay_failover so the broker's
+// relay ranking credits the relay that actually carried the connection.
 func connectMeasurements(res *candidateResult, brokerFetchMS int64) map[string]int64 {
 	return map[string]int64{
 		"broker_fetch_ms":   brokerFetchMS,
@@ -648,15 +650,16 @@ func connectMeasurements(res *candidateResult, brokerFetchMS int64) map[string]i
 
 // promote adopts a winning candidate as the live tunnel: it marks CONNECTED with
 // the broker-served location label (never a raw IP), records recents, points the
-// OS proxy at the tunnel, records the connection_succeeded that feeds the broker
-// ranking, and starts the heartbeat loop (once per session).
+// OS proxy at the tunnel, records the initial connection_succeeded when asked,
+// and starts the heartbeat loop (once per session). Recovery telemetry is
+// recorded by supervise with the transition attributes it owns.
 //
 // The disconnect guard and the CONNECTED publish happen under one lock, so a
 // Disconnect that set disconnecting first is always seen (the connect bails —
 // mirroring the mobile ensureActive guard — with no CONNECTED flash and no
 // recorded success), and one that arrives after is fully ordered behind the
 // publish. Returns false without publishing anything when it bailed.
-func (s *Service) promote(ctx context.Context, conn *connection, res *candidateResult, brokerFetchMS int64) bool {
+func (s *Service) promote(ctx context.Context, conn *connection, res *candidateResult, brokerFetchMS int64, initial bool) bool {
 	label := geoLabel(res.relay)
 	recent := recentFrom(res.relay)
 	s.appendLog("connected via " + label)
@@ -675,8 +678,10 @@ func (s *Service) promote(ctx context.Context, conn *connection, res *candidateR
 	s.applyProxy(conn, res.proxyPort)
 	if conn.mgr != nil {
 		conn.mgr.MarkConnected(res.relay.ID)
-		conn.mgr.Record("connection_succeeded", res.relay.ID, nil, connectMeasurements(res, brokerFetchMS))
-		_ = conn.mgr.Flush(ctx)
+		if initial {
+			conn.mgr.Record("connection_succeeded", res.relay.ID, nil, connectMeasurements(res, brokerFetchMS))
+			_ = conn.mgr.Flush(ctx)
+		}
 		conn.heartbeatOnce.Do(func() { go conn.mgr.RunHeartbeatLoop(ctx) })
 	}
 	return true
@@ -726,6 +731,9 @@ func (s *Service) applyProxy(conn *connection, port int) {
 			_ = s.store.SaveProxySnapshot(snap) // persist for crash recovery
 		}
 	}
+	// Mark restoration pending before Set: platform controllers can mutate OS
+	// state and only then fail while notifying applications of the change.
+	conn.proxySet = true
 	if err := s.proxy.Set("127.0.0.1", port); err != nil {
 		s.appendLog(fmt.Sprintf("system proxy set failed; set manual proxy 127.0.0.1:%d", port))
 		// A failed Set may have partially applied: put the captured setting back
@@ -734,6 +742,7 @@ func (s *Service) applyProxy(conn *connection, port int) {
 			s.appendLog("system proxy restore after failed set failed; will retry on next launch")
 			return
 		}
+		conn.proxySet = false
 		if s.store != nil {
 			_ = s.store.ClearProxySnapshot()
 		}
@@ -743,7 +752,6 @@ func (s *Service) applyProxy(conn *connection, port int) {
 		// The successful-Set path below re-persists the retained snapshot.
 		return
 	}
-	conn.proxySet = true
 	// Ensure proxySet=true always implies a persisted snapshot for crash
 	// recovery, even if an earlier Set failure cleared it (idempotent for the
 	// common first-Set-succeeds path).
@@ -756,11 +764,15 @@ func (s *Service) applyProxy(conn *connection, port int) {
 // releaseProxy points the OS proxy back at the user's captured setting while
 // keeping the snapshot, so a mid-session recovery lets traffic fall back to the
 // normal network during the reconnect gap and a re-promote can re-point.
-func (s *Service) releaseProxy(conn *connection) {
+func (s *Service) releaseProxy(conn *connection) bool {
 	if conn.proxySet {
-		_ = s.proxy.Restore(conn.snapshot)
+		if err := s.proxy.Restore(conn.snapshot); err != nil {
+			s.appendLog("system proxy restore failed; keeping the recovery snapshot for the next retry")
+			return false
+		}
 		conn.proxySet = false
 	}
+	return true
 }
 
 // cleanupConn tears down the live candidate (sing-box, punched path, temp
@@ -772,8 +784,8 @@ func (s *Service) cleanupConn(conn *connection) {
 	conn.active = nil
 	s.mu.Unlock()
 	active.teardown()
-	s.releaseProxy(conn)
-	if s.store != nil {
+	restored := s.releaseProxy(conn)
+	if restored && s.store != nil {
 		_ = s.store.ClearProxySnapshot()
 	}
 }

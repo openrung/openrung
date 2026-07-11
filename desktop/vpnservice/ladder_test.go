@@ -392,15 +392,14 @@ func TestUnexpectedTunnelExitFailsOverMidSession(t *testing.T) {
 	if len(failovers) != 1 || failovers[0].RelayID != "b" || failovers[0].Attributes["from_relay_id"] != "a" {
 		t.Fatalf("relay_failover = %+v", failovers)
 	}
-	// Both relays that carried the connection are credited with a
-	// connection_succeeded (the broker ranks on these), so a failover winner is
-	// not silently dropped from the ranking.
-	succeeded := sink.named("connection_succeeded")
-	if len(succeeded) != 2 || succeeded[0].RelayID != "a" || succeeded[1].RelayID != "b" {
-		t.Fatalf("connection_succeeded = %+v (want the initial connect to a then the failover to b)", succeeded)
+	if _, ok := failovers[0].Measurements["relay_tcp_ms"]; !ok {
+		t.Fatalf("relay_failover missing ranking measurements: %+v", failovers[0].Measurements)
 	}
-	if _, ok := succeeded[1].Measurements["relay_tcp_ms"]; !ok {
-		t.Fatalf("failover connection_succeeded missing measurements: %+v", succeeded[1].Measurements)
+	// The session has one attempted/succeeded pair. The measured relay_failover
+	// above credits the recovery winner without inflating connection trends.
+	succeeded := sink.named("connection_succeeded")
+	if len(succeeded) != 1 || succeeded[0].RelayID != "a" {
+		t.Fatalf("connection_succeeded = %+v (want only the initial connect to a)", succeeded)
 	}
 	// One session throughout: no terminal events besides the final disconnect.
 	if failed := sink.named("connection_failed"); len(failed) != 0 {

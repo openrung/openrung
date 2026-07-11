@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"openrung/desktop/persist"
 	"openrung/desktop/proxymode"
 	"openrung/internal/relay"
 )
@@ -231,10 +232,11 @@ func TestGetIdentityWithoutSession(t *testing.T) {
 }
 
 type fakeProxyController struct {
-	supported bool
-	snap      proxymode.Snapshot
-	setErr    error
-	restores  []proxymode.Snapshot
+	supported  bool
+	snap       proxymode.Snapshot
+	setErr     error
+	restoreErr error
+	restores   []proxymode.Snapshot
 }
 
 func (f *fakeProxyController) Supported() bool { return f.supported }
@@ -249,7 +251,47 @@ func (f *fakeProxyController) Set(host string, port int) error {
 
 func (f *fakeProxyController) Restore(snap proxymode.Snapshot) error {
 	f.restores = append(f.restores, snap)
-	return nil
+	return f.restoreErr
+}
+
+func TestCleanupKeepsRecoverySnapshotUntilRestoreSucceeds(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("AppData", tmp)
+	store, err := persist.New()
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	snap := proxymode.Snapshot{
+		Platform: "windows",
+		Windows:  &proxymode.WindowsProxyState{ProxyEnable: true, ProxyServer: "10.0.0.1:3128"},
+	}
+	if err := store.SaveProxySnapshot(snap); err != nil {
+		t.Fatalf("save snapshot: %v", err)
+	}
+	proxy := &fakeProxyController{supported: true, restoreErr: errors.New("notify failed")}
+	s := New()
+	s.proxy = proxy
+	s.store = store
+	conn := &connection{proxySet: true, snapshotTaken: true, snapshot: snap}
+
+	s.cleanupConn(conn)
+	if !conn.proxySet {
+		t.Fatal("failed restore must remain pending")
+	}
+	if _, ok := store.LoadProxySnapshot(); !ok {
+		t.Fatal("failed restore must keep the crash-recovery snapshot")
+	}
+
+	proxy.restoreErr = nil
+	s.cleanupConn(conn)
+	if conn.proxySet {
+		t.Fatal("successful retry must clear the pending proxy state")
+	}
+	if _, ok := store.LoadProxySnapshot(); ok {
+		t.Fatal("successful retry must clear the crash-recovery snapshot")
+	}
 }
 
 func TestApplySystemProxyRestoresSnapshotWhenSetFails(t *testing.T) {

@@ -182,7 +182,7 @@ SELECT 'failure_reasons',
 FROM events WHERE event = 'connection_failed' GROUP BY 2
 UNION ALL
 SELECT 'relay_successes', relay_id, NULL::text, COUNT(*)::bigint, NULL::bigint, NULL::bigint, NULL::bigint
-FROM events WHERE event = 'connection_succeeded' AND relay_id <> '' GROUP BY relay_id
+FROM events WHERE event IN ('connection_succeeded', 'relay_failover') AND relay_id <> '' GROUP BY relay_id
 UNION ALL
 SELECT 'relay_failures', relay_id, NULL::text, COUNT(*)::bigint, NULL::bigint, NULL::bigint, NULL::bigint
 FROM events WHERE event = 'relay_attempt_failed' AND relay_id <> '' GROUP BY relay_id

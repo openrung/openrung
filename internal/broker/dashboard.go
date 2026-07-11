@@ -515,6 +515,12 @@ func buildTelemetryOverview(records []TelemetryRecord, now time.Time, window tim
 			if event.RelayID != "" {
 				relayFor(relays, event.RelayID).Successes++
 			}
+		case "relay_failover":
+			// A failover is a successful relay observation, but not another
+			// session-level success or connection-trend success.
+			if event.RelayID != "" {
+				relayFor(relays, event.RelayID).Successes++
+			}
 		case "connection_failed":
 			session.failed = true
 			session.terminal = true

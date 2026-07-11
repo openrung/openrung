@@ -74,19 +74,18 @@ func (s *Service) supervise(ctx context.Context, conn *connection, cur *candidat
 			// not read it as "never connected".
 			return "failover_exhausted", err
 		}
-		if !s.promote(ctx, conn, next, fetchMS) {
+		if !s.promote(ctx, conn, next, fetchMS, false) {
 			return "", nil // user disconnected as the recovery winner came up
 		}
-		// promote already recorded connection_succeeded (so the broker credits
-		// the winning relay's ranking). relay_failover is an additional bare
-		// marker of the transition — it carries no measurements the broker would
-		// otherwise have to special-case.
+		// A recovery is not a second session-level connection success. Record one
+		// measured relay_failover instead: the broker credits the winning relay,
+		// while attempt/success trends remain one-to-one for this session.
 		if conn.mgr != nil {
 			attrs := map[string]string{"from_relay_id": oldRelayID}
 			if reason := clienttelemetry.ClassifyError(trigger); reason != "" {
 				attrs["failure_reason"] = reason
 			}
-			conn.mgr.Record("relay_failover", next.relay.ID, attrs, nil)
+			conn.mgr.Record("relay_failover", next.relay.ID, attrs, connectMeasurements(next, fetchMS))
 			_ = conn.mgr.Flush(ctx)
 		}
 		s.appendLog(fmt.Sprintf("failed over from relay %s to %s", oldRelayID, next.relay.ID))

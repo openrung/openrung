@@ -3,6 +3,7 @@
 package client
 
 import (
+	"os"
 	"os/exec"
 	"syscall"
 
@@ -15,4 +16,12 @@ func configureSingBoxProcess(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: windows.CREATE_NO_WINDOW,
 	}
+}
+
+func interruptSingBoxProcess(cmd *exec.Cmd) error {
+	return cmd.Process.Signal(os.Interrupt)
+}
+
+func killSingBoxProcess(cmd *exec.Cmd) error {
+	return cmd.Process.Kill()
 }
