@@ -171,6 +171,7 @@ func TestBuildTelemetryOverview(t *testing.T) {
 	records := []TelemetryRecord{
 		dashboardRecord(now.Add(-30*time.Minute), "attempt-1", "connection_attempted", "client-1", "session-1", "", clientOneAttributes, nil),
 		dashboardRecord(now.Add(-29*time.Minute), "success-1", "connection_succeeded", "client-1", "session-1", "relay-1", clientOneAttributes, nil),
+		dashboardRecord(now.Add(-15*time.Minute), "failover-1", "relay_failover", "client-1", "session-1", "relay-2", clientOneAttributes, map[string]int64{"relay_tcp_ms": 25}),
 		dashboardRecord(now.Add(-20*time.Minute), "app-1", "application_connection", "client-1", "session-1", "relay-1", clientOneAttributes, nil),
 		dashboardRecord(now.Add(-time.Minute), "heartbeat-1", "session_heartbeat", "client-1", "session-1", "relay-1", clientOneAttributes, map[string]int64{"connected_duration_ms": 60_000, "session_duration_ms": 1_740_000}),
 		dashboardRecord(now.Add(-10*time.Minute), "attempt-2", "connection_attempted", "client-2", "session-2", "", map[string]string{"android_api": "35", "country": "CA", "city": "Toronto", "organization": "Fallback Network", "asn": "AS64500"}, nil),
@@ -184,6 +185,13 @@ func TestBuildTelemetryOverview(t *testing.T) {
 	}
 	if overview.Totals.SuccessRate != 0.5 {
 		t.Fatalf("expected 50%% success rate, got %f", overview.Totals.SuccessRate)
+	}
+	var trendSuccesses int
+	for _, point := range overview.Trend {
+		trendSuccesses += point.Successes
+	}
+	if trendSuccesses != 1 {
+		t.Fatalf("failover must not inflate connection trend successes: %+v", overview.Trend)
 	}
 	if overview.Totals.ActiveClients != 1 || overview.Totals.ActiveSessions != 1 {
 		t.Fatalf("unexpected active totals: %+v", overview.Totals)

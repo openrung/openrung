@@ -204,7 +204,7 @@ func TestStoreGlobalRankingDemotesRecentFailures(t *testing.T) {
 
 	recordRelayMetric(t, store, now.Add(10*time.Second), TelemetryEvent{
 		EventID:    "success-1",
-		Event:      "connection_succeeded",
+		Event:      "relay_failover",
 		OccurredAt: now.Add(10 * time.Second),
 		ClientID:   "client-1",
 		SessionID:  "session-1",

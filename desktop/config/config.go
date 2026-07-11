@@ -49,7 +49,57 @@ const (
 	// request timeout. Must stay in sync with the mobile AppConfig's
 	// DISCOVERY_STAGGER_MS so every client races identically.
 	DiscoveryStagger = 2500 * time.Millisecond
+
+	// RelayTCPTimeout bounds the pre-connect TCP reachability check against a
+	// relay's public endpoint (it feeds relay_tcp_ms). Must stay in sync with
+	// the mobile RelayReachability.checkTcp timeout so both clients judge
+	// reachability identically.
+	RelayTCPTimeout = 5 * time.Second
+
+	// Internet probe: a connect is reported CONNECTED only after an end-to-end
+	// HTTP probe through the tunnel succeeds. Sweeps of InternetProbeURLs are
+	// retried every InternetProbeRetryDelay until InternetProbeOverallTimeout,
+	// each request bounded by InternetProbeRequestTimeout. Must stay in sync
+	// with the mobile InternetProbe constants.
+	InternetProbeOverallTimeout = 12 * time.Second
+	InternetProbeRequestTimeout = 3 * time.Second
+	InternetProbeRetryDelay     = 500 * time.Millisecond
+
+	// LadderKillGrace bounds how long a failed connect-ladder candidate's
+	// sing-box gets between interrupt and hard kill. Desktop-only: os.Interrupt
+	// is unsupported on Windows, so without this every failed candidate's
+	// teardown would cost the engine's full 5s default. Proxy mode holds no TUN
+	// device, so a hard kill is safe.
+	LadderKillGrace = 500 * time.Millisecond
+
+	// TunnelReadyTimeout bounds how long a candidate's sing-box has to bind its
+	// mixed inbound before the rung is judged failed (a config or bind error).
+	// It replaces a fixed post-launch grace, so a healthy engine that binds in
+	// tens of ms is not made to wait the whole window.
+	TunnelReadyTimeout = 5 * time.Second
+
+	// MaxRecoveryBackoff caps the Retry-After a rate-limited broker can impose on
+	// a mid-session recovery fetch, so a misbehaving or hostile front cannot
+	// suspend reconnection (and leave traffic on the normal network) for long.
+	MaxRecoveryBackoff = 60 * time.Second
+
+	// Mid-session health monitor (desktop-only; mobile has no equivalent yet):
+	// one probe sweep through the tunnel every HealthProbeInterval. After
+	// HealthFailureThreshold consecutive failures AND proof the local network
+	// is alive (some known relay answers a TCP dial), the tunnel is declared
+	// dead and an automatic failover re-ladder runs. The network-alive gate is
+	// what keeps a wifi blip or laptop sleep from churning relays.
+	HealthProbeInterval    = 30 * time.Second
+	HealthFailureThreshold = 3
 )
+
+// InternetProbeURLs are the through-tunnel connectivity endpoints, tried in
+// order each sweep. Must stay in sync with the mobile InternetProbe ENDPOINTS
+// so every client's probe traffic looks identical.
+var InternetProbeURLs = []string{
+	"https://www.gstatic.com/generate_204",
+	"https://cp.cloudflare.com/generate_204",
+}
 
 // DefaultBrokerURLs are the ordered discovery candidates. They are raced with
 // a staggered start — each entry gets a DiscoveryStagger head start over the

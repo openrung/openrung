@@ -565,7 +565,7 @@ func (s *PostgresStore) recordRelayTelemetry(ctx context.Context, tx pgx.Tx, rec
 				updated_at = EXCLUDED.updated_at
 		`, event.SessionID, event.ClientID, event.RelayID, observedAt, now)
 		return err
-	case "connection_succeeded":
+	case "connection_succeeded", "relay_failover":
 		if event.RelayID == "" {
 			return nil
 		}
