@@ -60,11 +60,17 @@ func main() {
 				Message:       "Quitting stops your relay, and people connected through it will be moved to other volunteers. Quit anyway?",
 				Buttons:       []string{"Quit", "Keep running"},
 				DefaultButton: "Keep running",
+				CancelButton:  "Keep running",
 			})
+			// Fail safe: prevent the quit unless the user affirmatively chose to
+			// quit. Wails maps custom labels only on macOS; GTK/Windows return
+			// "Yes"/"No" (or "" for Escape / window-close) and a dialog error
+			// returns "" too — every one of those must keep the relay running,
+			// never silently drop the people using it.
 			if err != nil {
-				return false
+				return true
 			}
-			return choice == "Keep running" || choice == "No"
+			return choice != "Quit" && choice != "Yes"
 		},
 		OnShutdown: func(ctx context.Context) {
 			svc.Shutdown(ctx)

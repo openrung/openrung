@@ -78,6 +78,12 @@ func (t *TrafficStats) Snapshot() TrafficSnapshot {
 	}
 }
 
+// tunnelStableThreshold is how long a tunnel must stay established before Run
+// treats a later drop as a fresh outage worth an immediate retry. A session
+// that flaps sooner (a hub that accepts HELLO_ACK then drops the yamux session)
+// keeps the growing backoff, so a flapping hub is not hammered once per second.
+const tunnelStableThreshold = time.Minute
+
 // Run maintains the tunnel until ctx is cancelled, reconnecting with backoff.
 func (c *Client) Run(ctx context.Context) error {
 	logger := c.logger()
@@ -86,12 +92,12 @@ func (c *Client) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return nil
 		}
-		established, err := c.runOnce(ctx)
+		uptime, err := c.runOnce(ctx)
 		if ctx.Err() != nil {
 			return nil
 		}
-		if established {
-			// The previous attempt worked: a later drop is a fresh outage, so
+		if uptime >= tunnelStableThreshold {
+			// The tunnel stayed up a while: this drop is a fresh outage, so
 			// retry promptly instead of inheriting stale accumulated backoff.
 			backoff = c.reconnectMin()
 		}
@@ -113,12 +119,19 @@ func (c *Client) Run(ctx context.Context) error {
 	}
 }
 
-// runOnce reports whether the HELLO handshake completed (established) so Run
-// can reset its backoff, alongside the terminating error.
-func (c *Client) runOnce(ctx context.Context) (bool, error) {
-	conn, err := c.dial(ctx)
+// runOnce returns how long the tunnel stayed established (0 if the handshake
+// never completed) so Run can decide whether to reset its backoff, alongside
+// the terminating error.
+func (c *Client) runOnce(ctx context.Context) (time.Duration, error) {
+	// A per-attempt context bounds the session-close watcher goroutine below to
+	// this call: without it the watcher blocks on the long-lived tunnel ctx and
+	// leaks one goroutine per reconnect until the whole tunnel is torn down.
+	onceCtx, cancelOnce := context.WithCancel(ctx)
+	defer cancelOnce()
+
+	conn, err := c.dial(onceCtx)
 	if err != nil {
-		return false, fmt.Errorf("dial hub: %w", err)
+		return 0, fmt.Errorf("dial hub: %w", err)
 	}
 	defer conn.Close()
 
@@ -127,20 +140,21 @@ func (c *Client) runOnce(ctx context.Context) (bool, error) {
 
 	_ = conn.SetDeadline(time.Now().Add(c.handshakeTimeout()))
 	if err := writeFrame(conn, hello); err != nil {
-		return false, fmt.Errorf("send hello: %w", err)
+		return 0, fmt.Errorf("send hello: %w", err)
 	}
 	var ack HelloAckFrame
 	if err := readFrame(conn, &ack); err != nil {
-		return false, fmt.Errorf("read hello ack: %w", err)
+		return 0, fmt.Errorf("read hello ack: %w", err)
 	}
 	if !ack.OK {
 		msg := ack.Error
 		if msg == "" {
 			msg = "tunnel rejected"
 		}
-		return false, fmt.Errorf("hub rejected tunnel: %s", msg)
+		return 0, fmt.Errorf("hub rejected tunnel: %s", msg)
 	}
 	_ = conn.SetDeadline(time.Time{})
+	establishedAt := time.Now()
 
 	if c.OnRegistered != nil {
 		c.OnRegistered(ack)
@@ -149,12 +163,12 @@ func (c *Client) runOnce(ctx context.Context) (bool, error) {
 
 	session, err := yamux.Client(conn, yamuxConfig())
 	if err != nil {
-		return true, fmt.Errorf("start yamux client: %w", err)
+		return time.Since(establishedAt), fmt.Errorf("start yamux client: %w", err)
 	}
 	defer session.Close()
 
 	go func() {
-		<-ctx.Done()
+		<-onceCtx.Done()
 		_ = session.Close()
 	}()
 
@@ -163,9 +177,9 @@ func (c *Client) runOnce(ctx context.Context) (bool, error) {
 		stream, err := session.Accept()
 		if err != nil {
 			if ctx.Err() != nil {
-				return true, nil
+				return time.Since(establishedAt), nil
 			}
-			return true, fmt.Errorf("accept tunnel stream: %w", err)
+			return time.Since(establishedAt), fmt.Errorf("accept tunnel stream: %w", err)
 		}
 		go c.handleAccepted(ctx, stream, typed)
 	}

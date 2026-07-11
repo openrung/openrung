@@ -63,7 +63,10 @@ jobs:
         if: runner.os != 'Windows'
         # The .dgst file lists hashes as "SHA2-256= <hex>"; verify the download
         # (same approach as deploy/volunteer/Dockerfile). Only the xray binary
-        # is extracted — the desktop app does not bundle the geo data files.
+        # and its LICENSE are extracted — the desktop app does not bundle the
+        # geo data files, but MPL-2.0 §3.1 requires Xray's license to travel
+        # with the binary (deploy/volunteer/Dockerfile keeps it for the same
+        # reason).
         run: |
           V="$XRAY_VERSION"
           BASE="https://github.com/XTLS/Xray-core/releases/download/v$V"
@@ -74,15 +77,16 @@ jobs:
           echo "xray v$V ${{ matrix.asset }} expected=$expected actual=$actual"
           test -n "$expected"
           test "$expected" = "$actual"
-          unzip -o xray.zip xray -d xray-dist
+          unzip -o xray.zip xray LICENSE -d xray-dist
           chmod +x xray-dist/xray
           echo "XRAY=$PWD/xray-dist/xray" >> "$GITHUB_ENV"
+          echo "XRAY_LICENSE=$PWD/xray-dist/LICENSE" >> "$GITHUB_ENV"
 
       - name: Fetch and verify xray (windows)
         if: runner.os == 'Windows'
         shell: pwsh
         # Same SHA-256 check as the unix step; the packaging script copies only
-        # xray.exe out of the extracted release.
+        # xray.exe and the LICENSE (MPL-2.0 §3.1) out of the extracted release.
         run: |
           $V = $env:XRAY_VERSION
           $asset = "${{ matrix.asset }}"
@@ -97,6 +101,7 @@ jobs:
           if ($expected -ne $actual) { throw 'xray checksum mismatch' }
           Expand-Archive xray.zip -DestinationPath xray-dist
           "XRAY=$PWD\xray-dist\xray.exe" | Out-File -FilePath $env:GITHUB_ENV -Append
+          if (Test-Path xray-dist\LICENSE) { "XRAY_LICENSE=$PWD\xray-dist\LICENSE" | Out-File -FilePath $env:GITHUB_ENV -Append }
 
       - name: Package (macOS)
         if: runner.os == 'macOS'

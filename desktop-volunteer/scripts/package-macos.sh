@@ -54,6 +54,16 @@ OpenRung Volunteer is free software (GPL-3.0-or-later).
 Source: https://github.com/openrung/openrung
 EOF
 
+# Ship the full corresponding-source license texts, not just URLs: GPL-3.0-or-later
+# §4/§6 require a copy of the License to accompany every conveyed binary, and
+# MPL-2.0 §3.1 requires Xray-core's own license. XRAY_LICENSE (Xray's LICENSE from
+# the release zip) is set by CI; skipped silently for a local PATH-xray build.
+cp ../LICENSE "${RES}/LICENSE.txt"
+cp ../THIRD_PARTY_NOTICES.md "${RES}/THIRD_PARTY_NOTICES.md"
+if [[ -n "${XRAY_LICENSE:-}" && -f "${XRAY_LICENSE}" ]]; then
+  cp "${XRAY_LICENSE}" "${RES}/XRAY-LICENSE.txt"
+fi
+
 echo "==> ad-hoc re-signing the bundle (covers the added xray)"
 codesign --force --deep --sign - "${APP}"
 codesign --verify --deep --strict "${APP}" && echo "    signature OK"

@@ -44,6 +44,16 @@ License text: https://www.mozilla.org/MPL/2.0/
 OpenRung Volunteer is free software (GPL-3.0-or-later): https://github.com/openrung/openrung
 EOF
 
+# Full corresponding-source license texts (GPL-3.0-or-later §4/§6 require the
+# License to accompany every conveyed binary; MPL-2.0 §3.1 requires Xray's).
+# XRAY_LICENSE (Xray's LICENSE from the release zip) is set by CI; skipped for a
+# local PATH-xray build.
+cp ../LICENSE "${STAGE}/LICENSE.txt"
+cp ../THIRD_PARTY_NOTICES.md "${STAGE}/THIRD_PARTY_NOTICES.md"
+if [[ -n "${XRAY_LICENSE:-}" && -f "${XRAY_LICENSE}" ]]; then
+  cp "${XRAY_LICENSE}" "${STAGE}/XRAY-LICENSE.txt"
+fi
+
 OUT="build/bin/OpenRungVolunteer-linux-${ARCH}.tar.gz"
 tar -czf "${OUT}" -C build OpenRungVolunteer
 echo "==> done: ${OUT}"

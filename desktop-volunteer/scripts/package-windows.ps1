@@ -38,6 +38,15 @@ License text: https://www.mozilla.org/MPL/2.0/
 OpenRung Volunteer is free software (GPL-3.0-or-later): https://github.com/openrung/openrung
 "@ | Set-Content (Join-Path $stage 'THIRD_PARTY_NOTICES.txt')
 
+# Full corresponding-source license texts (GPL-3.0-or-later requires the License
+# to accompany every conveyed binary; MPL-2.0 requires Xray's). $env:XRAY_LICENSE
+# (Xray's LICENSE from the release zip) is set by CI; skipped for a local build.
+Copy-Item '..\LICENSE' (Join-Path $stage 'LICENSE.txt')
+Copy-Item '..\THIRD_PARTY_NOTICES.md' (Join-Path $stage 'THIRD_PARTY_NOTICES.md')
+if ($env:XRAY_LICENSE -and (Test-Path $env:XRAY_LICENSE)) {
+    Copy-Item $env:XRAY_LICENSE (Join-Path $stage 'XRAY-LICENSE.txt')
+}
+
 $out = 'build\bin\OpenRungVolunteer-windows-amd64.zip'
 if (Test-Path $out) { Remove-Item $out }
 Compress-Archive -Path "$stage\*" -DestinationPath $out

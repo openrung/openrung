@@ -13,9 +13,13 @@ interface Props {
 
 type SaveStatus = { kind: 'idle' } | { kind: 'saved' } | { kind: 'error'; message: string };
 
+// All three numeric settings (max sessions, max Mbps, listen port) map to Go
+// `int` fields, so a fractional value would make the Wails JSON bridge reject
+// the whole save with an opaque unmarshal error. Truncate to an integer here so
+// the frontend contract matches the backend's.
 function parseNumber(value: string): number {
   const n = Number(value);
-  return Number.isFinite(n) ? n : 0;
+  return Number.isFinite(n) ? Math.trunc(n) : 0;
 }
 
 export function SettingsScreen({ state }: Props) {

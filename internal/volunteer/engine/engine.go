@@ -642,8 +642,14 @@ func (e *Engine) runDirectSession(ctx context.Context, cfg Config, label string,
 	defer heartbeat.Stop()
 	// Home IPv6 prefixes rotate; re-detect periodically and restart the session
 	// (fresh registration) when the address moves, because heartbeats never
-	// update public_host broker-side.
+	// update public_host broker-side. The comparison must be like-against-like:
+	// publicHost may be a hub-observed source address (in auto mode it can even
+	// be IPv4, or an OS temporary/privacy IPv6), which would never equal the
+	// locally-enumerated address and would restart the session every tick. So
+	// we baseline against the same source the recheck uses, and only when it
+	// yields an address at all (no global IPv6 ⇒ nothing to watch here).
 	const ipRecheckInterval = 5 * time.Minute
+	ipBaseline, _ := volunteer.DefaultPublicIPv6Address()
 	ipRecheck := time.NewTicker(ipRecheckInterval)
 	defer ipRecheck.Stop()
 
@@ -666,8 +672,8 @@ func (e *Engine) runDirectSession(ctx context.Context, cfg Config, label string,
 			}
 		case <-ipRecheck.C:
 			detected, err := volunteer.DefaultPublicIPv6Address()
-			if err == nil && detected != publicHost {
-				e.logf("public address changed %s → %s; re-registering", publicHost, detected)
+			if err == nil && ipBaseline != "" && detected != ipBaseline {
+				e.logf("public IPv6 changed %s → %s; re-registering", ipBaseline, detected)
 				return errPublicIPChanged
 			}
 		case <-heartbeat.C:
