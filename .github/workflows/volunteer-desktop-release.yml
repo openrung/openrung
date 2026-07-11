@@ -1,0 +1,155 @@
+name: volunteer-desktop-release
+
+# Builds the OpenRung Volunteer desktop app for macOS, Linux, and Windows on
+# their native runners (Wails cannot cross-compile — it links each OS's native
+# webview), with a pinned, SHA-256-verified Xray-core bundled into each. Run
+# manually (Actions → volunteer-desktop-release → Run) or on a volunteer-v*
+# tag. Artifacts appear on the run's summary page.
+on:
+  workflow_dispatch:
+    inputs:
+      xray_version:
+        description: Xray-core version to bundle (no leading v — the upstream release tag adds one)
+        default: "26.3.27"
+  push:
+    tags: ["volunteer-v*"]
+
+env:
+  # Xray-core release to bundle. Bump as needed; must exist as a GitHub
+  # release with companion .dgst checksum files. Keep in sync with
+  # deploy/volunteer/Dockerfile (ARG XRAY_VERSION).
+  XRAY_VERSION: ${{ github.event.inputs.xray_version || '26.3.27' }}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            asset: Xray-macos-arm64-v8a.zip
+            artifact: darwin-arm64
+          - os: ubuntu-22.04
+            asset: Xray-linux-64.zip
+            artifact: linux-amd64
+          - os: windows-latest
+            asset: Xray-windows-64.zip
+            artifact: windows-amd64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+
+      - name: Install Linux webview deps
+        if: runner.os == 'Linux'
+        # webkit2gtk 4.1 (not 4.0): modern distros (Ubuntu 24.04+, Debian 13,
+        # Fedora 40+) dropped the 4.0 runtime. The 22.04 runner still has an old
+        # enough glibc that the resulting binary also runs on those newer distros.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Fetch and verify xray (unix)
+        if: runner.os != 'Windows'
+        # The .dgst file lists hashes as "SHA2-256= <hex>"; verify the download
+        # (same approach as deploy/volunteer/Dockerfile). Only the xray binary
+        # and its LICENSE are extracted — the desktop app does not bundle the
+        # geo data files, but MPL-2.0 §3.1 requires Xray's license to travel
+        # with the binary (deploy/volunteer/Dockerfile keeps it for the same
+        # reason).
+        run: |
+          V="$XRAY_VERSION"
+          BASE="https://github.com/XTLS/Xray-core/releases/download/v$V"
+          curl -fsSL -o xray.zip "$BASE/${{ matrix.asset }}"
+          curl -fsSL -o xray.zip.dgst "$BASE/${{ matrix.asset }}.dgst"
+          expected="$(awk '/^SHA2-256=/ {print $2}' xray.zip.dgst)"
+          actual="$(sha256sum xray.zip | awk '{print $1}')"
+          echo "xray v$V ${{ matrix.asset }} expected=$expected actual=$actual"
+          test -n "$expected"
+          test "$expected" = "$actual"
+          unzip -o xray.zip xray LICENSE -d xray-dist
+          chmod +x xray-dist/xray
+          echo "XRAY=$PWD/xray-dist/xray" >> "$GITHUB_ENV"
+          echo "XRAY_LICENSE=$PWD/xray-dist/LICENSE" >> "$GITHUB_ENV"
+
+      - name: Fetch and verify xray (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        # Same SHA-256 check as the unix step; the packaging script copies only
+        # xray.exe and the LICENSE (MPL-2.0 §3.1) out of the extracted release.
+        run: |
+          $V = $env:XRAY_VERSION
+          $asset = "${{ matrix.asset }}"
+          $base = "https://github.com/XTLS/Xray-core/releases/download/v$V"
+          Invoke-WebRequest -Uri "$base/$asset" -OutFile xray.zip
+          Invoke-WebRequest -Uri "$base/$asset.dgst" -OutFile xray.zip.dgst
+          $line = (Select-String -Path xray.zip.dgst -Pattern '^SHA2-256=' | Select-Object -First 1).Line
+          if (-not $line) { throw 'no SHA2-256 line in .dgst' }
+          $expected = ($line -replace '^SHA2-256=', '').Trim().ToLower()
+          $actual = (Get-FileHash xray.zip -Algorithm SHA256).Hash.ToLower()
+          Write-Host "xray v$V $asset expected=$expected actual=$actual"
+          if ($expected -ne $actual) { throw 'xray checksum mismatch' }
+          Expand-Archive xray.zip -DestinationPath xray-dist
+          "XRAY=$PWD\xray-dist\xray.exe" | Out-File -FilePath $env:GITHUB_ENV -Append
+          if (Test-Path xray-dist\LICENSE) { "XRAY_LICENSE=$PWD\xray-dist\LICENSE" | Out-File -FilePath $env:GITHUB_ENV -Append }
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          ./desktop-volunteer/scripts/package-macos.sh
+          ditto -c -k --keepParent desktop-volunteer/build/bin/OpenRungVolunteer.app desktop-volunteer/build/bin/OpenRungVolunteer-macos-arm64.zip
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        # -tags webkit2_41 links libwebkit2gtk-4.1.so.0 instead of the 4.0 soname.
+        run: ./desktop-volunteer/scripts/package-linux.sh -tags webkit2_41
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./desktop-volunteer/scripts/package-windows.ps1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OpenRungVolunteer-${{ matrix.artifact }}
+          path: |
+            desktop-volunteer/build/bin/OpenRungVolunteer-*.zip
+            desktop-volunteer/build/bin/OpenRungVolunteer-*.tar.gz
+          if-no-files-found: error
+
+  # Publish a GitHub Release with all three binaries attached. Runs only for
+  # `volunteer-v*` tag pushes (not manual dispatch, which stays artifact-only
+  # for testing). Requires all three build jobs to succeed — we don't ship a
+  # partial release.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/volunteer-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the tag's GitHub Release + upload assets
+    steps:
+      # Pulls every artifact from this run into artifacts/<artifact-name>/<file>.
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: OpenRung Volunteer ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/**/OpenRungVolunteer-*.zip
+            artifacts/**/OpenRungVolunteer-*.tar.gz

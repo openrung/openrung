@@ -72,8 +72,13 @@ recipients of the MPL-2.0 terms and where to obtain the source.
 
 - **Component:** `github.com/XTLS/Xray-core` — the `xray` binary, plus
   `geoip.dat` / `geosite.dat`, bundled into the `openrung-volunteer` image.
-- **Version:** v26.3.27 (pinned in `deploy/volunteer/Dockerfile`,
-  `ARG XRAY_VERSION`, SHA-256 verified at build).
+  The OpenRung Volunteer desktop app (`desktop-volunteer/`) bundles the
+  `xray` binary **only** — no geo data files — so section 4 does not apply
+  to that channel.
+- **Version:** v26.3.27 (pinned in `deploy/volunteer/Dockerfile`
+  (`ARG XRAY_VERSION`) and in
+  `.github/workflows/volunteer-desktop-release.yml`; SHA-256 verified
+  against the release `.dgst` file at build/fetch).
 - **License (code):** Mozilla Public License 2.0 (**MPL-2.0**).
 - **Source for the exact version:**
   https://github.com/XTLS/Xray-core/releases/tag/v26.3.27
@@ -121,7 +126,9 @@ source offer for the GPL components themselves.
 ## 4. Bundled data files (license differs from the code that ships them)
 
 Both files are extracted from the Xray-core release zip and bundled, unmodified,
-into the `openrung-volunteer` image.
+into the `openrung-volunteer` image. They are **not** bundled in the OpenRung
+Volunteer desktop app (which ships the `xray` binary only), so these notices
+apply to the Docker image channel only.
 
 ### geoip.dat — CC-BY-SA-4.0 + MaxMind GeoLite2
 
