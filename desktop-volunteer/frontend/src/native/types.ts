@@ -14,6 +14,8 @@ export type VolunteerPhase =
 
 export type VolunteerTransport = '' | 'direct' | 'tunnel';
 
+export type ConnectionMode = 'automatic' | 'direct';
+
 export interface VolunteerSettings {
   label: string; // public relay name shown in the directory
   maxSessions: number; // advertised capacity
@@ -21,6 +23,7 @@ export interface VolunteerSettings {
   listenPort: number; // direct-mode port (advanced)
   brokerUrl: string; // advanced
   hubAddress: string; // advanced, host:port, empty = no hub
+  connectionMode: ConnectionMode; // 'automatic' or 'direct' (never use the hub)
 }
 
 export interface VolunteerState {

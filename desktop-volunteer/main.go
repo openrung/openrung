@@ -54,19 +54,28 @@ func main() {
 			if !svc.Running() {
 				return false
 			}
-			choice, err := wailsruntime.MessageDialog(ctx, wailsruntime.MessageDialogOptions{
+			opts := wailsruntime.MessageDialogOptions{
 				Type:          wailsruntime.QuestionDialog,
 				Title:         "Stop volunteering?",
 				Message:       "Quitting stops your relay, and people connected through it will be moved to other volunteers. Quit anyway?",
 				Buttons:       []string{"Quit", "Keep running"},
 				DefaultButton: "Keep running",
 				CancelButton:  "Keep running",
-			})
+			}
+			// Wails ignores custom button labels on Windows: QuestionDialog is a
+			// MB_YESNO box that returns "Yes"/"No", and it only makes the safe
+			// second button (No) the default when DefaultButton lowercases to
+			// "no" (wails v2.12 windows/dialog.go). Without this, Enter defaults
+			// to Yes and silently quits, dropping every connected user.
+			if runtime.GOOS == "windows" {
+				opts.DefaultButton = "No"
+			}
+			choice, err := wailsruntime.MessageDialog(ctx, opts)
 			// Fail safe: prevent the quit unless the user affirmatively chose to
-			// quit. Wails maps custom labels only on macOS; GTK/Windows return
-			// "Yes"/"No" (or "" for Escape / window-close) and a dialog error
-			// returns "" too — every one of those must keep the relay running,
-			// never silently drop the people using it.
+			// quit. macOS returns the custom labels; GTK/Windows return "Yes"/"No"
+			// (or "" for Escape / window-close), and a dialog error returns "" too
+			// — all of those must keep the relay running, never silently drop the
+			// people using it.
 			if err != nil {
 				return true
 			}

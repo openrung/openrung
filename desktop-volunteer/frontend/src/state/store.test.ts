@@ -26,6 +26,7 @@ function sampleState(overrides: Partial<VolunteerState> = {}): VolunteerState {
       listenPort: 8443,
       brokerUrl: 'https://broker.openrung.org/',
       hubAddress: '',
+      connectionMode: 'automatic',
     },
     ...overrides,
   };

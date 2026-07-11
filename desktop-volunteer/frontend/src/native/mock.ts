@@ -27,6 +27,7 @@ function defaultSettings(): VolunteerSettings {
     listenPort: 8443,
     brokerUrl: 'https://broker.openrung.org/',
     hubAddress: '',
+    connectionMode: 'automatic',
   };
 }
 
@@ -200,6 +201,7 @@ export class MockVolunteerService implements VolunteerModule {
       listenPort: Math.floor(input.listenPort),
       brokerUrl: input.brokerUrl.trim() || 'https://broker.openrung.org/',
       hubAddress: input.hubAddress.trim(),
+      connectionMode: input.connectionMode === 'direct' ? 'direct' : 'automatic',
     };
     this.emit({ settings }, 'settings saved');
     return settings;

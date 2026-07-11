@@ -37,6 +37,7 @@ const INITIAL_VOLUNTEER_STATE: VolunteerState = {
     listenPort: 8443,
     brokerUrl: '',
     hubAddress: '',
+    connectionMode: 'automatic',
   },
 };
 

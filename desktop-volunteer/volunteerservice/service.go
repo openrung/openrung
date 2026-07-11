@@ -52,14 +52,21 @@ const (
 	logRingCapacity    = 200
 )
 
+// Connection modes exposed to the user.
+const (
+	ModeAutomatic = "automatic" // probe, then serve directly or via the hub
+	ModeDirectXe  = "direct"    // never use the hub (public-IP machines only)
+)
+
 // Settings is the frontend-facing settings shape.
 type Settings struct {
-	Label       string `json:"label"`
-	MaxSessions int    `json:"maxSessions"`
-	MaxMbps     int    `json:"maxMbps"`
-	ListenPort  int    `json:"listenPort"`
-	BrokerURL   string `json:"brokerUrl"`
-	HubAddress  string `json:"hubAddress"`
+	Label          string `json:"label"`
+	MaxSessions    int    `json:"maxSessions"`
+	MaxMbps        int    `json:"maxMbps"`
+	ListenPort     int    `json:"listenPort"`
+	BrokerURL      string `json:"brokerUrl"`
+	HubAddress     string `json:"hubAddress"`
+	ConnectionMode string `json:"connectionMode"`
 }
 
 // State is the single event payload the frontend renders from.
@@ -182,8 +189,12 @@ func (s *Service) buildEngine() {
 // only direct is possible.
 func (s *Service) engineConfigLocked() engine.Config {
 	settings := s.normalizedSettingsLocked()
+	// Direct-only is a deliberate opt-out of the shared hub: the machine serves
+	// on its own public address and never tunnels, so a hub outage cannot affect
+	// it. Otherwise, a configured hub enables auto (probe picks direct or hub);
+	// with no hub, direct is the only option.
 	mode := engine.ModeDirect
-	if settings.HubAddress != "" {
+	if settings.ConnectionMode != ModeDirectXe && settings.HubAddress != "" {
 		mode = engine.ModeAuto
 	}
 	// The pinned fingerprint is for the built-in hub only. If the user points
@@ -210,12 +221,13 @@ func (s *Service) engineConfigLocked() engine.Config {
 
 func (s *Service) normalizedSettingsLocked() Settings {
 	out := Settings{
-		Label:       s.settings.Label,
-		MaxSessions: s.settings.MaxSessions,
-		MaxMbps:     s.settings.MaxMbps,
-		ListenPort:  s.settings.ListenPort,
-		BrokerURL:   s.settings.BrokerURL,
-		HubAddress:  s.settings.HubAddress,
+		Label:          s.settings.Label,
+		MaxSessions:    s.settings.MaxSessions,
+		MaxMbps:        s.settings.MaxMbps,
+		ListenPort:     s.settings.ListenPort,
+		BrokerURL:      s.settings.BrokerURL,
+		HubAddress:     s.settings.HubAddress,
+		ConnectionMode: s.settings.ConnectionMode,
 	}
 	if out.MaxSessions <= 0 {
 		out.MaxSessions = defaultMaxSessions
@@ -231,6 +243,9 @@ func (s *Service) normalizedSettingsLocked() Settings {
 	}
 	if strings.TrimSpace(out.HubAddress) == "" {
 		out.HubAddress = DefaultHubAddress
+	}
+	if out.ConnectionMode != ModeDirectXe {
+		out.ConnectionMode = ModeAutomatic
 	}
 	return out
 }
@@ -322,6 +337,10 @@ func (s *Service) SaveSettings(in Settings) (Settings, error) {
 	if in.ListenPort < 1 || in.ListenPort > 65535 {
 		return Settings{}, fmt.Errorf("listen port must be between 1 and 65535")
 	}
+	connMode := strings.ToLower(strings.TrimSpace(in.ConnectionMode))
+	if connMode != ModeDirectXe {
+		connMode = ModeAutomatic
+	}
 
 	s.mu.Lock()
 	s.settings.Label = label
@@ -330,6 +349,7 @@ func (s *Service) SaveSettings(in Settings) (Settings, error) {
 	s.settings.ListenPort = in.ListenPort
 	s.settings.BrokerURL = strings.TrimSpace(in.BrokerURL)
 	s.settings.HubAddress = strings.TrimSpace(in.HubAddress)
+	s.settings.ConnectionMode = connMode
 	if s.settings.Label == "" {
 		s.settings.Label = volunteer.GenerateLabel()
 	}

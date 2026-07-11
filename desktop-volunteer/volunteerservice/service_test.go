@@ -134,6 +134,36 @@ func TestEngineConfigDerivesModeFromHub(t *testing.T) {
 	}
 }
 
+func TestDirectOnlyModeNeverUsesHub(t *testing.T) {
+	s := newTestService(t)
+	// Direct-only must force engine direct mode even though the built-in hub is
+	// configured, so a public-IP volunteer runs independently of the hub.
+	if _, err := s.SaveSettings(Settings{MaxSessions: 8, MaxMbps: 20, ListenPort: 8443, ConnectionMode: ModeDirectXe}); err != nil {
+		t.Fatalf("SaveSettings: %v", err)
+	}
+	s.mu.Lock()
+	cfg := s.engineConfigLocked()
+	s.mu.Unlock()
+	if cfg.Mode != "direct" {
+		t.Fatalf("direct-only mode = %q, want direct", cfg.Mode)
+	}
+
+	// An unrecognized connection mode normalizes back to automatic (→ auto with
+	// the default hub).
+	if _, err := s.SaveSettings(Settings{MaxSessions: 8, MaxMbps: 20, ListenPort: 8443, ConnectionMode: "bogus"}); err != nil {
+		t.Fatalf("SaveSettings: %v", err)
+	}
+	if got := s.GetSettings().ConnectionMode; got != ModeAutomatic {
+		t.Fatalf("unknown mode normalized to %q, want automatic", got)
+	}
+	s.mu.Lock()
+	cfg = s.engineConfigLocked()
+	s.mu.Unlock()
+	if cfg.Mode != "auto" {
+		t.Fatalf("automatic mode = %q, want auto", cfg.Mode)
+	}
+}
+
 func TestStateDefaults(t *testing.T) {
 	s := newTestService(t)
 	state := s.GetState()

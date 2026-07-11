@@ -58,8 +58,9 @@ export function ConsentGate({ consentAccepted, onAccept }: Props) {
         </div>
 
         <p className="consent-body">
-          While people are connected, your relay uses your bandwidth (target limit configurable in
-          Settings, default 20 Mbps).
+          While people are connected, your relay uses your internet bandwidth. The speed setting
+          (default 20 Mbps) is only advertised to the network as a hint {'—'} it is{' '}
+          <strong>not enforced yet</strong>, so actual usage can exceed it.
         </p>
 
         <p className="consent-body">

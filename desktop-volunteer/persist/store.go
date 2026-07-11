@@ -22,12 +22,16 @@ const (
 // Settings is everything the user can configure, plus the consent flag. Zero
 // values mean "use the app default"; Normalize resolves them.
 type Settings struct {
-	Label           string `json:"label"`
-	MaxSessions     int    `json:"maxSessions"`
-	MaxMbps         int    `json:"maxMbps"`
-	ListenPort      int    `json:"listenPort"`
-	BrokerURL       string `json:"brokerUrl"`
-	HubAddress      string `json:"hubAddress"`
+	Label       string `json:"label"`
+	MaxSessions int    `json:"maxSessions"`
+	MaxMbps     int    `json:"maxMbps"`
+	ListenPort  int    `json:"listenPort"`
+	BrokerURL   string `json:"brokerUrl"`
+	HubAddress  string `json:"hubAddress"`
+	// ConnectionMode is "" / "automatic" (probe → direct or hub) or "direct"
+	// (never use the hub — for publicly reachable machines that want to run
+	// independently of the shared hub).
+	ConnectionMode  string `json:"connectionMode"`
 	ConsentAccepted bool   `json:"consentAccepted"`
 }
 

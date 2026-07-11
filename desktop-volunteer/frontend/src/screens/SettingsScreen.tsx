@@ -5,7 +5,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { errorMessage } from '../core/errors';
 import { VolunteerService } from '../native/VolunteerService';
-import type { VolunteerSettings, VolunteerState } from '../native/types';
+import type { ConnectionMode, VolunteerSettings, VolunteerState } from '../native/types';
 
 interface Props {
   state: VolunteerState;
@@ -156,6 +156,28 @@ export function SettingsScreen({ state }: Props) {
       {advancedOpen && (
         <>
           <div className="vol-field">
+            <label className="vol-label" htmlFor="connection-mode">
+              Connection mode
+            </label>
+            <select
+              id="connection-mode"
+              className="vol-input is-narrow"
+              value={form.connectionMode}
+              disabled={locked}
+              onChange={e => patch({ connectionMode: e.target.value as ConnectionMode })}
+            >
+              <option value="automatic">Automatic</option>
+              <option value="direct">Direct only</option>
+            </select>
+            <span className="vol-help">
+              Automatic serves directly when your computer is reachable, otherwise it routes
+              through the relay hub. Direct only never uses the hub, so it keeps working during a
+              hub outage {'—'} choose it only if your computer accepts incoming connections
+              (e.g. a public IPv6 address).
+            </span>
+          </div>
+
+          <div className="vol-field">
             <label className="vol-label" htmlFor="listen-port">
               Listen port
             </label>
@@ -203,8 +225,8 @@ export function SettingsScreen({ state }: Props) {
               onChange={e => patch({ hubAddress: e.target.value })}
             />
             <span className="vol-help">
-              Relay hub for computers that can{'\u2019'}t accept incoming connections. Leave empty
-              unless the project has published one.
+              Relay hub for computers that can{'\u2019'}t accept incoming connections. Defaults to
+              the project{'\u2019'}s hub; change it only to use your own.
             </span>
           </div>
         </>

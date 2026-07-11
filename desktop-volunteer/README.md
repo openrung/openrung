@@ -68,9 +68,17 @@ relay.
 
 ## Network reality (today)
 
-No relay hub is deployed yet, so the app currently works for homes whose
-machine is publicly reachable — in practice, connections with public IPv6
-(direct mode: clients connect straight to the volunteer). Hub support
-(auto/tunnel mode) is already built in and activates as soon as a hub
-address is configured in Settings → Advanced; once a production hub exists,
-NAT'd homes will be able to volunteer too.
+The app ships with the project's relay hub configured by default, so it runs
+in **automatic** mode: it probes whether this machine is reachable from the
+internet and serves **directly** if so (clients connect straight to the
+volunteer), otherwise it **tunnels** through the hub — which lets NAT'd /
+IPv4-only homes volunteer too. The hub's self-signed certificate is pinned
+in the binary (see `DefaultHubCertFingerprint`), so the connection is
+authenticated without a CA.
+
+Auto mode re-checks periodically and recovers to direct if the hub becomes
+unreachable, so a hub outage does not strand a publicly reachable volunteer.
+Users who want to run fully independent of the shared hub can pick
+**Direct only** under Settings → Advanced (requires a publicly reachable
+address, e.g. public IPv6). Point `Hub address` at your own hub to use a
+different one (its own TLS trust applies; the built-in pin is dropped).

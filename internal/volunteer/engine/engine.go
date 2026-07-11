@@ -378,6 +378,18 @@ func (e *Engine) run(ctx context.Context, done chan struct{}) {
 		if ctx.Err() != nil {
 			return
 		}
+		// An intentional restart (auto mode picked a better transport, or the
+		// public IP moved) is not a failure: restart promptly with fresh backoff
+		// and no error surfaced to the UI.
+		if errors.Is(err, errReresolve) || errors.Is(err, errPublicIPChanged) {
+			backoff = backoffMin
+			e.logf("restarting: %v", err)
+			e.setStatus(func() {
+				e.phase = PhaseStarting
+				e.lastErr = ""
+			})
+			continue
+		}
 		if err == nil {
 			err = errors.New("relay session ended unexpectedly")
 		}
@@ -408,6 +420,71 @@ func (e *Engine) run(ctx context.Context, done chan struct{}) {
 // relay's new address.
 var errPublicIPChanged = errors.New("public address changed")
 
+// errReresolve restarts the session because auto mode re-evaluated reachability
+// and now prefers a different transport (e.g. the hub recovered, or a hub outage
+// means a directly-reachable machine should stop tunnelling).
+var errReresolve = errors.New("auto mode re-resolved to a different transport")
+
+// detectPublicIPv6 is a package var so tests can stub public-IPv6 detection.
+var detectPublicIPv6 = volunteer.DefaultPublicIPv6Address
+
+// autoReprobeInterval is how often auto mode re-evaluates reachability while a
+// session runs, so it converges to the right transport after a change (hub
+// outage/recovery, a port opening). A var so tests can shorten it.
+var autoReprobeInterval = 3 * time.Minute
+
+// autoResolve decides the transport for auto mode. Crucially, a probe *error*
+// means the hub's HTTP API is unreachable — and since tunnel mode also depends
+// on the hub, tunnelling would be equally dead. So when the hub is unreachable
+// we prefer direct mode if this machine has any public IPv6 to advertise
+// (self-sufficient during a hub outage), and only tunnel as a last resort when
+// there is no public address at all. A definitive "not reachable" (hub up, us
+// unreachable) still means tunnel. Returns ("","") when ctx is cancelled.
+func (e *Engine) autoResolve(ctx context.Context, cfg Config) (mode, publicHost string) {
+	hubHTTP := volunteer.DeriveHubHTTPBase(cfg.HubHTTPURL, cfg.HubAddr, !cfg.HubPlaintext)
+	reachable, observed, err := volunteer.DetectDirectReachable(ctx, hubHTTP, cfg.Token, "::", cfg.ListenPort, e.probeClient(cfg))
+	if ctx.Err() != nil {
+		return "", ""
+	}
+	switch {
+	case err != nil:
+		if ipv6, e2 := detectPublicIPv6(); e2 == nil {
+			return ModeDirect, ipv6
+		}
+		return ModeTunnel, ""
+	case reachable:
+		return ModeDirect, observed
+	default:
+		return ModeTunnel, ""
+	}
+}
+
+// watchForModeChange runs only in auto mode: it periodically re-resolves the
+// reachability decision and signals on ch when the preferred transport differs
+// from current, so the supervisor restarts in the better mode. This is what lets
+// a directly-reachable volunteer recover to direct after a hub outage instead of
+// tunnelling forever, and switch back when reachability changes.
+func (e *Engine) watchForModeChange(ctx context.Context, cfg Config, current string, ch chan<- struct{}) {
+	ticker := time.NewTicker(autoReprobeInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m, _ := e.autoResolve(ctx, cfg)
+			if ctx.Err() != nil || m == "" || m == current {
+				continue
+			}
+			select {
+			case ch <- struct{}{}:
+			case <-ctx.Done():
+			}
+			return
+		}
+	}
+}
+
 func (e *Engine) runSession(ctx context.Context) error {
 	cfg := e.currentConfig()
 
@@ -437,24 +514,21 @@ func (e *Engine) runSession(ctx context.Context) error {
 	publicHost := ""
 	if mode == ModeAuto {
 		if cfg.HubAddr == "" {
+			// No hub configured: direct is the only option.
 			mode = ModeDirect
 		} else {
 			e.setStatus(func() { e.phase = PhaseProbing })
-			hubHTTP := volunteer.DeriveHubHTTPBase(cfg.HubHTTPURL, cfg.HubAddr, !cfg.HubPlaintext)
-			reachable, observed, err := volunteer.DetectDirectReachable(ctx, hubHTTP, cfg.Token, "::", cfg.ListenPort, e.probeClient(cfg))
-			switch {
-			case ctx.Err() != nil:
+			mode, publicHost = e.autoResolve(ctx, cfg)
+			if ctx.Err() != nil {
 				return ctx.Err()
-			case err != nil:
-				e.logf("reachability probe unavailable (%v); using tunnel mode", err)
-				mode = ModeTunnel
-			case reachable:
-				e.logf("directly reachable at %s — using direct mode", net.JoinHostPort(observed, strconv.Itoa(cfg.ListenPort)))
-				mode = ModeDirect
-				publicHost = observed
+			}
+			switch {
+			case mode == ModeDirect && publicHost != "":
+				e.logf("directly reachable at %s — using direct mode", net.JoinHostPort(publicHost, strconv.Itoa(cfg.ListenPort)))
+			case mode == ModeDirect:
+				e.logf("relay hub unreachable — serving directly on this machine's public IPv6 instead of waiting on the hub")
 			default:
 				e.logf("not directly reachable from the internet — using tunnel mode via the relay hub")
-				mode = ModeTunnel
 			}
 		}
 	}
@@ -572,7 +646,7 @@ func (e *Engine) startXray(ctx context.Context, cfg Config, identity Identity, l
 
 func (e *Engine) runDirectSession(ctx context.Context, cfg Config, label string, identity Identity, publicHost string) error {
 	if publicHost == "" {
-		detected, err := volunteer.DefaultPublicIPv6Address()
+		detected, err := detectPublicIPv6()
 		if err != nil {
 			return fmt.Errorf("this computer has no public address the internet can reach (no global IPv6): %w", err)
 		}
@@ -663,7 +737,7 @@ func (e *Engine) runDirectSession(ctx context.Context, cfg Config, label string,
 	// we baseline against the same source the recheck uses, and only when it
 	// yields an address at all (no global IPv6 ⇒ nothing to watch here).
 	const ipRecheckInterval = 5 * time.Minute
-	ipBaseline, _ := volunteer.DefaultPublicIPv6Address()
+	ipBaseline, _ := detectPublicIPv6()
 	ipRecheck := time.NewTicker(ipRecheckInterval)
 	defer ipRecheck.Stop()
 
@@ -685,7 +759,7 @@ func (e *Engine) runDirectSession(ctx context.Context, cfg Config, label string,
 				return fmt.Errorf("connection listener stopped: %w", err)
 			}
 		case <-ipRecheck.C:
-			detected, err := volunteer.DefaultPublicIPv6Address()
+			detected, err := detectPublicIPv6()
 			if err == nil && ipBaseline != "" && detected != ipBaseline {
 				e.logf("public IPv6 changed %s → %s; re-registering", ipBaseline, detected)
 				return errPublicIPChanged
@@ -810,11 +884,24 @@ func (e *Engine) runTunnelSession(ctx context.Context, cfg Config, label string,
 	go func() { clientDone <- client.Run(sessionCtx) }()
 	e.logf("connecting to relay hub %s", cfg.HubAddr)
 
+	// In auto mode, keep re-checking whether this machine could serve directly
+	// and switch off the hub when it can — so a hub outage or a newly-opened
+	// port doesn't leave a directly-reachable volunteer tunnelling forever.
+	becameDirect := make(chan struct{}, 1)
+	if cfg.Mode == ModeAuto {
+		go e.watchForModeChange(sessionCtx, cfg, ModeTunnel, becameDirect)
+	}
+
 	select {
 	case <-ctx.Done():
 		cancel()
 		<-clientDone
 		return nil
+	case <-becameDirect:
+		e.logf("switching from tunnel to direct mode")
+		cancel()
+		<-clientDone
+		return errReresolve
 	case err := <-xrayErr:
 		cancel()
 		<-clientDone
