@@ -3,7 +3,29 @@
 # the binary so it receives SIGTERM directly for a clean shutdown.
 set -eu
 
-if [ "${OPENRUNG_TUNNEL:-}" = "true" ] || [ "${OPENRUNG_TUNNEL:-}" = "1" ]; then
+case "${OPENRUNG_MODE:-}" in
+  tunnel)
+    tunnel_mode=true
+    ;;
+  direct|auto)
+    tunnel_mode=false
+    ;;
+  "")
+    # Backward compatibility: the legacy boolean is consulted only when no
+    # explicit mode was provided.
+    if [ "${OPENRUNG_TUNNEL:-}" = "true" ] || [ "${OPENRUNG_TUNNEL:-}" = "1" ]; then
+      tunnel_mode=true
+    else
+      tunnel_mode=false
+    fi
+    ;;
+  *)
+    echo "openrung-volunteer: OPENRUNG_MODE must be auto, direct, or tunnel" >&2
+    exit 2
+    ;;
+esac
+
+if [ "$tunnel_mode" = true ]; then
   # --- CGNAT reverse-tunnel mode ---
   # The relay hub supplies the public endpoint and registers the relay with the
   # broker, so neither OPENRUNG_PUBLIC_HOST nor OPENRUNG_BROKER_URL is needed
@@ -20,11 +42,11 @@ if [ "${OPENRUNG_TUNNEL:-}" = "true" ] || [ "${OPENRUNG_TUNNEL:-}" = "1" ]; then
   if [ -n "${OPENRUNG_HUB_INSECURE:-}" ]; then set -- "$@" "-hub-insecure=${OPENRUNG_HUB_INSECURE}"; fi
   echo "openrung-volunteer: tunnel mode hub=${OPENRUNG_HUB_ADDR}" >&2
 else
-  # --- Direct-exit mode (volunteer exposes a public port) ---
+  # --- Broker/public branch (direct or auto mode) ---
   # A container cannot reliably auto-detect the host's public address, so the
   # public host must always be provided explicitly.
   : "${OPENRUNG_BROKER_URL:?OPENRUNG_BROKER_URL is required (e.g. https://broker.example.com)}"
-  : "${OPENRUNG_PUBLIC_HOST:?OPENRUNG_PUBLIC_HOST is required — a container cannot auto-detect the host public IP; set it to this server's public IP or DNS name}"
+  : "${OPENRUNG_PUBLIC_HOST:?OPENRUNG_PUBLIC_HOST is required — a container cannot auto-detect the host public IP; set it to the server public IP or DNS name}"
   set -- /usr/local/bin/volunteer \
     -broker "${OPENRUNG_BROKER_URL}" \
     -public-host "${OPENRUNG_PUBLIC_HOST}" \
@@ -50,7 +72,7 @@ if [ -n "${OPENRUNG_MAX_SESSIONS:-}" ]; then set -- "$@" -max-sessions "${OPENRU
 if [ -n "${OPENRUNG_MAX_MBPS:-}" ]; then set -- "$@" -max-mbps "${OPENRUNG_MAX_MBPS}"; fi
 
 # The registration token (OPENRUNG_VOLUNTEER_TOKEN), label (OPENRUNG_LABEL),
-# and node class (OPENRUNG_NODE_CLASS) are read natively from the environment
-# by the binary, so they need no flag mapping.
+# node class (OPENRUNG_NODE_CLASS), and explicit mode (OPENRUNG_MODE) are read
+# natively from the environment by the binary, so they need no flag mapping.
 
 exec "$@"

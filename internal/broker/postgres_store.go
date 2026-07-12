@@ -349,13 +349,22 @@ func (s *PostgresStore) Heartbeat(id, maxClass string, now time.Time, ttl time.D
 		// No row updated: either the relay is gone or the guard blocked a
 		// foundation row. Distinguish so the handler can answer 403 vs 404
 		// (the 404 drives client re-registration and must stay accurate).
-		var exists bool
-		if lookupErr := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM relay_descriptors WHERE id = $1)`, id).Scan(&exists); lookupErr == nil && exists {
-			return relay.Descriptor{}, ErrNodeClassForbidden
-		}
-		return relay.Descriptor{}, ErrRelayNotFound
+		return relay.Descriptor{}, heartbeatMissError(
+			s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM relay_descriptors WHERE id = $1)`, id),
+		)
 	}
 	return desc, err
+}
+
+func heartbeatMissError(row pgx.Row) error {
+	var exists bool
+	if err := row.Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		return ErrNodeClassForbidden
+	}
+	return ErrRelayNotFound
 }
 
 func (s *PostgresStore) UpdateGeo(id string, geo relay.GeoLocation) error {

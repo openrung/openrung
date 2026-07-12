@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"openrung/internal/relay"
 )
@@ -76,6 +77,66 @@ func TestTunnelModeRequiresHub(t *testing.T) {
 	cfg.HubAddr = "hub.example:9443"
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("expected tunnel config to validate: %v", err)
+	}
+}
+
+func TestValidateFoundationRequiresDirectMode(t *testing.T) {
+	base := cliConfig{
+		BrokerURL:         "https://broker.openrung.org",
+		NodeClass:         relay.NodeClassFoundation,
+		HubAddr:           "hub.example:9443",
+		ListenPort:        443,
+		PublicHost:        "relay.example",
+		PublicPort:        443,
+		MaxSessions:       1,
+		MaxMbps:           1,
+		HeartbeatInterval: 5 * time.Second,
+		ConnectionLog:     true,
+	}
+
+	for _, mode := range []string{"auto", "tunnel"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := base
+			cfg.Mode = mode
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("Validate() error = nil, want foundation %s rejection", mode)
+			}
+			if !strings.Contains(err.Error(), "requires direct mode") {
+				t.Fatalf("Validate() error = %v, want direct-mode explanation", err)
+			}
+		})
+	}
+
+	direct := base
+	direct.Mode = "direct"
+	if err := direct.Validate(); err != nil {
+		t.Fatalf("Validate() rejected foundation direct mode: %v", err)
+	}
+}
+
+// run has its own fail-closed guard so a programmatic caller cannot bypass
+// Validate and send the foundation token in auto mode's hub probe.
+func TestRunRejectsFoundationAutoBeforeProbe(t *testing.T) {
+	var requests atomic.Int32
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		return jsonResponse(http.StatusOK, `{}`), nil
+	})}
+	cfg := cliConfig{
+		Mode:              "auto",
+		NodeClass:         " Foundation ",
+		HubAddr:           "hub.example:9443",
+		RegistrationToken: "foundation-secret",
+		HTTPClient:        client,
+	}
+
+	err := run(cfg)
+	if err == nil {
+		t.Fatal("run() error = nil, want foundation auto-mode rejection")
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("run() sent %d requests, want 0", requests.Load())
 	}
 }
 
@@ -171,6 +232,28 @@ func TestRegisterRefusesFoundationOverPlaintext(t *testing.T) {
 	}
 	if sent.Load() != 0 {
 		t.Fatalf("register sent %d requests, want 0 (must refuse before sending the token)", sent.Load())
+	}
+}
+
+// Heartbeats carry the same foundation bearer as registration, so the secure
+// transport policy must cover them too.
+func TestHeartbeatRefusesFoundationOverPlaintext(t *testing.T) {
+	var sent atomic.Int32
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		sent.Add(1)
+		return jsonResponse(http.StatusOK, `{}`), nil
+	})}
+	cfg := cliConfig{
+		BrokerURL:         "http://broker.test",
+		RegistrationToken: "foundation-secret",
+		HTTPClient:        client,
+		NodeClass:         relay.NodeClassFoundation,
+	}
+	if err := heartbeat(context.Background(), cfg, "relay_foundation"); err == nil {
+		t.Fatal("heartbeat() error = nil, want a cleartext-broker error")
+	}
+	if sent.Load() != 0 {
+		t.Fatalf("heartbeat sent %d requests, want 0", sent.Load())
 	}
 }
 

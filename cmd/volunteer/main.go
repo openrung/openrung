@@ -30,7 +30,7 @@ func main() {
 	flag.StringVar(&cfg.BrokerURL, "broker", "http://localhost:8080", "broker base URL")
 	flag.StringVar(&cfg.RegistrationToken, "registration-token", os.Getenv("OPENRUNG_VOLUNTEER_TOKEN"), "volunteer registration token")
 	flag.StringVar(&cfg.Label, "label", os.Getenv("OPENRUNG_LABEL"), "human-readable relay label shown in the broker; a random adjective-noun is generated when empty")
-	flag.StringVar(&cfg.NodeClass, "node-class", os.Getenv("OPENRUNG_NODE_CLASS"), "relay operator class: volunteer (default) or foundation; foundation requires the broker's foundation registration token and an https broker, and is rejected in tunnel mode")
+	flag.StringVar(&cfg.NodeClass, "node-class", os.Getenv("OPENRUNG_NODE_CLASS"), "relay operator class: volunteer (default) or foundation; foundation requires direct mode, the broker's foundation registration token, and an https broker")
 	flag.StringVar(&cfg.XrayPath, "xray", "xray", "path to xray binary")
 	flag.StringVar(&cfg.ListenHost, "listen-host", "::", "local listen host; with connection logging, :: listens on both IPv6 and IPv4 through the observer")
 	flag.IntVar(&cfg.ListenPort, "listen-port", 443, "local listen port")
@@ -133,6 +133,17 @@ func normalizeMode(mode string, tunnelFlag bool, hubAddr string) string {
 	}
 }
 
+// requireDirectModeForFoundation prevents a foundation credential from ever
+// entering the hub-based auto/tunnel paths. Auto probing sends the registration
+// token to the hub before it chooses a mode, so even an eventually-direct result
+// is not safe for the foundation token.
+func requireDirectModeForFoundation(nodeClass, mode string) error {
+	if nodeClass == relay.NodeClassFoundation && mode != "direct" {
+		return fmt.Errorf("node-class foundation requires direct mode: auto and tunnel send the registration token to the relay hub; use -mode direct against a TLS broker")
+	}
+	return nil
+}
+
 func (c *cliConfig) ApplyDefaults() error {
 	if c.Mode == "" {
 		c.Mode = normalizeMode("", c.TunnelMode, c.HubAddr)
@@ -171,6 +182,9 @@ func (c cliConfig) Validate() error {
 	mode := c.Mode
 	if mode == "" {
 		mode = normalizeMode("", c.TunnelMode, c.HubAddr)
+	}
+	if err := requireDirectModeForFoundation(c.NodeClass, mode); err != nil {
+		return err
 	}
 	switch mode {
 	case "tunnel":
@@ -240,6 +254,24 @@ func (c cliConfig) Validate() error {
 }
 
 func run(cfg cliConfig) error {
+	nodeClass, err := relay.NormalizeNodeClass(cfg.NodeClass)
+	if err != nil {
+		return fmt.Errorf("invalid node-class: %w", err)
+	}
+	cfg.NodeClass = nodeClass
+
+	mode := cfg.Mode
+	if mode == "" {
+		mode = normalizeMode("", cfg.TunnelMode, cfg.HubAddr)
+	}
+	if err := requireDirectModeForFoundation(cfg.NodeClass, mode); err != nil {
+		// Keep this guard in the runtime path as well as Validate. Besides making
+		// run safe for programmatic callers, it guarantees rejection before
+		// resolveAutoMode can transmit the foundation token in a hub probe.
+		return err
+	}
+	cfg.Mode = mode
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -673,7 +705,12 @@ func heartbeat(ctx context.Context, cfg cliConfig, id string) error {
 }
 
 func (c cliConfig) brokerClient() volunteer.BrokerClient {
-	return volunteer.BrokerClient{BaseURL: c.BrokerURL, Token: c.RegistrationToken, HTTPClient: c.HTTPClient}
+	return volunteer.BrokerClient{
+		BaseURL:                c.BrokerURL,
+		Token:                  c.RegistrationToken,
+		HTTPClient:             c.HTTPClient,
+		RequireSecureTransport: c.NodeClass == relay.NodeClassFoundation,
+	}
 }
 
 func stopProcess(cmd *exec.Cmd, errCh <-chan error) {

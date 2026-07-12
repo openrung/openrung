@@ -42,6 +42,7 @@ func TestStoreStatsAndPruneReportOnlyActiveRelays(t *testing.T) {
 		t.Fatalf("register expiring relay: %v", err)
 	}
 	activeReq := validRegisterRequest()
+	activeReq.PublicHost = "active.example.com"
 	activeReq.MaxSessions = 12
 	if _, err := store.Register(activeReq, now, 10*time.Minute); err != nil {
 		t.Fatalf("register active relay: %v", err)
@@ -87,6 +88,35 @@ func TestHeartbeatExtendsRelayLease(t *testing.T) {
 
 	if !updated.ExpiresAt.Equal(heartbeatAt.Add(time.Minute)) {
 		t.Fatalf("expected expiration %s, got %s", heartbeatAt.Add(time.Minute), updated.ExpiresAt)
+	}
+}
+
+func TestStoreDuplicateEndpointReplacesOldDescriptor(t *testing.T) {
+	store := NewStore()
+	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
+
+	first, err := store.Register(validRegisterRequest(), now, time.Minute)
+	if err != nil {
+		t.Fatalf("register first relay: %v", err)
+	}
+	replacement := validRegisterRequest()
+	replacement.ClientID = "1b5cceef-64f2-462b-b729-b89c3a63e6e2"
+	second, err := store.Register(replacement, now.Add(time.Second), time.Minute)
+	if err != nil {
+		t.Fatalf("register replacement relay: %v", err)
+	}
+	if first.ID == second.ID {
+		t.Fatal("expected replacement to receive a new relay ID")
+	}
+	if _, err := store.Heartbeat(first.ID, relay.NodeClassVolunteer, now.Add(2*time.Second), time.Minute); !errors.Is(err, ErrRelayNotFound) {
+		t.Fatalf("expected old relay ID to be forgotten, got %v", err)
+	}
+	listed, err := store.List(now.Add(2*time.Second), 10)
+	if err != nil {
+		t.Fatalf("list replacement relay: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != second.ID || listed[0].ClientID != replacement.ClientID {
+		t.Fatalf("unexpected replacement list: %+v", listed)
 	}
 }
 

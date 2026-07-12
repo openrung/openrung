@@ -241,11 +241,17 @@ Foundation runs itself. It is provenance, not a quality score. A `foundation`
 claim is only accepted when the request presents the broker's
 `OPENRUNG_FOUNDATION_TOKEN` as its bearer token; any other credential claiming
 `foundation` is rejected with `403` (fail loudly, never silently downgrade).
-The foundation token bounds the claimable class without forcing it — its
-holder may still register `volunteer` relays, which is how a foundation-run
-hub keeps registering the community volunteers tunneled behind it. The class
-is served back inside the signed relay-list body, so clients receive it with
-the same Ed25519 authenticity as every other descriptor field.
+The foundation token bounds the claimable class without forcing it — its holder
+may still register `volunteer` relays, but routine volunteer and hub traffic
+should use the volunteer token so the privileged bearer stays out of the hub
+path. The shipped volunteer supports Foundation claims only when the resolved
+mode is `direct`; operators should configure that mode explicitly. It rejects
+both `auto` and `tunnel` before contacting a hub, because the hub path would
+receive the registration bearer and the shipped hub
+always registers the tunneled exit operator as `volunteer`. A Foundation-operated
+hub therefore does not elevate the community volunteers behind it. The class is
+served back inside the signed relay-list body, so clients receive it with the
+same Ed25519 authenticity as every other descriptor field.
 
 Because `public_host`/`public_port` is client-supplied and foundation
 endpoints are public in the signed list, the broker also protects a live
@@ -257,13 +263,16 @@ foundation relay's row — new id, its own keys, downgraded class — and force
 the real node into a re-registration race. A foundation operator re-registers
 (refreshes) its own endpoint normally with the token. The same rule guards
 heartbeats: extending a `foundation` relay's lease requires the foundation
-token, so an orphaned foundation label simply expires within one lease TTL.
+token, so an orphaned foundation row expires from the origin store within one
+lease TTL.
 
 Foundation registrations must be sent over TLS: the foundation token is
 high-value, and the volunteer client refuses to transmit it over a cleartext
-`http://` broker URL (loopback excepted for local testing). The plaintext
-broker origin used by community volunteers — reachable because Cloudflare
-challenges datacenter IPs on the TLS front — is therefore volunteer-only.
+`http://` broker URL (loopback excepted for local testing). It also refuses all
+broker redirects in Foundation mode, preventing an HTTPS request from following
+a downgrade. The plaintext broker origin used by community volunteers —
+reachable because Cloudflare challenges datacenter IPs on the TLS front — is
+therefore volunteer-only.
 
 For tunnel registrations the hub also sends `exit_host`: the volunteer's public
 source IP as observed on its control connection, i.e. where tunneled traffic
@@ -332,7 +341,17 @@ in the relay list, so this guard is what stops a weaker credential from either
 keeping an orphaned foundation label alive (e.g. after an endpoint takeover
 through a pre-`node_class` broker binary) or interfering with a foundation
 relay: a refused heartbeat changes nothing, and an unattended foundation row
-simply expires within one lease TTL.
+expires from the origin store within one lease TTL.
+
+The one-TTL bound applies to the live origin row, not to copies already signed.
+An ordinary API snapshot has a 30-minute `not_after` window. On an origin
+failure, the edge Worker can serve its last healthy API response for up to 15
+minutes, but that response retains its original `not_after`; a signed
+static-mirror response has a 24-hour window. Clients and local fallback caches
+must stop using snapshots once `not_after` plus the protocol's bounded clock-skew
+allowance has elapsed. Until then a snapshot can still show the earlier
+`foundation` provenance, so removing the origin row is not an instant
+client-visible revocation mechanism.
 
 ## List Relays
 

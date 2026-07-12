@@ -10,6 +10,50 @@ import (
 	"openrung/internal/relay"
 )
 
+type heartbeatMissRow func(...any) error
+
+func (row heartbeatMissRow) Scan(dest ...any) error {
+	return row(dest...)
+}
+
+func TestHeartbeatMissError(t *testing.T) {
+	lookupErr := errors.New("lookup failed")
+	tests := []struct {
+		name string
+		row  heartbeatMissRow
+		want error
+	}{
+		{
+			name: "foundation row exists",
+			row: func(dest ...any) error {
+				*dest[0].(*bool) = true
+				return nil
+			},
+			want: ErrNodeClassForbidden,
+		},
+		{
+			name: "relay is missing",
+			row: func(dest ...any) error {
+				*dest[0].(*bool) = false
+				return nil
+			},
+			want: ErrRelayNotFound,
+		},
+		{
+			name: "lookup fails",
+			row:  func(...any) error { return lookupErr },
+			want: lookupErr,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := heartbeatMissError(test.row); !errors.Is(err, test.want) {
+				t.Fatalf("heartbeat miss error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
 func TestPostgresStoreSharesRelayStateAcrossInstances(t *testing.T) {
 	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
 	storeA := newTestPostgresStore(t, RankingModeGlobal)

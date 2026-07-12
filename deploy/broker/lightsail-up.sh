@@ -22,20 +22,20 @@
 #
 # Overridable via env: OPENRUNG_REGION, OPENRUNG_AZ, OPENRUNG_BUNDLE,
 # OPENRUNG_BLUEPRINT, OPENRUNG_IMAGE, OPENRUNG_BROKER_PORT, OPENRUNG_VOLUNTEER_TOKEN,
-# OPENRUNG_FOUNDATION_TOKEN, OPENRUNG_DASHBOARD_TOKEN, OPENRUNG_RELAY_STORE,
-# OPENRUNG_RELAY_DATABASE_URL, OPENRUNG_TELEMETRY_STORE,
-# OPENRUNG_TELEMETRY_DATABASE_URL, OPENRUNG_GEOIP_ENDPOINT.
+# OPENRUNG_DASHBOARD_TOKEN, OPENRUNG_RELAY_STORE, OPENRUNG_RELAY_DATABASE_URL,
+# OPENRUNG_TELEMETRY_STORE, OPENRUNG_TELEMETRY_DATABASE_URL, OPENRUNG_GEOIP_ENDPOINT.
 #
-# OPENRUNG_FOUNDATION_TOKEN, when set, authorizes node_class=foundation
-# registrations so foundation-operated relays are distinguishable from
-# community volunteers in the signed relay list. It must differ from
-# OPENRUNG_VOLUNTEER_TOKEN (the broker refuses to start otherwise).
+# This helper deliberately does NOT accept OPENRUNG_FOUNDATION_TOKEN. Lightsail
+# retains user-data, and the bootstrap log is readable on the instance, so
+# interpolating the privileged bearer here would leave durable copies. Provision
+# the broker first, then transfer the token over SSH into the root-owned,
+# mode-0600 /etc/openrung/broker.env and recreate the container with --env-file.
 #
 # OPENRUNG_RELAY_SIGNING_KEY is deliberately NOT overridable here: user-data
 # persists world-readable under /var/lib/cloud, so the instance generates a
 # fresh seed for itself instead. Clients pin the production public keys —
-# replace the generated seed with the production active seed (scp it into
-# /etc/openrung/broker.env and restart the container) before pointing pinned
+# replace the generated seed with the production active seed (transfer it into
+# /etc/openrung/broker.env and recreate the container with --env-file) before pointing pinned
 # clients at this broker.
 set -euo pipefail
 
@@ -46,13 +46,17 @@ BLUEPRINT="${OPENRUNG_BLUEPRINT:-ubuntu_24_04}"
 IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-broker:main}"
 PORT="${OPENRUNG_BROKER_PORT:-8080}"
 TOKEN="${OPENRUNG_VOLUNTEER_TOKEN:-}"
-FOUNDATION_TOKEN="${OPENRUNG_FOUNDATION_TOKEN:-}"
 DASHBOARD_TOKEN="${OPENRUNG_DASHBOARD_TOKEN:-}"
 RELAY_STORE="${OPENRUNG_RELAY_STORE:-memory}"
 RELAY_DATABASE_URL="${OPENRUNG_RELAY_DATABASE_URL:-}"
 TELEMETRY_STORE="${OPENRUNG_TELEMETRY_STORE:-}"
 TELEMETRY_DATABASE_URL="${OPENRUNG_TELEMETRY_DATABASE_URL:-}"
 GEOIP_ENDPOINT="${OPENRUNG_GEOIP_ENDPOINT:-}"
+
+if [ "${OPENRUNG_FOUNDATION_TOKEN+x}" = x ]; then
+  echo "error: OPENRUNG_FOUNDATION_TOKEN is not accepted by this helper because Lightsail user-data persists; install it post-boot in /etc/openrung/broker.env" >&2
+  exit 2
+fi
 
 adjectives=(happy grumpy glorious sleepy brave clever gentle jolly mighty nimble plucky quiet rapid shiny snappy spry sturdy sunny swift witty zesty breezy cosmic dapper eager fuzzy golden hardy lucky merry noble proud quirky rustic silly valiant)
 nouns=(hippo walrus castle otter falcon badger lantern comet maple harbor meadow beacon pebble willow cactus cobra ferret gecko heron ibex jaguar koala lemur marmot narwhal ocelot panther quokka raven salmon tapir urchin viper wombat yak zebra)
@@ -79,7 +83,6 @@ else
 fi
 
 # Optional env lines, included only when set so blank lines are harmless.
-FOUNDATION_ENV=""; [ -n "$FOUNDATION_TOKEN" ] && FOUNDATION_ENV="OPENRUNG_FOUNDATION_TOKEN=${FOUNDATION_TOKEN}"
 DASHBOARD_ENV=""; [ -n "$DASHBOARD_TOKEN" ] && DASHBOARD_ENV="OPENRUNG_DASHBOARD_TOKEN=${DASHBOARD_TOKEN}"
 STORE_ENV=""; [ -n "$RELAY_STORE" ] && STORE_ENV="OPENRUNG_RELAY_STORE=${RELAY_STORE}"
 DB_ENV=""; [ -n "$RELAY_DATABASE_URL" ] && DB_ENV="OPENRUNG_RELAY_DATABASE_URL=${RELAY_DATABASE_URL}"
@@ -109,7 +112,6 @@ cat > /etc/openrung/broker.env <<ENVEOF
 OPENRUNG_ADDR=:${PORT}
 ${TOKEN_ENV}
 ${ANON_ENV}
-${FOUNDATION_ENV}
 ${DASHBOARD_ENV}
 ${STORE_ENV}
 ${DB_ENV}
@@ -122,8 +124,8 @@ chmod 600 /etc/openrung/broker.env
 # Relay-list signing seed (the broker fails fast without it). Generated ON the
 # instance — the \$(...) is escaped so it never expands into user-data, which
 # persists on disk under /var/lib/cloud. Production: replace with the pinned
-# active seed (scp) and restart the container; every redeploy must keep using
-# --env-file so the seed is never hand-typed inline.
+# active seed over an authenticated channel and recreate the container; every
+# redeploy must keep using --env-file so the seed is never hand-typed inline.
 # set +x for exactly this line: set -eux (above) would otherwise trace the
 # EXPANDED command — i.e. the generated seed in cleartext — into the
 # world-readable /var/log/openrung-init.log.
@@ -194,6 +196,11 @@ echo "docker volume across restarts."
 echo
 echo "Relay-list signing: the instance generated a FRESH seed in"
 echo "/etc/openrung/broker.env. Clients pin the production public keys, so scp the"
-echo "production active seed over it (and restart the container) before pointing"
+echo "production active seed over it (and recreate the container) before pointing"
 echo "pinned clients at this broker. Confirm with: curl .../healthz (signing_key_id)."
+echo
+echo "Foundation registration is disabled until OPENRUNG_FOUNDATION_TOKEN is added"
+echo "post-boot to the root-owned /etc/openrung/broker.env, then recreate the container"
+echo "with --env-file (docker restart does not reload a changed env file)."
+echo "Never pass that token through Lightsail user-data or an inline docker -e argument."
 echo "OPENRUNG_BROKER name=${NAME} ip=${STATIC_IP} port=${PORT}"

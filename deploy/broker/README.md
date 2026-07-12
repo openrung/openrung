@@ -75,8 +75,22 @@ itself apart from community volunteers in the signed relay list. It works with
 either auth mode above, must differ from `OPENRUNG_VOLUNTEER_TOKEN` (the
 broker refuses to start otherwise), and belongs only on foundation-operated
 relays. Heartbeats for a foundation relay must also present this token; the
-broker refuses to extend the lease otherwise, so a foundation label can never
-outlive its authorized registrant by more than one lease TTL.
+broker refuses to extend the lease otherwise. At the origin store, an unattended
+foundation row therefore disappears after one lease TTL. That is not an instant
+client-visible revocation guarantee: an ordinary API directory has a 30-minute
+signed freshness window, the Worker may serve its last healthy response for up
+to 15 minutes (still bounded by that response's `not_after`), and a mirror has a
+24-hour signed freshness window. Clients and their local caches must enforce each
+snapshot's `not_after` with only the protocol's bounded clock-skew allowance;
+operators should treat `node_class` as provenance captured when it was signed.
+
+Treat the Foundation token like the relay-list signing seed. Never place it in
+cloud-init/user-data, provider metadata, an inline `docker -e` argument, or a
+shell command that tracing or history can retain. Transfer it only after boot
+over an authenticated channel, store it in the root-owned mode-`0600` broker env
+file, then **recreate** the container with `--env-file` (a Docker restart does
+not reload a changed env file). `lightsail-up.sh` intentionally rejects
+`OPENRUNG_FOUNDATION_TOKEN` for this reason.
 
 > **Rolling back past `node_class`:** a broker image that predates the
 > `node_class` column neither rewrites the class on re-registration upserts

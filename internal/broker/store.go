@@ -106,19 +106,40 @@ func (s *Store) Register(req relay.RegisterRequest, now time.Time, ttl time.Dura
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// Mirror the postgres upsert's foundation guard: a non-foundation
-	// registration may not land on an endpoint a live foundation relay holds.
-	// The memory store keys by id (it never overwrites on host:port), so the
-	// attack here is shadowing rather than replacement, but the guarantee must
-	// hold regardless of store — reject the collision outright.
-	if desc.NodeClass != relay.NodeClassFoundation {
-		for _, existing := range s.relays {
-			if existing.NodeClass == relay.NodeClassFoundation &&
-				existing.PublicHost == desc.PublicHost && existing.PublicPort == desc.PublicPort &&
-				existing.ExpiresAt.After(now) {
-				return relay.Descriptor{}, ErrNodeClassForbidden
-			}
+	// Mirror the postgres endpoint upsert: each public host:port identifies one
+	// current descriptor, and a successful re-registration replaces the old ID.
+	// Validate every matching row before deleting any of them so a legacy store
+	// containing duplicate rows cannot be partially modified when one of those
+	// rows is a live foundation relay.
+	replacedIDs := make([]string, 0, 1)
+	var preservedGeo relay.GeoLocation
+	var preservedGeoRegisteredAt time.Time
+	hasPreservedGeo := false
+	for existingID, existing := range s.relays {
+		if existing.PublicHost != desc.PublicHost || existing.PublicPort != desc.PublicPort {
+			continue
 		}
+		if desc.NodeClass != relay.NodeClassFoundation &&
+			existing.NodeClass == relay.NodeClassFoundation &&
+			existing.ExpiresAt.After(now) {
+			return relay.Descriptor{}, ErrNodeClassForbidden
+		}
+		replacedIDs = append(replacedIDs, existingID)
+		// Match postgres registration semantics: retain a resolved location
+		// while the exit is unchanged, but clear it when an endpoint is reused
+		// by a relay with a different exit host.
+		if existing.ExitHost == desc.ExitHost &&
+			(!hasPreservedGeo || existing.RegisteredAt.After(preservedGeoRegisteredAt)) {
+			preservedGeo = existing.GeoLocation
+			preservedGeoRegisteredAt = existing.RegisteredAt
+			hasPreservedGeo = true
+		}
+	}
+	if hasPreservedGeo {
+		desc.GeoLocation = preservedGeo
+	}
+	for _, replacedID := range replacedIDs {
+		delete(s.relays, replacedID)
 	}
 	s.relays[id] = desc
 

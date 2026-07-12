@@ -22,7 +22,7 @@ func TestDirectoryCacheThrottlesWithinInterval(t *testing.T) {
 			mu.Lock()
 			calls++
 			mu.Unlock()
-			return relay.ListResponse{Count: 1, Relays: []relay.Descriptor{{ID: "r1"}}}, nil
+			return relay.ListResponse{Count: 1, NotAfter: now.Add(time.Hour), Relays: []relay.Descriptor{{ID: "r1"}}}, nil
 		},
 	}
 
@@ -57,7 +57,7 @@ func TestDirectoryCacheServesStaleOnError(t *testing.T) {
 			if fail {
 				return relay.ListResponse{}, errors.New("broker unreachable")
 			}
-			return relay.ListResponse{Count: 1, Relays: []relay.Descriptor{{ID: "cached"}}}, nil
+			return relay.ListResponse{Count: 1, NotAfter: now.Add(time.Hour), Relays: []relay.Descriptor{{ID: "cached"}}}, nil
 		},
 	}
 
@@ -74,6 +74,36 @@ func TestDirectoryCacheServesStaleOnError(t *testing.T) {
 	}
 	if len(got.Relays) != 1 || got.Relays[0].ID != "cached" {
 		t.Fatalf("expected cached relay, got %+v", got.Relays)
+	}
+}
+
+func TestDirectoryCacheRefusesExpiredSnapshotOnError(t *testing.T) {
+	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
+	fail := false
+	d := &directoryCache{
+		now: func() time.Time { return now },
+		fetcher: func(_ context.Context, _ discovery.Options) (relay.ListResponse, error) {
+			if fail {
+				return relay.ListResponse{}, errors.New("broker unreachable")
+			}
+			return relay.ListResponse{
+				Count:    1,
+				NotAfter: now.Add(time.Minute),
+				Relays:   []relay.Descriptor{{ID: "expired"}},
+			}, nil
+		},
+	}
+
+	if _, err := d.fetch(context.Background(), discovery.Options{}); err != nil {
+		t.Fatalf("seed fetch: %v", err)
+	}
+
+	// Once not_after plus the protocol's clock-skew allowance has elapsed, a
+	// broker failure must surface instead of resurrecting the signed snapshot.
+	now = now.Add(time.Minute + directoryNotAfterSkewAllowance + time.Second)
+	fail = true
+	if _, err := d.fetch(context.Background(), discovery.Options{}); err == nil {
+		t.Fatal("expected broker error after cached snapshot expired")
 	}
 }
 

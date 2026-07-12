@@ -119,8 +119,8 @@ func TestRegisterAcceptsFoundationClassWithFoundationToken(t *testing.T) {
 }
 
 // The foundation token bounds the class a request may claim; it does not force
-// it. A privileged holder (e.g. a foundation-run hub) can still register
-// volunteer-class relays.
+// it. A privileged holder can still register a volunteer-class relay, though
+// routine volunteer and hub traffic should use the volunteer token.
 func TestRegisterFoundationTokenDefaultsToVolunteerClass(t *testing.T) {
 	server := NewServer(NewStore(), Config{
 		SigningSeed:       testSigningSeed(),
@@ -362,24 +362,81 @@ func TestRegisterCannotOverwriteFoundationEndpointAnonymously(t *testing.T) {
 	_ = original
 }
 
-// The legitimate foundation operator can always re-register (refresh) its own
-// endpoint with the foundation token.
+// An authorized foundation registration replaces both a volunteer that
+// pre-squatted the endpoint and an older foundation descriptor. The in-memory
+// store must retain the same one-row-per-endpoint invariant as postgres.
 func TestRegisterFoundationCanRefreshOwnEndpoint(t *testing.T) {
 	store := NewStore()
 	now := time.Now().UTC()
 
+	preSquat, err := store.Register(validRegisterRequest(), now, time.Minute)
+	if err != nil {
+		t.Fatalf("register pre-squatting volunteer: %v", err)
+	}
+
 	req := validRegisterRequest()
 	req.NodeClass = relay.NodeClassFoundation
-	if _, err := store.Register(req, now, time.Minute); err != nil {
+	firstFoundation, err := store.Register(req, now.Add(time.Second), time.Minute)
+	if err != nil {
 		t.Fatalf("first foundation register: %v", err)
 	}
+	if _, err := store.Heartbeat(preSquat.ID, relay.NodeClassVolunteer, now.Add(2*time.Second), time.Minute); !errors.Is(err, ErrRelayNotFound) {
+		t.Fatalf("pre-squatting volunteer ID survived foundation registration: %v", err)
+	}
+
 	// Re-register at the same endpoint, still foundation-class: allowed.
-	if _, err := store.Register(req, now.Add(time.Second), time.Minute); err != nil {
+	refreshed, err := store.Register(req, now.Add(2*time.Second), time.Minute)
+	if err != nil {
 		t.Fatalf("foundation refresh: %v", err)
 	}
+	if refreshed.ID == firstFoundation.ID {
+		t.Fatal("expected foundation refresh to receive a new relay ID")
+	}
+	if _, err := store.Heartbeat(firstFoundation.ID, relay.NodeClassFoundation, now.Add(3*time.Second), time.Minute); !errors.Is(err, ErrRelayNotFound) {
+		t.Fatalf("old foundation ID survived refresh: %v", err)
+	}
+	listed, err := store.List(now.Add(3*time.Second), 10)
+	if err != nil {
+		t.Fatalf("list refreshed foundation relay: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != refreshed.ID || listed[0].NodeClass != relay.NodeClassFoundation {
+		t.Fatalf("expected exactly the refreshed foundation descriptor, got %+v", listed)
+	}
+
 	// A volunteer registration at the same endpoint: refused.
 	vol := validRegisterRequest()
-	if _, err := store.Register(vol, now.Add(2*time.Second), time.Minute); !errors.Is(err, ErrNodeClassForbidden) {
+	if _, err := store.Register(vol, now.Add(4*time.Second), time.Minute); !errors.Is(err, ErrNodeClassForbidden) {
 		t.Fatalf("volunteer collision: err = %v, want ErrNodeClassForbidden", err)
+	}
+}
+
+func TestStoreExpiredFoundationEndpointIsReclaimable(t *testing.T) {
+	store := NewStore()
+	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
+
+	foundation := validRegisterRequest()
+	foundation.NodeClass = relay.NodeClassFoundation
+	expired, err := store.Register(foundation, now, time.Minute)
+	if err != nil {
+		t.Fatalf("register foundation relay: %v", err)
+	}
+
+	volunteer := validRegisterRequest()
+	reclaimed, err := store.Register(volunteer, now.Add(2*time.Minute), time.Minute)
+	if err != nil {
+		t.Fatalf("reclaim expired foundation endpoint: %v", err)
+	}
+	if reclaimed.NodeClass != relay.NodeClassVolunteer {
+		t.Fatalf("reclaimed node_class = %q, want %q", reclaimed.NodeClass, relay.NodeClassVolunteer)
+	}
+	if _, err := store.Heartbeat(expired.ID, relay.NodeClassFoundation, now.Add(2*time.Minute), time.Minute); !errors.Is(err, ErrRelayNotFound) {
+		t.Fatalf("expired foundation ID survived endpoint reclaim: %v", err)
+	}
+	listed, err := store.List(now.Add(2*time.Minute), 10)
+	if err != nil {
+		t.Fatalf("list reclaimed endpoint: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != reclaimed.ID {
+		t.Fatalf("expected exactly the volunteer replacement, got %+v", listed)
 	}
 }

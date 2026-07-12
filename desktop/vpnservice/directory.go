@@ -29,6 +29,12 @@ type directoryCache struct {
 	fetchedAt time.Time
 }
 
+// Signed directory responses allow five minutes of clock skew during
+// verification. The cache applies the same finite allowance, then refuses to
+// serve the snapshot even when the broker is unreachable: not_after is a
+// replay bound, not merely a hint to refresh when convenient.
+const directoryNotAfterSkewAllowance = 5 * time.Minute
+
 func newDirectoryCache() *directoryCache {
 	return &directoryCache{
 		fetcher: func(ctx context.Context, opts discovery.Options) (relay.ListResponse, error) {
@@ -78,7 +84,8 @@ func (s *Service) identityForDirectory() discovery.Options {
 
 func (d *directoryCache) fetch(ctx context.Context, opts discovery.Options) (relay.ListResponse, error) {
 	d.mu.Lock()
-	if d.cached != nil && d.clock().Sub(d.fetchedAt) < config.MinDirectoryRefreshInterval {
+	now := d.clock()
+	if directorySnapshotFresh(d.cached, now) && now.Sub(d.fetchedAt) < config.MinDirectoryRefreshInterval {
 		cached := *d.cached
 		d.mu.Unlock()
 		return cached, nil
@@ -91,7 +98,7 @@ func (d *directoryCache) fetch(ctx context.Context, opts discovery.Options) (rel
 		// blocked edge) so the map does not empty out mid-session.
 		d.mu.Lock()
 		defer d.mu.Unlock()
-		if d.cached != nil {
+		if directorySnapshotFresh(d.cached, d.clock()) {
 			return *d.cached, nil
 		}
 		return relay.ListResponse{}, err
@@ -102,4 +109,10 @@ func (d *directoryCache) fetch(ctx context.Context, opts discovery.Options) (rel
 	d.cached = &response
 	d.fetchedAt = d.clock()
 	return response, nil
+}
+
+func directorySnapshotFresh(response *relay.ListResponse, now time.Time) bool {
+	return response != nil &&
+		!response.NotAfter.IsZero() &&
+		!response.NotAfter.Before(now.Add(-directoryNotAfterSkewAllowance))
 }

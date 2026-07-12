@@ -25,8 +25,9 @@ type Config struct {
 	// RegistrationToken (cmd/broker refuses to start otherwise — a shared
 	// value would let every volunteer self-promote) and its holder can still
 	// register volunteer-class relays: the token bounds the maximum class a
-	// request may claim, it does not force one, so a foundation-operated hub
-	// can keep registering the community volunteers behind it as volunteers.
+	// request may claim, it does not force one. Routine volunteer and relay-hub
+	// traffic should still use RegistrationToken so this credential stays out
+	// of the hub path.
 	// Empty disables foundation registration entirely.
 	FoundationToken   string
 	VolunteerLeaseTTL time.Duration

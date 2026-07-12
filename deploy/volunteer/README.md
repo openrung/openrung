@@ -30,6 +30,37 @@ Only two are required:
 | `OPENRUNG_BROKER_URL` | Broker base URL the relay registers with. |
 | `OPENRUNG_PUBLIC_HOST` | Public IP / DNS name clients use to reach **this** relay. Must be set — a container cannot auto-detect it. |
 
+### Foundation-operated relays
+
+A Foundation-operated relay uses the same data plane, but attests its operator
+provenance to the broker. Put these values in a root-owned mode-`0600` env file:
+
+```sh
+OPENRUNG_NODE_CLASS=foundation
+OPENRUNG_MODE=direct
+OPENRUNG_BROKER_URL=https://broker.example.com
+OPENRUNG_VOLUNTEER_TOKEN=<foundation-registration-token>
+```
+
+Foundation mode is deliberately narrower than community-volunteer mode:
+
+- The resolved mode must be `direct`; set `OPENRUNG_MODE=direct` explicitly in
+  Foundation deployments. Both `auto` and `tunnel` are rejected before the
+  relay contacts a hub, because the hub path would expose the Foundation bearer
+  and the hub always registers the community exit operator as `volunteer`.
+- The broker URL must use HTTPS (loopback HTTP is allowed only for local tests),
+  and broker API redirects are refused so the bearer cannot follow a downgrade.
+- Never put the token in cloud-init/user-data, provider metadata, inline
+  `docker -e` arguments, or traced shell commands. The bundled Lightsail and
+  Hetzner bootstrap helpers intentionally provision anonymous volunteers only
+  and reject registration tokens; provision the host first, transfer the env
+  file over an authenticated channel, and recreate the container with
+  `--env-file`.
+
+`node_class` describes the operator of the exit relay, not the infrastructure it
+traverses. A Foundation-operated relay hub therefore does not make the community
+volunteers tunneled through it Foundation-operated.
+
 ### Stable relay identity (recommended)
 
 Without an explicit identity, the relay generates a fresh one on every restart.
