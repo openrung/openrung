@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"syscall"
 	"time"
 
 	"github.com/openrung/openrung/punchcore"
@@ -24,6 +25,14 @@ type Dialer struct {
 	Hub     punchcore.HubClient
 	RelayID string
 	Logger  *slog.Logger
+	// Control, when non-nil, is invoked with the raw file descriptor of the punch
+	// UDP socket immediately after it is created and before any datagram is sent.
+	// It exists for platforms where the socket must be excused from the process's
+	// own tunnel — on Android the callback runs VpnService.protect(fd) so the
+	// reflector, hole-punch, and QUIC traffic on this one socket reaches the
+	// underlying network instead of looping back through the app's TUN. Desktop
+	// leaves it nil, so socket creation is byte-for-byte the previous behaviour.
+	Control func(fd uintptr)
 }
 
 // Establishment is a live punched path. The caller starts Bridge.Serve with a
@@ -59,6 +68,33 @@ func (d *Dialer) logger() *slog.Logger {
 	return slog.Default()
 }
 
+// listenPunchSocket opens the single udp4 socket that serves reflector discovery,
+// the hole punch, and QUIC. When d.Control is set it is applied to the raw fd at
+// creation (before any traffic) so callers can protect the socket from the
+// process's own tunnel. The returned conn is always a *net.UDPConn: ListenConfig
+// with network "udp4" yields one, which Gather/Attempt/LocalCandidates require,
+// and it is left unconnected so quic-go can WriteTo arbitrary addresses.
+func (d *Dialer) listenPunchSocket(ctx context.Context) (*net.UDPConn, error) {
+	if d.Control == nil {
+		return net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	}
+	lc := net.ListenConfig{
+		Control: func(_, _ string, c syscall.RawConn) error {
+			return c.Control(d.Control)
+		},
+	}
+	pc, err := lc.ListenPacket(ctx, "udp4", ":0")
+	if err != nil {
+		return nil, err
+	}
+	sock, ok := pc.(*net.UDPConn)
+	if !ok {
+		_ = pc.Close()
+		return nil, fmt.Errorf("punch: expected *net.UDPConn, got %T", pc)
+	}
+	return sock, nil
+}
+
 // Establish attempts the full client punch flow. On success it returns a live
 // Establishment (the caller must run Bridge.Serve) and an OK PunchResult. On any
 // failure it returns a non-nil error and a PunchResult whose Reason/NATClass are
@@ -76,7 +112,7 @@ func (d *Dialer) Establish(ctx context.Context) (*Establishment, punchcore.Punch
 		return nil, res, err
 	}
 
-	sock, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	sock, err := d.listenPunchSocket(ctx)
 	if err != nil {
 		res.Reason = "socket"
 		return nil, res, err
