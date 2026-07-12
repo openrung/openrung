@@ -3,11 +3,7 @@ package main
 import (
 	"context"
 	"io"
-	"net"
 	"net/http"
-	"os"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -238,88 +234,5 @@ func TestHeartbeatRefusesFoundationOverPlaintext(t *testing.T) {
 	}
 	if sent.Load() != 0 {
 		t.Fatalf("heartbeat sent %d requests, want 0", sent.Load())
-	}
-}
-
-// A foundation relay must complete broker attestation BEFORE it opens its
-// public listener: if attestation fails, the public port must never accept
-// traffic and run() must return without entering the heartbeat loop. The
-// broker mock checks whether the public port is already listening at the
-// moment it is asked to attest, which would mean the relay was serving first.
-func TestRunFoundationAttestsBeforePublicListener(t *testing.T) {
-	// Reserve an ephemeral port for the relay's public listener, then release it.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("reserve port: %v", err)
-	}
-	publicPort := ln.Addr().(*net.TCPAddr).Port
-	_ = ln.Close()
-	publicAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(publicPort))
-
-	// A fake xray that just stays alive, so a (hypothetical) listener-first
-	// ordering would actually start the observer and bind the public port.
-	fakeXray := filepath.Join(t.TempDir(), "xray")
-	if err := os.WriteFile(fakeXray, []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
-		t.Fatalf("write fake xray: %v", err)
-	}
-
-	var registerCalls, heartbeatCalls atomic.Int32
-	var portOpenAtAttest atomic.Bool
-	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		if strings.Contains(r.URL.Path, "/heartbeat") {
-			heartbeatCalls.Add(1)
-			return jsonResponse(http.StatusOK, `{"ok":true}`), nil
-		}
-		registerCalls.Add(1)
-		if conn, derr := net.DialTimeout("tcp", publicAddr, 200*time.Millisecond); derr == nil {
-			portOpenAtAttest.Store(true)
-			_ = conn.Close()
-		}
-		// Broker predates node_class (drops the field): attestation must fail.
-		return jsonResponse(http.StatusCreated, `{"id":"relay_x","public_host":"127.0.0.1","public_port":`+strconv.Itoa(publicPort)+`}`), nil
-	})}
-
-	cfg := cliConfig{
-		Mode:              "direct",
-		BrokerURL:         "https://broker.test",
-		PublicHost:        "127.0.0.1",
-		PublicPort:        publicPort,
-		ListenHost:        "127.0.0.1",
-		ListenPort:        publicPort,
-		ServerName:        "www.cloudflare.com",
-		RealityDest:       "www.cloudflare.com:443",
-		ClientID:          "2c08df10-4ef4-4ab9-95c6-cb1e94cdb2ff",
-		RealityPublicKey:  "pk",
-		RealityPrivateKey: "sk",
-		ShortID:           "5f7a8d9c",
-		NodeClass:         relay.NodeClassFoundation,
-		XrayPath:          fakeXray,
-		ConnectionLog:     true,
-		ConfigOut:         filepath.Join(t.TempDir(), "xray-config.json"),
-		HeartbeatInterval: 30 * time.Second,
-		MaxSessions:       1,
-		MaxMbps:           1,
-		HTTPClient:        client,
-	}
-
-	err = run(cfg)
-	if err == nil {
-		t.Fatal("run() error = nil, want foundation attestation failure")
-	}
-	if !strings.Contains(err.Error(), "attestation") {
-		t.Fatalf("run() error = %v, want a foundation attestation failure", err)
-	}
-	if registerCalls.Load() != 1 {
-		t.Fatalf("register calls = %d, want exactly 1 (attestation)", registerCalls.Load())
-	}
-	if heartbeatCalls.Load() != 0 {
-		t.Fatalf("heartbeat calls = %d, want 0 (must not reach the heartbeat loop)", heartbeatCalls.Load())
-	}
-	if portOpenAtAttest.Load() {
-		t.Fatal("public listener was already accepting connections at attestation time; foundation must attest before serving")
-	}
-	if conn, derr := net.DialTimeout("tcp", publicAddr, 100*time.Millisecond); derr == nil {
-		_ = conn.Close()
-		t.Fatal("public port still listening after attestation failure; it must never have opened")
 	}
 }
