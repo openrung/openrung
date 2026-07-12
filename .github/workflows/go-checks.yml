@@ -75,6 +75,10 @@ jobs:
             exit 1
           fi
           version="$(tr -d '[:space:]' < punchcore/VERSION)"
+          if ! printf '%s\n' "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "invalid punchcore/VERSION \"$version\" (want X.Y.Z)" >&2
+            exit 1
+          fi
           tag="punchcore/v$version"
           if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
             echo "punchcore/VERSION is $version but $tag already exists; bump to a new version" >&2
