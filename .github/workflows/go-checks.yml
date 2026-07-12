@@ -47,3 +47,26 @@ jobs:
         run: |
           go vet ./volunteerservice/...
           go build ./volunteerservice/...
+
+  # PR-time smoke build of every deploy image. The image workflows themselves
+  # only run on pushes to main, so without this a Docker packaging error (e.g.
+  # a Dockerfile missing a COPY for a nested module's go.mod that the root
+  # replace directive needs) would surface only after merge. Single-arch and
+  # never pushed: this is a build gate, not a release.
+  docker:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [broker, relayhub, volunteer]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/${{ matrix.image }}/Dockerfile
+          platforms: linux/amd64
+          push: false
