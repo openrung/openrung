@@ -93,15 +93,35 @@ not reload a changed env file). `lightsail-up.sh` intentionally rejects
 `OPENRUNG_FOUNDATION_TOKEN` for this reason.
 
 > **Rolling back past `node_class`:** a broker image that predates the
-> `node_class` column neither rewrites the class on re-registration upserts
-> nor guards heartbeats, so while a rollback is running, a re-registration at
-> a foundation relay's `host:port` would keep the `foundation` label alive.
-> After any such rollback, clear the column before (or right after)
-> re-upgrading — foundation relays re-attest when they restart:
+> `node_class` column does not guard registrations or heartbeats, so it can
+> overwrite a foundation relay's `host:port` row — replacing its id, keys, and
+> endpoint with an attacker's or volunteer's — while leaving `node_class`
+> stuck at `'foundation'`. An upgraded broker would then sign that forged
+> descriptor as Foundation.
 >
-> ```sql
-> UPDATE relay_descriptors SET node_class = 'volunteer';
-> ```
+> **Never run pre-`node_class` and `node_class`-aware broker binaries against
+> the same database while any foundation row exists** — a mixed-version fleet
+> (a partial rollback, or a blue/green deploy straddling this change) lets the
+> old writer poison rows that the new writer signs. Keep the whole fleet on one
+> side of this change.
+>
+> To roll back and later re-upgrade safely, order it strictly so no
+> `node_class`-aware broker ever serves a row an old writer could have touched:
+>
+> 1. **Roll back:** stop every `node_class`-aware broker first, *then* start the
+>    old image. (The forged-class window exists only while both run.)
+> 2. **Re-upgrade:** stop and drain every old (pre-`node_class`) broker so
+>    nothing can still write the poisoned state — confirm none remain.
+> 3. Only then clear the classes, resetting every row to `volunteer`:
+>
+>    ```sql
+>    UPDATE relay_descriptors SET node_class = 'volunteer';
+>    ```
+> 4. Only after that `UPDATE` commits, start the new broker. Foundation relays
+>    re-attest their class the next time they register.
+>
+> Clearing before the new broker starts (never "right after") guarantees it
+> cannot sign a stale or forged `foundation` label.
 
 ## Relay-list signing
 
