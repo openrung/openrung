@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
+
+	"github.com/openrung/openrung/punchcore"
 )
 
 // quicConfig is shared by both ends. KeepAlivePeriod mirrors the yamux hub tunnel
@@ -67,7 +69,7 @@ func serverTLSConfig(cert tls.Certificate) *tls.Config {
 	return &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		MinVersion:   tls.VersionTLS13,
-		NextProtos:   []string{ALPN},
+		NextProtos:   []string{punchcore.ALPN},
 	}
 }
 
@@ -76,7 +78,7 @@ func clientTLSConfig(fingerprint string) *tls.Config {
 	return &tls.Config{
 		InsecureSkipVerify: true, //nolint:gosec // QUIC cert is pinned by fingerprint below; Reality is the real E2E layer.
 		MinVersion:         tls.VersionTLS13,
-		NextProtos:         []string{ALPN},
+		NextProtos:         []string{punchcore.ALPN},
 		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 			if len(rawCerts) == 0 {
 				return errors.New("punch peer presented no certificate")

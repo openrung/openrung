@@ -165,7 +165,10 @@ Statically linked into the Go server binaries:
 ### MIT
 
 - `github.com/quic-go/quic-go` v0.60.0 — Copyright (c) 2016 the quic-go authors
-  & Google, Inc. (statically linked into the server binaries via `internal/punch`)
+  & Google, Inc. (statically linked into the server binaries via
+  `internal/punch`, the QUIC layer over the first-party `punchcore` module;
+  `punchcore` itself is stdlib-only and quic-go remains a root-module
+  dependency)
 - `github.com/jackc/pgx/v5` v5.6.0 — Copyright (c) 2013-2021 Jack Christensen
 - `github.com/jackc/pgpassfile` v1.0.0 — Copyright (c) 2019 Jack Christensen
 - `github.com/jackc/pgservicefile` — Copyright (c) 2020 Jack Christensen
@@ -216,7 +219,8 @@ Union of `GOOS={darwin,windows,linux} go list -deps -tags desktop,production`
 - `github.com/leaanthony/go-ansi-parser`, `…/slicer`, `…/u` — Copyright (c)
   Lea Anthony
 - `github.com/quic-go/quic-go` — Copyright (c) 2016 the quic-go authors &
-  Google, Inc. (via `internal/punch`)
+  Google, Inc. (via `internal/punch`, the QUIC layer over the first-party
+  `punchcore` module)
 - `github.com/rivo/uniseg` — Copyright (c) 2019 Oliver Kuederle
 - `github.com/bep/debounce` — Copyright (c) 2016 Bjørn Erik Pedersen
 - `github.com/go-ole/go-ole` — Copyright (c) 2013-2017 Yasuhiro Matsumoto

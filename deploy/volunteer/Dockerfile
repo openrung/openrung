@@ -44,6 +44,9 @@ RUN set -eux; \
 FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
+# The root go.mod replaces github.com/openrung/openrung/punchcore with the
+# in-repo nested module, so its go.mod must exist before `go mod download`.
+COPY punchcore/go.mod punchcore/
 RUN go mod download
 COPY . .
 ARG TARGETARCH

@@ -1,0 +1,49 @@
+name: go-checks
+
+# Vet + test every Go module in the repo on each PR and push to main. This is
+# the compile/test gate for the module edges between the root module, the
+# nested punchcore module, and the two Wails app modules (which are only
+# compile-checked here: their release workflows package but never test, and
+# `./...` in desktop/ would require frontend/dist to exist, so only the Go
+# service subpackages are built).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+
+      - name: Root module (vet + test)
+        run: |
+          go vet ./...
+          go test -race ./...
+
+      - name: punchcore module (vet + test)
+        working-directory: punchcore
+        run: |
+          go vet ./...
+          go test -race ./...
+
+      - name: desktop module (vet + build)
+        working-directory: desktop
+        run: |
+          go vet ./vpnservice/...
+          go build ./vpnservice/... ./config/... ./discovery/... ./proxymode/...
+
+      - name: desktop-volunteer module (vet + build)
+        working-directory: desktop-volunteer
+        run: |
+          go vet ./volunteerservice/...
+          go build ./volunteerservice/...

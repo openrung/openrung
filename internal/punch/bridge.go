@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
+
+	"github.com/openrung/openrung/punchcore"
 )
 
 // streamAuthTimeout bounds how long the volunteer waits for a stream's token
@@ -59,7 +61,7 @@ func handleVolunteerStream(conn *quic.Conn, stream *quic.Stream, token []byte, t
 	defer stream.Close()
 
 	_ = stream.SetReadDeadline(time.Now().Add(streamAuthTimeout))
-	hdr := make([]byte, tokenLen)
+	hdr := make([]byte, punchcore.TokenLen)
 	if _, err := io.ReadFull(stream, hdr); err != nil {
 		return
 	}
@@ -150,8 +152,10 @@ func (b *ClientBridge) Close() error {
 }
 
 // pipe copies bytes in both directions until either side closes, then closes
-// both. Local copy of the internal/tunnel helper so this package stays
-// self-contained for the public client mirror.
+// both. Local copy of the internal/tunnel helper: punchcore is a standalone
+// module (internal packages of the parent module are not importable from a
+// published module), so this package stays self-contained too rather than
+// reaching into internal/tunnel.
 func pipe(a, b net.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(2)

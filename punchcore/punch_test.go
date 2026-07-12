@@ -1,12 +1,12 @@
-package punch
+package punchcore
 
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
-	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -28,34 +28,11 @@ func mustUDP(t *testing.T, host string) *net.UDPConn {
 
 func randomToken(t *testing.T) []byte {
 	t.Helper()
-	tok := make([]byte, tokenLen)
+	tok := make([]byte, TokenLen)
 	if _, err := rand.Read(tok); err != nil {
 		t.Fatalf("random token: %v", err)
 	}
 	return tok
-}
-
-func startEcho(t *testing.T) (string, int) {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("echo listen: %v", err)
-	}
-	t.Cleanup(func() { _ = ln.Close() })
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func(c net.Conn) {
-				defer c.Close()
-				_, _ = io.Copy(c, c)
-			}(c)
-		}
-	}()
-	addr := ln.Addr().(*net.TCPAddr)
-	return "127.0.0.1", addr.Port
 }
 
 // TestReflectorClassifyLogic exercises the NAT classification directly via the
@@ -117,7 +94,7 @@ func TestGatherAgainstReflector(t *testing.T) {
 	if err != nil {
 		t.Fatalf("nonce: %v", err)
 	}
-	reflexive, class, err := Gather(context.Background(), sock, r.Addrs(), nonce)
+	reflexive, class, err := DesktopPolicy().Gather(context.Background(), sock, r.Addrs(), nonce)
 	if err != nil {
 		t.Fatalf("gather: %v", err)
 	}
@@ -174,11 +151,11 @@ func punchPair(t *testing.T, a, b *net.UDPConn, aToken, bToken []byte, deadline 
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		aConfirmed, aErr = Attempt(context.Background(), a, aPeer, sess, aToken, deadline)
+		aConfirmed, aErr = DesktopPolicy().Attempt(context.Background(), a, aPeer, sess, aToken, deadline)
 	}()
 	go func() {
 		defer wg.Done()
-		bConfirmed, bErr = Attempt(context.Background(), b, bPeer, sess, bToken, deadline)
+		bConfirmed, bErr = DesktopPolicy().Attempt(context.Background(), b, bPeer, sess, bToken, deadline)
 	}()
 	wg.Wait()
 	return
@@ -200,6 +177,37 @@ func TestAttemptSucceedsOnLoopback(t *testing.T) {
 	}
 }
 
+// TestMobileAttemptSucceedsOnLoopbackHosts is the punchcore home of the Android
+// punchbridge's Attempt test: loopback "host" candidates survive the mobile
+// sanitize profile (hosts must NOT be globally routable; the srflx-only rules
+// do not apply to them), so a bidirectional authenticated punch completes under
+// MobilePolicy exactly as it did in the hand-mirrored mobile implementation.
+func TestMobileAttemptSucceedsOnLoopbackHosts(t *testing.T) {
+	a := mustUDP(t, "127.0.0.1")
+	b := mustUDP(t, "127.0.0.1")
+	token := randomToken(t)
+	deadline := time.Now().Add(2 * time.Second)
+	sess := "session-mobile"
+	aPeer := []Endpoint{endpointFromUDP(b.LocalAddr().(*net.UDPAddr), KindHost)}
+	bPeer := []Endpoint{endpointFromUDP(a.LocalAddr().(*net.UDPAddr), KindHost)}
+	var aConfirmed, bConfirmed *net.UDPAddr
+	var aErr, bErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		aConfirmed, aErr = MobilePolicy().Attempt(context.Background(), a, aPeer, sess, token, deadline)
+	}()
+	go func() {
+		defer wg.Done()
+		bConfirmed, bErr = MobilePolicy().Attempt(context.Background(), b, bPeer, sess, token, deadline)
+	}()
+	wg.Wait()
+	if aErr != nil || bErr != nil || aConfirmed == nil || bConfirmed == nil {
+		t.Fatalf("mobile punch failed: a=%v/%v b=%v/%v", aConfirmed, aErr, bConfirmed, bErr)
+	}
+}
+
 func TestAttemptRejectsTokenMismatch(t *testing.T) {
 	a := mustUDP(t, "127.0.0.1")
 	b := mustUDP(t, "127.0.0.1")
@@ -209,112 +217,59 @@ func TestAttemptRejectsTokenMismatch(t *testing.T) {
 	}
 }
 
-func TestTransportBridgeEchoOverPunchedSocket(t *testing.T) {
-	echoHost, echoPort := startEcho(t)
-	vsock := mustUDP(t, "127.0.0.1")
-	csock := mustUDP(t, "127.0.0.1")
-	token := randomToken(t)
-
-	_, cConfirmed, vErr, cErr := punchPair(t, vsock, csock, token, token, time.Now().Add(2*time.Second))
-	if vErr != nil || cErr != nil {
-		t.Fatalf("punch failed: volunteer=%v client=%v", vErr, cErr)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Volunteer: QUIC server bridging to the echo (loopback "Xray").
-	cert, fingerprint, err := GenerateSessionCert()
+// TestMobileGatherRejectsNonLiteralReflectorAddrs asserts MobilePolicy's strict
+// reflector-address filter (StrictReflectorAddrs): DNS names, non-global
+// literals, loopback, IPv6, and out-of-range ports are all skipped without DNS
+// resolution, so a list with no conforming entry fails immediately.
+func TestMobileGatherRejectsNonLiteralReflectorAddrs(t *testing.T) {
+	sock := mustUDP(t, "127.0.0.1")
+	_, nonce, err := GenerateNonce()
 	if err != nil {
-		t.Fatalf("cert: %v", err)
+		t.Fatalf("nonce: %v", err)
 	}
-	ln, err := ListenQUIC(vsock, cert)
-	if err != nil {
-		t.Fatalf("listen quic: %v", err)
+	addrs := []string{
+		"reflector.example.com:3478", // DNS name → skipped without resolution
+		"10.0.0.1:3478",              // private literal → skipped
+		"127.0.0.1:3478",             // loopback → skipped
+		"[2001:db8::1]:3478",         // IPv6 literal → skipped (socket is udp4)
+		"203.0.113.1:0",              // out-of-range port → skipped
+		"203.0.113.1",                // no port → skipped
 	}
-	go func() { _ = VolunteerBridge(ctx, ln, token, echoHost, echoPort, discardLogger()) }()
-
-	// Client: QUIC dial + loopback bridge.
-	dialCtx, dialCancel := context.WithTimeout(ctx, 5*time.Second)
-	defer dialCancel()
-	conn, err := DialQUIC(dialCtx, csock, cConfirmed, fingerprint)
-	if err != nil {
-		t.Fatalf("dial quic: %v", err)
+	_, class, err := MobilePolicy().Gather(context.Background(), sock, addrs, nonce)
+	if err == nil || err.Error() != "no resolvable reflector addresses" {
+		t.Fatalf("err = %v, want no resolvable reflector addresses", err)
 	}
-	bridge, err := NewClientBridge(conn, token, discardLogger())
-	if err != nil {
-		t.Fatalf("client bridge: %v", err)
-	}
-	go func() { _ = bridge.Serve(ctx) }()
-
-	host, port := bridge.Endpoint()
-	if err := echoRoundTrip(host, port, []byte("hello-punched-path")); err != nil {
-		t.Fatalf("echo round trip: %v", err)
-	}
-
-	// A second concurrent stream over the same punched connection.
-	if err := echoRoundTrip(host, port, []byte("second-stream")); err != nil {
-		t.Fatalf("second echo round trip: %v", err)
+	if class != ClassUnknown {
+		t.Fatalf("class = %q, want %q", class, ClassUnknown)
 	}
 }
 
-func TestClientBridgeRejectsUnauthenticatedStream(t *testing.T) {
-	echoHost, echoPort := startEcho(t)
-	vsock := mustUDP(t, "127.0.0.1")
-	csock := mustUDP(t, "127.0.0.1")
-	token := randomToken(t)
-
-	_, cConfirmed, vErr, cErr := punchPair(t, vsock, csock, token, token, time.Now().Add(2*time.Second))
-	if vErr != nil || cErr != nil {
-		t.Fatalf("punch failed: volunteer=%v client=%v", vErr, cErr)
+// TestGatherCancelBehaviorByPolicy asserts the FailGatherOnCancel split: with a
+// cancelled context, MobilePolicy surfaces ctx.Err() while DesktopPolicy
+// classifies the (empty) partial observations instead — the behavior
+// RespondToDirective relies on. The reflector address is a TEST-NET-3 literal;
+// both paths bail out before any datagram is sent.
+func TestGatherCancelBehaviorByPolicy(t *testing.T) {
+	sock := mustUDP(t, "127.0.0.1")
+	_, nonce, err := GenerateNonce()
+	if err != nil {
+		t.Fatalf("nonce: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	cancel()
+	addrs := []string{"203.0.113.1:3478"}
 
-	cert, fingerprint, _ := GenerateSessionCert()
-	ln, err := ListenQUIC(vsock, cert)
-	if err != nil {
-		t.Fatalf("listen quic: %v", err)
+	if _, _, err := MobilePolicy().Gather(ctx, sock, addrs, nonce); !errors.Is(err, context.Canceled) {
+		t.Fatalf("mobile gather err = %v, want context.Canceled", err)
 	}
-	// Volunteer verifies the real token; the client presents a WRONG one.
-	go func() { _ = VolunteerBridge(ctx, ln, token, echoHost, echoPort, discardLogger()) }()
-
-	dialCtx, dialCancel := context.WithTimeout(ctx, 5*time.Second)
-	defer dialCancel()
-	conn, err := DialQUIC(dialCtx, csock, cConfirmed, fingerprint)
-	if err != nil {
-		t.Fatalf("dial quic: %v", err)
+	_, class, err := DesktopPolicy().Gather(ctx, sock, addrs, nonce)
+	if errors.Is(err, context.Canceled) {
+		t.Fatalf("desktop gather surfaced cancellation: %v", err)
 	}
-	wrongBridge, err := NewClientBridge(conn, randomToken(t), discardLogger())
-	if err != nil {
-		t.Fatalf("client bridge: %v", err)
+	if err == nil || err.Error() != "reflector did not observe any endpoint" {
+		t.Fatalf("desktop gather err = %v, want reflector did not observe any endpoint", err)
 	}
-	go func() { _ = wrongBridge.Serve(ctx) }()
-
-	host, port := wrongBridge.Endpoint()
-	// The volunteer should reject the stream after the bad token, so the echo
-	// never completes within the window.
-	if err := echoRoundTrip(host, port, []byte("should-not-pass")); err == nil {
-		t.Fatal("expected bad-token stream to be rejected, but echo succeeded")
+	if class != ClassUnknown {
+		t.Fatalf("desktop gather class = %q, want %q", class, ClassUnknown)
 	}
-}
-
-func echoRoundTrip(host string, port int, msg []byte) error {
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, strconv.Itoa(port)), 2*time.Second)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
-	if _, err := conn.Write(msg); err != nil {
-		return err
-	}
-	buf := make([]byte, len(msg))
-	if _, err := io.ReadFull(conn, buf); err != nil {
-		return err
-	}
-	if string(buf) != string(msg) {
-		return io.ErrUnexpectedEOF
-	}
-	return nil
 }

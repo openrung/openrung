@@ -14,6 +14,8 @@ import (
 
 	"github.com/hashicorp/yamux"
 
+	"github.com/openrung/openrung/punchcore"
+
 	"openrung/internal/punch"
 )
 
@@ -219,7 +221,7 @@ func (c *Client) handleAccepted(ctx context.Context, stream net.Conn, typed bool
 func (c *Client) handlePunchControl(ctx context.Context, stream net.Conn) {
 	defer stream.Close()
 	_ = stream.SetReadDeadline(time.Now().Add(punchControlTimeout))
-	var dir punch.PunchDirective
+	var dir punchcore.PunchDirective
 	if err := readFrame(stream, &dir); err != nil {
 		c.logger().Warn("read punch directive failed", "error", err)
 		return

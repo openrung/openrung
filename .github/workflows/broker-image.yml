@@ -13,6 +13,9 @@ on:
       - 'internal/relay/**'
       - 'go.mod'
       - 'go.sum'
+      # The root go.mod replaces punchcore with ./punchcore, so the broker's
+      # `go mod download` layer depends on punchcore/go.mod too.
+      - 'punchcore/go.mod'
       - 'deploy/broker/**'
       - '.github/workflows/broker-image.yml'
   workflow_dispatch:

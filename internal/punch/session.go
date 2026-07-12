@@ -1,3 +1,8 @@
+// Package punch is the QUIC session, transport, and bridge layer of OpenRung's
+// NAT hole punching, built on the shared protocol core
+// github.com/openrung/openrung/punchcore (wire format, discovery, and punch
+// mechanics live there; the quic-go transport and per-repo session flows live
+// here).
 package punch
 
 import (
@@ -6,10 +11,9 @@ import (
 	"log/slog"
 	"net"
 	"time"
-)
 
-// DefaultTTL is the punch time budget used when the hub does not specify one.
-const DefaultTTL = 6 * time.Second
+	"github.com/openrung/openrung/punchcore"
+)
 
 // quicHandshakeTimeout bounds the QUIC handshake over the freshly punched hole.
 const quicHandshakeTimeout = 5 * time.Second
@@ -17,7 +21,7 @@ const quicHandshakeTimeout = 5 * time.Second
 // Dialer runs the client side of a punch: discover, coordinate via the hub, punch,
 // and stand up a loopback bridge that sing-box dials in place of the relay.
 type Dialer struct {
-	Hub     HubClient
+	Hub     punchcore.HubClient
 	RelayID string
 	Logger  *slog.Logger
 }
@@ -59,10 +63,12 @@ func (d *Dialer) logger() *slog.Logger {
 // Establishment (the caller must run Bridge.Serve) and an OK PunchResult. On any
 // failure it returns a non-nil error and a PunchResult whose Reason/NATClass are
 // suitable for telemetry; the caller then falls back to the hub relay. A
-// *HubHTTPError with status 404/409 signals a stale relay id (re-fetch relays).
-func (d *Dialer) Establish(ctx context.Context) (*Establishment, PunchResult, error) {
+// *punchcore.HubHTTPError with status 404/409 signals a stale relay id (re-fetch
+// relays).
+func (d *Dialer) Establish(ctx context.Context) (*Establishment, punchcore.PunchResult, error) {
+	pol := punchcore.DesktopPolicy()
 	start := time.Now()
-	res := PunchResult{}
+	res := punchcore.PunchResult{}
 
 	cfg, err := d.Hub.FetchConfig(ctx)
 	if err != nil {
@@ -82,15 +88,15 @@ func (d *Dialer) Establish(ctx context.Context) (*Establishment, PunchResult, er
 		}
 	}()
 
-	nonceHex, nonceRaw, err := GenerateNonce()
+	nonceHex, nonceRaw, err := punchcore.GenerateNonce()
 	if err != nil {
 		res.Reason = "nonce"
 		return nil, res, err
 	}
 
-	reflexive, class, gatherErr := Gather(ctx, sock, cfg.ReflectorAddrs, nonceRaw)
+	reflexive, class, gatherErr := pol.Gather(ctx, sock, cfg.ReflectorAddrs, nonceRaw)
 	res.NATClass = class
-	local := LocalCandidates(sock)
+	local := punchcore.LocalCandidates(sock)
 	if len(reflexive) == 0 && len(local) == 0 {
 		res.Reason = "discovery"
 		if gatherErr == nil {
@@ -99,14 +105,14 @@ func (d *Dialer) Establish(ctx context.Context) (*Establishment, PunchResult, er
 		return nil, res, gatherErr
 	}
 
-	resp, err := d.Hub.RequestPunch(ctx, PunchRequest{
+	resp, err := d.Hub.RequestPunch(ctx, punchcore.PunchRequest{
 		RelayID:         d.RelayID,
 		ClientNonce:     nonceHex,
 		ClientReflexive: reflexive,
 		ClientLocal:     local,
 		ClientClass:     class,
-		QUICALPN:        ALPN,
-		ProtoVersion:    ProtoVersion,
+		QUICALPN:        punchcore.ALPN,
+		ProtoVersion:    punchcore.ProtoVersion,
 	})
 	if err != nil {
 		res.Reason = "request"
@@ -118,7 +124,7 @@ func (d *Dialer) Establish(ctx context.Context) (*Establishment, PunchResult, er
 		return nil, res, fmt.Errorf("hub declined punch: %s", resp.Error)
 	}
 
-	token, err := DecodeToken(resp.PunchToken)
+	token, err := punchcore.DecodeToken(resp.PunchToken)
 	if err != nil {
 		res.Reason = "token"
 		return nil, res, err
@@ -126,12 +132,12 @@ func (d *Dialer) Establish(ctx context.Context) (*Establishment, PunchResult, er
 
 	ttl := time.Duration(resp.TTLMillis) * time.Millisecond
 	if ttl <= 0 {
-		ttl = DefaultTTL
+		ttl = punchcore.DefaultTTL
 	}
 	deadline := time.Now().Add(ttl)
-	peers := append(append([]Endpoint{}, resp.VolunteerReflexive...), resp.VolunteerLocal...)
+	peers := append(append([]punchcore.Endpoint{}, resp.VolunteerReflexive...), resp.VolunteerLocal...)
 
-	confirmed, err := Attempt(ctx, sock, peers, resp.SessionID, token, deadline)
+	confirmed, err := pol.Attempt(ctx, sock, peers, resp.SessionID, token, deadline)
 	if err != nil {
 		res.Reason = "punch"
 		return nil, res, err
@@ -173,15 +179,16 @@ func (d *Dialer) Establish(ctx context.Context) (*Establishment, PunchResult, er
 // directive TTL and ctx), bridging streams to targetHost:targetPort (the loopback
 // Xray listener). ctx should be the long-lived tunnel context so the background
 // punch survives the control stream closing but stops on tunnel shutdown.
-func RespondToDirective(ctx context.Context, dir PunchDirective, targetHost string, targetPort int, logger *slog.Logger) PunchAck {
+func RespondToDirective(ctx context.Context, dir punchcore.PunchDirective, targetHost string, targetPort int, logger *slog.Logger) punchcore.PunchAck {
+	pol := punchcore.DesktopPolicy()
 	if logger == nil {
 		logger = slog.Default()
 	}
-	fail := func(reason string) PunchAck {
-		return PunchAck{SessionID: dir.SessionID, OK: false, Error: reason}
+	fail := func(reason string) punchcore.PunchAck {
+		return punchcore.PunchAck{SessionID: dir.SessionID, OK: false, Error: reason}
 	}
 
-	token, err := DecodeToken(dir.PunchToken)
+	token, err := punchcore.DecodeToken(dir.PunchToken)
 	if err != nil {
 		return fail("bad token")
 	}
@@ -191,16 +198,16 @@ func RespondToDirective(ctx context.Context, dir PunchDirective, targetHost stri
 		return fail("socket")
 	}
 
-	_, nonceRaw, err := GenerateNonce()
+	_, nonceRaw, err := punchcore.GenerateNonce()
 	if err != nil {
 		_ = sock.Close()
 		return fail("nonce")
 	}
 
-	gatherCtx, gatherCancel := context.WithTimeout(ctx, gatherTimeout+500*time.Millisecond)
-	reflexive, class, _ := Gather(gatherCtx, sock, dir.ReflectorAddrs, nonceRaw)
+	gatherCtx, gatherCancel := context.WithTimeout(ctx, punchcore.GatherTimeout+500*time.Millisecond)
+	reflexive, class, _ := pol.Gather(gatherCtx, sock, dir.ReflectorAddrs, nonceRaw)
 	gatherCancel()
-	local := LocalCandidates(sock)
+	local := punchcore.LocalCandidates(sock)
 	if len(reflexive) == 0 && len(local) == 0 {
 		_ = sock.Close()
 		return fail("discovery")
@@ -214,9 +221,9 @@ func RespondToDirective(ctx context.Context, dir PunchDirective, targetHost stri
 
 	ttl := time.Duration(dir.TTLMillis) * time.Millisecond
 	if ttl <= 0 {
-		ttl = DefaultTTL
+		ttl = punchcore.DefaultTTL
 	}
-	peers := append(append([]Endpoint{}, dir.ClientReflexive...), dir.ClientLocal...)
+	peers := append(append([]punchcore.Endpoint{}, dir.ClientReflexive...), dir.ClientLocal...)
 
 	go func() {
 		defer sock.Close()
@@ -228,7 +235,7 @@ func RespondToDirective(ctx context.Context, dir PunchDirective, targetHost stri
 		// seconds after it is established.
 		deadline := time.Now().Add(ttl)
 		attemptCtx, cancel := context.WithDeadline(ctx, deadline)
-		_, err := Attempt(attemptCtx, sock, peers, dir.SessionID, token, deadline)
+		_, err := pol.Attempt(attemptCtx, sock, peers, dir.SessionID, token, deadline)
 		cancel()
 		if err != nil {
 			logger.Info("punch attempt failed", "session", dir.SessionID, "error", err)
@@ -244,7 +251,7 @@ func RespondToDirective(ctx context.Context, dir PunchDirective, targetHost stri
 		}
 	}()
 
-	return PunchAck{
+	return punchcore.PunchAck{
 		SessionID:          dir.SessionID,
 		OK:                 true,
 		VolunteerReflexive: reflexive,

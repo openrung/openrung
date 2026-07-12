@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"openrung/internal/punch"
+	"github.com/openrung/openrung/punchcore"
 )
 
 // punchControlTimeout bounds the hub<->volunteer punch-control exchange over the
@@ -22,6 +22,9 @@ const punchControlTimeout = 5 * time.Second
 
 // DefaultPunchTTL is the punch time budget the coordinator hands to both peers.
 const DefaultPunchTTL = 6 * time.Second
+
+// hubPolicy: the hub sanitizes with the historical server-side profile.
+var hubPolicy = punchcore.DesktopPolicy()
 
 var (
 	// ErrRelayNotConnected means no live tunnel is registered for the relay ID
@@ -62,18 +65,18 @@ func (h *Hub) lookupTunnel(relayID string) *tunnel {
 // existing control connection and returns the volunteer's ack. It re-looks up the
 // live tunnel at send time so a reconnect between coordination steps is handled
 // cleanly.
-func (h *Hub) SendPunchDirective(ctx context.Context, relayID string, dir punch.PunchDirective) (punch.PunchAck, error) {
+func (h *Hub) SendPunchDirective(ctx context.Context, relayID string, dir punchcore.PunchDirective) (punchcore.PunchAck, error) {
 	t := h.lookupTunnel(relayID)
 	if t == nil {
-		return punch.PunchAck{}, ErrRelayNotConnected
+		return punchcore.PunchAck{}, ErrRelayNotConnected
 	}
 	if !t.streamTyping {
-		return punch.PunchAck{}, ErrPunchUnsupported
+		return punchcore.PunchAck{}, ErrPunchUnsupported
 	}
 
 	stream, err := t.session.Open()
 	if err != nil {
-		return punch.PunchAck{}, err
+		return punchcore.PunchAck{}, err
 	}
 	defer stream.Close()
 
@@ -84,14 +87,14 @@ func (h *Hub) SendPunchDirective(ctx context.Context, relayID string, dir punch.
 	_ = stream.SetDeadline(deadline)
 
 	if _, err := stream.Write([]byte{StreamTypeControl}); err != nil {
-		return punch.PunchAck{}, err
+		return punchcore.PunchAck{}, err
 	}
 	if err := writeFrame(stream, dir); err != nil {
-		return punch.PunchAck{}, err
+		return punchcore.PunchAck{}, err
 	}
-	var ack punch.PunchAck
+	var ack punchcore.PunchAck
 	if err := readFrame(stream, &ack); err != nil {
-		return punch.PunchAck{}, err
+		return punchcore.PunchAck{}, err
 	}
 	return ack, nil
 }
@@ -101,7 +104,7 @@ func (h *Hub) SendPunchDirective(ctx context.Context, relayID string, dir punch.
 // own rate limiting and session caps.
 type PunchCoordinator struct {
 	Hub       *Hub
-	Reflector *punch.Reflector
+	Reflector *punchcore.Reflector
 	TTL       time.Duration
 	Logger    *slog.Logger
 
@@ -111,7 +114,7 @@ type PunchCoordinator struct {
 }
 
 // NewPunchCoordinator builds a coordinator with a fresh per-process HMAC secret.
-func NewPunchCoordinator(hub *Hub, reflector *punch.Reflector, ttl time.Duration, logger *slog.Logger) (*PunchCoordinator, error) {
+func NewPunchCoordinator(hub *Hub, reflector *punchcore.Reflector, ttl time.Duration, logger *slog.Logger) (*PunchCoordinator, error) {
 	if hub == nil || reflector == nil {
 		return nil, errors.New("punch coordinator requires a hub and reflector")
 	}
@@ -138,15 +141,15 @@ func NewPunchCoordinator(hub *Hub, reflector *punch.Reflector, ttl time.Duration
 
 // Register mounts the hub punch HTTP routes on mux.
 func (c *PunchCoordinator) Register(mux *http.ServeMux) {
-	mux.HandleFunc("GET "+punch.PathPunchConfig, c.handleConfig)
-	mux.HandleFunc("POST "+punch.PathPunchRequest, c.handleRequest)
-	mux.HandleFunc("POST "+punch.PathPunchResult, c.handleResult)
+	mux.HandleFunc("GET "+punchcore.PathPunchConfig, c.handleConfig)
+	mux.HandleFunc("POST "+punchcore.PathPunchRequest, c.handleRequest)
+	mux.HandleFunc("POST "+punchcore.PathPunchResult, c.handleResult)
 }
 
 func (c *PunchCoordinator) handleConfig(w http.ResponseWriter, _ *http.Request) {
-	writeJSONResponse(w, http.StatusOK, punch.PunchConfig{
+	writeJSONResponse(w, http.StatusOK, punchcore.PunchConfig{
 		ReflectorAddrs: c.Hub.ReflectorAddrs,
-		ALPN:           punch.ALPN,
+		ALPN:           punchcore.ALPN,
 		TTLMillis:      c.TTL.Milliseconds(),
 	})
 }
@@ -154,26 +157,26 @@ func (c *PunchCoordinator) handleConfig(w http.ResponseWriter, _ *http.Request) 
 func (c *PunchCoordinator) handleRequest(w http.ResponseWriter, r *http.Request) {
 	ip := requestIP(r)
 
-	var req punch.PunchRequest
+	var req punchcore.PunchRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, 16<<10)).Decode(&req); err != nil {
-		writeJSONResponse(w, http.StatusBadRequest, punch.PunchResponse{OK: false, Error: "invalid request"})
+		writeJSONResponse(w, http.StatusBadRequest, punchcore.PunchResponse{OK: false, Error: "invalid request"})
 		return
 	}
 	if req.RelayID == "" || req.ClientNonce == "" {
-		writeJSONResponse(w, http.StatusBadRequest, punch.PunchResponse{OK: false, Error: "relay_id and client_nonce required"})
+		writeJSONResponse(w, http.StatusBadRequest, punchcore.PunchResponse{OK: false, Error: "relay_id and client_nonce required"})
 		return
 	}
-	if req.QUICALPN != "" && req.QUICALPN != punch.ALPN {
-		writeJSONResponse(w, http.StatusBadRequest, punch.PunchResponse{OK: false, Error: "unsupported alpn"})
+	if req.QUICALPN != "" && req.QUICALPN != punchcore.ALPN {
+		writeJSONResponse(w, http.StatusBadRequest, punchcore.PunchResponse{OK: false, Error: "unsupported alpn"})
 		return
 	}
 
 	if !c.limiter.allow(ip + "|" + req.RelayID) {
-		writeJSONResponse(w, http.StatusTooManyRequests, punch.PunchResponse{OK: false, Error: "rate limited"})
+		writeJSONResponse(w, http.StatusTooManyRequests, punchcore.PunchResponse{OK: false, Error: "rate limited"})
 		return
 	}
 	if !c.inflight.acquire(req.RelayID, ip) {
-		writeJSONResponse(w, http.StatusTooManyRequests, punch.PunchResponse{OK: false, Error: "too many in-flight punch sessions"})
+		writeJSONResponse(w, http.StatusTooManyRequests, punchcore.PunchResponse{OK: false, Error: "too many in-flight punch sessions"})
 		return
 	}
 	defer c.inflight.release(req.RelayID, ip)
@@ -181,11 +184,11 @@ func (c *PunchCoordinator) handleRequest(w http.ResponseWriter, r *http.Request)
 	t := c.Hub.lookupTunnel(req.RelayID)
 	if t == nil {
 		// Stale/rotated relay id: tell the client to re-fetch relays.
-		writeJSONResponse(w, http.StatusNotFound, punch.PunchResponse{OK: false, Error: "relay not connected"})
+		writeJSONResponse(w, http.StatusNotFound, punchcore.PunchResponse{OK: false, Error: "relay not connected"})
 		return
 	}
 	if !t.streamTyping {
-		writeJSONResponse(w, http.StatusConflict, punch.PunchResponse{OK: false, Error: "relay not punch capable"})
+		writeJSONResponse(w, http.StatusConflict, punchcore.PunchResponse{OK: false, Error: "relay not punch capable"})
 		return
 	}
 
@@ -196,35 +199,36 @@ func (c *PunchCoordinator) handleRequest(w http.ResponseWriter, r *http.Request)
 	// forward ONLY reflector-observed reflexive endpoints; when the reflector saw
 	// nothing for this nonce we send none (the client falls back to the hub
 	// relay). Host candidates are clamped and filtered to non-routable addresses
-	// (see SanitizePeers) so they can only reach the volunteer's own LAN.
-	var clientReflexive []punch.Endpoint
-	clientClass := punch.ClassUnknown
-	if key, err := punch.NonceKey(req.ClientNonce); err == nil {
+	// (see punchcore.Policy.SanitizePeers) so they can only reach the volunteer's
+	// own LAN.
+	var clientReflexive []punchcore.Endpoint
+	clientClass := punchcore.ClassUnknown
+	if key, err := punchcore.NonceKey(req.ClientNonce); err == nil {
 		if class, reflexive, ok := c.Reflector.Classify(key); ok {
 			clientClass = class
-			clientReflexive = punch.SanitizePeers(reflexive)
+			clientReflexive = hubPolicy.SanitizePeers(reflexive)
 		}
 	}
 
 	sessionID, err := randomHex(16)
 	if err != nil {
-		writeJSONResponse(w, http.StatusInternalServerError, punch.PunchResponse{OK: false, Error: "internal error"})
+		writeJSONResponse(w, http.StatusInternalServerError, punchcore.PunchResponse{OK: false, Error: "internal error"})
 		return
 	}
-	token := punch.ComputeToken(c.secret, sessionID, req.RelayID, req.ClientNonce)
-	tokenHex := punch.EncodeToken(token)
+	token := punchcore.ComputeToken(c.secret, sessionID, req.RelayID, req.ClientNonce)
+	tokenHex := punchcore.EncodeToken(token)
 
-	dir := punch.PunchDirective{
+	dir := punchcore.PunchDirective{
 		SessionID:       sessionID,
 		RelayID:         req.RelayID,
 		ClientReflexive: clientReflexive,
-		ClientLocal:     punch.SanitizePeers(req.ClientLocal),
+		ClientLocal:     hubPolicy.SanitizePeers(req.ClientLocal),
 		ClientClass:     clientClass,
 		PunchToken:      tokenHex,
 		ReflectorAddrs:  c.Hub.ReflectorAddrs,
 		TTLMillis:       c.TTL.Milliseconds(),
-		QUICALPN:        punch.ALPN,
-		ProtoVersion:    punch.ProtoVersion,
+		QUICALPN:        punchcore.ALPN,
+		ProtoVersion:    punchcore.ProtoVersion,
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), punchControlTimeout)
@@ -232,30 +236,30 @@ func (c *PunchCoordinator) handleRequest(w http.ResponseWriter, r *http.Request)
 	ack, err := c.Hub.SendPunchDirective(ctx, req.RelayID, dir)
 	if err != nil {
 		if errors.Is(err, ErrRelayNotConnected) {
-			writeJSONResponse(w, http.StatusNotFound, punch.PunchResponse{OK: false, Error: "relay not connected"})
+			writeJSONResponse(w, http.StatusNotFound, punchcore.PunchResponse{OK: false, Error: "relay not connected"})
 			return
 		}
 		if errors.Is(err, ErrPunchUnsupported) {
-			writeJSONResponse(w, http.StatusConflict, punch.PunchResponse{OK: false, Error: "relay not punch capable"})
+			writeJSONResponse(w, http.StatusConflict, punchcore.PunchResponse{OK: false, Error: "relay not punch capable"})
 			return
 		}
 		c.Logger.Warn("punch directive failed", "relay_id", req.RelayID, "error", err)
-		writeJSONResponse(w, http.StatusOK, punch.PunchResponse{OK: false, Error: "volunteer unreachable"})
+		writeJSONResponse(w, http.StatusOK, punchcore.PunchResponse{OK: false, Error: "volunteer unreachable"})
 		return
 	}
 	if !ack.OK {
-		writeJSONResponse(w, http.StatusOK, punch.PunchResponse{OK: false, Error: "volunteer declined: " + ack.Error})
+		writeJSONResponse(w, http.StatusOK, punchcore.PunchResponse{OK: false, Error: "volunteer declined: " + ack.Error})
 		return
 	}
 
 	// Skip when both ends are symmetric: no port-prediction, so a direct path is
 	// not worth the budget — the client stays on the hub relay.
-	if clientClass == punch.ClassSymmetric && ack.VolunteerClass == punch.ClassSymmetric {
-		writeJSONResponse(w, http.StatusOK, punch.PunchResponse{OK: false, Error: "skip: both symmetric"})
+	if clientClass == punchcore.ClassSymmetric && ack.VolunteerClass == punchcore.ClassSymmetric {
+		writeJSONResponse(w, http.StatusOK, punchcore.PunchResponse{OK: false, Error: "skip: both symmetric"})
 		return
 	}
 
-	writeJSONResponse(w, http.StatusOK, punch.PunchResponse{
+	writeJSONResponse(w, http.StatusOK, punchcore.PunchResponse{
 		OK:                 true,
 		SessionID:          sessionID,
 		VolunteerReflexive: ack.VolunteerReflexive,
@@ -268,7 +272,7 @@ func (c *PunchCoordinator) handleRequest(w http.ResponseWriter, r *http.Request)
 }
 
 func (c *PunchCoordinator) handleResult(w http.ResponseWriter, r *http.Request) {
-	var res punch.PunchResult
+	var res punchcore.PunchResult
 	if err := json.NewDecoder(io.LimitReader(r.Body, 4<<10)).Decode(&res); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return
