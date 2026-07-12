@@ -197,29 +197,9 @@ func TestRegisterAcceptsAttestedFoundationClass(t *testing.T) {
 	}
 }
 
-func TestRequireSecureBrokerForFoundation(t *testing.T) {
-	cases := []struct {
-		nodeClass string
-		brokerURL string
-		wantErr   bool
-	}{
-		{relay.NodeClassVolunteer, "http://54.238.185.205:8080", false},   // volunteer over plaintext: fine
-		{relay.NodeClassFoundation, "https://broker.openrung.org", false}, // foundation over TLS: fine
-		{relay.NodeClassFoundation, "http://54.238.185.205:8080", true},   // foundation over plaintext origin: refused
-		{relay.NodeClassFoundation, "http://localhost:8080", false},       // loopback http: allowed for testing
-		{relay.NodeClassFoundation, "http://127.0.0.1:8080", false},       // loopback http: allowed for testing
-		{relay.NodeClassFoundation, "http://[::1]:8080", false},           // loopback http: allowed for testing
-	}
-	for _, tc := range cases {
-		err := requireSecureBrokerForFoundation(tc.nodeClass, tc.brokerURL)
-		if (err != nil) != tc.wantErr {
-			t.Errorf("requireSecureBrokerForFoundation(%q, %q) err = %v, wantErr = %v", tc.nodeClass, tc.brokerURL, err, tc.wantErr)
-		}
-	}
-}
-
 // register() must refuse a foundation registration over a cleartext broker URL
-// before it ever sends the token.
+// before it ever sends the token (enforced by BrokerClient.RequireSecureTransport,
+// which brokerClient() sets for foundation).
 func TestRegisterRefusesFoundationOverPlaintext(t *testing.T) {
 	var sent atomic.Int32
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -254,23 +234,5 @@ func TestHeartbeatRefusesFoundationOverPlaintext(t *testing.T) {
 	}
 	if sent.Load() != 0 {
 		t.Fatalf("heartbeat sent %d requests, want 0", sent.Load())
-	}
-}
-
-// Foundation class is unachievable in tunnel mode and would leak the token to
-// the hub; runTunnelMode must fail closed before touching the network.
-func TestRunTunnelModeRejectsFoundationClass(t *testing.T) {
-	cfg := cliConfig{
-		Mode:        "tunnel",
-		HubAddr:     "hub.example:9443",
-		NodeClass:   relay.NodeClassFoundation,
-		SkipXrayRun: true,
-	}
-	err := runTunnelMode(context.Background(), cfg)
-	if err == nil {
-		t.Fatal("runTunnelMode() error = nil, want a foundation-not-supported error")
-	}
-	if !strings.Contains(err.Error(), "foundation") {
-		t.Fatalf("runTunnelMode() error = %v, want it to mention foundation", err)
 	}
 }

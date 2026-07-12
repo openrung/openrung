@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -421,16 +420,8 @@ func runTunnelMode(parent context.Context, cfg cliConfig) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
-	if cfg.NodeClass == relay.NodeClassFoundation {
-		// Fail closed rather than warn-and-ignore. The hub registers tunneled
-		// relays with its own broker credential and always as volunteer class,
-		// so foundation is unachievable here; worse, proceeding would put the
-		// registration token (the foundation token, for a foundation operator)
-		// into the hub Hello frame, which is cleartext when -hub-tls=false.
-		// Returning before ReserveLoopbackTCPPort/dialing keeps the token off
-		// the wire entirely. Foundation relays must run direct mode.
-		return fmt.Errorf("node-class foundation is not supported in tunnel mode: the relay hub registers tunneled relays as volunteers, and proceeding would send the token to the hub (cleartext when -hub-tls=false). Run foundation relays in direct mode against a TLS broker")
-	}
+	// Foundation never reaches tunnel mode: requireDirectModeForFoundation
+	// (Validate and run) rejects any non-direct mode before dispatch.
 
 	loopHost, loopPort, err := volunteer.ReserveLoopbackTCPPort()
 	if err != nil {
@@ -633,44 +624,10 @@ func prepareRuntime(cfg cliConfig) (preparedRuntime, error) {
 	}, nil
 }
 
-// requireSecureBrokerForFoundation refuses to send a node_class=foundation
-// registration (which carries the high-value foundation token) over a
-// cleartext broker URL. https is required; plaintext http is tolerated only
-// for loopback hosts so local testing still works. Volunteers reach the prod
-// broker over the plaintext origin because Cloudflare challenges datacenter
-// IPs, but that posture is unacceptable for the foundation token — foundation
-// relays must register through a TLS endpoint.
-func requireSecureBrokerForFoundation(nodeClass, brokerURL string) error {
-	if nodeClass != relay.NodeClassFoundation {
-		return nil
-	}
-	u, err := url.Parse(brokerURL)
-	if err != nil {
-		return fmt.Errorf("parse broker URL %q: %w", brokerURL, err)
-	}
-	if u.Scheme == "https" {
-		return nil
-	}
-	if u.Scheme == "http" && isLoopbackHost(u.Hostname()) {
-		return nil
-	}
-	return fmt.Errorf("node-class foundation requires an https broker URL (got %q): the foundation token would otherwise transit in cleartext. Point -broker at the TLS broker endpoint, or drop -node-class to register as a volunteer", brokerURL)
-}
-
-func isLoopbackHost(host string) bool {
-	if host == "localhost" {
-		return true
-	}
-	if ip := net.ParseIP(host); ip != nil {
-		return ip.IsLoopback()
-	}
-	return false
-}
-
 func register(ctx context.Context, cfg cliConfig, prepared preparedRuntime) (relay.Descriptor, error) {
-	if err := requireSecureBrokerForFoundation(cfg.NodeClass, cfg.BrokerURL); err != nil {
-		return relay.Descriptor{}, err
-	}
+	// The foundation token's cleartext-transport guard lives in BrokerClient
+	// (RequireSecureTransport, set by brokerClient() for foundation), so it
+	// covers heartbeat as well as registration and also refuses redirects.
 	req := relay.RegisterRequest{
 		PublicHost:       cfg.PublicHost,
 		PublicPort:       cfg.PublicPort,
