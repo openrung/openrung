@@ -57,7 +57,8 @@ type Store struct {
 }
 
 type StoreStats struct {
-	ActiveVolunteers          int
+	// ActiveRelays counts every unexpired relay, foundation and volunteer alike.
+	ActiveRelays              int
 	AdvertisedSessionCapacity int
 }
 
@@ -207,7 +208,7 @@ func (s *Store) Stats(now time.Time) (StoreStats, error) {
 		if !desc.ExpiresAt.After(now) {
 			continue
 		}
-		stats.ActiveVolunteers++
+		stats.ActiveRelays++
 		stats.AdvertisedSessionCapacity += desc.MaxSessions
 	}
 	return stats, nil

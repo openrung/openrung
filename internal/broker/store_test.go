@@ -53,7 +53,7 @@ func TestStoreStatsAndPruneReportOnlyActiveRelays(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store stats: %v", err)
 	}
-	if stats.ActiveVolunteers != 1 || stats.AdvertisedSessionCapacity != 12 {
+	if stats.ActiveRelays != 1 || stats.AdvertisedSessionCapacity != 12 {
 		t.Fatalf("unexpected store stats: %+v", stats)
 	}
 	expired, err := store.Prune(checkAt)

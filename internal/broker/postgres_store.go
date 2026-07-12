@@ -431,7 +431,7 @@ func (s *PostgresStore) Stats(now time.Time) (StoreStats, error) {
 	`, now).Scan(&active, &capacity); err != nil {
 		return StoreStats{}, err
 	}
-	return StoreStats{ActiveVolunteers: active, AdvertisedSessionCapacity: int(capacity.Int64)}, nil
+	return StoreStats{ActiveRelays: active, AdvertisedSessionCapacity: int(capacity.Int64)}, nil
 }
 
 func (s *PostgresStore) Prune(now time.Time) ([]relay.Descriptor, error) {

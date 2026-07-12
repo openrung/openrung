@@ -269,7 +269,7 @@ func maintainBroker(store broker.RelayStore, telemetry broker.TelemetryReader, i
 		)
 		slog.Info(
 			"network status",
-			"active_volunteers", storeStats.ActiveVolunteers,
+			"active_relays", storeStats.ActiveRelays,
 			"advertised_session_capacity", storeStats.AdvertisedSessionCapacity,
 			"clients_seen_5m", telemetryStats.ClientsSeen,
 			"sessions_started_5m", telemetryStats.SessionsStarted,
