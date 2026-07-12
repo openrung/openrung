@@ -69,6 +69,26 @@ A token, when set, takes precedence and enforces auth; the anonymous flag then
 becomes a no-op. Generate a token with `openssl rand -hex 32`. Send it only over
 TLS — see Cloudflare below.
 
+Separately, `OPENRUNG_FOUNDATION_TOKEN` (optional) authorizes registrations
+that claim `node_class: foundation`, marking relays the foundation operates
+itself apart from community volunteers in the signed relay list. It works with
+either auth mode above, must differ from `OPENRUNG_VOLUNTEER_TOKEN` (the
+broker refuses to start otherwise), and belongs only on foundation-operated
+relays. Heartbeats for a foundation relay must also present this token; the
+broker refuses to extend the lease otherwise, so a foundation label can never
+outlive its authorized registrant by more than one lease TTL.
+
+> **Rolling back past `node_class`:** a broker image that predates the
+> `node_class` column neither rewrites the class on re-registration upserts
+> nor guards heartbeats, so while a rollback is running, a re-registration at
+> a foundation relay's `host:port` would keep the `foundation` label alive.
+> After any such rollback, clear the column before (or right after)
+> re-upgrading — foundation relays re-attest when they restart:
+>
+> ```sql
+> UPDATE relay_descriptors SET node_class = 'volunteer';
+> ```
+
 ## Relay-list signing
 
 Every 2xx relay-list response (`/api/v1/relays` and `/api/v1/relays.mirror`) is
@@ -144,6 +164,7 @@ the edge and spoof forwarded headers.
 | ------------------------------------ | -------- | ----------------------------------- | -------------------------------------------------------------- |
 | `OPENRUNG_VOLUNTEER_TOKEN`           | yes\*    | —                                   | Shared registration token (must match hubs/volunteers)         |
 | `OPENRUNG_ALLOW_ANONYMOUS_REGISTRATION` | yes\* | —                                   | Set `true` to run open when no token is set (\*one of these)   |
+| `OPENRUNG_FOUNDATION_TOKEN`          | no       | —                                   | Privileged token for `node_class=foundation` registrations; must differ from the volunteer token |
 | `OPENRUNG_RELAY_SIGNING_KEY`         | yes      | —                                   | Std-base64 32-byte Ed25519 seed; signs every relay-list response |
 | `OPENRUNG_DASHBOARD_TOKEN`           | no       | —                                   | Enables the protected `/admin/telemetry` dashboard             |
 | `OPENRUNG_ADDR`                      | no       | `:8080`                             | HTTP listen address                                            |

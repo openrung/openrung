@@ -29,6 +29,7 @@ func main() {
 	flag.StringVar(&cfg.BrokerURL, "broker", "http://localhost:8080", "broker base URL")
 	flag.StringVar(&cfg.RegistrationToken, "registration-token", os.Getenv("OPENRUNG_VOLUNTEER_TOKEN"), "volunteer registration token")
 	flag.StringVar(&cfg.Label, "label", os.Getenv("OPENRUNG_LABEL"), "human-readable relay label shown in the broker; a random adjective-noun is generated when empty")
+	flag.StringVar(&cfg.NodeClass, "node-class", os.Getenv("OPENRUNG_NODE_CLASS"), "relay operator class: volunteer (default) or foundation; foundation requires the broker's foundation registration token and is ignored in tunnel mode")
 	flag.StringVar(&cfg.XrayPath, "xray", "xray", "path to xray binary")
 	flag.StringVar(&cfg.ListenHost, "listen-host", "::", "local listen host; with connection logging, :: listens on both IPv6 and IPv4 through the observer")
 	flag.IntVar(&cfg.ListenPort, "listen-port", 443, "local listen port")
@@ -77,6 +78,7 @@ type cliConfig struct {
 	BrokerURL         string
 	RegistrationToken string
 	Label             string
+	NodeClass         string
 	XrayPath          string
 	ListenHost        string
 	ListenPort        int
@@ -143,6 +145,11 @@ func (c *cliConfig) ApplyDefaults() error {
 		}
 		c.Label = normalized
 	}
+	nodeClass, err := relay.NormalizeNodeClass(c.NodeClass)
+	if err != nil {
+		return fmt.Errorf("invalid node-class: %w", err)
+	}
+	c.NodeClass = nodeClass
 	if c.Mode == "tunnel" || c.Mode == "auto" {
 		// Tunnel mode gets its public endpoint from the hub; auto mode resolves it
 		// at runtime from the reachability probe. Neither needs a public host now.
@@ -381,6 +388,13 @@ func runTunnelMode(parent context.Context, cfg cliConfig) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
+	if cfg.NodeClass == relay.NodeClassFoundation {
+		// The hub registers tunneled relays with its own broker credential and
+		// always as volunteer class; a foundation claim cannot flow through.
+		// Foundation relays are expected to run direct mode.
+		slog.Warn("node-class foundation is ignored in tunnel mode: the hub registers this relay as a volunteer")
+	}
+
 	loopHost, loopPort, err := volunteer.ReserveLoopbackTCPPort()
 	if err != nil {
 		return err
@@ -597,8 +611,19 @@ func register(ctx context.Context, cfg cliConfig, prepared preparedRuntime) (rel
 		MaxMbps:          cfg.MaxMbps,
 		VolunteerVersion: version,
 		Label:            cfg.Label,
+		NodeClass:        cfg.NodeClass,
 	}
-	return cfg.brokerClient().Register(ctx, req)
+	desc, err := cfg.brokerClient().Register(ctx, req)
+	if err != nil {
+		return relay.Descriptor{}, err
+	}
+	// A broker that predates node_class drops the field and answers 201 with
+	// no class attested; without this check the relay would silently serve
+	// mislabeled as a volunteer.
+	if req.NodeClass == relay.NodeClassFoundation && desc.NodeClass != relay.NodeClassFoundation {
+		return relay.Descriptor{}, fmt.Errorf("broker attested node_class %q instead of %q: the broker likely predates node_class support; upgrade it, or drop -node-class to serve as a volunteer", desc.NodeClass, relay.NodeClassFoundation)
+	}
+	return desc, nil
 }
 
 func heartbeat(ctx context.Context, cfg cliConfig, id string) error {

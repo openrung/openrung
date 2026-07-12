@@ -80,7 +80,7 @@ func TestHeartbeatExtendsRelayLease(t *testing.T) {
 	}
 
 	heartbeatAt := now.Add(30 * time.Second)
-	updated, err := store.Heartbeat(desc.ID, heartbeatAt, time.Minute)
+	updated, err := store.Heartbeat(desc.ID, relay.NodeClassVolunteer, heartbeatAt, time.Minute)
 	if err != nil {
 		t.Fatalf("heartbeat relay: %v", err)
 	}

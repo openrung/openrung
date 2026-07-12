@@ -106,3 +106,32 @@ func jsonResponse(status int, body string) *http.Response {
 		Body:       io.NopCloser(strings.NewReader(body)),
 	}
 }
+
+// A broker that predates node_class silently drops the field and returns a
+// descriptor without it; a foundation relay must refuse to serve mislabeled
+// rather than silently run as a volunteer.
+func TestRegisterRejectsUnattestedFoundationClass(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusCreated, `{"id":"relay_new","public_host":"relay.example","public_port":443}`), nil
+	})}
+
+	cfg := cliConfig{BrokerURL: "http://broker.test", PublicHost: "relay.example", PublicPort: 443, HTTPClient: client, NodeClass: relay.NodeClassFoundation}
+	if _, err := register(context.Background(), cfg, preparedRuntime{}); err == nil {
+		t.Fatal("register() error = nil, want an unattested-node-class error")
+	}
+}
+
+func TestRegisterAcceptsAttestedFoundationClass(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusCreated, `{"id":"relay_new","public_host":"relay.example","public_port":443,"node_class":"foundation"}`), nil
+	})}
+
+	cfg := cliConfig{BrokerURL: "http://broker.test", PublicHost: "relay.example", PublicPort: 443, HTTPClient: client, NodeClass: relay.NodeClassFoundation}
+	desc, err := register(context.Background(), cfg, preparedRuntime{})
+	if err != nil {
+		t.Fatalf("register() error = %v", err)
+	}
+	if desc.NodeClass != relay.NodeClassFoundation {
+		t.Fatalf("node_class = %q, want foundation", desc.NodeClass)
+	}
+}

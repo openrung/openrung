@@ -48,6 +48,15 @@ func run() error {
 		return errors.New("OPENRUNG_VOLUNTEER_TOKEN is empty: refusing to start an open broker where anyone can register relays. Set OPENRUNG_VOLUNTEER_TOKEN, or set OPENRUNG_ALLOW_ANONYMOUS_REGISTRATION=true to run open intentionally")
 	}
 
+	// The foundation token authorizes node_class=foundation registrations. It
+	// must not equal the (shared, widely distributed) volunteer token, or every
+	// volunteer could label its relay as foundation-operated and clients would
+	// trust the signed lie.
+	foundationToken := os.Getenv("OPENRUNG_FOUNDATION_TOKEN")
+	if foundationToken != "" && foundationToken == registrationToken {
+		return errors.New("OPENRUNG_FOUNDATION_TOKEN must differ from OPENRUNG_VOLUNTEER_TOKEN: a shared value would let any volunteer register as a foundation relay")
+	}
+
 	// Fail closed on the signing key too: a missing or malformed seed must
 	// crash-loop (an ordinary, visible outage) rather than serve unsigned relay
 	// lists, which healthz and old clients would never notice while every
@@ -72,6 +81,7 @@ func run() error {
 	}
 	cfg := broker.Config{
 		RegistrationToken: registrationToken,
+		FoundationToken:   foundationToken,
 		VolunteerLeaseTTL: *leaseTTL,
 		TelemetrySink:     telemetrySink,
 		DashboardToken:    os.Getenv("OPENRUNG_DASHBOARD_TOKEN"),
@@ -122,7 +132,7 @@ func run() error {
 		close(shutdownDone)
 	}()
 
-	slog.Info("starting broker", "addr", *addr, "lease_ttl", leaseTTL.String(), "telemetry_store", *telemetryStore, "telemetry_file", *telemetryFile, "relay_store", *relayStore, "relay_ranking", rankingMode, "dashboard_enabled", os.Getenv("OPENRUNG_DASHBOARD_TOKEN") != "", "status_interval", statusInterval.String(), "geoip_enabled", geoResolver != nil)
+	slog.Info("starting broker", "addr", *addr, "lease_ttl", leaseTTL.String(), "telemetry_store", *telemetryStore, "telemetry_file", *telemetryFile, "relay_store", *relayStore, "relay_ranking", rankingMode, "dashboard_enabled", os.Getenv("OPENRUNG_DASHBOARD_TOKEN") != "", "foundation_registration_enabled", foundationToken != "", "status_interval", statusInterval.String(), "geoip_enabled", geoResolver != nil)
 	err = server.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {
 		<-shutdownDone

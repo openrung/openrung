@@ -226,13 +226,26 @@ Request:
   "max_sessions": 8,
   "max_mbps": 20,
   "volunteer_version": "dev",
-  "transport": "direct"
+  "transport": "direct",
+  "node_class": "volunteer"
 }
 ```
 
 `transport` is optional and defaults to `direct`. The relay hub registers CGNAT
 volunteers with `transport: "tunnel"` and a `public_host`/`public_port` pointing
 at the hub; clients treat both the same.
+
+`node_class` records who operates the relay: `volunteer` (the default when
+omitted) for community-run hardware, or `foundation` for relays the OpenRung
+Foundation runs itself. It is provenance, not a quality score. A `foundation`
+claim is only accepted when the request presents the broker's
+`OPENRUNG_FOUNDATION_TOKEN` as its bearer token; any other credential claiming
+`foundation` is rejected with `403` (fail loudly, never silently downgrade).
+The foundation token bounds the claimable class without forcing it — its
+holder may still register `volunteer` relays, which is how a foundation-run
+hub keeps registering the community volunteers tunneled behind it. The class
+is served back inside the signed relay-list body, so clients receive it with
+the same Ed25519 authenticity as every other descriptor field.
 
 For tunnel registrations the hub also sends `exit_host`: the volunteer's public
 source IP as observed on its control connection, i.e. where tunneled traffic
@@ -253,6 +266,7 @@ Response:
   "country_code": "JP",
   "latitude": 35.6895,
   "longitude": 139.6917,
+  "node_class": "volunteer",
   "protocol": "vless-reality-vision",
   "client_id": "2c08df10-4ef4-4ab9-95c6-cb1e94cdb2ff",
   "reality_public_key": "xray-public-key",
@@ -291,6 +305,16 @@ Response:
   "expires_at": "2026-06-09T07:03:30Z"
 }
 ```
+
+Any registration credential (volunteer token, anonymous on an open broker, or
+the foundation token) may heartbeat a volunteer-class relay. Extending a
+**foundation** relay's lease additionally requires the foundation token;
+anything weaker gets `403` and the lease is not extended. Relay IDs are public
+in the relay list, so this guard is what stops a weaker credential from either
+keeping an orphaned foundation label alive (e.g. after an endpoint takeover
+through a pre-`node_class` broker binary) or interfering with a foundation
+relay: a refused heartbeat changes nothing, and an unattended foundation row
+simply expires within one lease TTL.
 
 ## List Relays
 
@@ -347,6 +371,7 @@ Response:
       "country_code": "JP",
       "latitude": 35.6895,
       "longitude": 139.6917,
+      "node_class": "volunteer",
       "protocol": "vless-reality-vision",
       "client_id": "2c08df10-4ef4-4ab9-95c6-cb1e94cdb2ff",
       "reality_public_key": "xray-public-key",
@@ -364,6 +389,12 @@ Response:
   ]
 }
 ```
+
+`node_class` (`volunteer` or `foundation`, see Register Volunteer) is
+broker-attested and covered by the list signature. Clients written before the
+field existed ignore it; clients that read it must treat a missing value as
+`volunteer` and must not relax any signature or transport verification for
+`foundation` relays — the class is operator provenance, not a trust bypass.
 
 ## Mirror Relay List
 

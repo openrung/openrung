@@ -27,6 +27,17 @@ const (
 	// against the channel they actually fetched from.
 	ChannelAPI    = "api"
 	ChannelMirror = "mirror"
+
+	// NodeClassFoundation marks a relay operated by the OpenRung Foundation
+	// itself; NodeClassVolunteer (the default) marks community-operated
+	// hardware. The class records provenance — who runs the node — not a
+	// quality score: reliability is measured per-relay by telemetry either
+	// way. The broker only accepts a foundation claim from a registration
+	// that presents the foundation token, and the class travels inside the
+	// signed relay-list body, so clients can trust it without any new
+	// verification machinery.
+	NodeClassFoundation = "foundation"
+	NodeClassVolunteer  = "volunteer"
 )
 
 type RegisterRequest struct {
@@ -43,7 +54,13 @@ type RegisterRequest struct {
 	MaxMbps          int    `json:"max_mbps"`
 	VolunteerVersion string `json:"volunteer_version"`
 	Label            string `json:"label,omitempty"`
-	Transport        string `json:"transport,omitempty"`
+	// NodeClass declares who operates this relay: NodeClassVolunteer (the
+	// default when empty) or NodeClassFoundation. A foundation claim is only
+	// honored when the request presents the broker's foundation token;
+	// otherwise registration is rejected, so the class can never be
+	// self-granted.
+	NodeClass string `json:"node_class,omitempty"`
+	Transport string `json:"transport,omitempty"`
 	// PunchCapable reports that this relay can attempt a direct NAT-hole-punched
 	// path (client<->volunteer) via the hub's punch coordinator, bypassing the
 	// hub data path. Only tunnel-transport volunteers set it. Clients that do not
@@ -88,7 +105,12 @@ type Descriptor struct {
 	// true exit location of tunnel relays, but it is never serialized: exposing
 	// a CGNAT volunteer's real IP through the public API would defeat the
 	// privacy the hub provides.
-	ExitHost         string    `json:"-"`
+	ExitHost string `json:"-"`
+	// NodeClass is the broker-attested operator class (NodeClassFoundation or
+	// NodeClassVolunteer). Always serialized, and covered by the relay-list
+	// signature like every other descriptor field; clients that predate it
+	// ignore it, clients that read it treat a missing value as volunteer.
+	NodeClass        string    `json:"node_class"`
 	Protocol         string    `json:"protocol"`
 	ClientID         string    `json:"client_id"`
 	RealityPublicKey string    `json:"reality_public_key"`
@@ -138,6 +160,20 @@ type HeartbeatResponse struct {
 
 type ErrorResponse struct {
 	Error string `json:"error"`
+}
+
+// NormalizeNodeClass trims, lowercases, and validates an operator-supplied
+// node class. Empty means "unstated" and normalizes to NodeClassVolunteer, so
+// every descriptor downstream carries a concrete class.
+func NormalizeNodeClass(class string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(class)) {
+	case "", NodeClassVolunteer:
+		return NodeClassVolunteer, nil
+	case NodeClassFoundation:
+		return NodeClassFoundation, nil
+	default:
+		return "", fmt.Errorf("node_class must be %q or %q", NodeClassVolunteer, NodeClassFoundation)
+	}
 }
 
 // MaxLabelLength bounds the operator-supplied relay label.

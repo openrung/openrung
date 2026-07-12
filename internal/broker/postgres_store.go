@@ -40,7 +40,8 @@ const descriptorColumns = `
 	country_code,
 	latitude,
 	longitude,
-	exit_host
+	exit_host,
+	node_class
 `
 
 const postgresOperationTimeout = 5 * time.Second
@@ -74,6 +75,7 @@ CREATE TABLE IF NOT EXISTS relay_descriptors (
 	latitude double precision NOT NULL DEFAULT 0,
 	longitude double precision NOT NULL DEFAULT 0,
 	exit_host text NOT NULL DEFAULT '',
+	node_class text NOT NULL DEFAULT 'volunteer',
 	attributes jsonb NOT NULL DEFAULT '{}'::jsonb,
 	UNIQUE (public_host, public_port)
 );
@@ -110,6 +112,9 @@ ALTER TABLE relay_descriptors
 
 ALTER TABLE relay_descriptors
 	ADD COLUMN IF NOT EXISTS exit_host text NOT NULL DEFAULT '';
+
+ALTER TABLE relay_descriptors
+	ADD COLUMN IF NOT EXISTS node_class text NOT NULL DEFAULT 'volunteer';
 
 CREATE INDEX IF NOT EXISTS relay_descriptors_active_idx
 	ON relay_descriptors (expires_at DESC, last_heartbeat_at DESC);
@@ -189,6 +194,7 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 	desc := relay.Descriptor{
 		ID:               id,
 		Label:            req.Label,
+		NodeClass:        normalizeNodeClass(req.NodeClass),
 		PublicHost:       req.PublicHost,
 		PublicPort:       req.PublicPort,
 		ExitHost:         req.ExitHost,
@@ -238,9 +244,10 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 			transport,
 			punch_capable,
 			punch_endpoint,
-			exit_host
+			exit_host,
+			node_class
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23
 		)
 		ON CONFLICT (public_host, public_port) DO UPDATE SET
 			id = EXCLUDED.id,
@@ -267,7 +274,8 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 			country_code = CASE WHEN relay_descriptors.exit_host = EXCLUDED.exit_host THEN relay_descriptors.country_code ELSE '' END,
 			latitude = CASE WHEN relay_descriptors.exit_host = EXCLUDED.exit_host THEN relay_descriptors.latitude ELSE 0 END,
 			longitude = CASE WHEN relay_descriptors.exit_host = EXCLUDED.exit_host THEN relay_descriptors.longitude ELSE 0 END,
-			exit_host = EXCLUDED.exit_host
+			exit_host = EXCLUDED.exit_host,
+			node_class = EXCLUDED.node_class
 		RETURNING `+descriptorColumns,
 		desc.ID,
 		desc.PublicHost,
@@ -291,23 +299,35 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 		desc.PunchCapable,
 		desc.PunchEndpoint,
 		desc.ExitHost,
+		desc.NodeClass,
 	))
 }
 
-func (s *PostgresStore) Heartbeat(id string, now time.Time, ttl time.Duration) (relay.Descriptor, error) {
+func (s *PostgresStore) Heartbeat(id, maxClass string, now time.Time, ttl time.Duration) (relay.Descriptor, error) {
 	ctx, cancel := postgresOperationContext()
 	defer cancel()
 
+	// The class guard lives inside the UPDATE's WHERE so an unauthorized
+	// heartbeat never extends the lease, not even transiently.
 	desc, err := scanDescriptor(s.pool.QueryRow(ctx, `
 		UPDATE relay_descriptors
 		SET last_heartbeat_at = $2, expires_at = $3
-		WHERE id = $1
+		WHERE id = $1 AND (node_class <> $4 OR $5)
 		RETURNING `+descriptorColumns,
 		id,
 		now,
 		now.Add(ttl),
+		relay.NodeClassFoundation,
+		maxClass == relay.NodeClassFoundation,
 	))
 	if errors.Is(err, pgx.ErrNoRows) {
+		// No row updated: either the relay is gone or the guard blocked a
+		// foundation row. Distinguish so the handler can answer 403 vs 404
+		// (the 404 drives client re-registration and must stay accurate).
+		var exists bool
+		if lookupErr := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM relay_descriptors WHERE id = $1)`, id).Scan(&exists); lookupErr == nil && exists {
+			return relay.Descriptor{}, ErrNodeClassForbidden
+		}
 		return relay.Descriptor{}, ErrRelayNotFound
 	}
 	return desc, err
@@ -693,6 +713,7 @@ func scanDescriptor(row pgx.Row) (relay.Descriptor, error) {
 		&desc.Latitude,
 		&desc.Longitude,
 		&desc.ExitHost,
+		&desc.NodeClass,
 	)
 	return desc, err
 }

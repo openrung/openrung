@@ -13,6 +13,13 @@ import (
 
 var ErrRelayNotFound = errors.New("relay not found")
 
+// ErrNodeClassForbidden is returned by Heartbeat when the presented credential
+// cannot vouch for the relay's stored node class. Refusing the lease extension
+// (rather than downgrading the row) means an unauthorized foundation label
+// expires within one lease TTL, while an attacker who heartbeats a foundation
+// relay's public ID with weaker credentials cannot damage the row.
+var ErrNodeClassForbidden = errors.New("credential cannot heartbeat a relay of this node class")
+
 type RankingMode string
 
 const (
@@ -22,7 +29,14 @@ const (
 
 type RelayStore interface {
 	Register(relay.RegisterRequest, time.Time, time.Duration) (relay.Descriptor, error)
-	Heartbeat(string, time.Time, time.Duration) (relay.Descriptor, error)
+	// Heartbeat extends a relay's lease. maxClass is the highest node class
+	// the caller's credential vouches for: extending a foundation relay's
+	// lease requires a foundation credential (ErrNodeClassForbidden
+	// otherwise), so a foundation label that lost its authorized registrant —
+	// e.g. an endpoint takeover through a rolled-back broker binary whose
+	// upsert predates node_class — expires within one TTL instead of being
+	// kept alive indefinitely by whoever now heartbeats the ID.
+	Heartbeat(id, maxClass string, now time.Time, ttl time.Duration) (relay.Descriptor, error)
 	UpdateGeo(string, relay.GeoLocation) error
 	List(time.Time, int) ([]relay.Descriptor, error)
 	Stats(time.Time) (StoreStats, error)
@@ -66,6 +80,7 @@ func (s *Store) Register(req relay.RegisterRequest, now time.Time, ttl time.Dura
 	desc := relay.Descriptor{
 		ID:               id,
 		Label:            req.Label,
+		NodeClass:        normalizeNodeClass(req.NodeClass),
 		PublicHost:       req.PublicHost,
 		PublicPort:       req.PublicPort,
 		ExitHost:         req.ExitHost,
@@ -94,13 +109,16 @@ func (s *Store) Register(req relay.RegisterRequest, now time.Time, ttl time.Dura
 	return desc, nil
 }
 
-func (s *Store) Heartbeat(id string, now time.Time, ttl time.Duration) (relay.Descriptor, error) {
+func (s *Store) Heartbeat(id, maxClass string, now time.Time, ttl time.Duration) (relay.Descriptor, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	desc, ok := s.relays[id]
 	if !ok {
 		return relay.Descriptor{}, ErrRelayNotFound
+	}
+	if desc.NodeClass == relay.NodeClassFoundation && maxClass != relay.NodeClassFoundation {
+		return relay.Descriptor{}, ErrNodeClassForbidden
 	}
 
 	desc.LastHeartbeatAt = now
@@ -327,6 +345,16 @@ func normalizeTransport(transport string) string {
 		return relay.TransportDirect
 	}
 	return transport
+}
+
+// normalizeNodeClass defaults an empty node class to volunteer so every
+// stored descriptor carries a concrete value. Authorization of a foundation
+// claim happens in the handler; the store trusts its caller.
+func normalizeNodeClass(class string) string {
+	if class == "" {
+		return relay.NodeClassVolunteer
+	}
+	return class
 }
 
 func newRelayID() (string, error) {

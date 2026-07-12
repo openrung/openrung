@@ -49,8 +49,8 @@ if [ -n "${OPENRUNG_SHORT_ID:-}" ]; then set -- "$@" -short-id "${OPENRUNG_SHORT
 if [ -n "${OPENRUNG_MAX_SESSIONS:-}" ]; then set -- "$@" -max-sessions "${OPENRUNG_MAX_SESSIONS}"; fi
 if [ -n "${OPENRUNG_MAX_MBPS:-}" ]; then set -- "$@" -max-mbps "${OPENRUNG_MAX_MBPS}"; fi
 
-# The registration token (OPENRUNG_VOLUNTEER_TOKEN) and label (OPENRUNG_LABEL)
-# are read natively from the environment by the binary, so they need no flag
-# mapping.
+# The registration token (OPENRUNG_VOLUNTEER_TOKEN), label (OPENRUNG_LABEL),
+# and node class (OPENRUNG_NODE_CLASS) are read natively from the environment
+# by the binary, so they need no flag mapping.
 
 exec "$@"
