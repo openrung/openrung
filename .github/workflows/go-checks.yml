@@ -48,6 +48,40 @@ jobs:
           go vet ./volunteerservice/...
           go build ./volunteerservice/...
 
+  # A punchcore change that merges without a VERSION bump would never get a
+  # punchcore/vX.Y.Z tag (punchcore-tag.yml triggers on VERSION changes), so
+  # the mobile repo could never pin it. Enforce the bump at PR time and make
+  # sure the bumped version is not already tagged. README-only edits are
+  # exempt.
+  punchcore-version:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require a fresh VERSION when punchcore changes
+        run: |
+          base="origin/${{ github.base_ref }}"
+          changed="$(git diff --name-only "$base"...HEAD -- punchcore/ ':!punchcore/README.md')"
+          if [ -z "$changed" ]; then
+            echo "punchcore/ untouched"
+            exit 0
+          fi
+          if git diff --quiet "$base"...HEAD -- punchcore/VERSION; then
+            echo "punchcore/ changed without a punchcore/VERSION bump:" >&2
+            echo "$changed" >&2
+            exit 1
+          fi
+          version="$(tr -d '[:space:]' < punchcore/VERSION)"
+          tag="punchcore/v$version"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "punchcore/VERSION is $version but $tag already exists; bump to a new version" >&2
+            exit 1
+          fi
+          echo "punchcore/VERSION -> $version (will tag $tag on merge)"
+
   # PR-time smoke build of every deploy image. The image workflows themselves
   # only run on pushes to main, so without this a Docker packaging error (e.g.
   # a Dockerfile missing a COPY for a nested module's go.mod that the root

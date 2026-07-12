@@ -47,11 +47,17 @@ protocol change and must be treated as one (see `ProtoVersion`).
 1. Edit punchcore in an OpenRung PR — the hub, volunteers, and desktop clients
    consume it via the in-repo `replace`, so servers and desktop stay atomically
    consistent.
-2. Merge, then tag `punchcore/vX.Y.Z` on `main` (nested-module tag; this is
-   what makes the module fetchable via the Go proxy).
-3. A mobile PR bumps the require in `android/punchbridge/go.mod` (+`go.sum`),
-   which automatically busts the AAR CI caches.
-4. Rebuild the AAR via `android/build-libbox-release.sh` and ship.
+2. Bump `punchcore/VERSION` in the same PR — a `go-checks` job fails any PR
+   that changes punchcore without a fresh, untagged version.
+3. Merge. `punchcore-tag.yml` tags `punchcore/v$(VERSION)` on the merge commit
+   automatically (the nested-module tag is what makes the module fetchable via
+   the Go proxy). No manual tagging.
+4. Dependabot in the mobile repo (scoped to this module) opens the
+   `android/punchbridge/go.mod` (+`go.sum`) bump PR when it sees the new tag;
+   the bump automatically busts the AAR CI caches. Manual fallback:
+   `go get github.com/openrung/openrung/punchcore@vX.Y.Z` in
+   `android/punchbridge`.
+5. Rebuild the AAR via `android/build-libbox-release.sh` and ship.
 
 Local cross-repo development: use
 `PUNCHCORE_SRC=/path/to/openrung/punchcore android/build-libbox-release.sh`

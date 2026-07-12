@@ -1,0 +1,35 @@
+name: punchcore-tag
+
+# Tags punchcore/v$(punchcore/VERSION) on the merge commit whenever VERSION
+# changes on main, making the nested module fetchable at that version without
+# a manual tagging step. The go-checks punchcore-version job enforces the
+# VERSION bump at PR time, so merging a punchcore change IS the release.
+# No-ops if the tag already exists.
+
+on:
+  push:
+    branches: [main]
+    paths: [punchcore/VERSION]
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag punchcore version if missing
+        run: |
+          version="$(tr -d '[:space:]' < punchcore/VERSION)"
+          case "$version" in
+            *[!0-9.]*|.*|*.|*..*) echo "invalid punchcore/VERSION: $version" >&2; exit 1 ;;
+          esac
+          tag="punchcore/v$version"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "$tag already exists; nothing to do"
+            exit 0
+          fi
+          git tag "$tag"
+          git push origin "refs/tags/$tag"

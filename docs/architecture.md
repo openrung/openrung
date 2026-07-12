@@ -150,12 +150,16 @@ and uses the hub relay with no regression.
 1. Edit `punchcore/` in an openrung PR — the hub, volunteers, and desktop
    clients consume it via the in-repo `replace`, so servers and desktop stay
    atomically consistent.
-2. Merge, then tag `punchcore/vX.Y.Z` on `main` (the nested-module tag makes it
-   fetchable through the Go proxy).
-3. A mobile PR bumps the require in `android/punchbridge/go.mod` (+`go.sum`),
+2. Bump `punchcore/VERSION` in the same PR — the `go-checks` workflow fails
+   any PR that changes `punchcore/` without a fresh, untagged version.
+3. Merge. The `punchcore-tag.yml` workflow tags `punchcore/v$(VERSION)` on the
+   merge commit automatically (the nested-module tag makes it fetchable
+   through the Go proxy); no manual tagging.
+4. Dependabot in the mobile repo (scoped to punchcore) opens the
+   `android/punchbridge/go.mod` (+`go.sum`) bump PR when it sees the new tag,
    which automatically busts the AAR CI caches (their hash keys include
-   go.mod/go.sum).
-4. Rebuild the AAR via `android/build-libbox-release.sh` and ship.
+   go.mod/go.sum). Manual fallback: `go get` the new version directly.
+5. Rebuild the AAR via `android/build-libbox-release.sh` and ship.
 
 Local cross-repo development uses
 `PUNCHCORE_SRC=/path/to/openrung/punchcore android/build-libbox-release.sh`
