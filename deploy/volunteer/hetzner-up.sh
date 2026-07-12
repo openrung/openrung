@@ -15,7 +15,13 @@
 #
 # Overridable via env: OPENRUNG_LOCATION, OPENRUNG_SERVER_TYPE, OPENRUNG_OS_IMAGE,
 # OPENRUNG_IMAGE, OPENRUNG_BROKER_URL, OPENRUNG_VOLUNTEER_TOKEN,
-# OPENRUNG_SSH_KEY_NAME, OPENRUNG_FIREWALL_NAME.
+# OPENRUNG_NODE_CLASS, OPENRUNG_SSH_KEY_NAME, OPENRUNG_FIREWALL_NAME.
+#
+# This script provisions VOLUNTEER relays and registers against the plaintext
+# broker origin (see below). It cannot provision foundation relays: the
+# volunteer binary refuses to send the foundation token over cleartext, so
+# OPENRUNG_NODE_CLASS=foundation here would fail at registration. Foundation
+# relays must register through a TLS broker endpoint.
 set -euo pipefail
 
 LOCATION="${OPENRUNG_LOCATION:-hel1}"          # Helsinki (EU: 20TB included traffic)
@@ -29,6 +35,7 @@ IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-volunteer:main}"  # multi-arc
 # exactly like the Lightsail fleet (see lightsail-up.sh).
 BROKER_URL="${OPENRUNG_BROKER_URL:-http://54.238.185.205:8080}"
 TOKEN="${OPENRUNG_VOLUNTEER_TOKEN:-}"          # empty = anonymous (origin allows it)
+NODE_CLASS="${OPENRUNG_NODE_CLASS:-volunteer}" # foundation is refused over this plaintext origin
 SSH_KEY_NAME="${OPENRUNG_SSH_KEY_NAME:-openrung}"
 FIREWALL_NAME="${OPENRUNG_FIREWALL_NAME:-openrung-volunteer}"
 
@@ -87,6 +94,7 @@ docker run -d --name openrung-volunteer --restart unless-stopped \\
   -e OPENRUNG_BROKER_URL=${BROKER_URL} \\
   -e OPENRUNG_PUBLIC_HOST="\$PUBLIC_IP" \\
   -e OPENRUNG_LISTEN_HOST=0.0.0.0 \\
+  -e OPENRUNG_NODE_CLASS=${NODE_CLASS} \\
   -e OPENRUNG_LABEL=${NAME} ${TOKEN_INLINE}\\
   ${IMAGE}
 EOF

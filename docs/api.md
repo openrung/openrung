@@ -247,6 +247,24 @@ hub keeps registering the community volunteers tunneled behind it. The class
 is served back inside the signed relay-list body, so clients receive it with
 the same Ed25519 authenticity as every other descriptor field.
 
+Because `public_host`/`public_port` is client-supplied and foundation
+endpoints are public in the signed list, the broker also protects a live
+foundation relay's directory entry: a registration at a
+`public_host:public_port` currently held by a `foundation` relay is rejected
+with `403` unless it is itself a foundation-class registration (which requires
+the token). Without this, an anonymous registrant could otherwise seize a
+foundation relay's row — new id, its own keys, downgraded class — and force
+the real node into a re-registration race. A foundation operator re-registers
+(refreshes) its own endpoint normally with the token. The same rule guards
+heartbeats: extending a `foundation` relay's lease requires the foundation
+token, so an orphaned foundation label simply expires within one lease TTL.
+
+Foundation registrations must be sent over TLS: the foundation token is
+high-value, and the volunteer client refuses to transmit it over a cleartext
+`http://` broker URL (loopback excepted for local testing). The plaintext
+broker origin used by community volunteers — reachable because Cloudflare
+challenges datacenter IPs on the TLS front — is therefore volunteer-only.
+
 For tunnel registrations the hub also sends `exit_host`: the volunteer's public
 source IP as observed on its control connection, i.e. where tunneled traffic
 actually exits. The broker uses it only to geolocate the relay and never

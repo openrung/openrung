@@ -284,15 +284,17 @@ func TestPostgresStoreRoundTripsNodeClass(t *testing.T) {
 		t.Fatalf("listed node_class not preserved: %+v", listed)
 	}
 
-	// A re-registration at the same host:port without the class (e.g. after a
-	// deploy that dropped the env var) must downgrade to volunteer rather than
-	// keep a stale foundation label.
-	downgraded, err := store.Register(validRegisterRequest(), now.Add(2*time.Second), time.Minute)
+	// A volunteer-class registration at a DIFFERENT endpoint round-trips as
+	// volunteer. (A volunteer registration at the SAME endpoint is refused by
+	// the foundation guard; see TestPostgresStoreRegisterGuardsFoundationEndpoint.)
+	vol := validRegisterRequest()
+	vol.PublicHost = "2001:db8::abcd"
+	volDesc, err := store.Register(vol, now.Add(2*time.Second), time.Minute)
 	if err != nil {
-		t.Fatalf("re-register relay: %v", err)
+		t.Fatalf("register volunteer relay: %v", err)
 	}
-	if downgraded.NodeClass != relay.NodeClassVolunteer {
-		t.Fatalf("re-registered node_class = %q, want %q", downgraded.NodeClass, relay.NodeClassVolunteer)
+	if volDesc.NodeClass != relay.NodeClassVolunteer {
+		t.Fatalf("volunteer node_class = %q, want %q", volDesc.NodeClass, relay.NodeClassVolunteer)
 	}
 }
 
@@ -326,5 +328,78 @@ func TestPostgresStoreHeartbeatGuardsFoundationLease(t *testing.T) {
 
 	if _, err := store.Heartbeat("relay_missing", relay.NodeClassFoundation, now, time.Minute); !errors.Is(err, ErrRelayNotFound) {
 		t.Fatalf("missing relay: err = %v, want ErrRelayNotFound", err)
+	}
+}
+
+func TestPostgresStoreRegisterGuardsFoundationEndpoint(t *testing.T) {
+	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
+	store := newTestPostgresStore(t, RankingModeGlobal)
+
+	foundation := validRegisterRequest()
+	foundation.NodeClass = relay.NodeClassFoundation
+	foundation.RealityPublicKey = "foundation-key"
+	original, err := store.Register(foundation, now, time.Minute)
+	if err != nil {
+		t.Fatalf("register foundation relay: %v", err)
+	}
+
+	// Anonymous/volunteer registration at the same host:port must be refused,
+	// not overwrite the foundation descriptor.
+	attacker := validRegisterRequest() // same public_host:public_port
+	attacker.RealityPublicKey = "attacker-key"
+	if _, err := store.Register(attacker, now.Add(time.Second), time.Minute); !errors.Is(err, ErrNodeClassForbidden) {
+		t.Fatalf("attacker overwrite: err = %v, want ErrNodeClassForbidden", err)
+	}
+
+	listed, err := store.List(now.Add(2*time.Second), 10)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("expected exactly the foundation relay, got %d: %+v", len(listed), listed)
+	}
+	got := listed[0]
+	if got.ID != original.ID || got.NodeClass != relay.NodeClassFoundation || got.RealityPublicKey != "foundation-key" {
+		t.Fatalf("foundation descriptor was disturbed: %+v", got)
+	}
+
+	// The foundation operator can still refresh its own endpoint with a
+	// foundation-class registration.
+	refreshed, err := store.Register(foundation, now.Add(3*time.Second), time.Minute)
+	if err != nil {
+		t.Fatalf("foundation refresh: %v", err)
+	}
+	if refreshed.NodeClass != relay.NodeClassFoundation {
+		t.Fatalf("refresh node_class = %q, want foundation", refreshed.NodeClass)
+	}
+}
+
+// An expired-but-unpruned foundation row must not block a fresh registration
+// at the same endpoint: the postgres guard checks liveness, matching the
+// in-memory store (parity for the "live foundation endpoint" contract).
+func TestPostgresStoreExpiredFoundationEndpointIsReclaimable(t *testing.T) {
+	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
+	store := newTestPostgresStore(t, RankingModeGlobal)
+
+	foundation := validRegisterRequest()
+	foundation.NodeClass = relay.NodeClassFoundation
+	if _, err := store.Register(foundation, now, time.Minute); err != nil {
+		t.Fatalf("register foundation relay: %v", err)
+	}
+
+	// A live foundation row still blocks a volunteer takeover.
+	vol := validRegisterRequest()
+	if _, err := store.Register(vol, now.Add(30*time.Second), time.Minute); !errors.Is(err, ErrNodeClassForbidden) {
+		t.Fatalf("live foundation endpoint: err = %v, want ErrNodeClassForbidden", err)
+	}
+
+	// Past the foundation lease (but before any prune), the same volunteer
+	// registration succeeds and reclaims the endpoint as volunteer.
+	reclaimed, err := store.Register(vol, now.Add(2*time.Minute), time.Minute)
+	if err != nil {
+		t.Fatalf("reclaim expired foundation endpoint: %v", err)
+	}
+	if reclaimed.NodeClass != relay.NodeClassVolunteer {
+		t.Fatalf("reclaimed node_class = %q, want %q", reclaimed.NodeClass, relay.NodeClassVolunteer)
 	}
 }

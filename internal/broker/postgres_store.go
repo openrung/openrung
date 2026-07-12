@@ -221,7 +221,21 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 	// handler's next successful UpdateGeo — except when the exit host changed
 	// (a hub port reused by a different volunteer), where the upsert clears
 	// the stale location so the handler resolves the new exit.
-	return scanDescriptor(s.pool.QueryRow(ctx, `
+	//
+	// The DO UPDATE WHERE guards a LIVE foundation endpoint: a foundation row
+	// may only be overwritten by another foundation-class registration.
+	// public_host:public_port is client-supplied and foundation endpoints are
+	// public in the signed list, so without this guard an anonymous
+	// registration could seize a foundation relay's row (new id, attacker's
+	// keys, downgraded class) and knock the real node into a re-registration
+	// race. The handler already gates node_class=foundation behind the
+	// foundation token, so "EXCLUDED.node_class = foundation" can only be true
+	// for a token-authorized caller. The expires_at disjunct keeps this to
+	// live rows — an already-expired foundation row (not yet pruned) is
+	// reclaimable, matching the in-memory Store's ExpiresAt.After(now) guard.
+	// A suppressed update returns no row (pgx.ErrNoRows), which we map to
+	// ErrNodeClassForbidden.
+	desc, err = scanDescriptor(s.pool.QueryRow(ctx, `
 		INSERT INTO relay_descriptors (
 			id,
 			public_host,
@@ -276,6 +290,9 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 			longitude = CASE WHEN relay_descriptors.exit_host = EXCLUDED.exit_host THEN relay_descriptors.longitude ELSE 0 END,
 			exit_host = EXCLUDED.exit_host,
 			node_class = EXCLUDED.node_class
+		WHERE relay_descriptors.node_class <> $24
+			OR EXCLUDED.node_class = $24
+			OR relay_descriptors.expires_at <= EXCLUDED.registered_at
 		RETURNING `+descriptorColumns,
 		desc.ID,
 		desc.PublicHost,
@@ -300,7 +317,15 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 		desc.PunchEndpoint,
 		desc.ExitHost,
 		desc.NodeClass,
+		relay.NodeClassFoundation,
 	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The upsert matched an existing row but the WHERE suppressed the
+		// update: the endpoint is held by a foundation relay and this
+		// (non-foundation) registration may not take it over.
+		return relay.Descriptor{}, ErrNodeClassForbidden
+	}
+	return desc, err
 }
 
 func (s *PostgresStore) Heartbeat(id, maxClass string, now time.Time, ttl time.Duration) (relay.Descriptor, error) {

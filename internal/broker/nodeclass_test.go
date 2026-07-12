@@ -320,3 +320,66 @@ func TestStoreHeartbeatGuardsFoundationLease(t *testing.T) {
 		t.Fatalf("missing relay: err = %v, want ErrRelayNotFound", err)
 	}
 }
+
+// The registration overwrite guard: a live foundation endpoint may not be
+// seized by a non-foundation registration at the same public_host:public_port.
+// This is the vector the heartbeat guard does NOT cover — the damage would
+// otherwise happen through registration, not heartbeat.
+func TestRegisterCannotOverwriteFoundationEndpointAnonymously(t *testing.T) {
+	server := NewServer(NewStore(), Config{
+		SigningSeed:     testSigningSeed(),
+		FoundationToken: "foundation-token",
+	})
+
+	foundation := validRegisterRequest()
+	foundation.NodeClass = relay.NodeClassFoundation
+	foundation.RealityPublicKey = "foundation-key"
+	recorder := postRegister(t, server, foundation, "foundation-token")
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("register foundation: expected 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	original := decodeDescriptor(t, recorder)
+
+	// Attacker registers the same host:port anonymously (as a volunteer).
+	attacker := validRegisterRequest() // same public_host:public_port
+	attacker.RealityPublicKey = "attacker-key"
+	attackRecorder := postRegister(t, server, attacker, "")
+	if attackRecorder.Code != http.StatusForbidden {
+		t.Fatalf("attacker overwrite: expected 403, got %d: %s", attackRecorder.Code, attackRecorder.Body.String())
+	}
+
+	// The signed list must still carry the original foundation descriptor,
+	// unmodified — same class, same reality key, and no attacker entry.
+	listRecorder := httptest.NewRecorder()
+	server.ServeHTTP(listRecorder, httptest.NewRequest(http.MethodGet, "/api/v1/relays", nil))
+	body := listRecorder.Body.String()
+	if !strings.Contains(body, `"node_class":"foundation"`) || !strings.Contains(body, "foundation-key") {
+		t.Fatalf("foundation descriptor was disturbed: %s", body)
+	}
+	if strings.Contains(body, "attacker-key") {
+		t.Fatalf("attacker descriptor leaked into the list: %s", body)
+	}
+	_ = original
+}
+
+// The legitimate foundation operator can always re-register (refresh) its own
+// endpoint with the foundation token.
+func TestRegisterFoundationCanRefreshOwnEndpoint(t *testing.T) {
+	store := NewStore()
+	now := time.Now().UTC()
+
+	req := validRegisterRequest()
+	req.NodeClass = relay.NodeClassFoundation
+	if _, err := store.Register(req, now, time.Minute); err != nil {
+		t.Fatalf("first foundation register: %v", err)
+	}
+	// Re-register at the same endpoint, still foundation-class: allowed.
+	if _, err := store.Register(req, now.Add(time.Second), time.Minute); err != nil {
+		t.Fatalf("foundation refresh: %v", err)
+	}
+	// A volunteer registration at the same endpoint: refused.
+	vol := validRegisterRequest()
+	if _, err := store.Register(vol, now.Add(2*time.Second), time.Minute); !errors.Is(err, ErrNodeClassForbidden) {
+		t.Fatalf("volunteer collision: err = %v, want ErrNodeClassForbidden", err)
+	}
+}

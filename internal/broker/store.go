@@ -13,12 +13,14 @@ import (
 
 var ErrRelayNotFound = errors.New("relay not found")
 
-// ErrNodeClassForbidden is returned by Heartbeat when the presented credential
-// cannot vouch for the relay's stored node class. Refusing the lease extension
-// (rather than downgrading the row) means an unauthorized foundation label
-// expires within one lease TTL, while an attacker who heartbeats a foundation
-// relay's public ID with weaker credentials cannot damage the row.
-var ErrNodeClassForbidden = errors.New("credential cannot heartbeat a relay of this node class")
+// ErrNodeClassForbidden is returned when a registration or heartbeat would
+// act on a foundation relay without foundation authority: a non-foundation
+// registration cannot seize a foundation endpoint (Register), and a
+// non-foundation credential cannot extend a foundation lease (Heartbeat).
+// Refusing outright (rather than downgrading the row) keeps a foundation
+// label from being taken over — public relay IDs and endpoints notwithstanding
+// — and lets an orphaned label expire within one lease TTL.
+var ErrNodeClassForbidden = errors.New("registration or heartbeat is not authorized for this relay's node class")
 
 type RankingMode string
 
@@ -104,6 +106,20 @@ func (s *Store) Register(req relay.RegisterRequest, now time.Time, ttl time.Dura
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Mirror the postgres upsert's foundation guard: a non-foundation
+	// registration may not land on an endpoint a live foundation relay holds.
+	// The memory store keys by id (it never overwrites on host:port), so the
+	// attack here is shadowing rather than replacement, but the guarantee must
+	// hold regardless of store — reject the collision outright.
+	if desc.NodeClass != relay.NodeClassFoundation {
+		for _, existing := range s.relays {
+			if existing.NodeClass == relay.NodeClassFoundation &&
+				existing.PublicHost == desc.PublicHost && existing.PublicPort == desc.PublicPort &&
+				existing.ExpiresAt.After(now) {
+				return relay.Descriptor{}, ErrNodeClassForbidden
+			}
+		}
+	}
 	s.relays[id] = desc
 
 	return desc, nil

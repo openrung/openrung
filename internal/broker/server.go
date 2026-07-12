@@ -135,6 +135,12 @@ func registerHandler(store RelayStore, cfg Config) http.HandlerFunc {
 		}
 
 		desc, err := store.Register(req, time.Now().UTC(), cfg.VolunteerLeaseTTL)
+		if errors.Is(err, ErrNodeClassForbidden) {
+			// The endpoint is held by a live foundation relay; a
+			// non-foundation registration may not seize it.
+			writeError(w, http.StatusForbidden, "public_host:public_port is reserved by a foundation relay")
+			return
+		}
 		if err != nil {
 			slog.Error("could not register volunteer", "error", err)
 			writeError(w, http.StatusServiceUnavailable, "could not register relay")

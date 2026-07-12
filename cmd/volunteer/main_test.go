@@ -126,12 +126,68 @@ func TestRegisterAcceptsAttestedFoundationClass(t *testing.T) {
 		return jsonResponse(http.StatusCreated, `{"id":"relay_new","public_host":"relay.example","public_port":443,"node_class":"foundation"}`), nil
 	})}
 
-	cfg := cliConfig{BrokerURL: "http://broker.test", PublicHost: "relay.example", PublicPort: 443, HTTPClient: client, NodeClass: relay.NodeClassFoundation}
+	cfg := cliConfig{BrokerURL: "https://broker.test", PublicHost: "relay.example", PublicPort: 443, HTTPClient: client, NodeClass: relay.NodeClassFoundation}
 	desc, err := register(context.Background(), cfg, preparedRuntime{})
 	if err != nil {
 		t.Fatalf("register() error = %v", err)
 	}
 	if desc.NodeClass != relay.NodeClassFoundation {
 		t.Fatalf("node_class = %q, want foundation", desc.NodeClass)
+	}
+}
+
+func TestRequireSecureBrokerForFoundation(t *testing.T) {
+	cases := []struct {
+		nodeClass string
+		brokerURL string
+		wantErr   bool
+	}{
+		{relay.NodeClassVolunteer, "http://54.238.185.205:8080", false},   // volunteer over plaintext: fine
+		{relay.NodeClassFoundation, "https://broker.openrung.org", false}, // foundation over TLS: fine
+		{relay.NodeClassFoundation, "http://54.238.185.205:8080", true},   // foundation over plaintext origin: refused
+		{relay.NodeClassFoundation, "http://localhost:8080", false},       // loopback http: allowed for testing
+		{relay.NodeClassFoundation, "http://127.0.0.1:8080", false},       // loopback http: allowed for testing
+		{relay.NodeClassFoundation, "http://[::1]:8080", false},           // loopback http: allowed for testing
+	}
+	for _, tc := range cases {
+		err := requireSecureBrokerForFoundation(tc.nodeClass, tc.brokerURL)
+		if (err != nil) != tc.wantErr {
+			t.Errorf("requireSecureBrokerForFoundation(%q, %q) err = %v, wantErr = %v", tc.nodeClass, tc.brokerURL, err, tc.wantErr)
+		}
+	}
+}
+
+// register() must refuse a foundation registration over a cleartext broker URL
+// before it ever sends the token.
+func TestRegisterRefusesFoundationOverPlaintext(t *testing.T) {
+	var sent atomic.Int32
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		sent.Add(1)
+		return jsonResponse(http.StatusCreated, `{"id":"relay_new","node_class":"foundation"}`), nil
+	})}
+	cfg := cliConfig{BrokerURL: "http://broker.test", PublicHost: "relay.example", PublicPort: 443, HTTPClient: client, NodeClass: relay.NodeClassFoundation}
+	if _, err := register(context.Background(), cfg, preparedRuntime{}); err == nil {
+		t.Fatal("register() error = nil, want a cleartext-broker error")
+	}
+	if sent.Load() != 0 {
+		t.Fatalf("register sent %d requests, want 0 (must refuse before sending the token)", sent.Load())
+	}
+}
+
+// Foundation class is unachievable in tunnel mode and would leak the token to
+// the hub; runTunnelMode must fail closed before touching the network.
+func TestRunTunnelModeRejectsFoundationClass(t *testing.T) {
+	cfg := cliConfig{
+		Mode:        "tunnel",
+		HubAddr:     "hub.example:9443",
+		NodeClass:   relay.NodeClassFoundation,
+		SkipXrayRun: true,
+	}
+	err := runTunnelMode(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("runTunnelMode() error = nil, want a foundation-not-supported error")
+	}
+	if !strings.Contains(err.Error(), "foundation") {
+		t.Fatalf("runTunnelMode() error = %v, want it to mention foundation", err)
 	}
 }

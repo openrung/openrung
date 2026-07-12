@@ -9,7 +9,16 @@
 # relay shows up in the broker dashboard under the same friendly name as the box.
 #
 # Overridable via env: OPENRUNG_REGION, OPENRUNG_AZ, OPENRUNG_BUNDLE,
-# OPENRUNG_BLUEPRINT, OPENRUNG_IMAGE, OPENRUNG_BROKER_URL.
+# OPENRUNG_BLUEPRINT, OPENRUNG_IMAGE, OPENRUNG_BROKER_URL, OPENRUNG_VOLUNTEER_TOKEN,
+# OPENRUNG_NODE_CLASS.
+#
+# OPENRUNG_NODE_CLASS defaults to volunteer. To provision a FOUNDATION relay,
+# set OPENRUNG_NODE_CLASS=foundation, OPENRUNG_VOLUNTEER_TOKEN to the broker's
+# foundation token, and — required — OPENRUNG_BROKER_URL to an https endpoint:
+# the volunteer binary refuses to send the foundation token over cleartext, and
+# the default plaintext origin below is volunteer-only (Cloudflare challenges
+# datacenter IPs, so the TLS front is not reachable from here without an
+# allowlist for this relay's static IP).
 set -euo pipefail
 
 REGION="${OPENRUNG_REGION:-ap-northeast-1}"
@@ -18,6 +27,8 @@ BUNDLE="${OPENRUNG_BUNDLE:-micro_3_0}"          # 1GB RAM / 2 vCPU / 40GB / 2TB
 BLUEPRINT="${OPENRUNG_BLUEPRINT:-ubuntu_24_04}"
 IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-volunteer:main}"
 BROKER_URL="${OPENRUNG_BROKER_URL:-http://54.238.185.205:8080}"
+TOKEN="${OPENRUNG_VOLUNTEER_TOKEN:-}"           # empty = anonymous (origin allows it)
+NODE_CLASS="${OPENRUNG_NODE_CLASS:-volunteer}"
 
 adjectives=(happy grumpy glorious sleepy brave clever gentle jolly mighty nimble plucky quiet rapid shiny snappy spry sturdy sunny swift witty zesty breezy cosmic dapper eager fuzzy golden hardy lucky merry noble proud quirky rustic silly valiant)
 nouns=(hippo walrus castle otter falcon badger lantern comet maple harbor meadow beacon pebble willow cactus cobra ferret gecko heron ibex jaguar koala lemur marmot narwhal ocelot panther quokka raven salmon tapir urchin viper wombat yak zebra)
@@ -30,6 +41,13 @@ echo "Provisioning Lightsail relay '${NAME}' in ${REGION} (${BUNDLE}, ${BLUEPRIN
 # Static IP (free while attached; gives the relay a stable public host).
 aws lightsail allocate-static-ip --static-ip-name "$IPNAME" --region "$REGION" >/dev/null 2>&1 || true
 STATIC_IP="$(aws lightsail get-static-ip --static-ip-name "$IPNAME" --region "$REGION" --query 'staticIp.ipAddress' --output text)"
+
+# Optional token as an inline fragment (not its own line): an empty optional
+# line would land mid backslash-continuation and terminate `docker run` before
+# the image argument. OPENRUNG_NODE_CLASS is always set (defaults to volunteer),
+# so it gets its own line.
+TOKEN_INLINE=""
+if [ -n "$TOKEN" ]; then TOKEN_INLINE="-e OPENRUNG_VOLUNTEER_TOKEN=${TOKEN} "; fi
 
 # Launch script: install Docker, pull the public image, run the relay. The IP is
 # known up front (static IP), so OPENRUNG_PUBLIC_HOST and OPENRUNG_LABEL are baked in.
@@ -51,7 +69,8 @@ docker run -d --name openrung-volunteer --restart unless-stopped \\
   -e OPENRUNG_BROKER_URL=${BROKER_URL} \\
   -e OPENRUNG_PUBLIC_HOST=${STATIC_IP} \\
   -e OPENRUNG_LISTEN_HOST=0.0.0.0 \\
-  -e OPENRUNG_LABEL=${NAME} \\
+  -e OPENRUNG_NODE_CLASS=${NODE_CLASS} \\
+  -e OPENRUNG_LABEL=${NAME} ${TOKEN_INLINE}\\
   ${IMAGE}
 EOF
 
