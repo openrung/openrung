@@ -24,6 +24,12 @@ import (
 
 const version = "dev"
 
+// foundationAttestTimeout bounds the registration a foundation relay must
+// complete before it opens its public listener. A stalled broker then fails
+// fast (and the container's restart policy retries) instead of leaving the
+// relay hanging — or, worse, serving — without a confirmed foundation class.
+const foundationAttestTimeout = 30 * time.Second
+
 func main() {
 	var cfg cliConfig
 	flag.StringVar(&cfg.BrokerURL, "broker", "http://localhost:8080", "broker base URL")
@@ -319,6 +325,25 @@ func run(cfg cliConfig) error {
 	}
 	slog.Info("wrote xray config", "path", configPath)
 
+	// A foundation relay must be broker-attested before it serves any traffic:
+	// register (with a bounded timeout) BEFORE the public listener opens, so a
+	// stalled or rejected attestation never leaves an unattested relay serving
+	// under the foundation label. On failure the process exits and the
+	// container restart policy retries. Volunteers keep the original order —
+	// serve first, then advertise — so a transient broker outage never drops a
+	// working community exit.
+	foundation := cfg.NodeClass == relay.NodeClassFoundation
+	var desc relay.Descriptor
+	if foundation {
+		attestCtx, cancel := context.WithTimeout(ctx, foundationAttestTimeout)
+		desc, err = register(attestCtx, cfg, prepared)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("foundation attestation failed; not opening the public listener: %w", err)
+		}
+		slog.Info("foundation relay attested before opening public listener", "id", desc.ID, "label", desc.Label)
+	}
+
 	var xrayCmd *exec.Cmd
 	var errCh <-chan error
 	var observerErrCh <-chan error
@@ -361,12 +386,14 @@ func run(cfg cliConfig) error {
 		}
 	}
 
-	desc, err := register(ctx, cfg, prepared)
-	if err != nil {
-		if xrayCmd != nil {
-			stopProcess(xrayCmd, errCh)
+	if !foundation {
+		desc, err = register(ctx, cfg, prepared)
+		if err != nil {
+			if xrayCmd != nil {
+				stopProcess(xrayCmd, errCh)
+			}
+			return err
 		}
-		return err
 	}
 	slog.Info("registered relay", "id", desc.ID, "label", desc.Label, "public", fmt.Sprintf("%s:%d", desc.PublicHost, desc.PublicPort))
 

@@ -50,6 +50,11 @@ Foundation mode is deliberately narrower than community-volunteer mode:
   and the hub always registers the community exit operator as `volunteer`.
 - The broker URL must use HTTPS (loopback HTTP is allowed only for local tests),
   and broker API redirects are refused so the bearer cannot follow a downgrade.
+- The relay opens its public listener only **after** the broker confirms its
+  `foundation` class, so it never serves under that label without attestation.
+  If the broker is unreachable or rejects the class at startup, the process
+  exits (within a bounded timeout) and the container restart policy retries —
+  a foundation relay that keeps restarting means attestation is failing.
 - Never put the token in cloud-init/user-data, provider metadata, inline
   `docker -e` arguments, or traced shell commands. The bundled Lightsail and
   Hetzner bootstrap helpers intentionally provision anonymous volunteers only
