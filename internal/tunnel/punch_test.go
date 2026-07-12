@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/openrung/openrung/punchcore"
+
 	"openrung/internal/punch"
 	"openrung/internal/relay"
 )
@@ -88,7 +90,7 @@ func TestRegistryCompareAndDelete(t *testing.T) {
 
 func TestSendPunchDirectiveUnknownRelay(t *testing.T) {
 	h := &Hub{}
-	_, err := h.SendPunchDirective(context.Background(), "missing", punch.PunchDirective{})
+	_, err := h.SendPunchDirective(context.Background(), "missing", punchcore.PunchDirective{})
 	if err != ErrRelayNotConnected {
 		t.Fatalf("err = %v, want ErrRelayNotConnected", err)
 	}
@@ -129,7 +131,7 @@ func setupPunchHub(t *testing.T, ttl time.Duration) (context.Context, string, st
 	t.Helper()
 	echoHost, echoPort := startEchoServer(t)
 
-	reflector, err := punch.NewReflector(reflectorTestAddrs(), discardLogger())
+	reflector, err := punchcore.NewReflector(reflectorTestAddrs(), discardLogger())
 	if err != nil {
 		t.Fatalf("reflector: %v", err)
 	}
@@ -208,7 +210,7 @@ func setupPunchHub(t *testing.T, ttl time.Duration) (context.Context, string, st
 func establishPunch(t *testing.T, ctx context.Context, hubURL, relayID string) *punch.Establishment {
 	t.Helper()
 	dialer := &punch.Dialer{
-		Hub:     punch.HubClient{BaseURL: hubURL},
+		Hub:     punchcore.HubClient{BaseURL: hubURL},
 		RelayID: relayID,
 		Logger:  discardLogger(),
 	}

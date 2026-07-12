@@ -15,7 +15,8 @@ import (
 	"syscall"
 	"time"
 
-	"openrung/internal/punch"
+	"github.com/openrung/openrung/punchcore"
+
 	"openrung/internal/relayhub"
 	"openrung/internal/tunnel"
 )
@@ -72,7 +73,7 @@ func run() error {
 		tunnel.NewReachabilityProber(cfg.Token, slog.Default()).Register(mux)
 
 		if cfg.PunchEnabled() {
-			reflector, err := punch.NewReflector(cfg.ReflectorAddrs, slog.Default())
+			reflector, err := punchcore.NewReflector(cfg.ReflectorAddrs, slog.Default())
 			if err != nil {
 				return fmt.Errorf("start punch reflector: %w", err)
 			}

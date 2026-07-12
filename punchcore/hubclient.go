@@ -1,4 +1,4 @@
-package punch
+package punchcore
 
 import (
 	"bytes"
@@ -24,6 +24,18 @@ func (c HubClient) httpClient() *http.Client {
 		return c.HTTPClient
 	}
 	return &http.Client{Timeout: 10 * time.Second}
+}
+
+// HardenedHTTPClient returns the hardened default used by the mobile client when
+// no coordinator pin applies: 10s timeout, redirects refused, keep-alives disabled.
+func HardenedHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: 10 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+		Transport: &http.Transport{DisableKeepAlives: true},
+	}
 }
 
 // FetchConfig retrieves the reflector addresses and punch parameters.

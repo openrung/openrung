@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/openrung/openrung/punchcore"
+
 	"openrung/internal/clienttelemetry"
 	"openrung/internal/punch"
 	"openrung/internal/relay"
@@ -31,7 +33,7 @@ func (s *Service) maybePunch(ctx context.Context, mgr *clienttelemetry.Manager, 
 
 	recordPunch(mgr, "punch_attempted", selected.ID, nil, nil)
 	dialer := &punch.Dialer{
-		Hub:     punch.HubClient{BaseURL: punchBaseURL(selected), HTTPClient: punchHTTPClient(s.PunchInsecure)},
+		Hub:     punchcore.HubClient{BaseURL: punchBaseURL(selected), HTTPClient: punchHTTPClient(s.PunchInsecure)},
 		RelayID: selected.ID,
 	}
 	est, res, err := dialer.Establish(ctx)
@@ -68,7 +70,7 @@ func punchBaseURL(selected relay.Descriptor) string {
 // the tunnel.
 func punchHTTPClient(insecure bool) *http.Client {
 	if !insecure {
-		return nil // punch.HubClient uses its default client
+		return nil // punchcore.HubClient uses its default client
 	}
 	return &http.Client{
 		Timeout: 10 * time.Second,

@@ -135,10 +135,36 @@ path. The hub coordinates but never carries the bytes.
 
 Honest scope: this reliably serves endpoint-independent-mapping (home-broadband /
 full-cone) volunteers; **double-symmetric CGNAT is deliberately not solved** and
-stays on the hub relay. Mobile clients (Android/iOS) are a documented follow-up:
-they embed stock sing-box, so punching must be an app-layer addition (a
-gomobile-built build of the `internal/punch` client), and until then they ignore
-`punch_capable` and use the hub relay with no regression.
+stays on the hub relay. The shared protocol core (wire format, discovery, punch
+mechanics, reflector, policies) lives in the nested `punchcore/` Go module
+(`github.com/openrung/openrung/punchcore`) — the single source of truth with no
+hand-mirrored copies. The servers and the desktop client consume it in-repo via
+`internal/punch` (the quic-go session/transport/bridge layer); the Android app's
+gomobile binding (`android/punchbridge` in `openrung-mobile-app`) consumes the
+punchcore module at a pinned, tagged version. iOS remains a follow-up: it embeds
+stock sing-box without an app-layer punch client, so it ignores `punch_capable`
+and uses the hub relay with no regression.
+
+#### punchcore pin/upgrade procedure (wire changes)
+
+1. Edit `punchcore/` in an openrung PR — the hub, volunteers, and desktop
+   clients consume it via the in-repo `replace`, so servers and desktop stay
+   atomically consistent.
+2. Bump `punchcore/VERSION` in the same PR — the `go-checks` workflow fails
+   any PR that changes `punchcore/` without a fresh, untagged version.
+3. Merge. The `punchcore-tag.yml` workflow tags `punchcore/v$(VERSION)` on the
+   merge commit automatically (the nested-module tag makes it fetchable
+   through the Go proxy); no manual tagging.
+4. Dependabot in the mobile repo (scoped to punchcore) opens the
+   `android/punchbridge/go.mod` (+`go.sum`) bump PR when it sees the new tag,
+   which automatically busts the AAR CI caches (their hash keys include
+   go.mod/go.sum). Manual fallback: `go get` the new version directly.
+5. Rebuild the AAR via `android/build-libbox-release.sh` and ship.
+
+Local cross-repo development uses
+`PUNCHCORE_SRC=/path/to/openrung/punchcore android/build-libbox-release.sh`
+and/or an uncommitted `go.work` — never in releases (GPL §6 pins the module
+version).
 
 ```mermaid
 sequenceDiagram

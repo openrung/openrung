@@ -1,0 +1,204 @@
+{
+  "compute_token": "f6de6c429db27cedcd090b1e50341980d6660f67ca66904ffd391b9655a3c4ec",
+  "decode_errors": {
+    "badhex": "decode punch token: encoding/hex: invalid byte: U+007A 'z'",
+    "short": "punch token has wrong length"
+  },
+  "decode_roundtrip": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "encode_token": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "json": {
+    "ack_full": "{\"session_id\":\"sess\",\"ok\":true,\"volunteer_reflexive\":[{\"ip\":\"203.0.113.5\",\"port\":4433,\"kind\":\"srflx\"}],\"volunteer_local\":[{\"ip\":\"203.0.113.5\",\"port\":4433,\"kind\":\"srflx\"}],\"volunteer_class\":\"eim\",\"cert_fingerprint\":\"bb\",\"error\":\"e\"}",
+    "ack_zero": "{\"session_id\":\"\",\"ok\":false}",
+    "config_full": "{\"reflector_addrs\":[\"203.0.113.5:9000\",\"198.51.100.7:9000\"],\"quic_alpn\":\"openrung-punch/1\",\"ttl_ms\":6000}",
+    "config_zero": "{\"reflector_addrs\":null,\"quic_alpn\":\"\",\"ttl_ms\":0}",
+    "directive_full": "{\"session_id\":\"sess\",\"relay_id\":\"relay-1\",\"client_reflexive\":[{\"ip\":\"203.0.113.5\",\"port\":4433,\"kind\":\"srflx\"}],\"client_local\":[{\"ip\":\"203.0.113.5\",\"port\":4433,\"kind\":\"srflx\"}],\"client_class\":\"eim\",\"punch_token\":\"aa\",\"reflector_addrs\":[\"203.0.113.5:9000\"],\"ttl_ms\":6000,\"quic_alpn\":\"openrung-punch/1\",\"proto_version\":1}",
+    "directive_zero": "{\"session_id\":\"\",\"relay_id\":\"\",\"punch_token\":\"\",\"reflector_addrs\":null,\"ttl_ms\":0,\"quic_alpn\":\"\",\"proto_version\":0}",
+    "endpoint": "{\"ip\":\"203.0.113.5\",\"port\":4433,\"kind\":\"srflx\"}",
+    "request_full": "{\"relay_id\":\"relay-1\",\"client_nonce\":\"a0a1\",\"client_reflexive\":[{\"ip\":\"203.0.113.5\",\"port\":4433,\"kind\":\"srflx\"}],\"client_local\":[{\"ip\":\"192.168.1.2\",\"port\":4433,\"kind\":\"host\"}],\"client_class\":\"eim\",\"quic_alpn\":\"openrung-punch/1\",\"proto_version\":1}",
+    "request_zero": "{\"relay_id\":\"\",\"client_nonce\":\"\",\"quic_alpn\":\"\",\"proto_version\":0}",
+    "response_full": "{\"ok\":true,\"error\":\"e\",\"session_id\":\"sess\",\"volunteer_reflexive\":[{\"ip\":\"203.0.113.5\",\"port\":4433,\"kind\":\"srflx\"}],\"volunteer_local\":[{\"ip\":\"203.0.113.5\",\"port\":4433,\"kind\":\"srflx\"}],\"volunteer_class\":\"eim\",\"punch_token\":\"aa\",\"cert_fingerprint\":\"bb\",\"ttl_ms\":6000}",
+    "response_zero": "{\"ok\":false}",
+    "result_full": "{\"session_id\":\"sess\",\"ok\":true,\"reason\":\"punch\",\"rtt_ms\":123,\"nat_class\":\"eim\"}",
+    "result_zero": "{\"session_id\":\"\",\"ok\":false}"
+  },
+  "nonce_key": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+  "parse_probe": {
+    "ack_as_probe_id": 0,
+    "empty": 0,
+    "trailing_junk": 1,
+    "truncated": 0,
+    "valid_ack": 2,
+    "valid_probe": 1,
+    "wrong_magic": 0,
+    "wrong_session": 0,
+    "wrong_token": 0
+  },
+  "probe_packets": {
+    "ack:": "4f52484f4c4541434b0000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "ack:s": "4f52484f4c4541434b000173000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "ack:sess-1234567890": "4f52484f4c4541434b000f736573732d31323334353637383930000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "probe:": "4f52484f4c450000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "probe:long128": "4f52484f4c4500807878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "probe:s": "4f52484f4c45000173000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "probe:sess-1234567890": "4f52484f4c45000f736573732d31323334353637383930000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+  },
+  "reflect_reply_build": {
+    "v4": "4f5250554e43485253a0a1a2a3a4a5a6a7a8a9aaabacadaeaf04cb007105ad9c",
+    "v6": "4f5250554e43485253a0a1a2a3a4a5a6a7a8a9aaabacadaeaf0620010db800000000000000000000000104d2"
+  },
+  "reflect_reply_parse": {
+    "badmagic": {
+      "ok": false
+    },
+    "truncated": {
+      "ok": false
+    },
+    "v4": {
+      "ip": "203.0.113.5",
+      "nonce": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+      "ok": true,
+      "port": 44444
+    },
+    "v6": {
+      "ip": "2001:db8::1",
+      "nonce": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+      "ok": true,
+      "port": 1234
+    }
+  },
+  "reflect_request": "4f5250554e43485251a0a1a2a3a4a5a6a7a8a9aaabacadaeaf000000000000000000000000000000000000000000000000000000000000000000000000000000",
+  "reflect_request_parse": {
+    "nonce": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+    "ok": true
+  },
+  "reflect_request_short_ok": false,
+  "sanitize_desktop": [
+    {
+      "ip": "203.0.113.5",
+      "kind": "srflx",
+      "port": 4433
+    },
+    {
+      "ip": "203.0.113.5",
+      "kind": "srflx",
+      "port": 4434
+    },
+    {
+      "ip": "198.51.100.7",
+      "kind": "srflx",
+      "port": 1000
+    },
+    {
+      "ip": "10.1.2.3",
+      "kind": "srflx",
+      "port": 5000
+    },
+    {
+      "ip": "127.0.0.1",
+      "kind": "srflx",
+      "port": 6000
+    },
+    {
+      "ip": "100.64.0.9",
+      "kind": "srflx",
+      "port": 6001
+    },
+    {
+      "ip": "192.168.1.50",
+      "kind": "host",
+      "port": 7000
+    },
+    {
+      "ip": "fe80::1",
+      "kind": "host",
+      "port": 7006
+    },
+    {
+      "ip": "fd00::2",
+      "kind": "host",
+      "port": 7007
+    },
+    {
+      "ip": "2001:db8::9",
+      "kind": "srflx",
+      "port": 7008
+    },
+    {
+      "ip": "192.168.9.1",
+      "kind": "host",
+      "port": 8000
+    },
+    {
+      "ip": "192.168.9.2",
+      "kind": "host",
+      "port": 8001
+    },
+    {
+      "ip": "192.168.9.3",
+      "kind": "host",
+      "port": 8002
+    },
+    {
+      "ip": "192.168.9.4",
+      "kind": "host",
+      "port": 8003
+    },
+    {
+      "ip": "192.168.9.5",
+      "kind": "host",
+      "port": 8004
+    },
+    {
+      "ip": "203.0.113.5",
+      "kind": "srflx",
+      "port": 9000
+    }
+  ],
+  "sanitize_mobile": [
+    {
+      "ip": "203.0.113.5",
+      "kind": "srflx",
+      "port": 4433
+    },
+    {
+      "ip": "203.0.113.5",
+      "kind": "srflx",
+      "port": 4434
+    },
+    {
+      "ip": "192.168.1.50",
+      "kind": "host",
+      "port": 7000
+    },
+    {
+      "ip": "fe80::1",
+      "kind": "host",
+      "port": 7006
+    },
+    {
+      "ip": "fd00::2",
+      "kind": "host",
+      "port": 7007
+    },
+    {
+      "ip": "192.168.9.1",
+      "kind": "host",
+      "port": 8000
+    },
+    {
+      "ip": "203.0.113.5",
+      "kind": "srflx",
+      "port": 9000
+    },
+    {
+      "ip": "203.0.113.5",
+      "kind": "srflx",
+      "port": 9001
+    }
+  ],
+  "udpaddr_errors": {
+    "badip": "invalid endpoint ip \"bad\"",
+    "badport": "invalid endpoint port 0",
+    "hugeport": "invalid endpoint port 70000"
+  }
+}

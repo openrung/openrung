@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/openrung/openrung/punchcore"
+
 	"openrung/internal/client"
 	"openrung/internal/clienttelemetry"
 	"openrung/internal/punch"
@@ -336,7 +338,7 @@ func maybePunch(ctx context.Context, cfg commonConfig, mgr *clienttelemetry.Mana
 
 	mgr.Record("punch_attempted", selected.ID, nil, nil)
 	dialer := &punch.Dialer{
-		Hub:     punch.HubClient{BaseURL: punchBaseURL(urlOverride, selected), HTTPClient: punchHTTPClient(insecure)},
+		Hub:     punchcore.HubClient{BaseURL: punchBaseURL(urlOverride, selected), HTTPClient: punchHTTPClient(insecure)},
 		RelayID: selected.ID,
 	}
 	est, res, err := dialer.Establish(ctx)
@@ -384,7 +386,7 @@ func punchBaseURL(override string, selected relay.Descriptor) string {
 // volunteer's per-session cert by fingerprint regardless).
 func punchHTTPClient(insecure bool) *http.Client {
 	if !insecure {
-		return nil // punch.HubClient uses its default client
+		return nil // punchcore.HubClient uses its default client
 	}
 	return &http.Client{
 		Timeout: 10 * time.Second,

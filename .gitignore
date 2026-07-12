@@ -3,6 +3,10 @@
 .gocache/
 .build/
 
+# Local multi-module workspaces (dev-only; module wiring is via replace directives)
+go.work
+go.work.sum
+
 # Local agent guidance
 /AGENTS.md
 

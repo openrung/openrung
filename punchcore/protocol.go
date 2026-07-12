@@ -1,6 +1,9 @@
-// Package punch implements NAT hole punching so a client and a CGNAT volunteer
-// (both behind NAT, neither able to accept inbound) can exchange the opaque
-// VLESS/Reality byte stream directly, bypassing the relay hub data path.
+// Package punchcore implements NAT hole punching so a client and a CGNAT
+// volunteer (both behind NAT, neither able to accept inbound) can exchange the
+// opaque VLESS/Reality byte stream directly, bypassing the relay hub data path.
+// It is the single source of truth for the punch wire format and the QUIC-free
+// punch mechanics, consumed by the relay hub and volunteer servers, the desktop
+// client (via internal/punch), and the mobile app's gomobile binding.
 //
 // The relay hub is the rendezvous: it hosts a UDP reflector (STUN-like) and
 // relays a punch offer to the volunteer over the existing yamux control channel.
@@ -9,7 +12,7 @@
 // socket. QUIC provides the reliable, ordered, multiplexed byte stream that
 // Reality-over-TCP needs. Reality still terminates only at client and volunteer;
 // no third party can decrypt the traffic.
-package punch
+package punchcore
 
 import (
 	"crypto/hmac"
@@ -80,9 +83,11 @@ const (
 const (
 	probeMagic    = "ORHOLE"    // 6 bytes
 	probeAckMagic = "ORHOLEACK" // 9 bytes
-	// tokenLen is the HMAC-SHA256 punch token length in bytes.
-	tokenLen = sha256.Size
 )
+
+// TokenLen is the HMAC-SHA256 punch token length in bytes. Exported because the
+// consumers' QUIC session layers prefix every bridged stream with the token.
+const TokenLen = sha256.Size
 
 // Endpoint is a candidate transport address (host or server-reflexive).
 type Endpoint struct {
@@ -132,12 +137,6 @@ func dedupeEndpoints(in []Endpoint) []Endpoint {
 	return out
 }
 
-// maxPunchPeers caps how many candidate endpoints of each kind (host, srflx) a
-// single peer may advertise. A legitimate peer offers a handful — one reflexive
-// per reflector vantage point plus a few LAN addresses — so a longer list is a
-// bid to turn Attempt's probe spray into a reflected flood at third parties.
-const maxPunchPeers = 8
-
 // isGloballyRoutable reports whether ip is an ordinary public unicast address,
 // i.e. NOT loopback, private (RFC1918/ULA), link-local, carrier-grade-NAT shared
 // space (RFC6598 100.64.0.0/10), unspecified, or multicast.
@@ -151,45 +150,6 @@ func isGloballyRoutable(ip net.IP) bool {
 		return false // 100.64.0.0/10 carrier-grade NAT shared space
 	}
 	return true
-}
-
-// SanitizePeers filters and clamps peer-advertised punch candidates so the probe
-// spray in Attempt can never be aimed at an arbitrary third party:
-//
-//   - A "host" (LAN) candidate must NOT be globally routable. A public IP tagged
-//     as a same-subnet address is an attempt to make the volunteer flood a
-//     victim, never a real LAN peer, so it is dropped.
-//   - Multicast/unspecified addresses and invalid ports are always dropped.
-//   - Each kind (host, srflx) is independently capped at maxPunchPeers.
-//
-// Reflexive ("srflx") provenance is enforced upstream by the punch coordinator,
-// which forwards only reflector-observed reflexive endpoints; a public srflx
-// reaching here has therefore already been proven to belong to a real peer.
-func SanitizePeers(in []Endpoint) []Endpoint {
-	out := make([]Endpoint, 0, len(in))
-	var hostN, srflxN int
-	for _, e := range dedupeEndpoints(in) {
-		ip := net.ParseIP(e.IP)
-		if ip == nil || e.Port < 1 || e.Port > 65535 || ip.IsMulticast() || ip.IsUnspecified() {
-			continue
-		}
-		switch e.Kind {
-		case KindHost:
-			if isGloballyRoutable(ip) || hostN >= maxPunchPeers {
-				continue
-			}
-			hostN++
-		case KindSrflx:
-			if srflxN >= maxPunchPeers {
-				continue
-			}
-			srflxN++
-		default:
-			continue // unknown kind: never spray at it
-		}
-		out = append(out, e)
-	}
-	return out
 }
 
 // PunchRequest is the client -> hub HTTP body (POST /api/v1/punch/request).
@@ -275,7 +235,7 @@ func DecodeToken(s string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decode punch token: %w", err)
 	}
-	if len(raw) != tokenLen {
+	if len(raw) != TokenLen {
 		return nil, errors.New("punch token has wrong length")
 	}
 	return raw, nil

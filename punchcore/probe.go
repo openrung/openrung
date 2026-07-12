@@ -1,4 +1,4 @@
-package punch
+package punchcore
 
 import (
 	"context"
@@ -57,14 +57,14 @@ func matchProbe(data []byte, magic, sessionID string, token []byte) bool {
 	}
 	sl := int(binary.BigEndian.Uint16(data[off : off+2]))
 	off += 2
-	if len(data) < off+sl+tokenLen {
+	if len(data) < off+sl+TokenLen {
 		return false
 	}
 	if string(data[off:off+sl]) != sessionID {
 		return false
 	}
 	off += sl
-	return subtle.ConstantTimeCompare(data[off:off+tokenLen], token) == 1
+	return subtle.ConstantTimeCompare(data[off:off+TokenLen], token) == 1
 }
 
 // Attempt runs a simultaneous-open UDP hole punch from sock towards the peer
@@ -77,14 +77,14 @@ func matchProbe(data []byte, magic, sessionID string, token []byte) bool {
 // hand it straight to quic-go (a connected *net.UDPConn errors on WriteTo, which
 // quic-go uses). Attempt runs entirely in the caller's goroutine and starts no
 // background reader, so there is no race with quic-go's read loop afterwards.
-func Attempt(ctx context.Context, sock *net.UDPConn, peers []Endpoint, sessionID string, token []byte, deadline time.Time) (*net.UDPAddr, error) {
+func (p Policy) Attempt(ctx context.Context, sock *net.UDPConn, peers []Endpoint, sessionID string, token []byte, deadline time.Time) (*net.UDPAddr, error) {
 	// SanitizePeers clamps the candidate count and drops globally-routable "host"
 	// addresses, so a malicious peer cannot make this socket spray probes at an
 	// arbitrary victim (open UDP reflector) or exhaust the sender with a huge
 	// candidate list.
 	peerAddrs := make([]*net.UDPAddr, 0, len(peers))
-	for _, p := range SanitizePeers(peers) {
-		if addr, err := p.UDPAddr(); err == nil {
+	for _, peer := range p.SanitizePeers(peers) {
+		if addr, err := peer.UDPAddr(); err == nil {
 			peerAddrs = append(peerAddrs, addr)
 		}
 	}

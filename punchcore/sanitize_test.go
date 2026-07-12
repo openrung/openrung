@@ -1,4 +1,4 @@
-package punch
+package punchcore
 
 import "testing"
 
@@ -17,7 +17,7 @@ func TestSanitizePeersDropsRoutableHosts(t *testing.T) {
 		{IP: "10.0.0.1", Port: 0, Kind: KindHost},        // invalid port → drop
 		{IP: "10.0.0.2", Port: 9000, Kind: "bogus"},      // unknown kind → drop
 	}
-	got := SanitizePeers(in)
+	got := DesktopPolicy().SanitizePeers(in)
 	want := map[string]bool{
 		"192.168.1.5:1234": true,
 		"127.0.0.1:4000":   true,
@@ -35,6 +35,7 @@ func TestSanitizePeersDropsRoutableHosts(t *testing.T) {
 }
 
 func TestSanitizePeersCapsEachKind(t *testing.T) {
+	maxPunchPeers := DesktopPolicy().MaxPeersPerKind // historical internal/punch cap (8)
 	var in []Endpoint
 	for i := 0; i < maxPunchPeers*3; i++ {
 		in = append(in,
@@ -42,7 +43,7 @@ func TestSanitizePeersCapsEachKind(t *testing.T) {
 			Endpoint{IP: "203.0.113." + itoa(i), Port: 3000, Kind: KindSrflx},
 		)
 	}
-	got := SanitizePeers(in)
+	got := DesktopPolicy().SanitizePeers(in)
 	var host, srflx int
 	for _, e := range got {
 		switch e.Kind {
@@ -63,4 +64,48 @@ func itoa(i int) string {
 		return string(rune('0' + i))
 	}
 	return string(rune('0'+i/10)) + string(rune('0'+i%10))
+}
+
+// TestMobileSanitizePeersDropsPublicHostAndCapsReflexiveTarget is the mobile
+// preset's hardening regression test, ported from the Android punchbridge: a
+// coordinator response must not fan the client's authenticated probes out
+// across public IPs (SingleSrflxIP), must not relabel a LAN target as srflx
+// (RequireGlobalSrflx), and caps each kind at the mobile limit (4).
+func TestMobileSanitizePeersDropsPublicHostAndCapsReflexiveTarget(t *testing.T) {
+	maxPunchPeers := MobilePolicy().MaxPeersPerKind // hardened Android cap (4)
+	input := []Endpoint{
+		{IP: "8.8.8.8", Port: 53, Kind: KindHost},
+		{IP: "192.168.1.10", Port: 1234, Kind: KindHost},
+		{IP: "224.0.0.1", Port: 9999, Kind: KindSrflx},
+		{IP: "10.9.8.7", Port: 1111, Kind: KindSrflx}, // private srflx → drop (RequireGlobalSrflx)
+		{IP: "203.0.113.8", Port: 443, Kind: "bogus"},
+	}
+	for index := 0; index < maxPunchPeers+3; index++ {
+		input = append(input, Endpoint{
+			IP:   "198.51.100.1",
+			Port: 20_000 + index,
+			Kind: KindSrflx,
+		})
+	}
+	input = append(input, Endpoint{IP: "198.51.100.2", Port: 30_000, Kind: KindSrflx})
+
+	got := MobilePolicy().SanitizePeers(input)
+	var hosts, reflexive int
+	for _, endpoint := range got {
+		switch endpoint.Kind {
+		case KindHost:
+			hosts++
+			if endpoint.IP != "192.168.1.10" {
+				t.Fatalf("unexpected host candidate: %+v", endpoint)
+			}
+		case KindSrflx:
+			reflexive++
+			if endpoint.IP != "198.51.100.1" {
+				t.Fatalf("reflexive target fanned out to another public IP: %+v", endpoint)
+			}
+		}
+	}
+	if hosts != 1 || reflexive != maxPunchPeers {
+		t.Fatalf("host=%d reflexive=%d candidates=%+v", hosts, reflexive, got)
+	}
 }

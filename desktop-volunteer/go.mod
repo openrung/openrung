@@ -7,6 +7,8 @@ require (
 	openrung v0.0.0
 )
 
+require github.com/openrung/openrung/punchcore v0.0.0 // indirect
+
 require (
 	git.sr.ht/~jackmordaunt/go-toast/v2 v2.0.3 // indirect
 	github.com/bep/debounce v1.2.1 // indirect
@@ -41,3 +43,5 @@ require (
 )
 
 replace openrung => ../
+
+replace github.com/openrung/openrung/punchcore => ../punchcore

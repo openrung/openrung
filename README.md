@@ -201,11 +201,14 @@ cmd/client/          Desktop CLI client.
 internal/broker/     Broker store and HTTP handlers.
 internal/client/     Client engine, relay selection, and sing-box config.
 internal/clienttelemetry/  Client metrics reporting to the broker.
-internal/punch/      NAT hole punching (reflector, coordinator, QUIC transport).
+internal/punch/      NAT hole-punch QUIC layer (session, transport, bridges) over punchcore.
 internal/relay/      Shared relay descriptor models.
 internal/relayhub/   Relay hub configuration.
 internal/tunnel/     Reverse-tunnel transport (hub + volunteer client, yamux).
 internal/volunteer/  Xray config generation helpers.
+punchcore/           Shared NAT hole-punch protocol core (nested Go module
+                     github.com/openrung/openrung/punchcore) consumed by the
+                     servers, the desktop client, and the mobile app's binding.
 deploy/              Broker proxy, relay hub, and volunteer deployment assets.
 docs/                Architecture, API, client, and operations docs + website.
 ```
@@ -227,7 +230,9 @@ docs/                Architecture, API, client, and operations docs + website.
 - **Abuse and rate controls** — exit policies, rate limits, and abuse
   reporting ahead of a broad public rollout.
 - **NAT hole punching** — direct client↔volunteer paths without a hub in the
-  middle (core protocol in `internal/punch`; client rollout planned).
+  middle (core protocol in the `punchcore` module,
+  `github.com/openrung/openrung/punchcore`; shipped in the desktop and Android
+  clients, iOS still planned).
 - **Dual-stack relay discovery** — multiple public endpoints per relay.
 
 Have an opinion on what should come first?

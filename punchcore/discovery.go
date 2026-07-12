@@ -1,4 +1,4 @@
-package punch
+package punchcore
 
 import (
 	"bytes"
@@ -8,14 +8,21 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"time"
 )
 
+// GatherTimeout is the overall reflexive-discovery budget of one Gather call.
+// Exported because the volunteer session layer sizes its gather context from it.
+const GatherTimeout = 2 * time.Second
+
 const (
-	gatherTimeout   = 2 * time.Second
 	gatherRounds    = 4
 	gatherRoundWait = 250 * time.Millisecond
 )
+
+// DefaultTTL is the punch time budget used when the hub does not specify one.
+const DefaultTTL = 6 * time.Second
 
 // GenerateNonce returns a fresh nonce as a hex string (for JSON transport) and
 // its raw bytes (for the reflector wire and hub correlation key).
@@ -45,17 +52,42 @@ func NonceKey(hexNonce string) (string, error) {
 // punch and carry QUIC) and returns the observed server-reflexive endpoints plus
 // the locally-derived NAT class. It performs no long-lived reads: it clears the
 // read deadline before returning so the caller can hand the socket to Attempt.
-func Gather(ctx context.Context, sock *net.UDPConn, reflectorAddrs []string, nonce []byte) ([]Endpoint, string, error) {
+func (p Policy) Gather(ctx context.Context, sock *net.UDPConn, reflectorAddrs []string, nonce []byte) ([]Endpoint, string, error) {
 	if len(reflectorAddrs) == 0 {
 		return nil, ClassUnknown, errors.New("no reflector addresses")
 	}
 	targets := make([]*net.UDPAddr, 0, len(reflectorAddrs))
-	for _, a := range reflectorAddrs {
-		udp, err := net.ResolveUDPAddr("udp", a)
-		if err != nil {
-			continue
+	keys := make([]string, 0, len(reflectorAddrs))
+	for _, address := range reflectorAddrs {
+		if p.StrictReflectorAddrs {
+			host, portValue, err := net.SplitHostPort(address)
+			if err != nil {
+				continue
+			}
+			ip := net.ParseIP(host)
+			port, portErr := strconv.Atoi(portValue)
+			// The retained socket is udp4, and deployed reflector addresses are
+			// signed literal IPv4 tuples. Rejecting coordinator-controlled DNS names
+			// also keeps Close cancellation from getting stuck in an uncancelable
+			// net.ResolveUDPAddr lookup.
+			if ip == nil || ip.To4() == nil || !isGloballyRoutable(ip) || portErr != nil || !inRange(port, 1, 65535) {
+				continue
+			}
+			targets = append(targets, &net.UDPAddr{IP: ip.To4(), Port: port})
+			keys = append(keys, address)
+		} else {
+			udp, err := net.ResolveUDPAddr("udp", address)
+			if err != nil {
+				continue
+			}
+			targets = append(targets, udp)
+			// Historical desktop keying: the Nth accepted target is keyed by the Nth
+			// entry of the ORIGINAL list (not by its own address). Preserved verbatim
+			// so the extraction is byte-for-byte behavior-neutral; do not "fix" without
+			// a deliberate protocol-level change (the NAT class derived from these keys
+			// is wire-visible via client_class/volunteer_class).
+			keys = append(keys, reflectorAddrs[len(keys)])
 		}
-		targets = append(targets, udp)
 	}
 	if len(targets) == 0 {
 		return nil, ClassUnknown, errors.New("no resolvable reflector addresses")
@@ -63,14 +95,17 @@ func Gather(ctx context.Context, sock *net.UDPConn, reflectorAddrs []string, non
 
 	observed := make(map[string]Endpoint) // key: reflector addr string
 	buf := make([]byte, 1500)
-	overall := time.Now().Add(gatherTimeout)
+	overall := time.Now().Add(GatherTimeout)
 
 	for round := 0; round < gatherRounds && len(observed) < len(targets) && time.Now().Before(overall); round++ {
-		if ctx.Err() != nil {
+		if err := ctx.Err(); err != nil {
+			if p.FailGatherOnCancel {
+				return nil, ClassUnknown, err
+			}
 			break
 		}
 		for i, t := range targets {
-			if _, done := observed[reflectorAddrs[i]]; done {
+			if _, done := observed[keys[i]]; done {
 				continue
 			}
 			_, _ = sock.WriteToUDP(buildReflectRequest(nonce), t)
@@ -89,7 +124,7 @@ func Gather(ctx context.Context, sock *net.UDPConn, reflectorAddrs []string, non
 			if !ok || !bytes.Equal(rn, nonce) {
 				continue
 			}
-			if key := matchReflector(src, targets, reflectorAddrs); key != "" {
+			if key := matchReflector(src, targets, keys); key != "" {
 				observed[key] = endpointFromUDP(obs, KindSrflx)
 			}
 		}
@@ -117,6 +152,10 @@ func Gather(ctx context.Context, sock *net.UDPConn, reflectorAddrs []string, non
 		return nil, class, errors.New("reflector did not observe any endpoint")
 	}
 	return reflexive, class, nil
+}
+
+func inRange(value, minimum, maximum int) bool {
+	return value >= minimum && value <= maximum
 }
 
 func matchReflector(src *net.UDPAddr, targets []*net.UDPAddr, keys []string) string {

@@ -1,0 +1,110 @@
+name: go-checks
+
+# Vet + test every Go module in the repo on each PR and push to main. This is
+# the compile/test gate for the module edges between the root module, the
+# nested punchcore module, and the two Wails app modules (which are only
+# compile-checked here: their release workflows package but never test, and
+# `./...` in desktop/ would require frontend/dist to exist, so only the Go
+# service subpackages are built).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+
+      - name: Root module (vet + test)
+        run: |
+          go vet ./...
+          go test -race ./...
+
+      - name: punchcore module (vet + test)
+        working-directory: punchcore
+        run: |
+          go vet ./...
+          go test -race ./...
+
+      - name: desktop module (vet + build)
+        working-directory: desktop
+        run: |
+          go vet ./vpnservice/...
+          go build ./vpnservice/... ./config/... ./discovery/... ./proxymode/...
+
+      - name: desktop-volunteer module (vet + build)
+        working-directory: desktop-volunteer
+        run: |
+          go vet ./volunteerservice/...
+          go build ./volunteerservice/...
+
+  # A punchcore change that merges without a VERSION bump would never get a
+  # punchcore/vX.Y.Z tag (punchcore-tag.yml triggers on VERSION changes), so
+  # the mobile repo could never pin it. Enforce the bump at PR time and make
+  # sure the bumped version is not already tagged. README-only edits are
+  # exempt.
+  punchcore-version:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require a fresh VERSION when punchcore changes
+        run: |
+          base="origin/${{ github.base_ref }}"
+          changed="$(git diff --name-only "$base"...HEAD -- punchcore/ ':!punchcore/README.md')"
+          if [ -z "$changed" ]; then
+            echo "punchcore/ untouched"
+            exit 0
+          fi
+          if git diff --quiet "$base"...HEAD -- punchcore/VERSION; then
+            echo "punchcore/ changed without a punchcore/VERSION bump:" >&2
+            echo "$changed" >&2
+            exit 1
+          fi
+          version="$(tr -d '[:space:]' < punchcore/VERSION)"
+          if ! printf '%s\n' "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "invalid punchcore/VERSION \"$version\" (want X.Y.Z)" >&2
+            exit 1
+          fi
+          tag="punchcore/v$version"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "punchcore/VERSION is $version but $tag already exists; bump to a new version" >&2
+            exit 1
+          fi
+          echo "punchcore/VERSION -> $version (will tag $tag on merge)"
+
+  # PR-time smoke build of every deploy image. The image workflows themselves
+  # only run on pushes to main, so without this a Docker packaging error (e.g.
+  # a Dockerfile missing a COPY for a nested module's go.mod that the root
+  # replace directive needs) would surface only after merge. Single-arch and
+  # never pushed: this is a build gate, not a release.
+  docker:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [broker, relayhub, volunteer]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/${{ matrix.image }}/Dockerfile
+          platforms: linux/amd64
+          push: false
