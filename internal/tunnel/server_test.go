@@ -29,6 +29,11 @@ type fakeRegistrar struct {
 	relayIDs []string
 	// failHeartbeatOnce is returned by the next Heartbeat call, then cleared.
 	failHeartbeatOnce error
+	// releaseHeartbeat, when non-nil, holds the Heartbeat call that returns
+	// failHeartbeatOnce until the channel is closed. This lets a test observe the
+	// pre-re-registration registry state deterministically instead of racing the
+	// re-registration that the not-found error triggers.
+	releaseHeartbeat chan struct{}
 }
 
 func (f *fakeRegistrar) Register(_ context.Context, req relay.RegisterRequest) (RelayRegistration, error) {
@@ -47,16 +52,28 @@ func (f *fakeRegistrar) Register(_ context.Context, req relay.RegisterRequest) (
 	return RelayRegistration{RelayID: id, PublicHost: req.PublicHost, PublicPort: req.PublicPort, ExpiresAt: time.Now().Add(time.Minute)}, nil
 }
 
-func (f *fakeRegistrar) Heartbeat(_ context.Context, _ string) error {
+func (f *fakeRegistrar) Heartbeat(ctx context.Context, _ string) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.heartbeats++
-	if f.failHeartbeatOnce != nil {
-		err := f.failHeartbeatOnce
-		f.failHeartbeatOnce = nil
-		return err
+	err := f.failHeartbeatOnce
+	if err == nil {
+		f.mu.Unlock()
+		return nil
 	}
-	return nil
+	f.failHeartbeatOnce = nil
+	gate := f.releaseHeartbeat
+	f.mu.Unlock()
+	// Hold the not-found response until the test releases the gate, so the
+	// assertion on the initial relay entry cannot race the re-registration this
+	// error triggers. Honor ctx so a failed test tears the goroutine down.
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return err
 }
 
 func (f *fakeRegistrar) stats() (registers, heartbeats int, lastReq relay.RegisterRequest) {
@@ -247,6 +264,7 @@ func TestHubReregistersWhenBrokerForgetsRelay(t *testing.T) {
 	registrar := &fakeRegistrar{
 		relayIDs:          []string{"relay_old", "relay_new"},
 		failHeartbeatOnce: fmt.Errorf("broker /api/v1/volunteers/relay_old/heartbeat: %w", ErrRelayNotFound),
+		releaseHeartbeat:  make(chan struct{}),
 	}
 	hub, controlAddr, _ := startTestHub(t, registrar, "secret")
 
@@ -287,11 +305,15 @@ func TestHubReregistersWhenBrokerForgetsRelay(t *testing.T) {
 	if ack.RelayID != "relay_old" {
 		t.Fatalf("relay_id = %q, want relay_old", ack.RelayID)
 	}
-	if hub.lookupTunnel("relay_old") == nil {
+	// The hub publishes the tunnel to its registry after sending the ack, so wait
+	// for the initial relay_old entry rather than reading it instantaneously. The
+	// gated heartbeat below guarantees re-registration has not yet removed it.
+	if !eventually(2*time.Second, func() bool { return hub.lookupTunnel("relay_old") != nil }) {
 		t.Fatal("registry missing initial relay_old entry")
 	}
 
-	// The first heartbeat returns not-found; the hub must re-register.
+	// Now let the first heartbeat return not-found; the hub must re-register.
+	close(registrar.releaseHeartbeat)
 	if !eventually(3*time.Second, func() bool {
 		registers, _, _ := registrar.stats()
 		return registers == 2
