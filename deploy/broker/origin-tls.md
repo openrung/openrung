@@ -28,9 +28,9 @@ Cloudflare Worker front. Set up 2026-07-13.
   `deploy/volunteer/hetzner-up.sh`) register directly against
   `http://54.238.185.205:8080`, and the Cloudflare Worker front fetches the
   origin on `:8080`. Do not firewall it off as part of this change.
-- **The origin cert must be RSA, not ECDSA** — see the CloudFront gotchas below.
 - **The CloudFront behavior must use `Managed-AllViewerExceptHostHeader`, not
-  `Managed-AllViewer`** — see the CloudFront gotchas below.
+  `Managed-AllViewer`** — see the CloudFront gotcha below. This is the load-bearing
+  requirement; get it wrong and the origin handshake fails with a 502.
 - Do not disable/mask the `caddy` service; it both serves TLS and auto-renews
   the cert.
 
@@ -61,7 +61,8 @@ reference):
 
 ```caddyfile
 {
-	key_type rsa2048        # REQUIRED for CloudFront — see gotchas
+	# no global options needed — Caddy's default ECDSA (P-256) leaf works with
+	# CloudFront's origin connection; do not force RSA.
 }
 
 broker-origin.openrung.org {
@@ -117,8 +118,9 @@ Open ports afterward: `22, 80, 443, 8080`.
 
 ### Cert + renewal
 
-- Cert: `CN=broker-origin.openrung.org`, **RSA-2048**, Let's Encrypt, 90-day.
-  Issued via **HTTP-01** on `:80`.
+- Cert: `CN=broker-origin.openrung.org`, Caddy-default **ECDSA (P-256)**, Let's
+  Encrypt, 90-day. Issued via **HTTP-01** on `:80`. (ECDSA is fine for CloudFront
+  — see the note below.)
 - Renewal: **automatic and native to Caddy** (ARI-scheduled; renews well before
   expiry as long as the service runs). No timer or cron to maintain. Stored in
   `/var/lib/caddy/.local/share/caddy/`.
@@ -133,34 +135,35 @@ CLI profile's default region is a broken AZ value so pass it explicitly):
 1. **Origin protocol `http-only` → `https-only`** (`HTTPSPort` was already 443,
    `OriginSslProtocols=[TLSv1.2]`). This is the change that encrypts the leg.
 2. **Origin request policy `Managed-AllViewer` → `Managed-AllViewerExceptHostHeader`**
-   (`216adef6-…` → `b689b0a8-53d0-40ab-baf2-68738e2966ac`). **Required** — see
-   gotchas. This policy still forwards everything except `Host` (all other
-   headers incl. `Authorization`, all cookies, all query strings), so the
-   Foundation token still reaches the origin.
+   (`216adef6-…` → `b689b0a8-53d0-40ab-baf2-68738e2966ac`). **Required** — see the
+   gotcha. This policy still forwards everything except `Host` (all other headers
+   incl. `Authorization`, all cookies, all query strings), so the Foundation
+   token still reaches the origin.
 
 Both are applied with `get-distribution-config` → edit `DistributionConfig` →
 `update-distribution --if-match <ETag>`, then `aws cloudfront wait
 distribution-deployed`.
 
-### Two CloudFront gotchas (each caused a 502 during rollout)
+### The CloudFront gotcha (the 502 root cause): SNI, not the Host header
 
-1. **RSA cert, not ECDSA.** Caddy's default leaf key is ECDSA (P-256).
-   CloudFront's origin-facing TLS cipher list is **RSA-only** (it offers the
-   origin `ECDHE-RSA-*` / `AES*` suites and *no* `ECDHE-ECDSA-*` suites), so an
-   ECDSA leaf shares no cipher with CloudFront and the handshake fails with a
-   502. Fixed with `key_type rsa2048`. (Changing `key_type` does not re-issue an
-   existing cert — the old ECDSA cert dir under
-   `…/certificates/…/broker-origin.openrung.org/` was removed and Caddy
-   restarted to force fresh RSA issuance.)
+With `Managed-AllViewer`, CloudFront forwards the viewer `Host` header **and uses
+it as the origin SNI** — so with a client hitting the distribution it sent
+`SNI: d2r7mdpyevvs1m.cloudfront.net`. Caddy has no cert for that name and rejected
+the handshake (Caddy debug log: `no certificate available for
+'d2r7mdpyevvs1m.cloudfront.net'`) → 502. `Managed-AllViewerExceptHostHeader` makes
+CloudFront send the **origin** hostname (`broker-origin.openrung.org`) as both
+`Host` and SNI, which Caddy serves and routes. CloudFront still validates the
+returned cert against the *origin domain name*, which matches. This SNI mismatch
+was the sole cause of the 502.
 
-2. **`AllViewerExceptHostHeader`, not `AllViewer`.** With `Managed-AllViewer`,
-   CloudFront forwards the viewer `Host` header **and uses it as the origin
-   SNI** — so it sent `SNI: d2r7mdpyevvs1m.cloudfront.net`. Caddy has no cert for
-   that name and rejected the handshake (`no certificate available for
-   'd2r7mdpyevvs1m.cloudfront.net'`) → 502. `AllViewerExceptHostHeader` makes
-   CloudFront send the **origin** hostname (`broker-origin.openrung.org`) as both
-   `Host` and SNI, which Caddy serves and routes. CloudFront still validates the
-   returned cert against the *origin domain name*, which matches.
+> **Note — the cert key type (ECDSA) is not the problem.** During debugging an
+> RSA cert (`key_type rsa2048`) was tried and initially looked like the fix; it
+> was a red herring. CloudFront's captured origin `ClientHello` offers
+> `ECDHE-ECDSA-*` cipher suites, the P-256 curve, `ecdsa_secp256r1_sha256`, and
+> TLS 1.3 — i.e. it fully supports an ECDSA (P-256) leaf, which AWS documents for
+> origin connections. This was verified end-to-end: with the default **ECDSA**
+> cert and `AllViewerExceptHostHeader` in place, CloudFront returns `200`. Caddy's
+> default key type is used; do **not** force RSA.
 
 ## Verify
 
