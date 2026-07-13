@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"openrung/internal/relay"
@@ -19,6 +21,10 @@ type BrokerClient struct {
 	BaseURL    string
 	Token      string
 	HTTPClient *http.Client
+	// RequireSecureTransport refuses plaintext non-loopback broker URLs and
+	// all redirects. It is enabled for the high-value foundation credential;
+	// loopback HTTP remains available for local integration tests.
+	RequireSecureTransport bool
 }
 
 // Register announces the relay and returns the broker-minted descriptor.
@@ -43,8 +49,13 @@ func (b BrokerClient) postJSON(ctx context.Context, path string, body any, out a
 		return err
 	}
 
-	url := strings.TrimRight(b.BaseURL, "/") + path
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	requestURL := strings.TrimRight(b.BaseURL, "/") + path
+	if b.RequireSecureTransport {
+		if err := requireSecureBrokerURL(requestURL); err != nil {
+			return err
+		}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
@@ -56,6 +67,18 @@ func (b BrokerClient) postJSON(ctx context.Context, path string, body any, out a
 	httpClient := b.HTTPClient
 	if httpClient == nil {
 		httpClient = http.DefaultClient
+	}
+	if b.RequireSecureTransport {
+		// Clone the caller's client so the security policy neither mutates a
+		// shared client nor depends on its CheckRedirect setting. Broker API
+		// endpoints are canonical and should never need a redirect; rejecting
+		// every redirect also makes an HTTPS-to-HTTP Authorization leak
+		// impossible.
+		secureClient := *httpClient
+		secureClient.CheckRedirect = func(req *http.Request, _ []*http.Request) error {
+			return fmt.Errorf("secure broker request refused redirect to %s", req.URL.Redacted())
+		}
+		httpClient = &secureClient
 	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -79,6 +102,28 @@ func (b BrokerClient) postJSON(ctx context.Context, path string, body any, out a
 	}
 
 	return nil
+}
+
+func requireSecureBrokerURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("parse broker URL %q: %w", rawURL, err)
+	}
+	if u.Scheme == "https" {
+		return nil
+	}
+	if u.Scheme == "http" && isLoopbackBrokerHost(u.Hostname()) {
+		return nil
+	}
+	return fmt.Errorf("secure broker requests require an https URL (got %q); plaintext http is allowed only on loopback", rawURL)
+}
+
+func isLoopbackBrokerHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // APIError is a non-2xx broker response.

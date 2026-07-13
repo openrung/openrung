@@ -20,6 +20,16 @@ const maxRegisterBodyBytes = 64 << 10
 
 type Config struct {
 	RegistrationToken string
+	// FoundationToken is the privileged bearer token that authorizes
+	// registrations claiming node_class "foundation". It must differ from
+	// RegistrationToken (cmd/broker refuses to start otherwise — a shared
+	// value would let every volunteer self-promote) and its holder can still
+	// register volunteer-class relays: the token bounds the maximum class a
+	// request may claim, it does not force one. Routine volunteer and relay-hub
+	// traffic should still use RegistrationToken so this credential stays out
+	// of the hub path.
+	// Empty disables foundation registration entirely.
+	FoundationToken   string
 	VolunteerLeaseTTL time.Duration
 	TelemetrySink     TelemetrySink
 	// TelemetryReader backs the dashboard by aggregating records in Go on
@@ -86,7 +96,8 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 
 func registerHandler(store RelayStore, cfg Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !authorized(r, cfg.RegistrationToken) {
+		maxClass, ok := credentialNodeClass(r, cfg)
+		if !ok {
 			writeError(w, http.StatusUnauthorized, "missing or invalid volunteer registration token")
 			return
 		}
@@ -105,19 +116,39 @@ func registerHandler(store RelayStore, cfg Config) http.HandlerFunc {
 		}
 		req.Label = label
 
+		nodeClass, err := relay.NormalizeNodeClass(req.NodeClass)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		req.NodeClass = nodeClass
+		// Fail loudly instead of clamping: a foundation relay that lost its
+		// token should crash-loop where the operator sees it, not silently
+		// serve as a volunteer.
+		if req.NodeClass == relay.NodeClassFoundation && maxClass != relay.NodeClassFoundation {
+			writeError(w, http.StatusForbidden, "node_class foundation requires the foundation registration token")
+			return
+		}
+
 		if err := validateRegisterRequest(req); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 
 		desc, err := store.Register(req, time.Now().UTC(), cfg.VolunteerLeaseTTL)
+		if errors.Is(err, ErrNodeClassForbidden) {
+			// The endpoint is held by a live foundation relay; a
+			// non-foundation registration may not seize it.
+			writeError(w, http.StatusForbidden, "public_host:public_port is reserved by a foundation relay")
+			return
+		}
 		if err != nil {
 			slog.Error("could not register volunteer", "error", err)
 			writeError(w, http.StatusServiceUnavailable, "could not register relay")
 			return
 		}
 		resolveRelayGeo(r.Context(), store, cfg.GeoIP, &desc)
-		slog.Info("volunteer registered", "relay_id", desc.ID, "public", desc.PublicHost, "port", desc.PublicPort, "city", desc.City, "country", desc.Country, "max_sessions", desc.MaxSessions, "version", desc.VolunteerVersion)
+		slog.Info("volunteer registered", "relay_id", desc.ID, "node_class", desc.NodeClass, "public", desc.PublicHost, "port", desc.PublicPort, "city", desc.City, "country", desc.Country, "max_sessions", desc.MaxSessions, "version", desc.VolunteerVersion)
 
 		writeJSON(w, http.StatusCreated, desc)
 	}
@@ -125,7 +156,10 @@ func registerHandler(store RelayStore, cfg Config) http.HandlerFunc {
 
 func heartbeatHandler(store RelayStore, cfg Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !authorized(r, cfg.RegistrationToken) {
+		// Any registration credential may heartbeat a volunteer relay, so
+		// foundation relays can present the foundation token on both calls.
+		maxClass, ok := credentialNodeClass(r, cfg)
+		if !ok {
 			writeError(w, http.StatusUnauthorized, "missing or invalid volunteer registration token")
 			return
 		}
@@ -136,9 +170,13 @@ func heartbeatHandler(store RelayStore, cfg Config) http.HandlerFunc {
 			return
 		}
 
-		desc, err := store.Heartbeat(id, time.Now().UTC(), cfg.VolunteerLeaseTTL)
+		desc, err := store.Heartbeat(id, maxClass, time.Now().UTC(), cfg.VolunteerLeaseTTL)
 		if errors.Is(err, ErrRelayNotFound) {
 			writeError(w, http.StatusNotFound, "relay not found")
+			return
+		}
+		if errors.Is(err, ErrNodeClassForbidden) {
+			writeError(w, http.StatusForbidden, "heartbeat for a foundation relay requires the foundation registration token")
 			return
 		}
 		if err != nil {
@@ -307,11 +345,36 @@ func authorized(r *http.Request, token string) bool {
 	if token == "" {
 		return true
 	}
+	return bearerMatches(r, token)
+}
+
+// bearerMatches reports whether the request's Authorization header carries
+// exactly "Bearer <token>". Unlike authorized it has no open-mode bypass: an
+// empty token matches nothing.
+func bearerMatches(r *http.Request, token string) bool {
+	if token == "" {
+		return false
+	}
 	// Constant-time compare so a network attacker cannot recover the token one
 	// byte at a time from response-timing differences.
 	expected := "Bearer " + token
 	presented := r.Header.Get("Authorization")
 	return subtle.ConstantTimeCompare([]byte(presented), []byte(expected)) == 1
+}
+
+// credentialNodeClass resolves the volunteer-endpoint credential to the
+// highest node class it may vouch for, or ok=false when the request is not
+// authorized at all. The foundation token is checked first: with anonymous
+// registration enabled (RegistrationToken empty) every request already passes
+// the volunteer check, and the foundation credential must still win.
+func credentialNodeClass(r *http.Request, cfg Config) (string, bool) {
+	if bearerMatches(r, cfg.FoundationToken) {
+		return relay.NodeClassFoundation, true
+	}
+	if authorized(r, cfg.RegistrationToken) {
+		return relay.NodeClassVolunteer, true
+	}
+	return "", false
 }
 
 // writeJSON streams v via Encode, which appends a trailing newline. Signed

@@ -14,8 +14,13 @@
 # reach the box.
 #
 # Overridable via env: OPENRUNG_LOCATION, OPENRUNG_SERVER_TYPE, OPENRUNG_OS_IMAGE,
-# OPENRUNG_IMAGE, OPENRUNG_BROKER_URL, OPENRUNG_VOLUNTEER_TOKEN,
-# OPENRUNG_SSH_KEY_NAME, OPENRUNG_FIREWALL_NAME.
+# OPENRUNG_IMAGE, OPENRUNG_BROKER_URL, OPENRUNG_SSH_KEY_NAME,
+# OPENRUNG_FIREWALL_NAME.
+#
+# This helper provisions anonymous volunteer-class relays only. It cannot safely
+# accept any registration bearer: Hetzner retains cloud-init user-data. Provision
+# an authenticated host first, then install its credential post-boot through an
+# authenticated channel instead of passing it to this helper.
 set -euo pipefail
 
 LOCATION="${OPENRUNG_LOCATION:-hel1}"          # Helsinki (EU: 20TB included traffic)
@@ -28,9 +33,18 @@ IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-volunteer:main}"  # multi-arc
 # cannot solve (403). The origin is plaintext HTTP and takes registrations directly,
 # exactly like the Lightsail fleet (see lightsail-up.sh).
 BROKER_URL="${OPENRUNG_BROKER_URL:-http://54.238.185.205:8080}"
-TOKEN="${OPENRUNG_VOLUNTEER_TOKEN:-}"          # empty = anonymous (origin allows it)
 SSH_KEY_NAME="${OPENRUNG_SSH_KEY_NAME:-openrung}"
 FIREWALL_NAME="${OPENRUNG_FIREWALL_NAME:-openrung-volunteer}"
+
+if [ "${OPENRUNG_VOLUNTEER_TOKEN+x}" = x ] || [ "${OPENRUNG_FOUNDATION_TOKEN+x}" = x ]; then
+  echo "error: this helper provisions anonymous volunteers only; OPENRUNG_VOLUNTEER_TOKEN / OPENRUNG_FOUNDATION_TOKEN must be unset because Hetzner retains cloud-init user-data. A Foundation relay also needs a TLS broker, which this plaintext-origin helper does not use — install its credential post-boot over an authenticated channel instead." >&2
+  exit 2
+fi
+
+if [ "${OPENRUNG_NODE_CLASS:-volunteer}" != "volunteer" ]; then
+  echo "error: this helper provisions volunteer-class relays only; configure Foundation credentials post-boot instead of placing them in cloud-init user-data" >&2
+  exit 2
+fi
 
 adjectives=(happy grumpy glorious sleepy brave clever gentle jolly mighty nimble plucky quiet rapid shiny snappy spry sturdy sunny swift witty zesty breezy cosmic dapper eager fuzzy golden hardy lucky merry noble proud quirky rustic silly valiant)
 nouns=(hippo walrus castle otter falcon badger lantern comet maple harbor meadow beacon pebble willow cactus cobra ferret gecko heron ibex jaguar koala lemur marmot narwhal ocelot panther quokka raven salmon tapir urchin viper wombat yak zebra)
@@ -62,16 +76,11 @@ hcloud firewall add-rule "$FIREWALL_NAME" --direction in --protocol icmp        
 # Cloud-init user-data: install Docker, pull the public image, run the relay. The
 # public IP is not known until the server exists, so the box self-discovers it
 # from Hetzner's metadata service at boot and bakes it into OPENRUNG_PUBLIC_HOST.
-# Inline fragment (not its own line): an empty optional line would land mid
-# backslash-continuation and terminate `docker run` before the image argument.
-TOKEN_INLINE=""
-if [ -n "$TOKEN" ]; then TOKEN_INLINE="-e OPENRUNG_VOLUNTEER_TOKEN=${TOKEN} "; fi
-
 USERDATA_FILE="$(mktemp)"
 trap 'rm -f "$USERDATA_FILE"' EXIT
 cat >"$USERDATA_FILE" <<EOF
 #!/bin/bash
-set -eux
+set -eu
 exec > /var/log/openrung-init.log 2>&1
 export DEBIAN_FRONTEND=noninteractive
 # DPkg::Lock::Timeout waits for cloud-init's own apt activity to release the lock.
@@ -87,7 +96,7 @@ docker run -d --name openrung-volunteer --restart unless-stopped \\
   -e OPENRUNG_BROKER_URL=${BROKER_URL} \\
   -e OPENRUNG_PUBLIC_HOST="\$PUBLIC_IP" \\
   -e OPENRUNG_LISTEN_HOST=0.0.0.0 \\
-  -e OPENRUNG_LABEL=${NAME} ${TOKEN_INLINE}\\
+  -e OPENRUNG_LABEL=${NAME} \\
   ${IMAGE}
 EOF
 
@@ -107,5 +116,6 @@ hcloud server create \
 PUBLIC_IP="$(hcloud server ip "$NAME")"
 
 echo "Done. '${NAME}' is at ${PUBLIC_IP}:443 and registers with ${BROKER_URL} after boot (~2-3 min)."
+echo "  This helper launches an anonymous volunteer-class relay only; it rejects all registration tokens."
 echo "  logs:  ssh -i ~/.ssh/id_ed25519_openrung root@${PUBLIC_IP} 'tail -f /var/log/openrung-init.log'"
 echo "OPENRUNG_RELAY name=${NAME} ip=${PUBLIC_IP}"

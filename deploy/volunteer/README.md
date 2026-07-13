@@ -30,6 +30,42 @@ Only two are required:
 | `OPENRUNG_BROKER_URL` | Broker base URL the relay registers with. |
 | `OPENRUNG_PUBLIC_HOST` | Public IP / DNS name clients use to reach **this** relay. Must be set — a container cannot auto-detect it. |
 
+### Foundation-operated relays
+
+A Foundation-operated relay uses the same data plane, but attests its operator
+provenance to the broker. The `OPENRUNG_FOUNDATION_TOKEN` credential is
+self-contained — presenting it is all you need. Put these values in a root-owned
+mode-`0600` env file:
+
+```sh
+OPENRUNG_FOUNDATION_TOKEN=<foundation-registration-token>
+OPENRUNG_BROKER_URL=https://broker.example.com
+OPENRUNG_PUBLIC_HOST=2001:db8::1234
+```
+
+The token is the same secret configured as `OPENRUNG_FOUNDATION_TOKEN` on the
+broker. Setting it alone forces the entire Foundation posture — you do **not**
+also set `OPENRUNG_NODE_CLASS` or `OPENRUNG_MODE`:
+
+- **Foundation class** is forced; `OPENRUNG_NODE_CLASS` is unnecessary, and
+  setting it to anything but `foundation` alongside the token is a startup error.
+- **Direct mode** is forced. `auto` and `tunnel` never run, because the hub path
+  would expose the Foundation bearer and the hub always registers the community
+  exit operator as `volunteer`.
+- The broker URL **must use HTTPS** (loopback HTTP is allowed only for local
+  tests), and broker API redirects are refused so the bearer cannot follow a
+  downgrade.
+- Never put the token in cloud-init/user-data, provider metadata, inline
+  `docker -e` arguments, or traced shell commands. The bundled Lightsail and
+  Hetzner bootstrap helpers intentionally provision anonymous volunteers only
+  and reject registration tokens; provision the host first, transfer the env
+  file over an authenticated channel, and recreate the container with
+  `--env-file`.
+
+`node_class` describes the operator of the exit relay, not the infrastructure it
+traverses. A Foundation-operated relay hub therefore does not make the community
+volunteers tunneled through it Foundation-operated.
+
 ### Stable relay identity (recommended)
 
 Without an explicit identity, the relay generates a fresh one on every restart.

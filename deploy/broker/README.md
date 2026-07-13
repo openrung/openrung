@@ -69,6 +69,76 @@ A token, when set, takes precedence and enforces auth; the anonymous flag then
 becomes a no-op. Generate a token with `openssl rand -hex 32`. Send it only over
 TLS — see Cloudflare below.
 
+Separately, `OPENRUNG_FOUNDATION_TOKEN` (optional) authorizes registrations
+that claim `node_class: foundation`, marking relays the foundation operates
+itself apart from community volunteers in the signed relay list. It works with
+either auth mode above, must differ from `OPENRUNG_VOLUNTEER_TOKEN` (the
+broker refuses to start otherwise), and belongs only on foundation-operated
+relays. Heartbeats for a foundation relay must also present this token; the
+broker refuses to extend the lease otherwise. At the origin store, an unattended
+foundation row therefore disappears after one lease TTL. That is not an instant
+client-visible revocation guarantee: an ordinary API directory has a 30-minute
+signed freshness window, the Worker may serve its last healthy response for up
+to 15 minutes (still bounded by that response's `not_after`), and a mirror has a
+24-hour signed freshness window. Clients and their local caches must enforce each
+snapshot's `not_after` with only the protocol's bounded clock-skew allowance;
+operators should treat `node_class` as provenance captured when it was signed.
+
+Treat the Foundation token like the relay-list signing seed. Never place it in
+cloud-init/user-data, provider metadata, an inline `docker -e` argument, or a
+shell command that tracing or history can retain. Transfer it only after boot
+over an authenticated channel, store it in the root-owned mode-`0600` broker env
+file, then **recreate** the container with `--env-file` (a Docker restart does
+not reload a changed env file). `lightsail-up.sh` intentionally rejects
+`OPENRUNG_FOUNDATION_TOKEN` for this reason.
+
+> **Rolling back past `node_class`:** a broker image that predates the
+> `node_class` column does not guard registrations or heartbeats, so it can
+> overwrite a foundation relay's `host:port` row — replacing its id, keys, and
+> endpoint with an attacker's or volunteer's — while leaving `node_class`
+> stuck at `'foundation'`. An upgraded broker would then sign that forged
+> descriptor as Foundation.
+>
+> **Never run pre-`node_class` and `node_class`-aware broker binaries against
+> the same database while any foundation row exists** — a mixed-version fleet
+> (a partial rollback, or a blue/green deploy straddling this change) lets the
+> old writer poison rows that the new writer signs. Keep the whole fleet on one
+> side of this change.
+>
+> To roll back and later re-upgrade safely, order it strictly so no
+> `node_class`-aware broker ever serves a row an old writer could have touched:
+>
+> 1. **Roll back:** stop every `node_class`-aware broker first, *then* start the
+>    old image. (The forged-class window exists only while both run.)
+> 2. **Re-upgrade:** stop and drain every old (pre-`node_class`) broker so
+>    nothing can still write the poisoned state — confirm none remain.
+> 3. With every broker still stopped (the new one not yet started), **delete**
+>    all descriptors so every relay is forced to re-attest:
+>
+>    ```sql
+>    DELETE FROM relay_descriptors;
+>    ```
+> 4. Only after that `DELETE` commits, start the new broker. Each relay's next
+>    heartbeat now returns `404`, so it re-registers and re-attests: foundation
+>    relays present the foundation token and are re-signed as `foundation`;
+>    every other relay registers as `volunteer`.
+>
+> Use `DELETE`, not `UPDATE ... SET node_class = 'volunteer'`. An `UPDATE` clears
+> the column, but heartbeats never rewrite `node_class` — a live foundation relay
+> would keep heartbeating its downgraded row and never regain its class until it
+> happened to restart. Deleting forces the `404` → re-register → re-attest cycle
+> across the whole fleet, and deleting *before* the new broker starts guarantees
+> it never signs a stale or forged `foundation` label.
+>
+> **Old brokers do not understand the foundation token.** A pre-`node_class`
+> broker knows only its single `OPENRUNG_VOLUNTEER_TOKEN`, so while the old image
+> runs, a foundation relay's bearer (`OPENRUNG_FOUNDATION_TOKEN`) is not a
+> privileged credential to it: a token-gated old broker rejects it (`401`, since
+> it differs from the volunteer token), and an anonymous old broker accepts it
+> but its insert leaves `node_class` at the column default (`volunteer`).
+> Foundation relays are therefore rejected or silently downgraded for the whole
+> rollback window; the re-upgrade `DELETE` above is what restores them.
+
 ## Relay-list signing
 
 Every 2xx relay-list response (`/api/v1/relays` and `/api/v1/relays.mirror`) is
@@ -144,6 +214,7 @@ the edge and spoof forwarded headers.
 | ------------------------------------ | -------- | ----------------------------------- | -------------------------------------------------------------- |
 | `OPENRUNG_VOLUNTEER_TOKEN`           | yes\*    | —                                   | Shared registration token (must match hubs/volunteers)         |
 | `OPENRUNG_ALLOW_ANONYMOUS_REGISTRATION` | yes\* | —                                   | Set `true` to run open when no token is set (\*one of these)   |
+| `OPENRUNG_FOUNDATION_TOKEN`          | no       | —                                   | Privileged token for `node_class=foundation` registrations; must differ from the volunteer token |
 | `OPENRUNG_RELAY_SIGNING_KEY`         | yes      | —                                   | Std-base64 32-byte Ed25519 seed; signs every relay-list response |
 | `OPENRUNG_DASHBOARD_TOKEN`           | no       | —                                   | Enables the protected `/admin/telemetry` dashboard             |
 | `OPENRUNG_ADDR`                      | no       | `:8080`                             | HTTP listen address                                            |

@@ -40,7 +40,8 @@ const descriptorColumns = `
 	country_code,
 	latitude,
 	longitude,
-	exit_host
+	exit_host,
+	node_class
 `
 
 const postgresOperationTimeout = 5 * time.Second
@@ -74,6 +75,7 @@ CREATE TABLE IF NOT EXISTS relay_descriptors (
 	latitude double precision NOT NULL DEFAULT 0,
 	longitude double precision NOT NULL DEFAULT 0,
 	exit_host text NOT NULL DEFAULT '',
+	node_class text NOT NULL DEFAULT 'volunteer',
 	attributes jsonb NOT NULL DEFAULT '{}'::jsonb,
 	UNIQUE (public_host, public_port)
 );
@@ -110,6 +112,9 @@ ALTER TABLE relay_descriptors
 
 ALTER TABLE relay_descriptors
 	ADD COLUMN IF NOT EXISTS exit_host text NOT NULL DEFAULT '';
+
+ALTER TABLE relay_descriptors
+	ADD COLUMN IF NOT EXISTS node_class text NOT NULL DEFAULT 'volunteer';
 
 CREATE INDEX IF NOT EXISTS relay_descriptors_active_idx
 	ON relay_descriptors (expires_at DESC, last_heartbeat_at DESC);
@@ -189,6 +194,7 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 	desc := relay.Descriptor{
 		ID:               id,
 		Label:            req.Label,
+		NodeClass:        normalizeNodeClass(req.NodeClass),
 		PublicHost:       req.PublicHost,
 		PublicPort:       req.PublicPort,
 		ExitHost:         req.ExitHost,
@@ -215,7 +221,21 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 	// handler's next successful UpdateGeo — except when the exit host changed
 	// (a hub port reused by a different volunteer), where the upsert clears
 	// the stale location so the handler resolves the new exit.
-	return scanDescriptor(s.pool.QueryRow(ctx, `
+	//
+	// The DO UPDATE WHERE guards a LIVE foundation endpoint: a foundation row
+	// may only be overwritten by another foundation-class registration.
+	// public_host:public_port is client-supplied and foundation endpoints are
+	// public in the signed list, so without this guard an anonymous
+	// registration could seize a foundation relay's row (new id, attacker's
+	// keys, downgraded class) and knock the real node into a re-registration
+	// race. The handler already gates node_class=foundation behind the
+	// foundation token, so "EXCLUDED.node_class = foundation" can only be true
+	// for a token-authorized caller. The expires_at disjunct keeps this to
+	// live rows — an already-expired foundation row (not yet pruned) is
+	// reclaimable, matching the in-memory Store's ExpiresAt.After(now) guard.
+	// A suppressed update returns no row (pgx.ErrNoRows), which we map to
+	// ErrNodeClassForbidden.
+	desc, err = scanDescriptor(s.pool.QueryRow(ctx, `
 		INSERT INTO relay_descriptors (
 			id,
 			public_host,
@@ -238,9 +258,10 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 			transport,
 			punch_capable,
 			punch_endpoint,
-			exit_host
+			exit_host,
+			node_class
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23
 		)
 		ON CONFLICT (public_host, public_port) DO UPDATE SET
 			id = EXCLUDED.id,
@@ -267,7 +288,11 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 			country_code = CASE WHEN relay_descriptors.exit_host = EXCLUDED.exit_host THEN relay_descriptors.country_code ELSE '' END,
 			latitude = CASE WHEN relay_descriptors.exit_host = EXCLUDED.exit_host THEN relay_descriptors.latitude ELSE 0 END,
 			longitude = CASE WHEN relay_descriptors.exit_host = EXCLUDED.exit_host THEN relay_descriptors.longitude ELSE 0 END,
-			exit_host = EXCLUDED.exit_host
+			exit_host = EXCLUDED.exit_host,
+			node_class = EXCLUDED.node_class
+		WHERE relay_descriptors.node_class <> $24
+			OR EXCLUDED.node_class = $24
+			OR relay_descriptors.expires_at <= EXCLUDED.registered_at
 		RETURNING `+descriptorColumns,
 		desc.ID,
 		desc.PublicHost,
@@ -291,26 +316,55 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 		desc.PunchCapable,
 		desc.PunchEndpoint,
 		desc.ExitHost,
+		desc.NodeClass,
+		relay.NodeClassFoundation,
 	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The upsert matched an existing row but the WHERE suppressed the
+		// update: the endpoint is held by a foundation relay and this
+		// (non-foundation) registration may not take it over.
+		return relay.Descriptor{}, ErrNodeClassForbidden
+	}
+	return desc, err
 }
 
-func (s *PostgresStore) Heartbeat(id string, now time.Time, ttl time.Duration) (relay.Descriptor, error) {
+func (s *PostgresStore) Heartbeat(id, maxClass string, now time.Time, ttl time.Duration) (relay.Descriptor, error) {
 	ctx, cancel := postgresOperationContext()
 	defer cancel()
 
+	// The class guard lives inside the UPDATE's WHERE so an unauthorized
+	// heartbeat never extends the lease, not even transiently.
 	desc, err := scanDescriptor(s.pool.QueryRow(ctx, `
 		UPDATE relay_descriptors
 		SET last_heartbeat_at = $2, expires_at = $3
-		WHERE id = $1
+		WHERE id = $1 AND (node_class <> $4 OR $5)
 		RETURNING `+descriptorColumns,
 		id,
 		now,
 		now.Add(ttl),
+		relay.NodeClassFoundation,
+		maxClass == relay.NodeClassFoundation,
 	))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return relay.Descriptor{}, ErrRelayNotFound
+		// No row updated: either the relay is gone or the guard blocked a
+		// foundation row. Distinguish so the handler can answer 403 vs 404
+		// (the 404 drives client re-registration and must stay accurate).
+		return relay.Descriptor{}, heartbeatMissError(
+			s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM relay_descriptors WHERE id = $1)`, id),
+		)
 	}
 	return desc, err
+}
+
+func heartbeatMissError(row pgx.Row) error {
+	var exists bool
+	if err := row.Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		return ErrNodeClassForbidden
+	}
+	return ErrRelayNotFound
 }
 
 func (s *PostgresStore) UpdateGeo(id string, geo relay.GeoLocation) error {
@@ -377,7 +431,7 @@ func (s *PostgresStore) Stats(now time.Time) (StoreStats, error) {
 	`, now).Scan(&active, &capacity); err != nil {
 		return StoreStats{}, err
 	}
-	return StoreStats{ActiveVolunteers: active, AdvertisedSessionCapacity: int(capacity.Int64)}, nil
+	return StoreStats{ActiveRelays: active, AdvertisedSessionCapacity: int(capacity.Int64)}, nil
 }
 
 func (s *PostgresStore) Prune(now time.Time) ([]relay.Descriptor, error) {
@@ -693,6 +747,7 @@ func scanDescriptor(row pgx.Row) (relay.Descriptor, error) {
 		&desc.Latitude,
 		&desc.Longitude,
 		&desc.ExitHost,
+		&desc.NodeClass,
 	)
 	return desc, err
 }

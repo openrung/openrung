@@ -13,6 +13,15 @@ import (
 
 var ErrRelayNotFound = errors.New("relay not found")
 
+// ErrNodeClassForbidden is returned when a registration or heartbeat would
+// act on a foundation relay without foundation authority: a non-foundation
+// registration cannot seize a foundation endpoint (Register), and a
+// non-foundation credential cannot extend a foundation lease (Heartbeat).
+// Refusing outright (rather than downgrading the row) keeps a foundation
+// label from being taken over — public relay IDs and endpoints notwithstanding
+// — and lets an orphaned label expire within one lease TTL.
+var ErrNodeClassForbidden = errors.New("registration or heartbeat is not authorized for this relay's node class")
+
 type RankingMode string
 
 const (
@@ -22,7 +31,14 @@ const (
 
 type RelayStore interface {
 	Register(relay.RegisterRequest, time.Time, time.Duration) (relay.Descriptor, error)
-	Heartbeat(string, time.Time, time.Duration) (relay.Descriptor, error)
+	// Heartbeat extends a relay's lease. maxClass is the highest node class
+	// the caller's credential vouches for: extending a foundation relay's
+	// lease requires a foundation credential (ErrNodeClassForbidden
+	// otherwise), so a foundation label that lost its authorized registrant —
+	// e.g. an endpoint takeover through a rolled-back broker binary whose
+	// upsert predates node_class — expires within one TTL instead of being
+	// kept alive indefinitely by whoever now heartbeats the ID.
+	Heartbeat(id, maxClass string, now time.Time, ttl time.Duration) (relay.Descriptor, error)
 	UpdateGeo(string, relay.GeoLocation) error
 	List(time.Time, int) ([]relay.Descriptor, error)
 	Stats(time.Time) (StoreStats, error)
@@ -41,7 +57,8 @@ type Store struct {
 }
 
 type StoreStats struct {
-	ActiveVolunteers          int
+	// ActiveRelays counts every unexpired relay, foundation and volunteer alike.
+	ActiveRelays              int
 	AdvertisedSessionCapacity int
 }
 
@@ -66,6 +83,7 @@ func (s *Store) Register(req relay.RegisterRequest, now time.Time, ttl time.Dura
 	desc := relay.Descriptor{
 		ID:               id,
 		Label:            req.Label,
+		NodeClass:        normalizeNodeClass(req.NodeClass),
 		PublicHost:       req.PublicHost,
 		PublicPort:       req.PublicPort,
 		ExitHost:         req.ExitHost,
@@ -89,18 +107,56 @@ func (s *Store) Register(req relay.RegisterRequest, now time.Time, ttl time.Dura
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Mirror the postgres endpoint upsert: each public host:port identifies one
+	// current descriptor, and a successful re-registration replaces the old ID.
+	// Validate every matching row before deleting any of them so a legacy store
+	// containing duplicate rows cannot be partially modified when one of those
+	// rows is a live foundation relay.
+	replacedIDs := make([]string, 0, 1)
+	var preservedGeo relay.GeoLocation
+	var preservedGeoRegisteredAt time.Time
+	hasPreservedGeo := false
+	for existingID, existing := range s.relays {
+		if existing.PublicHost != desc.PublicHost || existing.PublicPort != desc.PublicPort {
+			continue
+		}
+		if desc.NodeClass != relay.NodeClassFoundation &&
+			existing.NodeClass == relay.NodeClassFoundation &&
+			existing.ExpiresAt.After(now) {
+			return relay.Descriptor{}, ErrNodeClassForbidden
+		}
+		replacedIDs = append(replacedIDs, existingID)
+		// Match postgres registration semantics: retain a resolved location
+		// while the exit is unchanged, but clear it when an endpoint is reused
+		// by a relay with a different exit host.
+		if existing.ExitHost == desc.ExitHost &&
+			(!hasPreservedGeo || existing.RegisteredAt.After(preservedGeoRegisteredAt)) {
+			preservedGeo = existing.GeoLocation
+			preservedGeoRegisteredAt = existing.RegisteredAt
+			hasPreservedGeo = true
+		}
+	}
+	if hasPreservedGeo {
+		desc.GeoLocation = preservedGeo
+	}
+	for _, replacedID := range replacedIDs {
+		delete(s.relays, replacedID)
+	}
 	s.relays[id] = desc
 
 	return desc, nil
 }
 
-func (s *Store) Heartbeat(id string, now time.Time, ttl time.Duration) (relay.Descriptor, error) {
+func (s *Store) Heartbeat(id, maxClass string, now time.Time, ttl time.Duration) (relay.Descriptor, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	desc, ok := s.relays[id]
 	if !ok {
 		return relay.Descriptor{}, ErrRelayNotFound
+	}
+	if desc.NodeClass == relay.NodeClassFoundation && maxClass != relay.NodeClassFoundation {
+		return relay.Descriptor{}, ErrNodeClassForbidden
 	}
 
 	desc.LastHeartbeatAt = now
@@ -152,7 +208,7 @@ func (s *Store) Stats(now time.Time) (StoreStats, error) {
 		if !desc.ExpiresAt.After(now) {
 			continue
 		}
-		stats.ActiveVolunteers++
+		stats.ActiveRelays++
 		stats.AdvertisedSessionCapacity += desc.MaxSessions
 	}
 	return stats, nil
@@ -327,6 +383,16 @@ func normalizeTransport(transport string) string {
 		return relay.TransportDirect
 	}
 	return transport
+}
+
+// normalizeNodeClass defaults an empty node class to volunteer so every
+// stored descriptor carries a concrete value. Authorization of a foundation
+// claim happens in the handler; the store trusts its caller.
+func normalizeNodeClass(class string) string {
+	if class == "" {
+		return relay.NodeClassVolunteer
+	}
+	return class
 }
 
 func newRelayID() (string, error) {

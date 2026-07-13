@@ -10,6 +10,13 @@
 #
 # Overridable via env: OPENRUNG_REGION, OPENRUNG_AZ, OPENRUNG_BUNDLE,
 # OPENRUNG_BLUEPRINT, OPENRUNG_IMAGE, OPENRUNG_BROKER_URL.
+#
+# This helper deliberately provisions only unauthenticated volunteer-class
+# relays. Lightsail retains user-data and the bootstrap log, so registration
+# tokens must not be interpolated here. For an authenticated or Foundation relay,
+# provision the host first, then install a root-owned mode-0600 env file over SSH
+# and recreate the container with --env-file. Foundation relays additionally
+# require explicit direct mode and an HTTPS broker URL.
 set -euo pipefail
 
 REGION="${OPENRUNG_REGION:-ap-northeast-1}"
@@ -18,6 +25,11 @@ BUNDLE="${OPENRUNG_BUNDLE:-micro_3_0}"          # 1GB RAM / 2 vCPU / 40GB / 2TB
 BLUEPRINT="${OPENRUNG_BLUEPRINT:-ubuntu_24_04}"
 IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-volunteer:main}"
 BROKER_URL="${OPENRUNG_BROKER_URL:-http://54.238.185.205:8080}"
+
+if [ "${OPENRUNG_VOLUNTEER_TOKEN+x}" = x ] || [ "${OPENRUNG_FOUNDATION_TOKEN+x}" = x ] || [ "${OPENRUNG_NODE_CLASS+x}" = x ]; then
+  echo "error: this helper does not accept registration tokens (including the foundation token) or node-class overrides because Lightsail user-data persists; configure them post-boot in a root-owned env file" >&2
+  exit 2
+fi
 
 adjectives=(happy grumpy glorious sleepy brave clever gentle jolly mighty nimble plucky quiet rapid shiny snappy spry sturdy sunny swift witty zesty breezy cosmic dapper eager fuzzy golden hardy lucky merry noble proud quirky rustic silly valiant)
 nouns=(hippo walrus castle otter falcon badger lantern comet maple harbor meadow beacon pebble willow cactus cobra ferret gecko heron ibex jaguar koala lemur marmot narwhal ocelot panther quokka raven salmon tapir urchin viper wombat yak zebra)
@@ -90,4 +102,6 @@ aws lightsail open-instance-public-ports --instance-name "$NAME" --region "$REGI
   --port-info "fromPort=443,toPort=443,protocol=TCP,cidrs=0.0.0.0/0,ipv6Cidrs=::/0" >/dev/null
 
 echo "Done. '${NAME}' is at ${STATIC_IP}:443 and registers with ${BROKER_URL} after boot (~2-3 min)."
+echo "  This helper launches an unauthenticated volunteer-class relay only."
+echo "  Install credentials post-boot in a root-owned env file and recreate the container."
 echo "OPENRUNG_RELAY name=${NAME} ip=${STATIC_IP}"
