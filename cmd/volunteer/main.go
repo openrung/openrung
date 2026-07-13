@@ -29,7 +29,7 @@ func main() {
 	flag.StringVar(&cfg.BrokerURL, "broker", "http://localhost:8080", "broker base URL")
 	flag.StringVar(&cfg.RegistrationToken, "registration-token", os.Getenv("OPENRUNG_VOLUNTEER_TOKEN"), "volunteer registration token")
 	flag.StringVar(&cfg.Label, "label", os.Getenv("OPENRUNG_LABEL"), "human-readable relay label shown in the broker; a random adjective-noun is generated when empty")
-	flag.StringVar(&cfg.NodeClass, "node-class", os.Getenv("OPENRUNG_NODE_CLASS"), "relay operator class: volunteer (default) or foundation; foundation requires direct mode, the broker's foundation registration token, and an https broker")
+	flag.StringVar(&cfg.NodeClass, "node-class", os.Getenv("OPENRUNG_NODE_CLASS"), "relay operator class: volunteer (default) or foundation. For a foundation relay prefer -foundation-token, which sets this and forces direct mode / https automatically; a bare -node-class=foundation still needs direct mode, the foundation token as the bearer, and an https broker")
 	flag.StringVar(&cfg.FoundationToken, "foundation-token", os.Getenv("OPENRUNG_FOUNDATION_TOKEN"), "foundation registration token; presenting it runs this relay as a foundation node — it forces foundation class, direct mode, an https broker, and redirect refusal, so no separate -node-class is needed")
 	flag.StringVar(&cfg.XrayPath, "xray", "xray", "path to xray binary")
 	flag.StringVar(&cfg.ListenHost, "listen-host", "::", "local listen host; with connection logging, :: listens on both IPv6 and IPv4 through the observer")
@@ -140,7 +140,7 @@ func normalizeMode(mode string, tunnelFlag bool, hubAddr string) string {
 // is not safe for the foundation token.
 func requireDirectModeForFoundation(nodeClass, mode string) error {
 	if nodeClass == relay.NodeClassFoundation && mode != "direct" {
-		return fmt.Errorf("node-class foundation requires direct mode: auto and tunnel send the registration token to the relay hub; use -mode direct against a TLS broker")
+		return fmt.Errorf("node-class foundation requires direct mode: auto and tunnel send the registration token to the relay hub. Use -mode direct against a TLS broker, or set -foundation-token, which forces direct mode")
 	}
 	return nil
 }

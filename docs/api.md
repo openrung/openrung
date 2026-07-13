@@ -244,14 +244,15 @@ claim is only accepted when the request presents the broker's
 The foundation token bounds the claimable class without forcing it — its holder
 may still register `volunteer` relays, but routine volunteer and hub traffic
 should use the volunteer token so the privileged bearer stays out of the hub
-path. The shipped volunteer supports Foundation claims only when the resolved
-mode is `direct`; operators should configure that mode explicitly. It rejects
-both `auto` and `tunnel` before contacting a hub, because the hub path would
-receive the registration bearer and the shipped hub
-always registers the tunneled exit operator as `volunteer`. A Foundation-operated
-hub therefore does not elevate the community volunteers behind it. The class is
-served back inside the signed relay-list body, so clients receive it with the
-same Ed25519 authenticity as every other descriptor field.
+path. On the shipped volunteer, presenting the foundation token
+(`OPENRUNG_FOUNDATION_TOKEN`) is self-contained: it **forces** direct mode,
+overriding any `auto`/`tunnel` setting, so operators do not configure the mode
+themselves and the bearer never reaches a hub probe. (The hub path would receive
+the registration bearer, and the shipped hub always registers the tunneled exit
+operator as `volunteer`, so a Foundation-operated hub does not elevate the
+community volunteers behind it.) The class is served back inside the signed
+relay-list body, so clients receive it with the same Ed25519 authenticity as
+every other descriptor field.
 
 Because `public_host`/`public_port` is client-supplied and foundation
 endpoints are public in the signed list, the broker also protects a live
