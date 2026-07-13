@@ -1,0 +1,217 @@
+# Broker origin TLS (end-to-end HTTPS for the CloudFront front)
+
+The broker runs plaintext HTTP on `:8080`. Fronts terminate client TLS at the
+edge, but the **edge → origin** leg was HTTP. On the AWS CloudFront front
+(distribution `E2PLKW8FO3JZSA`, `d2r7mdpyevvs1m.cloudfront.net`) that leg
+carried the high-value **Foundation registration token** (`Authorization`
+header on `POST /api/v1/volunteers/register`) in cleartext across the public
+internet. This runbook closes that leg with a TLS-terminating reverse proxy on
+the broker box so the token is encrypted **relay → CloudFront edge → origin**.
+
+```
+relay ──HTTPS──► CloudFront edge ──HTTPS(:443)──► Caddy ──HTTP(127.0.0.1:8080)──► broker
+                 (E2PLKW8FO3JZSA)   broker-origin.openrung.org      (container, unchanged)
+```
+
+The broker container is **not touched** — the proxy is purely additive, and the
+plaintext `:8080` path stays open for community volunteer relays and for the
+Cloudflare Worker front. Set up 2026-07-13.
+
+## What must not be undone
+
+- **`broker-origin.openrung.org` must stay DNS-only (grey cloud) in Cloudflare.**
+  It is an `A` record → `54.238.185.205`. Orange-clouding (proxying) it would
+  reintroduce Cloudflare's datacenter challenge on the origin and loop the
+  Cloudflare Worker's subrequest back into the edge. Both CDN fronts depend on
+  this record resolving straight to the broker IP.
+- **Keep `:8080` open.** Community volunteers (Hetzner + Lightsail, see
+  `deploy/volunteer/hetzner-up.sh`) register directly against
+  `http://54.238.185.205:8080`, and the Cloudflare Worker front fetches the
+  origin on `:8080`. Do not firewall it off as part of this change.
+- **The origin cert must be RSA, not ECDSA** — see the CloudFront gotchas below.
+- **The CloudFront behavior must use `Managed-AllViewerExceptHostHeader`, not
+  `Managed-AllViewer`** — see the CloudFront gotchas below.
+- Do not disable/mask the `caddy` service; it both serves TLS and auto-renews
+  the cert.
+
+## Broker box: Caddy TLS terminator
+
+Host: Lightsail `typhoon-broker`, `ssh -i ~/.ssh/id_ed25519_openrung ubuntu@54.238.185.205`.
+
+Caddy was chosen for native Let's Encrypt auto-renewal (no cron/certbot timer to
+manage). ACM certs cannot be installed on Lightsail, and a self-signed cert
+would not validate at CloudFront — so a publicly-trusted Let's Encrypt cert is
+required.
+
+### Install
+
+```sh
+sudo apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl gnupg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+  | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+  | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+sudo apt-get update && sudo apt-get install -y caddy   # installs the systemd service, enabled
+```
+
+### Config
+
+`/etc/caddy/Caddyfile` (also committed as `deploy/broker/Caddyfile` for
+reference):
+
+```caddyfile
+{
+	key_type rsa2048        # REQUIRED for CloudFront — see gotchas
+}
+
+broker-origin.openrung.org {
+	reverse_proxy 127.0.0.1:8080 {
+		header_up -CF-Connecting-IP
+		header_up X-Forwarded-For {remote_host}
+	}
+	log {
+		output file /var/log/caddy/broker-origin.access.log {
+			roll_size 20MiB
+			roll_keep 5
+		}
+		format json
+	}
+}
+```
+
+The log directory is provided by a systemd drop-in (the packaged unit sandboxes
+the service, so a plain `mkdir` is not enough — systemd must own the path):
+
+`/etc/systemd/system/caddy.service.d/logdir.conf`
+
+```ini
+[Service]
+LogsDirectory=caddy
+LogsDirectoryMode=0750
+```
+
+Apply changes as the `caddy` user (never `sudo caddy validate`/`fmt` as root — it
+creates a root-owned log file that the service then can't open):
+
+```sh
+sudo -u caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+sudo systemctl reload caddy
+```
+
+### Firewall
+
+`:443` was opened on the Lightsail instance (additive; `:80` was already open and
+is used for the ACME HTTP-01 challenge):
+
+```sh
+aws lightsail open-instance-public-ports --instance-name typhoon-broker \
+  --region ap-northeast-1 --port-info fromPort=443,toPort=443,protocol=TCP
+```
+
+Open ports afterward: `22, 80, 443, 8080`.
+
+### Cert + renewal
+
+- Cert: `CN=broker-origin.openrung.org`, **RSA-2048**, Let's Encrypt, 90-day.
+  Issued via **HTTP-01** on `:80`.
+- Renewal: **automatic and native to Caddy** (ARI-scheduled; renews well before
+  expiry as long as the service runs). No timer or cron to maintain. Stored in
+  `/var/lib/caddy/.local/share/caddy/`.
+- No ACME account email is set (Caddy auto-renews, so expiry notices are
+  unnecessary, and it avoids attaching an operator identity to issuance).
+
+## CloudFront front: `E2PLKW8FO3JZSA`
+
+Two config changes (CloudFront/ACM are global — use `--region us-east-1`; the
+CLI profile's default region is a broken AZ value so pass it explicitly):
+
+1. **Origin protocol `http-only` → `https-only`** (`HTTPSPort` was already 443,
+   `OriginSslProtocols=[TLSv1.2]`). This is the change that encrypts the leg.
+2. **Origin request policy `Managed-AllViewer` → `Managed-AllViewerExceptHostHeader`**
+   (`216adef6-…` → `b689b0a8-53d0-40ab-baf2-68738e2966ac`). **Required** — see
+   gotchas. This policy still forwards everything except `Host` (all other
+   headers incl. `Authorization`, all cookies, all query strings), so the
+   Foundation token still reaches the origin.
+
+Both are applied with `get-distribution-config` → edit `DistributionConfig` →
+`update-distribution --if-match <ETag>`, then `aws cloudfront wait
+distribution-deployed`.
+
+### Two CloudFront gotchas (each caused a 502 during rollout)
+
+1. **RSA cert, not ECDSA.** Caddy's default leaf key is ECDSA (P-256).
+   CloudFront's origin-facing TLS cipher list is **RSA-only** (it offers the
+   origin `ECDHE-RSA-*` / `AES*` suites and *no* `ECDHE-ECDSA-*` suites), so an
+   ECDSA leaf shares no cipher with CloudFront and the handshake fails with a
+   502. Fixed with `key_type rsa2048`. (Changing `key_type` does not re-issue an
+   existing cert — the old ECDSA cert dir under
+   `…/certificates/…/broker-origin.openrung.org/` was removed and Caddy
+   restarted to force fresh RSA issuance.)
+
+2. **`AllViewerExceptHostHeader`, not `AllViewer`.** With `Managed-AllViewer`,
+   CloudFront forwards the viewer `Host` header **and uses it as the origin
+   SNI** — so it sent `SNI: d2r7mdpyevvs1m.cloudfront.net`. Caddy has no cert for
+   that name and rejected the handshake (`no certificate available for
+   'd2r7mdpyevvs1m.cloudfront.net'`) → 502. `AllViewerExceptHostHeader` makes
+   CloudFront send the **origin** hostname (`broker-origin.openrung.org`) as both
+   `Host` and SNI, which Caddy serves and routes. CloudFront still validates the
+   returned cert against the *origin domain name*, which matches.
+
+## Verify
+
+```sh
+# Origin TLS directly (publicly-trusted cert, signed relay list):
+curl -v https://broker-origin.openrung.org/api/v1/relays        # 200, cert verifies
+
+# End-to-end through CloudFront (works from a datacenter IP; the Cloudflare
+# Worker front 403s datacenter IPs by design):
+curl https://d2r7mdpyevvs1m.cloudfront.net/api/v1/relays?limit=1 # 200, X-OpenRung-Relays-Signature present
+curl -X POST -H 'Content-Type: application/json' -d '{}' \
+  https://d2r7mdpyevvs1m.cloudfront.net/api/v1/volunteers/register   # 400 {"error":"public_host is required"}
+
+# Volunteer plaintext path still intact:
+curl http://54.238.185.205:8080/api/v1/relays                   # 200
+
+# Confirm CloudFront connects over TLS (SNI = origin, not the CF domain):
+sudo tail /var/log/caddy/broker-origin.access.log   # request.tls.server_name = broker-origin.openrung.org
+```
+
+## Rollback
+
+The proxy is additive and reversible. To revert the CloudFront front to the
+previous (verified-working) plaintext-origin state, restore the original
+`DistributionConfig` (`OriginProtocolPolicy=http-only` +
+`OriginRequestPolicyId=Managed-AllViewer`):
+
+```sh
+aws cloudfront get-distribution-config --id E2PLKW8FO3JZSA --region us-east-1   # note ETag
+# set OriginProtocolPolicy=http-only and OriginRequestPolicyId=216adef6-5c7f-47e4-b989-5492eafa07d3
+aws cloudfront update-distribution --id E2PLKW8FO3JZSA --region us-east-1 \
+  --distribution-config file://rollback.json --if-match <ETag>
+```
+
+Caddy itself can be stopped without affecting the broker or `:8080`
+(`sudo systemctl stop caddy`) — only the origin `:443` and the CloudFront front
+depend on it.
+
+## Known follow-ups (not done here)
+
+- **Per-client rate-limit / telemetry granularity on the CloudFront path.** The
+  broker trusts only Cloudflare ranges for forwarded client IPs
+  (`internal/broker/clientip.go`); it does **not** trust the new loopback hop, so
+  it records `127.0.0.1` as the client for CloudFront-fronted requests — i.e.
+  the whole CloudFront front shares one relay-list rate-limit bucket (2 req/s,
+  burst 30) and one telemetry client IP. This is benign day-to-day (CloudFront
+  is a cold 2.5 s-stagger *failover* front — normal traffic ≈ 0), but a
+  mass-failover surge (primary Worker/Cloudflare down) would all land in that one
+  bucket. To restore per-edge-IP bucketing, recreate the broker container with
+  `OPENRUNG_TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128`; the Caddy config already
+  forwards the unspoofable CloudFront edge IP as the sole `X-Forwarded-For` value
+  (and strips client-supplied `CF-Connecting-IP`/`XFF`), so no proxy change is
+  needed — only the broker env. **Requires a broker container recreate → operator
+  approval** (per the no-autonomous-broker-recreate policy).
+- **Cloudflare Worker front origin leg is still plaintext.**
+  `broker.openrung.org` (the Worker) still fetches `http://broker-origin…:8080`.
+  Now that `:443` origin TLS exists, the Worker could be pointed at
+  `https://broker-origin.openrung.org` to close its leg too — a separate change
+  to the higher-traffic primary front, deliberately out of scope here.

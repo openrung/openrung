@@ -208,6 +208,18 @@ limiting and telemetry source IPs will all collapse onto the docker gateway.
 Firewall the raw origin `:8080` to Cloudflare's ranges so clients cannot bypass
 the edge and spoof forwarded headers.
 
+### End-to-end TLS to the origin
+
+For a front to reach the origin over HTTPS (so tokens like the Foundation
+registration token are never in cleartext on the edge → origin leg), terminate
+TLS on the broker box with a Let's Encrypt reverse proxy on `:443` that forwards
+to the broker on `:8080`. The production setup for the AWS CloudFront front —
+Caddy config, cert/renewal, firewall, the required CloudFront origin settings,
+verification, and rollback — is documented in
+[`origin-tls.md`](./origin-tls.md), with the deployed config in
+[`Caddyfile`](./Caddyfile). It is additive: the broker container and the
+plaintext `:8080` path are untouched.
+
 ## Container hardening
 
 Both `docker-compose.yml` and `lightsail-up.sh` run the broker with a
