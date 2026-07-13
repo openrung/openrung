@@ -197,36 +197,49 @@ decision differs.
 plain assignment: shell history can retain the assignment, and curl
 [warns](https://curl.se/docs/manpage.html#-H) that command-line arguments (the
 expanded header) are not reliably hidden from `ps`/other users. Keep it out of
-both history and argv — read it straight into a private **tmpfs** header file and
-feed that to curl with `-H @file`. On the broker box (the token lives in the
-root-owned env file):
+both history and argv — write it into a **`mktemp`** file (root-owned, mode
+`0600`, **unpredictable** name, so there is no fixed path in a shared dir like
+`/dev/shm` for another user to pre-create or symlink; note `umask` cannot repair
+an *existing* file) and feed that to curl with `-H @file`, under a `trap` that
+removes it **however the shell exits** (success, error, or signal). On the broker
+box (the token lives in the root-owned env file), one root shell:
 
 ```sh
-CF=https://d2r7mdpyevvs1m.cloudfront.net/api/v1/volunteers/register
-
-# token goes file -> file: never an argv, never echoed, never in history.
-# Strip ONLY the first `NAME=` prefix (sed), so a token that itself contains `=`
-# (e.g. base64 padding) is preserved verbatim — `awk -F= ... $2` would truncate
-# it at the first `=`, producing a wrong token and a misleading 403.
-sudo bash -c 'umask 077; sed -n "s|^OPENRUNG_FOUNDATION_TOKEN=|Authorization: Bearer |p" \
-  /etc/openrung/broker.env > /dev/shm/ft.hdr'
-
-# WITH token   -> 400 public_host is required   => token SURVIVED CloudFront->origin
-sudo curl -sS -H @/dev/shm/ft.hdr -o /dev/null -w '%{http_code}\n' -X POST \
-  -H 'Content-Type: application/json' -d '{"node_class":"foundation"}' "$CF"
-
-# WITHOUT token -> 403 requires the foundation registration token  => header loss shows here
-curl -sS -o /dev/null -w '%{http_code}\n' -X POST \
-  -H 'Content-Type: application/json' -d '{"node_class":"foundation"}' "$CF"
-
-sudo shred -u /dev/shm/ft.hdr 2>/dev/null || sudo rm -f /dev/shm/ft.hdr   # always clean up
+sudo bash -c '
+  set -eu; umask 077
+  hdr=$(mktemp)                                              # root-owned, 0600, unpredictable
+  trap "shred -u \"$hdr\" 2>/dev/null || rm -f \"$hdr\"" EXIT   # always removed
+  # sed strips ONLY the first NAME= prefix, so a token containing = (base64
+  # padding) survives verbatim; awk -F= "{print \$2}" would truncate it and 403.
+  sed -n "s|^OPENRUNG_FOUNDATION_TOKEN=|Authorization: Bearer |p" /etc/openrung/broker.env > "$hdr"
+  CF=https://d2r7mdpyevvs1m.cloudfront.net/api/v1/volunteers/register
+  # WITH token   -> 400 public_host is required  => token SURVIVED CloudFront->origin
+  curl -sS -H @"$hdr" -o /dev/null -w "with-token: %{http_code}\n" \
+    -X POST -H "Content-Type: application/json" -d "{\"node_class\":\"foundation\"}" "$CF"
+  # WITHOUT token -> 403 requires the foundation registration token  => header loss shows here
+  curl -sS          -o /dev/null -w "no-token:   %{http_code}\n" \
+    -X POST -H "Content-Type: application/json" -d "{\"node_class\":\"foundation\"}" "$CF"
+'
 ```
 
-From a host that isn't the broker, replace the `awk` line with a hidden prompt so
-the token never lands in history or argv:
-`read -rs FT; umask 077; printf 'Authorization: Bearer %s\n' "$FT" > /dev/shm/ft.hdr; unset FT`
-(`read`/`printf` are shell builtins — no process argv), then use `-H @file` and
-`shred` as above.
+From a host that isn't the broker, hold the token in a **hidden prompt** instead
+(`read`/`printf` are shell builtins — no process argv). Force `bash` so the trap
+fires consistently, and keep it **portable** — macOS has no `/dev/shm` and no GNU
+`shred`, so this uses `mktemp` + `rm`:
+
+```sh
+bash -c '
+  set -eu; umask 077
+  hdr=$(mktemp); trap "rm -f \"$hdr\"" EXIT INT TERM
+  read -rs -p "Foundation token: " FT </dev/tty; echo
+  printf "Authorization: Bearer %s\n" "$FT" > "$hdr"; unset FT
+  CF=https://d2r7mdpyevvs1m.cloudfront.net/api/v1/volunteers/register
+  curl -sS -H @"$hdr" -o /dev/null -w "with-token: %{http_code}\n" \
+    -X POST -H "Content-Type: application/json" -d "{\"node_class\":\"foundation\"}" "$CF"
+  curl -sS          -o /dev/null -w "no-token:   %{http_code}\n" \
+    -X POST -H "Content-Type: application/json" -d "{\"node_class\":\"foundation\"}" "$CF"
+'
+```
 
 `400` vs `403` is the signal: if `AllViewerExceptHostHeader` (or the origin leg)
 dropped `Authorization`, the first call would return `403` like the second.
