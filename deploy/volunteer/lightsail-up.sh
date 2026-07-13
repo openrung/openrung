@@ -26,8 +26,8 @@ BLUEPRINT="${OPENRUNG_BLUEPRINT:-ubuntu_24_04}"
 IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-volunteer:main}"
 BROKER_URL="${OPENRUNG_BROKER_URL:-http://54.238.185.205:8080}"
 
-if [ "${OPENRUNG_VOLUNTEER_TOKEN+x}" = x ] || [ "${OPENRUNG_NODE_CLASS+x}" = x ]; then
-  echo "error: this helper does not accept registration tokens or node-class overrides because Lightsail user-data persists; configure them post-boot in a root-owned env file" >&2
+if [ "${OPENRUNG_VOLUNTEER_TOKEN+x}" = x ] || [ "${OPENRUNG_FOUNDATION_TOKEN+x}" = x ] || [ "${OPENRUNG_NODE_CLASS+x}" = x ]; then
+  echo "error: this helper does not accept registration tokens (including the foundation token) or node-class overrides because Lightsail user-data persists; configure them post-boot in a root-owned env file" >&2
   exit 2
 fi
 

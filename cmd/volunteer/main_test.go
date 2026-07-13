@@ -236,3 +236,106 @@ func TestHeartbeatRefusesFoundationOverPlaintext(t *testing.T) {
 		t.Fatalf("heartbeat sent %d requests, want 0", sent.Load())
 	}
 }
+
+// A foundation token is a self-contained posture: setting only
+// OPENRUNG_FOUNDATION_TOKEN (no OPENRUNG_NODE_CLASS) must register as
+// foundation, over the foundation bearer, on an https broker.
+func TestFoundationTokenRegistersAsFoundationWithoutNodeClass(t *testing.T) {
+	var gotAuth, gotBody string
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		gotAuth = r.Header.Get("Authorization")
+		if r.Body != nil {
+			b, _ := io.ReadAll(r.Body)
+			gotBody = string(b)
+		}
+		return jsonResponse(http.StatusCreated, `{"id":"relay_x","public_host":"relay.example","public_port":443,"node_class":"foundation"}`), nil
+	})}
+	cfg := cliConfig{
+		BrokerURL:       "https://broker.test",
+		FoundationToken: "fnd-secret",
+		PublicHost:      "relay.example",
+		PublicPort:      443,
+		HTTPClient:      client,
+	}
+	if err := cfg.ApplyDefaults(); err != nil {
+		t.Fatalf("ApplyDefaults: %v", err)
+	}
+	if cfg.NodeClass != relay.NodeClassFoundation {
+		t.Fatalf("node_class = %q, want foundation (forced by the token)", cfg.NodeClass)
+	}
+	if cfg.Mode != "direct" {
+		t.Fatalf("mode = %q, want direct (forced by the token)", cfg.Mode)
+	}
+	desc, err := register(context.Background(), cfg, preparedRuntime{})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if desc.NodeClass != relay.NodeClassFoundation {
+		t.Fatalf("attested node_class = %q, want foundation", desc.NodeClass)
+	}
+	if gotAuth != "Bearer fnd-secret" {
+		t.Fatalf("Authorization = %q, want the foundation token as bearer", gotAuth)
+	}
+	if !strings.Contains(gotBody, `"node_class":"foundation"`) {
+		t.Fatalf("register body did not claim foundation: %s", gotBody)
+	}
+}
+
+// A hub var would normally resolve to auto; a foundation token overrides that
+// to direct so the token can never route through a hub.
+func TestFoundationTokenForcesDirectOverResolvedAuto(t *testing.T) {
+	cfg := cliConfig{
+		FoundationToken: "fnd-secret",
+		BrokerURL:       "https://broker.test",
+		PublicHost:      "relay.example",
+		HubAddr:         "hub.example:9443",
+	}
+	cfg.Mode = normalizeMode(cfg.Mode, cfg.TunnelMode, cfg.HubAddr) // main() does this first
+	if cfg.Mode != "auto" {
+		t.Fatalf("precondition: mode = %q, want auto (hub implies auto)", cfg.Mode)
+	}
+	if err := cfg.ApplyDefaults(); err != nil {
+		t.Fatalf("ApplyDefaults: %v", err)
+	}
+	if cfg.NodeClass != relay.NodeClassFoundation || cfg.Mode != "direct" {
+		t.Fatalf("posture = %q/%q, want foundation/direct", cfg.NodeClass, cfg.Mode)
+	}
+}
+
+func TestFoundationTokenConflictsWithExplicitVolunteerClass(t *testing.T) {
+	cfg := cliConfig{FoundationToken: "fnd-secret", NodeClass: "volunteer", BrokerURL: "https://broker.test", PublicHost: "relay.example"}
+	if err := cfg.ApplyDefaults(); err == nil {
+		t.Fatal("ApplyDefaults() error = nil, want a node-class conflict error")
+	}
+}
+
+func TestFoundationTokenIsBearerAndForcesSecureTransport(t *testing.T) {
+	cfg := cliConfig{FoundationToken: "fnd-secret", RegistrationToken: "vol-token", BrokerURL: "https://broker.test"}
+	bc := cfg.brokerClient()
+	if bc.Token != "fnd-secret" {
+		t.Fatalf("bearer = %q, want the foundation token (not the volunteer token)", bc.Token)
+	}
+	if !bc.RequireSecureTransport {
+		t.Fatal("RequireSecureTransport = false, want true for a foundation token")
+	}
+}
+
+// The token forces secure transport intrinsically: a foundation token against a
+// cleartext broker is refused before any request is sent.
+func TestFoundationTokenRefusesPlaintextBroker(t *testing.T) {
+	var sent atomic.Int32
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		sent.Add(1)
+		return jsonResponse(http.StatusCreated, `{"node_class":"foundation"}`), nil
+	})}
+	cfg := cliConfig{FoundationToken: "fnd-secret", BrokerURL: "http://broker.test", PublicHost: "relay.example", PublicPort: 443, HTTPClient: client}
+	if err := cfg.ApplyDefaults(); err != nil {
+		t.Fatalf("ApplyDefaults: %v", err)
+	}
+	if _, err := register(context.Background(), cfg, preparedRuntime{}); err == nil {
+		t.Fatal("register() error = nil, want a cleartext-broker refusal")
+	}
+	if sent.Load() != 0 {
+		t.Fatalf("register sent %d requests, want 0 (must refuse before sending)", sent.Load())
+	}
+}

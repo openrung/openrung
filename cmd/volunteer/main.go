@@ -30,6 +30,7 @@ func main() {
 	flag.StringVar(&cfg.RegistrationToken, "registration-token", os.Getenv("OPENRUNG_VOLUNTEER_TOKEN"), "volunteer registration token")
 	flag.StringVar(&cfg.Label, "label", os.Getenv("OPENRUNG_LABEL"), "human-readable relay label shown in the broker; a random adjective-noun is generated when empty")
 	flag.StringVar(&cfg.NodeClass, "node-class", os.Getenv("OPENRUNG_NODE_CLASS"), "relay operator class: volunteer (default) or foundation; foundation requires direct mode, the broker's foundation registration token, and an https broker")
+	flag.StringVar(&cfg.FoundationToken, "foundation-token", os.Getenv("OPENRUNG_FOUNDATION_TOKEN"), "foundation registration token; presenting it runs this relay as a foundation node — it forces foundation class, direct mode, an https broker, and redirect refusal, so no separate -node-class is needed")
 	flag.StringVar(&cfg.XrayPath, "xray", "xray", "path to xray binary")
 	flag.StringVar(&cfg.ListenHost, "listen-host", "::", "local listen host; with connection logging, :: listens on both IPv6 and IPv4 through the observer")
 	flag.IntVar(&cfg.ListenPort, "listen-port", 443, "local listen port")
@@ -77,6 +78,7 @@ func main() {
 type cliConfig struct {
 	BrokerURL         string
 	RegistrationToken string
+	FoundationToken   string
 	Label             string
 	NodeClass         string
 	XrayPath          string
@@ -143,7 +145,33 @@ func requireDirectModeForFoundation(nodeClass, mode string) error {
 	return nil
 }
 
+// applyFoundationTokenPosture makes a foundation token a self-contained relay
+// posture: presenting it forces foundation class and direct mode (HTTPS and
+// redirect refusal follow from the foundation bearer in brokerClient). Setting
+// OPENRUNG_FOUNDATION_TOKEN is therefore sufficient — no separate
+// OPENRUNG_NODE_CLASS. An explicit non-foundation node-class is a contradiction
+// and rejected; a non-direct mode is overridden to direct (direct is the only
+// mode that never routes the token through a hub). Called from both
+// ApplyDefaults and run so the posture holds even for a caller that skips
+// ApplyDefaults.
+func applyFoundationTokenPosture(c *cliConfig) error {
+	if c.FoundationToken == "" {
+		return nil
+	}
+	switch strings.ToLower(strings.TrimSpace(c.NodeClass)) {
+	case "", relay.NodeClassFoundation:
+	default:
+		return fmt.Errorf("node-class %q conflicts with a foundation token, which already forces foundation class; unset -node-class/OPENRUNG_NODE_CLASS", c.NodeClass)
+	}
+	c.NodeClass = relay.NodeClassFoundation
+	c.Mode = "direct"
+	return nil
+}
+
 func (c *cliConfig) ApplyDefaults() error {
+	if err := applyFoundationTokenPosture(c); err != nil {
+		return err
+	}
 	if c.Mode == "" {
 		c.Mode = normalizeMode("", c.TunnelMode, c.HubAddr)
 	}
@@ -253,6 +281,9 @@ func (c cliConfig) Validate() error {
 }
 
 func run(cfg cliConfig) error {
+	if err := applyFoundationTokenPosture(&cfg); err != nil {
+		return err
+	}
 	nodeClass, err := relay.NormalizeNodeClass(cfg.NodeClass)
 	if err != nil {
 		return fmt.Errorf("invalid node-class: %w", err)
@@ -671,11 +702,18 @@ func heartbeat(ctx context.Context, cfg cliConfig, id string) error {
 }
 
 func (c cliConfig) brokerClient() volunteer.BrokerClient {
+	// A foundation token is the bearer and, on its own, requires secure
+	// transport (https + redirect refusal), so the guarantee holds even if the
+	// posture normalization above has not run for this config.
+	token := c.RegistrationToken
+	if c.FoundationToken != "" {
+		token = c.FoundationToken
+	}
 	return volunteer.BrokerClient{
 		BaseURL:                c.BrokerURL,
-		Token:                  c.RegistrationToken,
+		Token:                  token,
 		HTTPClient:             c.HTTPClient,
-		RequireSecureTransport: c.NodeClass == relay.NodeClassFoundation,
+		RequireSecureTransport: c.FoundationToken != "" || c.NodeClass == relay.NodeClassFoundation,
 	}
 }
 

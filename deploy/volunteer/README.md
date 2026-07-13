@@ -33,23 +33,28 @@ Only two are required:
 ### Foundation-operated relays
 
 A Foundation-operated relay uses the same data plane, but attests its operator
-provenance to the broker. Put these values in a root-owned mode-`0600` env file:
+provenance to the broker. The `OPENRUNG_FOUNDATION_TOKEN` credential is
+self-contained — presenting it is all you need. Put these values in a root-owned
+mode-`0600` env file:
 
 ```sh
-OPENRUNG_NODE_CLASS=foundation
-OPENRUNG_MODE=direct
+OPENRUNG_FOUNDATION_TOKEN=<foundation-registration-token>
 OPENRUNG_BROKER_URL=https://broker.example.com
-OPENRUNG_VOLUNTEER_TOKEN=<foundation-registration-token>
+OPENRUNG_PUBLIC_HOST=2001:db8::1234
 ```
 
-Foundation mode is deliberately narrower than community-volunteer mode:
+The token is the same secret configured as `OPENRUNG_FOUNDATION_TOKEN` on the
+broker. Setting it alone forces the entire Foundation posture — you do **not**
+also set `OPENRUNG_NODE_CLASS` or `OPENRUNG_MODE`:
 
-- The resolved mode must be `direct`; set `OPENRUNG_MODE=direct` explicitly in
-  Foundation deployments. Both `auto` and `tunnel` are rejected before the
-  relay contacts a hub, because the hub path would expose the Foundation bearer
-  and the hub always registers the community exit operator as `volunteer`.
-- The broker URL must use HTTPS (loopback HTTP is allowed only for local tests),
-  and broker API redirects are refused so the bearer cannot follow a downgrade.
+- **Foundation class** is forced; `OPENRUNG_NODE_CLASS` is unnecessary, and
+  setting it to anything but `foundation` alongside the token is a startup error.
+- **Direct mode** is forced. `auto` and `tunnel` never run, because the hub path
+  would expose the Foundation bearer and the hub always registers the community
+  exit operator as `volunteer`.
+- The broker URL **must use HTTPS** (loopback HTTP is allowed only for local
+  tests), and broker API redirects are refused so the bearer cannot follow a
+  downgrade.
 - Never put the token in cloud-init/user-data, provider metadata, inline
   `docker -e` arguments, or traced shell commands. The bundled Lightsail and
   Hetzner bootstrap helpers intentionally provision anonymous volunteers only
