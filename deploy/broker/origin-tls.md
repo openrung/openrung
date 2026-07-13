@@ -98,6 +98,11 @@ sudo -u caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 sudo systemctl reload caddy
 ```
 
+The JSON access log redacts sensitive request headers by default — Caddy replaces
+`Authorization`, `Cookie`, `Set-Cookie`, and `Proxy-Authorization` with `REDACTED`
+— so the Foundation bearer token is never written to
+`/var/log/caddy/broker-origin.access.log`.
+
 ### Firewall
 
 `:443` was opened on the Lightsail instance (additive; `:80` was already open and
@@ -194,22 +199,21 @@ Caddy itself can be stopped without affecting the broker or `:8080`
 (`sudo systemctl stop caddy`) — only the origin `:443` and the CloudFront front
 depend on it.
 
-## Known follow-ups (not done here)
+## Follow-ups
 
-- **Per-client rate-limit / telemetry granularity on the CloudFront path.** The
-  broker trusts only Cloudflare ranges for forwarded client IPs
-  (`internal/broker/clientip.go`); it does **not** trust the new loopback hop, so
-  it records `127.0.0.1` as the client for CloudFront-fronted requests — i.e.
-  the whole CloudFront front shares one relay-list rate-limit bucket (2 req/s,
-  burst 30) and one telemetry client IP. This is benign day-to-day (CloudFront
-  is a cold 2.5 s-stagger *failover* front — normal traffic ≈ 0), but a
-  mass-failover surge (primary Worker/Cloudflare down) would all land in that one
-  bucket. To restore per-edge-IP bucketing, recreate the broker container with
-  `OPENRUNG_TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128`; the Caddy config already
-  forwards the unspoofable CloudFront edge IP as the sole `X-Forwarded-For` value
-  (and strips client-supplied `CF-Connecting-IP`/`XFF`), so no proxy change is
-  needed — only the broker env. **Requires a broker container recreate → operator
-  approval** (per the no-autonomous-broker-recreate policy).
+- **Per-client rate-limit / telemetry granularity on the CloudFront path — RESOLVED 2026-07-13.**
+  The broker trusts only Cloudflare ranges for forwarded client IPs
+  (`internal/broker/clientip.go`) and did not trust the new loopback hop, so it
+  recorded `127.0.0.1` as the client for every CloudFront-fronted request — the
+  whole front shared one relay-list rate-limit bucket (2 req/s, burst 30) and one
+  telemetry client IP. Benign day-to-day (CloudFront is a cold 2.5 s-stagger
+  *failover* front, normal traffic ≈ 0) but would have concentrated a
+  mass-failover surge into that one bucket. Fixed by adding
+  `OPENRUNG_TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128` to `/etc/openrung/broker.env`
+  (durable) and recreating the broker container; the broker now buckets
+  CloudFront-fronted requests by the unspoofable CloudFront edge IP that Caddy
+  forwards as the sole `X-Forwarded-For` value (and strips client-supplied
+  `CF-Connecting-IP`/`XFF`). No Caddy change was needed.
 - **Cloudflare Worker front origin leg is still plaintext.**
   `broker.openrung.org` (the Worker) still fetches `http://broker-origin…:8080`.
   Now that `:443` origin TLS exists, the Worker could be pointed at
