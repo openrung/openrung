@@ -204,8 +204,11 @@ root-owned env file):
 ```sh
 CF=https://d2r7mdpyevvs1m.cloudfront.net/api/v1/volunteers/register
 
-# token goes file -> file via awk: never an argv, never echoed, never in history
-sudo bash -c 'umask 077; awk -F= "/^OPENRUNG_FOUNDATION_TOKEN=/{print \"Authorization: Bearer \" \$2}" \
+# token goes file -> file: never an argv, never echoed, never in history.
+# Strip ONLY the first `NAME=` prefix (sed), so a token that itself contains `=`
+# (e.g. base64 padding) is preserved verbatim — `awk -F= ... $2` would truncate
+# it at the first `=`, producing a wrong token and a misleading 403.
+sudo bash -c 'umask 077; sed -n "s|^OPENRUNG_FOUNDATION_TOKEN=|Authorization: Bearer |p" \
   /etc/openrung/broker.env > /dev/shm/ft.hdr'
 
 # WITH token   -> 400 public_host is required   => token SURVIVED CloudFront->origin
