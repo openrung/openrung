@@ -93,11 +93,15 @@ Logs: `wrangler tail openrung-broker-proxy`.
 
 ## Known limitations / follow-ups
 
-- **Origin leg is plaintext HTTP.** The censorship-relevant leg (client → Cloudflare) is
-  encrypted, but Cloudflare → origin is HTTP over the public internet. Harden by giving the origin
-  a Cloudflare Origin CA cert and switching SSL/TLS mode to Full (strict), by fronting via a
+- **Origin leg is plaintext HTTP (this Worker front only).** The censorship-relevant leg
+  (client → Cloudflare) is encrypted, but *this Worker's* Cloudflare → origin subrequest is still
+  HTTP (`http://broker-origin.openrung.org:8080`) over the public internet. Harden by giving the
+  origin a Cloudflare Origin CA cert and switching SSL/TLS mode to Full (strict), by fronting via a
   Cloudflare Tunnel (no public origin port), or by firewalling the origin to Cloudflare egress
-  ranges only.
+  ranges only. **The independent AWS CloudFront front already has end-to-end TLS to the origin**
+  (via a Caddy Let's Encrypt terminator on `:443` — see `deploy/broker/origin-tls.md`); the same
+  `:443` origin endpoint is now available to point this Worker at
+  (`https://broker-origin.openrung.org`) to close its leg too.
 - **Client IP recovery (done).** The Worker forwards the real client IP as `X-Forwarded-For`, and
   the broker now honors `CF-Connecting-IP` / `X-Forwarded-For` **only when the request arrives from a
   trusted proxy** (Cloudflare's published ranges by default; extend via `OPENRUNG_TRUSTED_PROXY_CIDRS`).

@@ -1,0 +1,47 @@
+# OpenRung broker origin-TLS front.
+#
+# Purely ADDITIVE: terminates Let's Encrypt TLS on :443 for
+# broker-origin.openrung.org and reverse-proxies to the broker container, which
+# is untouched on 127.0.0.1:8080. Auto-renewal is native to Caddy (the running
+# service renews ~30 days before expiry). The plaintext :8080 origin stays open
+# for community volunteer relay registration and for the Cloudflare Worker front
+# (broker.openrung.org), neither of which pass through here.
+#
+# Serves its cert on SNI broker-origin.openrung.org. CloudFront (distribution
+# E2PLKW8FO3JZSA) is configured to send THAT hostname as the origin SNI via the
+# AllViewerExceptHostHeader origin-request policy. (Do NOT switch it back to
+# AllViewer: that forwards the viewer Host, which CloudFront then uses as the
+# origin SNI — the distribution domain, which this proxy has no cert for, so the
+# handshake 502s. See origin-tls.md.) The default ECDSA (P-256) leaf is fine for
+# CloudFront and every other client.
+
+{
+	# No ACME account email on purpose: Caddy auto-renews, so expiry notices are
+	# non-essential, and we avoid tying an operator identity to the issuance.
+	# Let's Encrypt production CA + ToS are accepted implicitly by Caddy.
+}
+
+broker-origin.openrung.org {
+	reverse_proxy 127.0.0.1:8080 {
+		# Client-IP provenance for the CloudFront path.
+		#
+		# The broker honors forwarded client IPs only from trusted proxies
+		# (internal/broker/clientip.go) and trusts this loopback hop:
+		# OPENRUNG_TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128 IS set on the broker.
+		# CloudFront forwards ALL viewer headers except Host, so a client could
+		# inject X-Forwarded-For / CF-Connecting-IP. Strip both and set XFF to our
+		# own immediate peer — the UNSPOOFABLE CloudFront edge IP — so the broker
+		# buckets CloudFront-fronted requests (rate limit, telemetry) by that edge
+		# IP instead of collapsing them all onto 127.0.0.1.
+		header_up -CF-Connecting-IP
+		header_up X-Forwarded-For {remote_host}
+	}
+
+	log {
+		output file /var/log/caddy/broker-origin.access.log {
+			roll_size 20MiB
+			roll_keep 5
+		}
+		format json
+	}
+}
