@@ -64,10 +64,18 @@ through. You must either:
   and volunteers), **or**
 - explicitly opt into an open, unauthenticated broker with
   `OPENRUNG_ALLOW_ANONYMOUS_REGISTRATION=true` (the `.env.example` default).
+  OpenRung's public network intentionally runs open so any volunteer can
+  contribute a relay without a shared secret.
 
 A token, when set, takes precedence and enforces auth; the anonymous flag then
 becomes a no-op. Generate a token with `openssl rand -hex 32`. Send it only over
 TLS — see Cloudflare below.
+
+Keep whichever auth line you choose **in the env file** (`.env` / the
+`--env-file` broker.env), never as an ad-hoc `docker run -e
+OPENRUNG_ALLOW_ANONYMOUS_REGISTRATION=true`. Because the broker fails closed at
+startup, a redeploy that forgets an inline `-e` flag crash-loops; keeping the
+opt-in in the env file means it travels with every `--env-file` recreate.
 
 Separately, `OPENRUNG_FOUNDATION_TOKEN` (optional) authorizes registrations
 that claim `node_class: foundation`, marking relays the foundation operates

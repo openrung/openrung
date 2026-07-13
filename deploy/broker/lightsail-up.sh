@@ -72,8 +72,12 @@ aws lightsail allocate-static-ip --static-ip-name "$IPNAME" --region "$REGION" >
 STATIC_IP="$(aws lightsail get-static-ip --static-ip-name "$IPNAME" --region "$REGION" --query 'staticIp.ipAddress' --output text)"
 
 # Auth: the broker fails closed without a registration token, so when none is
-# provided we explicitly opt into an open, unauthenticated broker — set
-# OPENRUNG_VOLUNTEER_TOKEN to require auth (a token supersedes the anonymous flag).
+# provided we explicitly opt into an open, unauthenticated broker — OpenRung's
+# public network intentionally runs open so any volunteer can contribute a relay.
+# Set OPENRUNG_VOLUNTEER_TOKEN to require auth (a token supersedes the anonymous
+# flag). Either way the choice is written into broker.env below and applied via
+# --env-file, never an ad-hoc `docker run -e` (a redeploy that forgets it would
+# crash-loop the fail-closed broker).
 TOKEN_ENV=""
 ANON_ENV=""
 if [ -n "$TOKEN" ]; then
