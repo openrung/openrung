@@ -36,8 +36,8 @@ BROKER_URL="${OPENRUNG_BROKER_URL:-http://54.238.185.205:8080}"
 SSH_KEY_NAME="${OPENRUNG_SSH_KEY_NAME:-openrung}"
 FIREWALL_NAME="${OPENRUNG_FIREWALL_NAME:-openrung-volunteer}"
 
-if [ "${OPENRUNG_VOLUNTEER_TOKEN+x}" = x ]; then
-  echo "error: this helper provisions anonymous volunteers only; OPENRUNG_VOLUNTEER_TOKEN must be unset because Hetzner retains cloud-init user-data" >&2
+if [ "${OPENRUNG_VOLUNTEER_TOKEN+x}" = x ] || [ "${OPENRUNG_FOUNDATION_TOKEN+x}" = x ]; then
+  echo "error: this helper provisions anonymous volunteers only; OPENRUNG_VOLUNTEER_TOKEN / OPENRUNG_FOUNDATION_TOKEN must be unset because Hetzner retains cloud-init user-data. A Foundation relay also needs a TLS broker, which this plaintext-origin helper does not use — install its credential post-boot over an authenticated channel instead." >&2
   exit 2
 fi
 
