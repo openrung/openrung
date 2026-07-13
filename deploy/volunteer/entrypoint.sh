@@ -10,7 +10,16 @@ set -eu
 # binary can never disagree about which mode is active.
 norm() { printf '%s' "$1" | tr 'A-Z' 'a-z' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'; }
 mode="$(norm "${OPENRUNG_MODE:-}")"
-if [ -z "$mode" ]; then
+if [ -n "${OPENRUNG_FOUNDATION_TOKEN:-}" ]; then
+  # A foundation token forces direct mode, mirroring the binary's
+  # applyFoundationTokenPosture. This must win over OPENRUNG_MODE/OPENRUNG_TUNNEL/
+  # a stale hub: resolving tunnel or auto here would take a branch that omits the
+  # broker URL and public host that direct mode needs, and the binary would then
+  # flip to direct with wrong defaults (e.g. the localhost broker). Forcing it
+  # here makes the direct branch require and pass OPENRUNG_BROKER_URL and
+  # OPENRUNG_PUBLIC_HOST.
+  mode=direct
+elif [ -z "$mode" ]; then
   # Match the binary's boolEnv for the legacy OPENRUNG_TUNNEL boolean: lowercase,
   # trim, and accept 1/true/yes/on. A narrower test here would reject a tunnel
   # config the binary accepts, since the resolved -mode below is authoritative.
