@@ -76,6 +76,25 @@ hcloud firewall add-rule "$FIREWALL_NAME" --direction in --protocol icmp        
 # Cloud-init user-data: install Docker, pull the public image, run the relay. The
 # public IP is not known until the server exists, so the box self-discovers it
 # from Hetzner's metadata service at boot and bakes it into OPENRUNG_PUBLIC_HOST.
+#
+# Container hardening — identical posture to the Lightsail volunteer helper, and
+# the exact posture the production fleet runs (confirmed read-only via
+# `docker inspect` on a live Hetzner relay 2026-07-13: ReadonlyRootfs=true,
+# CapDrop=[ALL], CapAdd=[NET_BIND_SERVICE], while serving 443). The flags on the
+# `docker run` line:
+#   --cap-drop ALL --cap-add NET_BIND_SERVICE
+#       Drop every capability, re-add only the one needed to bind the privileged
+#       public port (443). The binary carries a cap_net_bind_service file
+#       capability (setcap in the Dockerfile); NET_BIND_SERVICE keeps it in the
+#       container's bounding set so the non-root `openrung` user can use it.
+#   (deliberately NO --security-opt no-new-privileges)
+#       no-new-privileges makes the kernel ignore file capabilities on exec,
+#       which would break the 443 bind. Do NOT add it here. To harden with
+#       no-new-privileges instead, serve a port >= 1024 and drop NET_BIND_SERVICE.
+#   --read-only --tmpfs /tmp
+#       Read-only rootfs; the only writable path the relay needs is the generated
+#       xray config under /tmp. Xray logs to stdout (loglevel warning, no log
+#       files), so nothing else is written.
 USERDATA_FILE="$(mktemp)"
 trap 'rm -f "$USERDATA_FILE"' EXIT
 cat >"$USERDATA_FILE" <<EOF

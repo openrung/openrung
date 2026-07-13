@@ -208,6 +208,35 @@ limiting and telemetry source IPs will all collapse onto the docker gateway.
 Firewall the raw origin `:8080` to Cloudflare's ranges so clients cannot bypass
 the edge and spoof forwarded headers.
 
+## Container hardening
+
+Both `docker-compose.yml` and `lightsail-up.sh` run the broker with a
+least-privilege container posture (verified 2026-07-13 by running the published
+image under the full flag set — it starts, serves `/healthz`, and enforces the
+read-only rootfs):
+
+- `--cap-drop ALL` — the broker binds `:8080` (≥ 1024) and never changes user or
+  mounts, so it needs no Linux capabilities.
+- `--security-opt no-new-privileges` — nothing in the image escalates via setuid
+  or file capabilities. (Unlike the volunteer relay, which must **not** set this:
+  it binds 443 through a `cap_net_bind_service` file capability that
+  `no-new-privileges` would disable.)
+- `--read-only` root filesystem with `--tmpfs /tmp` — the only writable paths are
+  `/tmp` and the telemetry named volume (`jsonl` mode appends there; `postgres`
+  mode writes nothing to disk).
+
+These flags take effect **only** for a container created by the script or compose
+file. A broker recreated by hand — for example a manual `docker run` that adds an
+extra `-e` override — does not inherit them unless the flags are re-typed. Verify
+a running container and recreate it (with the full flag set and `--env-file`) if
+it has drifted:
+
+```sh
+docker inspect openrung-broker \
+  --format '{{.HostConfig.ReadonlyRootfs}} {{.HostConfig.CapDrop}} {{.HostConfig.SecurityOpt}}'
+# want: true [ALL] [no-new-privileges]
+```
+
 ## Configuration
 
 | Variable                             | Required | Default                             | Purpose                                                        |

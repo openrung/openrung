@@ -93,8 +93,36 @@ GEOIP_ENV=""; [ -n "$GEOIP_ENDPOINT" ] && GEOIP_ENV="OPENRUNG_GEOIP_ENDPOINT=${G
 # Launch script: install Docker, write the env file, pull the public image, and
 # run the broker. Host networking so the broker sees real peer IPs (its
 # trusted-proxy client-IP logic needs them); a named volume persists telemetry
-# across restarts; the rootfs is otherwise read-only. The image points
-# OPENRUNG_TELEMETRY_FILE at the volume, so no telemetry path is set here.
+# across restarts.
+#
+# Container hardening — verified 2026-07-13 by running the published image
+# (ghcr.io/openrung/openrung-broker) under the full flag set below: it starts
+# clean and serves /healthz, the rootfs is enforced read-only (a write outside
+# the volume/tmpfs fails EROFS), and the jsonl telemetry file is created on the
+# volume. The flags on the `docker run` line:
+#   --cap-drop ALL                    the broker binds :8080 (>=1024) and never
+#                                     changes user or mounts, so it needs zero
+#                                     Linux capabilities.
+#   --security-opt no-new-privileges  nothing in the image escalates via setuid
+#                                     or file capabilities, so this is safe here.
+#                                     (The volunteer relay must NOT set this — it
+#                                     binds 443 through a file capability, which
+#                                     no-new-privileges disables. See its script.)
+#   --read-only --tmpfs /tmp          read-only rootfs; the only writable paths
+#                                     the broker needs are /tmp (Go temp) and the
+#                                     named volume below. In jsonl mode it appends
+#                                     telemetry + compaction temp files to the
+#                                     volume; in postgres mode it writes nothing
+#                                     to disk. The image points
+#                                     OPENRUNG_TELEMETRY_FILE at the volume, so no
+#                                     telemetry path is set here.
+#
+# These flags take effect ONLY for a container this script (or the compose file)
+# creates. A broker recreated by hand — e.g. a manual `docker run` that bolts on
+# an extra `-e` override — does NOT inherit them unless they are re-typed. Keep
+# the full flag set on any recreate and confirm with:
+#   docker inspect openrung-broker \
+#     --format '{{.HostConfig.ReadonlyRootfs}} {{.HostConfig.CapDrop}} {{.HostConfig.SecurityOpt}}'
 read -r -d '' USERDATA <<EOF || true
 #!/bin/sh
 # NOTE: Lightsail prepends its own #!/bin/sh preamble, so this runs under dash.

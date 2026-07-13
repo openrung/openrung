@@ -45,6 +45,24 @@ STATIC_IP="$(aws lightsail get-static-ip --static-ip-name "$IPNAME" --region "$R
 
 # Launch script: install Docker, pull the public image, run the relay. The IP is
 # known up front (static IP), so OPENRUNG_PUBLIC_HOST and OPENRUNG_LABEL are baked in.
+#
+# Container hardening — this is the exact posture the production Lightsail and
+# Hetzner fleets run (confirmed read-only via `docker inspect` on 2026-07-13:
+# ReadonlyRootfs=true, CapDrop=[ALL], CapAdd=[NET_BIND_SERVICE], while serving
+# 443). The flags on the `docker run` line:
+#   --cap-drop ALL --cap-add NET_BIND_SERVICE
+#       Drop every capability, re-add only the one needed to bind the privileged
+#       public port (443). The binary carries a cap_net_bind_service file
+#       capability (setcap in the Dockerfile); NET_BIND_SERVICE keeps it in the
+#       container's bounding set so the non-root `openrung` user can use it.
+#   (deliberately NO --security-opt no-new-privileges)
+#       no-new-privileges makes the kernel ignore file capabilities on exec,
+#       which would break the 443 bind. Do NOT add it here. To harden with
+#       no-new-privileges instead, serve a port >= 1024 and drop NET_BIND_SERVICE.
+#   --read-only --tmpfs /tmp
+#       Read-only rootfs; the only writable path the relay needs is the generated
+#       xray config under /tmp. Xray logs to stdout (loglevel warning, no log
+#       files), so nothing else is written.
 read -r -d '' USERDATA <<EOF || true
 #!/bin/sh
 # NOTE: Lightsail prepends its own #!/bin/sh preamble, so this runs under dash.
