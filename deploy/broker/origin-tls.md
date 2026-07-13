@@ -252,19 +252,30 @@ depend on it.
 
 ## Follow-ups
 
-- **Per-client rate-limit / telemetry granularity on the CloudFront path — RESOLVED 2026-07-13.**
+- **Loopback-wide rate-limit / telemetry collapse — RESOLVED 2026-07-13; residual per-edge aggregation is by design.**
   The broker trusts only Cloudflare ranges for forwarded client IPs
   (`internal/broker/clientip.go`) and did not trust the new loopback hop, so it
-  recorded `127.0.0.1` as the client for every CloudFront-fronted request — the
-  whole front shared one relay-list rate-limit bucket (2 req/s, burst 30) and one
-  telemetry client IP. Benign day-to-day (CloudFront is a cold 2.5 s-stagger
-  *failover* front, normal traffic ≈ 0) but would have concentrated a
-  mass-failover surge into that one bucket. Fixed by adding
+  recorded `127.0.0.1` as the client for *every* CloudFront-fronted request — the
+  whole front collapsed onto one relay-list rate-limit bucket (2 req/s, burst 30)
+  and one telemetry client IP. Fixed by adding
   `OPENRUNG_TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128` to `/etc/openrung/broker.env`
-  (durable) and recreating the broker container; the broker now buckets
-  CloudFront-fronted requests by the unspoofable CloudFront edge IP that Caddy
-  forwards as the sole `X-Forwarded-For` value (and strips client-supplied
-  `CF-Connecting-IP`/`XFF`). No Caddy change was needed.
+  (durable) and recreating the broker container; the broker now keys on the
+  unspoofable CloudFront **edge** IP that Caddy forwards as the sole
+  `X-Forwarded-For` value (client-supplied `CF-Connecting-IP`/`XFF` are stripped).
+  No Caddy change was needed.
+
+  This restores the **pre-proxy** behavior exactly — keyed by CloudFront edge IP —
+  and is **not per-viewer**. Clients sharing one CloudFront edge still share that
+  edge's 2 req/s / burst-30 relay-list bucket and its telemetry identity. That is
+  deliberate: the only per-viewer signal CloudFront gives the origin is the
+  client-*appended* `X-Forwarded-For`, which a client can forge to evade the
+  limiter or poison telemetry — so the edge IP (which the client cannot forge) is
+  the correct key. Residual to keep in mind, **especially under mass failover**:
+  when many clients in a region funnel through a handful of nearby edges, a
+  per-edge bucket can still hit its limit (far better than the single-bucket
+  collapse, but coarser than per-viewer). True per-viewer limiting would require
+  CloudFront to attest the viewer IP in a header the origin can trust; it does
+  not, so this is left as-is.
 - **Cloudflare Worker front origin leg is still plaintext.**
   `broker.openrung.org` (the Worker) still fetches `http://broker-origin…:8080`.
   Now that `:443` origin TLS exists, the Worker could be pointed at
