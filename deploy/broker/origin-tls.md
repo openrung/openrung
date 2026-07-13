@@ -171,11 +171,9 @@ was the sole cause of the 502.
 # Origin TLS directly (publicly-trusted cert, signed relay list):
 curl -v https://broker-origin.openrung.org/api/v1/relays        # 200, cert verifies
 
-# End-to-end through CloudFront (works from a datacenter IP; the Cloudflare
-# Worker front 403s datacenter IPs by design):
+# Discovery end-to-end through CloudFront (works from a datacenter IP; the
+# Cloudflare Worker front 403s datacenter IPs by design):
 curl https://d2r7mdpyevvs1m.cloudfront.net/api/v1/relays?limit=1 # 200, X-OpenRung-Relays-Signature present
-curl -X POST -H 'Content-Type: application/json' -d '{}' \
-  https://d2r7mdpyevvs1m.cloudfront.net/api/v1/volunteers/register   # 400 {"error":"public_host is required"}
 
 # Volunteer plaintext path still intact:
 curl http://54.238.185.205:8080/api/v1/relays                   # 200
@@ -183,6 +181,38 @@ curl http://54.238.185.205:8080/api/v1/relays                   # 200
 # Confirm CloudFront connects over TLS (SNI = origin, not the CF domain):
 sudo tail /var/log/caddy/broker-origin.access.log   # request.tls.server_name = broker-origin.openrung.org
 ```
+
+### The load-bearing test: does the Foundation token survive the origin leg?
+
+This is the whole point of the change, and it needs a **discriminating** test.
+`POST {}` → `400 public_host is required` does **not** prove it: prod permits
+anonymous registration (`OPENRUNG_ALLOW_ANONYMOUS_REGISTRATION=true`), so an
+*unauthenticated* request gets the same 400 even if `Authorization` were stripped.
+
+Send a `node_class: foundation` registration (which *requires* the Foundation
+token) with `public_host` **omitted**, so no relay is ever created — only the auth
+decision differs. Run with the real token from a shell that won't log it (leading
+space / token in a var), never over the plaintext port:
+
+```sh
+FT=…            # the OPENRUNG_FOUNDATION_TOKEN (from the root-owned broker env)
+CF=https://d2r7mdpyevvs1m.cloudfront.net/api/v1/volunteers/register
+
+# WITH token  -> 400 public_host is required   => token SURVIVED CloudFront->origin
+curl -s -o /dev/null -w '%{http_code}\n' -X POST -H "Authorization: Bearer $FT" \
+  -H 'Content-Type: application/json' -d '{"node_class":"foundation"}' "$CF"
+
+# WITHOUT token -> 403 "requires the foundation registration token" => header loss WOULD show here
+curl -s -o /dev/null -w '%{http_code}\n' -X POST \
+  -H 'Content-Type: application/json' -d '{"node_class":"foundation"}' "$CF"
+```
+
+`400` vs `403` is the signal: if `AllViewerExceptHostHeader` (or the origin leg)
+dropped `Authorization`, the first call would return `403` like the second.
+Verified 2026-07-13: `400` with the token, `403` without. As a no-secret
+cross-check, the Caddy access log records `request.headers.Authorization =
+["REDACTED"]` on a CloudFront-fronted request that carried one (Caddy redacts the
+value, so the token is never written to disk).
 
 ## Rollback
 
