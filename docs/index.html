@@ -1117,7 +1117,7 @@
             <ul class="promise">
               <li><svg aria-hidden="true"><use href="#check"/></svg><span data-i18n="promiseFree">Always free</span></li>
               <li><svg aria-hidden="true"><use href="#check"/></svg><span data-i18n="promiseNoSignup">No sign-up</span></li>
-              <li><svg aria-hidden="true"><use href="#check"/></svg><span data-i18n="promiseNoLog">No browsing logs</span></li>
+              <li><svg aria-hidden="true"><use href="#check"/></svg><span data-i18n="promiseNoLog">Debug telemetry during testing</span></li>
               <li><svg aria-hidden="true"><use href="#check"/></svg><span data-i18n="promiseOpen">Open source</span></li>
             </ul>
           </div>
@@ -1420,8 +1420,8 @@
             <div class="label" data-i18n="statAccounts">Accounts or sign-ups required</div>
           </div>
           <div class="stat" data-reveal style="--d:.16s">
-            <div class="value">0</div>
-            <div class="label" data-i18n="statLogs">Browsing logs kept</div>
+            <div class="value">Beta</div>
+            <div class="label" data-i18n="statLogs">Diagnostic telemetry collected for debugging</div>
           </div>
           <div class="stat" data-reveal style="--d:.24s">
             <div class="value">100%</div>
@@ -1487,7 +1487,7 @@
             <article class="tile" data-reveal style="--d:.07s">
               <div class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
               <h3 data-i18n="whyPrivacyTitle">Privacy-first</h3>
-              <p data-i18n="whyPrivacyBody">No account required, no browsing logs kept, and we never sell your data.</p>
+              <p data-i18n="whyPrivacyBody">No account is required and we never sell your data. During early-access testing, OpenRung collects diagnostic connection metadata to debug reliability.</p>
             </article>
             <article class="tile" data-reveal style="--d:.14s">
               <div class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
@@ -1612,14 +1612,14 @@
                 <span data-i18n="faq2Q">Do I need an account?</span>
                 <span class="chev" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span>
               </summary>
-              <div class="faq-body"><p data-i18n="faq2A">No. The app works without sign-up, phone number, or email — there is no identity attached to your connection.</p></div>
+              <div class="faq-body"><p data-i18n="faq2A">No. The app works without sign-up, phone number, or email. Early-access builds use a persistent installation identifier and collect the diagnostic connection metadata described below.</p></div>
             </details>
             <details class="faq-item" data-reveal style="--d:.1s">
               <summary>
                 <span data-i18n="faq3Q">What can OpenRung see about my browsing?</span>
                 <span class="chev" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span>
               </summary>
-              <div class="faq-body"><p data-i18n="faq3A">As little as we can manage. The broker only matches you with a relay — your traffic never passes through it, and we keep no browsing logs. Traffic between your device and the relay is encrypted. The full threat model is documented publicly on GitHub.</p></div>
+              <div class="faq-body"><p data-i18n="faq3A">During early-access testing, OpenRung collects diagnostic connection metadata to debug reliability. This can include source and destination IP addresses, app package names, device and network metadata, and persistent client and session identifiers. We do not sell this data. Traffic between your device and the relay is encrypted, and the technical telemetry documentation is public on GitHub.</p></div>
             </details>
             <details class="faq-item" data-reveal style="--d:.15s">
               <summary>
@@ -1704,7 +1704,7 @@
         </div>
         <div class="foot-bottom">
           <p data-i18n="footerRights">© 2026 OpenRung Foundation · A nonprofit project</p>
-          <p data-i18n="footerPrivacy">We don't require an account, don't keep your browsing logs, and never sell your data.</p>
+          <p data-i18n="footerPrivacy">No account required. Early-access builds collect diagnostic connection metadata for debugging; we never sell your data.</p>
         </div>
       </div>
     </footer>
@@ -1754,11 +1754,11 @@
           poemAttrib: "— Ye Shaoweng, 'Visiting a Garden When the Master Is Away' (Song dynasty, c. 1200)",
           promiseFree: "Always free",
           promiseNoSignup: "No sign-up",
-          promiseNoLog: "No browsing logs",
+          promiseNoLog: "Debug telemetry during testing",
           promiseOpen: "Open source",
           statCost: "Cost — now and forever",
           statAccounts: "Accounts or sign-ups required",
-          statLogs: "Browsing logs kept",
+          statLogs: "Diagnostic telemetry collected for debugging",
           statOpen: "Open source · GPL-3.0",
           howKicker: "How it works",
           howTitle: "Reach the open internet in three steps",
@@ -1781,7 +1781,7 @@
           trustOpenBody: "Every line of code is public under GPL-3.0. Anyone can read it, audit it, and build it themselves — trust doesn't have to be taken on faith.",
           trustOpenLink: "Read the code on GitHub",
           whyPrivacyTitle: "Privacy-first",
-          whyPrivacyBody: "No account required, no browsing logs kept, and we never sell your data.",
+          whyPrivacyBody: "No account is required and we never sell your data. During early-access testing, OpenRung collects diagnostic connection metadata to debug reliability.",
           trustBlockTitle: "Hard to block",
           trustBlockBody: "Relay connections use VLESS + REALITY — protocols engineered to be indistinguishable from ordinary encrypted web traffic.",
           whyVolunteerTitle: "Volunteer-powered",
@@ -1822,9 +1822,9 @@
           faq1Q: "Is OpenRung really free?",
           faq1A: "Yes. OpenRung is run by a nonprofit foundation and powered by volunteers. There are no subscriptions, no ads, and no premium tier — and there never will be.",
           faq2Q: "Do I need an account?",
-          faq2A: "No. The app works without sign-up, phone number, or email — there is no identity attached to your connection.",
+          faq2A: "No. The app works without sign-up, phone number, or email. Early-access builds use a persistent installation identifier and collect the diagnostic connection metadata described below.",
           faq3Q: "What can OpenRung see about my browsing?",
-          faq3A: "As little as we can manage. The broker only matches you with a relay — your traffic never passes through it, and we keep no browsing logs. Traffic between your device and the relay is encrypted. The full threat model is documented publicly on GitHub.",
+          faq3A: "During early-access testing, OpenRung collects diagnostic connection metadata to debug reliability. This can include source and destination IP addresses, app package names, device and network metadata, and persistent client and session identifiers. We do not sell this data. Traffic between your device and the relay is encrypted, and the technical telemetry documentation is public on GitHub.",
           faq4Q: "How is this different from a commercial VPN?",
           faq4A: "VPN companies route you through servers they own and charge for it. OpenRung is a nonprofit network of everyday volunteers, built specifically to get past censorship: connections are disguised as ordinary web traffic, access is free, and the code is open for anyone to audit.",
           faq5Q: "Why isn't it on Google Play or the App Store yet?",
@@ -1843,7 +1843,7 @@
           footIssue: "Report an issue",
           footContact: "Contact",
           footerRights: "© 2026 OpenRung Foundation · A nonprofit project",
-          footerPrivacy: "We don't require an account, don't keep your browsing logs, and never sell your data."
+          footerPrivacy: "No account required. Early-access builds collect diagnostic connection metadata for debugging; we never sell your data."
         },
         zh: {
           lang: "zh-CN",
@@ -1870,11 +1870,11 @@
           poemAttrib: "——宋·叶绍翁《游园不值》",
           promiseFree: "永久免费",
           promiseNoSignup: "无需注册",
-          promiseNoLog: "不留存浏览记录",
+          promiseNoLog: "测试期间收集调试遥测数据",
           promiseOpen: "完全开源",
           statCost: "使用费用——现在与永远",
           statAccounts: "所需账号或注册",
-          statLogs: "留存的浏览记录",
+          statLogs: "为排查问题收集诊断遥测数据",
           statOpen: "开源 · GPL-3.0",
           howKicker: "工作原理",
           howTitle: "三步连接开放的互联网",
@@ -1897,7 +1897,7 @@
           trustOpenBody: "每一行代码都以 GPL-3.0 许可证公开发布。任何人都可以阅读、审计并自行构建——信任不必建立在盲从之上。",
           trustOpenLink: "在 GitHub 查看源码",
           whyPrivacyTitle: "隐私优先",
-          whyPrivacyBody: "无需账号，不留存你的浏览记录，也不会出售你的数据。",
+          whyPrivacyBody: "无需账号，我们也绝不会出售你的数据。在抢先体验测试期间，OpenRung 会收集连接诊断元数据，以排查可靠性问题。",
           trustBlockTitle: "难以封锁",
           trustBlockBody: "中继连接使用 VLESS + REALITY 协议——专为与普通加密网页流量难以区分而设计。",
           whyVolunteerTitle: "志愿者网络",
@@ -1938,9 +1938,9 @@
           faq1Q: "OpenRung 真的免费吗？",
           faq1A: "是的。OpenRung 由非营利基金会运营、由志愿者支撑。没有订阅、没有广告、没有付费高级版——将来也不会有。",
           faq2Q: "需要注册账号吗？",
-          faq2A: "不需要。应用无需注册、手机号或邮箱即可使用——你的连接不会绑定任何身份。",
+          faq2A: "不需要。应用无需注册、手机号或邮箱即可使用。抢先体验版本会使用长期安装标识符，并收集下方说明的连接诊断元数据。",
           faq3Q: "OpenRung 能看到我的浏览内容吗？",
-          faq3A: "我们把能看到的降到最低。调度服务器只负责为你匹配中继——你的流量绝不经过它，我们也不留存浏览记录。你的设备与中继之间的流量是加密的。完整的威胁模型在 GitHub 上公开可查。",
+          faq3A: "在抢先体验测试期间，OpenRung 会收集连接诊断元数据，以排查可靠性问题。这些数据可能包括源 IP 和目标 IP 地址、应用包名、设备与网络元数据，以及长期客户端标识符和会话标识符。我们不会出售这些数据。你的设备与中继之间的流量是加密的，完整的遥测技术文档已在 GitHub 公开。",
           faq4Q: "这与商业 VPN 有什么不同？",
           faq4A: "VPN 公司用自有服务器为你转发流量并收取费用。OpenRung 是由普通志愿者组成的非营利网络，专为突破封锁而设计：连接伪装成普通网页流量，访问免费，代码开放，任何人都可以审计。",
           faq5Q: "为什么还没有上架 Google Play 或 App Store？",
@@ -1959,7 +1959,7 @@
           footIssue: "报告问题",
           footContact: "联系",
           footerRights: "© 2026 OpenRung Foundation · 一个非营利项目",
-          footerPrivacy: "我们不要求账号、不留存你的浏览记录，也不会出售你的数据。"
+          footerPrivacy: "无需账号。抢先体验版本会收集连接诊断元数据用于排查问题；我们绝不会出售你的数据。"
         },
         fa: {
           lang: "fa",
@@ -1986,11 +1986,11 @@
           poemAttrib: "— یِه شائو‌ونگ، «دیدار از باغی که صاحبش نبود»، دودمان سونگ",
           promiseFree: "همیشه رایگان",
           promiseNoSignup: "بدون ثبت‌نام",
-          promiseNoLog: "بدون ثبت سابقهٔ مرور",
+          promiseNoLog: "تله‌متری عیب‌یابی در دورهٔ آزمایش",
           promiseOpen: "متن‌باز",
           statCost: "هزینه — حالا و همیشه",
           statAccounts: "حساب کاربری یا ثبت‌نام لازم",
-          statLogs: "سابقهٔ مرور ذخیره‌شده",
+          statLogs: "گردآوری تله‌متری تشخیصی برای عیب‌یابی",
           statOpen: "متن‌باز · GPL-3.0",
           howKicker: "چگونه کار می‌کند",
           howTitle: "در سه گام به اینترنت آزاد دسترسی پیدا کنید",
@@ -2013,7 +2013,7 @@
           trustOpenBody: "تمام کد با مجوز GPL-3.0 به‌صورت عمومی منتشر شده است. هر کسی می‌تواند آن را بخواند، بررسی کند و خودش بسازد — اعتماد نباید کورکورانه باشد.",
           trustOpenLink: "مشاهدهٔ کد در GitHub",
           whyPrivacyTitle: "اولویت با حریم خصوصی",
-          whyPrivacyBody: "نیازی به حساب کاربری نیست، سابقهٔ مرور شما ذخیره نمی‌شود و داده‌های شما هرگز فروخته نمی‌شود.",
+          whyPrivacyBody: "نیازی به حساب کاربری نیست و ما هرگز داده‌های شما را نمی‌فروشیم. در دورهٔ دسترسی زودهنگام، OpenRung برای عیب‌یابی پایداری، فرادادهٔ تشخیصی اتصال را گردآوری می‌کند.",
           trustBlockTitle: "مقاوم در برابر مسدودسازی",
           trustBlockBody: "اتصال‌های رله از VLESS + REALITY استفاده می‌کنند — پروتکل‌هایی که طراحی شده‌اند تا از ترافیک رمزگذاری‌شدهٔ عادی وب قابل تشخیص نباشند.",
           whyVolunteerTitle: "نیروی داوطلبان",
@@ -2054,9 +2054,9 @@
           faq1Q: "آیا OpenRung واقعاً رایگان است؟",
           faq1A: "بله. OpenRung توسط یک بنیاد غیرانتفاعی اداره و با نیروی داوطلبان اجرا می‌شود. نه اشتراکی در کار است، نه تبلیغات و نه نسخهٔ ویژهٔ پولی — و هرگز هم نخواهد بود.",
           faq2Q: "آیا به حساب کاربری نیاز دارم؟",
-          faq2A: "خیر. برنامه بدون ثبت‌نام، شمارهٔ تلفن یا ایمیل کار می‌کند — هیچ هویتی به اتصال شما متصل نیست.",
+          faq2A: "خیر. برنامه بدون ثبت‌نام، شمارهٔ تلفن یا ایمیل کار می‌کند. نسخه‌های دسترسی زودهنگام از یک شناسهٔ پایدار نصب استفاده می‌کنند و فرادادهٔ تشخیصی اتصال را که در ادامه توضیح داده شده گردآوری می‌کنند.",
           faq3Q: "OpenRung چه چیزی از مرور من می‌بیند؟",
-          faq3A: "تا جایی که ممکن است، کم. هماهنگ‌کننده فقط شما را به یک رله معرفی می‌کند — ترافیک شما هرگز از آن عبور نمی‌کند و ما سابقهٔ مرور نگه نمی‌داریم. ترافیک میان دستگاه شما و رله رمزگذاری شده است. مدل تهدید کامل به‌صورت عمومی در GitHub مستند است.",
+          faq3A: "در دورهٔ دسترسی زودهنگام، OpenRung برای عیب‌یابی پایداری، فرادادهٔ تشخیصی اتصال را گردآوری می‌کند. این داده‌ها ممکن است شامل نشانی IP مبدأ و مقصد، نام بستهٔ برنامه، فرادادهٔ دستگاه و شبکه، و شناسه‌های پایدار کاربر و نشست باشد. ما این داده‌ها را نمی‌فروشیم. ترافیک میان دستگاه شما و رله رمزگذاری شده و مستندات فنی تله‌متری به‌صورت عمومی در GitHub در دسترس است.",
           faq4Q: "چه تفاوتی با VPNهای تجاری دارد؟",
           faq4A: "شرکت‌های VPN ترافیک شما را از سرورهای خودشان عبور می‌دهند و بابت آن پول می‌گیرند. OpenRung شبکه‌ای غیرانتفاعی از داوطلبان عادی است که به‌طور خاص برای عبور از سانسور ساخته شده: اتصال‌ها شبیه ترافیک عادی وب پنهان می‌شوند، دسترسی رایگان است و کد برای بررسی همه باز است.",
           faq5Q: "چرا هنوز در Google Play یا App Store نیست؟",
@@ -2075,7 +2075,7 @@
           footIssue: "گزارش مشکل",
           footContact: "تماس",
           footerRights: "© 2026 OpenRung Foundation · یک پروژهٔ غیرانتفاعی",
-          footerPrivacy: "ما حساب کاربری نمی‌خواهیم، سابقهٔ مرور شما را ذخیره نمی‌کنیم و داده‌های شما را هرگز نمی‌فروشیم."
+          footerPrivacy: "نیازی به حساب کاربری نیست. نسخه‌های دسترسی زودهنگام برای عیب‌یابی، فرادادهٔ تشخیصی اتصال را گردآوری می‌کنند؛ ما هرگز داده‌های شما را نمی‌فروشیم."
         },
         ru: {
           lang: "ru",
@@ -2102,11 +2102,11 @@
           poemAttrib: "— Е Шаовэн, «Пришёл в сад, но не застал хозяина» (эпоха Сун)",
           promiseFree: "Всегда бесплатно",
           promiseNoSignup: "Без регистрации",
-          promiseNoLog: "Без журналов посещений",
+          promiseNoLog: "Диагностическая телеметрия во время тестирования",
           promiseOpen: "Открытый код",
           statCost: "Стоимость — сейчас и навсегда",
           statAccounts: "Аккаунтов и регистраций",
-          statLogs: "Журналов посещений",
+          statLogs: "Диагностическая телеметрия для отладки",
           statOpen: "Открытый код · GPL-3.0",
           howKicker: "Как это работает",
           howTitle: "Откройте открытый интернет за три шага",
@@ -2129,7 +2129,7 @@
           trustOpenBody: "Каждая строка кода опубликована под лицензией GPL-3.0. Любой может прочитать её, проверить и собрать самостоятельно — доверие не должно быть слепым.",
           trustOpenLink: "Смотреть код на GitHub",
           whyPrivacyTitle: "Приватность прежде всего",
-          whyPrivacyBody: "Аккаунт не нужен, журналы посещений не хранятся, а ваши данные никогда не продаются.",
+          whyPrivacyBody: "Аккаунт не нужен, и мы никогда не продаём ваши данные. Во время раннего тестирования OpenRung собирает диагностические метаданные соединений для отладки надёжности.",
           trustBlockTitle: "Трудно заблокировать",
           trustBlockBody: "Соединения с ретрансляторами используют VLESS + REALITY — протоколы, спроектированные так, чтобы не отличаться от обычного зашифрованного веб-трафика.",
           whyVolunteerTitle: "Сила волонтёров",
@@ -2170,9 +2170,9 @@
           faq1Q: "OpenRung действительно бесплатен?",
           faq1A: "Да. OpenRung управляется некоммерческим фондом и работает силами волонтёров. Никаких подписок, рекламы и платных тарифов — и никогда не будет.",
           faq2Q: "Нужен ли аккаунт?",
-          faq2A: "Нет. Приложение работает без регистрации, номера телефона и почты — к вашему подключению не привязана никакая личность.",
+          faq2A: "Нет. Приложение работает без регистрации, номера телефона и почты. Версии раннего доступа используют постоянный идентификатор установки и собирают диагностические метаданные соединения, описанные ниже.",
           faq3Q: "Что OpenRung видит о моих посещениях?",
-          faq3A: "Настолько мало, насколько возможно. Координатор лишь подбирает вам ретранслятор — ваш трафик никогда не проходит через него, а журналы посещений мы не ведём. Трафик между вашим устройством и ретранслятором зашифрован. Полная модель угроз открыто задокументирована на GitHub.",
+          faq3A: "Во время раннего тестирования OpenRung собирает диагностические метаданные соединений для отладки надёжности. Они могут включать исходный и целевой IP-адреса, имена пакетов приложений, метаданные устройства и сети, а также постоянные идентификаторы клиента и сеанса. Мы не продаём эти данные. Трафик между вашим устройством и ретранслятором зашифрован, а техническая документация по телеметрии открыто опубликована на GitHub.",
           faq4Q: "Чем это отличается от коммерческого VPN?",
           faq4A: "VPN-компании пропускают ваш трафик через собственные серверы и берут за это деньги. OpenRung — некоммерческая сеть обычных волонтёров, созданная именно для обхода цензуры: соединения маскируются под обычный веб-трафик, доступ бесплатен, а код открыт для проверки любым желающим.",
           faq5Q: "Почему приложения ещё нет в Google Play или App Store?",
@@ -2191,7 +2191,7 @@
           footIssue: "Сообщить о проблеме",
           footContact: "Контакты",
           footerRights: "© 2026 OpenRung Foundation · Некоммерческий проект",
-          footerPrivacy: "Мы не требуем аккаунта, не храним журналы посещений и никогда не продаём ваши данные."
+          footerPrivacy: "Аккаунт не нужен. Версии раннего доступа собирают диагностические метаданные соединений для отладки; мы никогда не продаём ваши данные."
         }
       };
 
