@@ -112,16 +112,32 @@ not reload a changed env file). `lightsail-up.sh` intentionally rejects
 >    old image. (The forged-class window exists only while both run.)
 > 2. **Re-upgrade:** stop and drain every old (pre-`node_class`) broker so
 >    nothing can still write the poisoned state — confirm none remain.
-> 3. Only then clear the classes, resetting every row to `volunteer`:
+> 3. With every broker still stopped (the new one not yet started), **delete**
+>    all descriptors so every relay is forced to re-attest:
 >
 >    ```sql
->    UPDATE relay_descriptors SET node_class = 'volunteer';
+>    DELETE FROM relay_descriptors;
 >    ```
-> 4. Only after that `UPDATE` commits, start the new broker. Foundation relays
->    re-attest their class the next time they register.
+> 4. Only after that `DELETE` commits, start the new broker. Each relay's next
+>    heartbeat now returns `404`, so it re-registers and re-attests: foundation
+>    relays present the foundation token and are re-signed as `foundation`;
+>    every other relay registers as `volunteer`.
 >
-> Clearing before the new broker starts (never "right after") guarantees it
-> cannot sign a stale or forged `foundation` label.
+> Use `DELETE`, not `UPDATE ... SET node_class = 'volunteer'`. An `UPDATE` clears
+> the column, but heartbeats never rewrite `node_class` — a live foundation relay
+> would keep heartbeating its downgraded row and never regain its class until it
+> happened to restart. Deleting forces the `404` → re-register → re-attest cycle
+> across the whole fleet, and deleting *before* the new broker starts guarantees
+> it never signs a stale or forged `foundation` label.
+>
+> **Old brokers do not understand the foundation token.** A pre-`node_class`
+> broker knows only its single `OPENRUNG_VOLUNTEER_TOKEN`, so while the old image
+> runs, a foundation relay's bearer (`OPENRUNG_FOUNDATION_TOKEN`) is not a
+> privileged credential to it: a token-gated old broker rejects it (`401`, since
+> it differs from the volunteer token), and an anonymous old broker accepts it
+> but its insert leaves `node_class` at the column default (`volunteer`).
+> Foundation relays are therefore rejected or silently downgraded for the whole
+> rollback window; the re-upgrade `DELETE` above is what restores them.
 
 ## Relay-list signing
 
