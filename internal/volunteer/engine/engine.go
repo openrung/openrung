@@ -371,10 +371,16 @@ func (e *Engine) run(ctx context.Context, done chan struct{}) {
 	}()
 
 	const backoffMin, backoffMax = 2 * time.Second, time.Minute
+	brokerConfig := e.currentConfig()
+	broker := &volunteer.BrokerClient{
+		BaseURL:    brokerConfig.BrokerURL,
+		Token:      brokerConfig.Token,
+		HTTPClient: brokerConfig.HTTPClient,
+	}
 	backoff := backoffMin
 	for {
 		sessionStart := time.Now()
-		err := e.runSession(ctx)
+		err := e.runSession(ctx, broker)
 		if ctx.Err() != nil {
 			return
 		}
@@ -485,7 +491,7 @@ func (e *Engine) watchForModeChange(ctx context.Context, cfg Config, current str
 	}
 }
 
-func (e *Engine) runSession(ctx context.Context) error {
+func (e *Engine) runSession(ctx context.Context, broker *volunteer.BrokerClient) error {
 	cfg := e.currentConfig()
 
 	e.setStatus(func() {
@@ -533,7 +539,7 @@ func (e *Engine) runSession(ctx context.Context) error {
 	if mode == ModeTunnel {
 		return e.runTunnelSession(ctx, cfg, label, identity)
 	}
-	return e.runDirectSession(ctx, cfg, label, identity, publicHost)
+	return e.runDirectSession(ctx, broker, cfg, label, identity, publicHost)
 }
 
 func (e *Engine) currentConfig() Config {
@@ -641,7 +647,7 @@ func (e *Engine) startXray(ctx context.Context, cfg Config, identity Identity, l
 	return cmd, waitCh, nil
 }
 
-func (e *Engine) runDirectSession(ctx context.Context, cfg Config, label string, identity Identity, publicHost string) error {
+func (e *Engine) runDirectSession(ctx context.Context, broker *volunteer.BrokerClient, cfg Config, label string, identity Identity, publicHost string) error {
 	if publicHost == "" {
 		detected, err := detectPublicIPv6()
 		if err != nil {
@@ -692,7 +698,6 @@ func (e *Engine) runDirectSession(ctx context.Context, cfg Config, label string,
 
 	e.setStatus(func() { e.phase = PhaseRegistering })
 
-	broker := volunteer.BrokerClient{BaseURL: cfg.BrokerURL, Token: cfg.Token, HTTPClient: cfg.HTTPClient}
 	req := relay.RegisterRequest{
 		PublicHost:       publicHost,
 		PublicPort:       cfg.ListenPort,
@@ -782,7 +787,7 @@ func (e *Engine) runDirectSession(ctx context.Context, cfg Config, label string,
 
 // registerWithRetry gives startup registration a few tries with short backoff
 // (honouring 429 Retry-After) before failing the session to the supervisor.
-func registerWithRetry(ctx context.Context, broker volunteer.BrokerClient, req relay.RegisterRequest) (relay.Descriptor, error) {
+func registerWithRetry(ctx context.Context, broker *volunteer.BrokerClient, req relay.RegisterRequest) (relay.Descriptor, error) {
 	const attempts = 3
 	backoff := 2 * time.Second
 	var lastErr error

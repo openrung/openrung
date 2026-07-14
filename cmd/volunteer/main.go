@@ -401,7 +401,8 @@ func run(cfg cliConfig) error {
 	// would publish a live foundation lease that a subsequent bind failure
 	// could strand. Any registration failure, including a rejected foundation
 	// attestation, tears the relay down below.
-	desc, err := register(ctx, cfg, prepared)
+	broker := cfg.brokerClient()
+	desc, err := register(ctx, broker, cfg, prepared)
 	if err != nil {
 		if xrayCmd != nil {
 			stopProcess(xrayCmd, errCh)
@@ -437,7 +438,7 @@ func run(cfg cliConfig) error {
 				return fmt.Errorf("connection observer stopped: %w", err)
 			}
 		case <-ticker.C:
-			updatedDesc, reRegistered, err := heartbeatOrRegister(ctx, cfg, prepared, desc)
+			updatedDesc, reRegistered, err := heartbeatOrRegister(ctx, broker, cfg, prepared, desc)
 			if err != nil {
 				slog.Warn("heartbeat failed", "error", err)
 				continue
@@ -584,13 +585,13 @@ func boolEnv(key string) bool {
 	}
 }
 
-func heartbeatOrRegister(ctx context.Context, cfg cliConfig, prepared preparedRuntime, desc relay.Descriptor) (relay.Descriptor, bool, error) {
-	if err := heartbeat(ctx, cfg, desc.ID); err != nil {
+func heartbeatOrRegister(ctx context.Context, broker *volunteer.BrokerClient, cfg cliConfig, prepared preparedRuntime, desc relay.Descriptor) (relay.Descriptor, bool, error) {
+	if err := heartbeat(ctx, broker, desc.ID); err != nil {
 		if !volunteer.IsRelayNotFound(err) {
 			return desc, false, err
 		}
 
-		updatedDesc, registerErr := register(ctx, cfg, prepared)
+		updatedDesc, registerErr := register(ctx, broker, cfg, prepared)
 		if registerErr != nil {
 			return desc, false, fmt.Errorf("re-register relay after broker forgot %s: %w", desc.ID, registerErr)
 		}
@@ -664,7 +665,7 @@ func prepareRuntime(cfg cliConfig) (preparedRuntime, error) {
 	}, nil
 }
 
-func register(ctx context.Context, cfg cliConfig, prepared preparedRuntime) (relay.Descriptor, error) {
+func register(ctx context.Context, broker *volunteer.BrokerClient, cfg cliConfig, prepared preparedRuntime) (relay.Descriptor, error) {
 	// The foundation token's cleartext-transport guard lives in BrokerClient
 	// (RequireSecureTransport, set by brokerClient() for foundation), so it
 	// covers heartbeat as well as registration and also refuses redirects.
@@ -684,7 +685,7 @@ func register(ctx context.Context, cfg cliConfig, prepared preparedRuntime) (rel
 		Label:            cfg.Label,
 		NodeClass:        cfg.NodeClass,
 	}
-	desc, err := cfg.brokerClient().Register(ctx, req)
+	desc, err := broker.Register(ctx, req)
 	if err != nil {
 		return relay.Descriptor{}, err
 	}
@@ -697,11 +698,11 @@ func register(ctx context.Context, cfg cliConfig, prepared preparedRuntime) (rel
 	return desc, nil
 }
 
-func heartbeat(ctx context.Context, cfg cliConfig, id string) error {
-	return cfg.brokerClient().Heartbeat(ctx, id)
+func heartbeat(ctx context.Context, broker *volunteer.BrokerClient, id string) error {
+	return broker.Heartbeat(ctx, id)
 }
 
-func (c cliConfig) brokerClient() volunteer.BrokerClient {
+func (c cliConfig) brokerClient() *volunteer.BrokerClient {
 	// A foundation token is the bearer and, on its own, requires secure
 	// transport (https + redirect refusal), so the guarantee holds even if the
 	// posture normalization above has not run for this config.
@@ -709,7 +710,7 @@ func (c cliConfig) brokerClient() volunteer.BrokerClient {
 	if c.FoundationToken != "" {
 		token = c.FoundationToken
 	}
-	return volunteer.BrokerClient{
+	return &volunteer.BrokerClient{
 		BaseURL:                c.BrokerURL,
 		Token:                  token,
 		HTTPClient:             c.HTTPClient,

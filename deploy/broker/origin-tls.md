@@ -3,11 +3,12 @@
 The broker runs plaintext HTTP on `:8080`. Fronts terminate client TLS at the
 edge, but the **edge → origin** leg was HTTP. On the AWS CloudFront front
 (distribution `E2PLKW8FO3JZSA`, `d2r7mdpyevvs1m.cloudfront.net`) that leg
-carried the high-value **Foundation registration token** (`Authorization`
-header on the shipped runtime's `POST /api/v1/volunteers/register` request) in
-cleartext across the public internet. This runbook closes that leg with a
-TLS-terminating reverse proxy on the broker box so the token is encrypted
-**relay → CloudFront edge → origin**.
+carried the high-value **Foundation registration token** (the `Authorization`
+header on relay registration requests) in cleartext across the public internet.
+This runbook closes that leg with a TLS-terminating reverse proxy on the broker
+box so the token is encrypted **relay → CloudFront edge → origin**. Current
+relays use `POST /api/v1/relays/register`; older runtimes used the compatibility
+path below.
 
 The legacy `POST /api/v1/volunteers/register` route reaches the same handler and
 is retained as a compatibility alias with no scheduled removal date. New

@@ -51,6 +51,14 @@ as `node_class: "volunteer"`; relays presenting the Foundation credential
 register as `node_class: "foundation"`. The broker attests this provenance in
 the signed relay directory. It is not a quality score or a trust bypass.
 
+Direct-mode relays, including the desktop relay engine, prefer the canonical
+`POST /api/v1/relays/register` and `/api/v1/relays/{id}/heartbeat` routes. If a
+broker reports either route unsupported with the old ServeMux's exact
+route-missing `404` response or with `405`, that runtime selects the legacy
+`/api/v1/volunteers/...` compatibility route family for all subsequent
+registrations and heartbeats. The selection is sticky across reconnects; other
+broker errors never trigger fallback, and broker redirects are refused.
+
 The CLI produces an Xray server config with:
 
 - VLESS inbound.
