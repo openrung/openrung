@@ -51,13 +51,10 @@ as `node_class: "volunteer"`; relays presenting the Foundation credential
 register as `node_class: "foundation"`. The broker attests this provenance in
 the signed relay directory. It is not a quality score or a trust bypass.
 
-Direct-mode relays, including the desktop relay engine, prefer the canonical
-`POST /api/v1/relays/register` and `/api/v1/relays/{id}/heartbeat` routes. If a
-broker reports either route unsupported with the old ServeMux's exact
-route-missing `404` response or with `405`, that runtime selects the legacy
-`/api/v1/volunteers/...` compatibility route family for all subsequent
-registrations and heartbeats. The selection is sticky across reconnects; other
-broker errors never trigger fallback, and broker redirects are refused.
+Direct-mode relays, including the desktop relay engine, use only the canonical
+`POST /api/v1/relays/register` and `/api/v1/relays/{id}/heartbeat` routes.
+Broker errors are returned directly to the runtime, and broker redirects are
+refused.
 
 The CLI produces an Xray server config with:
 
@@ -95,12 +92,9 @@ volunteer-run relays online:
 - The hub allocates one public TCP port per relay, registers the relay with
   the broker (with `transport: "tunnel"` and `public_host`/`public_port` pointing
   at the hub), and multiplexes inbound client connections to the relay over the
-  tunnel using yamux. The hub prefers the canonical
-  `POST /api/v1/relays/register` route. If a broker reports that route unsupported
-  with the old ServeMux's route-missing `404` response or with `405`, the hub
-  selects the legacy `POST /api/v1/volunteers/register` compatibility alias for
-  subsequent registrations and heartbeats. Other broker errors never trigger
-  fallback.
+  tunnel using yamux. The hub uses only the canonical
+  `POST /api/v1/relays/register` and `/api/v1/relays/{id}/heartbeat` routes;
+  broker errors are returned directly.
   Clients connect to `hub:port` exactly as they would any direct relay — no client
   changes.
 - Descriptor liveness is tied to the tunnel: the hub heartbeats while the tunnel

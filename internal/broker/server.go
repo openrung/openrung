@@ -79,12 +79,6 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 	})
 	mux.HandleFunc("POST /api/v1/relays/register", registerRelay)
 	mux.HandleFunc("POST /api/v1/relays/", heartbeatRelay)
-	// Keep the original volunteer-named routes as compatibility aliases for
-	// deployed relays. Both route families intentionally share the same handler
-	// closures and rate limiter so aliases cannot change behavior or double a
-	// client's registration budget.
-	mux.HandleFunc("POST /api/v1/volunteers/register", registerRelay)
-	mux.HandleFunc("POST /api/v1/volunteers/", heartbeatRelay)
 	mux.HandleFunc("GET /api/v1/relays", rateLimited(relayListLimiter, clientIP, 10, listRelaysHandler(store, cfg.TelemetrySink, clientIP, clientSeen, relaySigner)))
 	mux.HandleFunc("GET /api/v1/relays.mirror", rateLimited(relayListLimiter, clientIP, 10, listRelaysMirrorHandler(store, relaySigner)))
 	mux.HandleFunc("POST /api/v1/telemetry/events", rateLimited(telemetryLimiter, clientIP, 10, telemetryHandler(cfg.TelemetrySink, store, clientIP)))
@@ -342,20 +336,14 @@ func validateRegisterRequest(req relay.RegisterRequest) error {
 
 func heartbeatRelayID(path string) (string, bool) {
 	const (
-		relayPrefix     = "/api/v1/relays/"
-		volunteerPrefix = "/api/v1/volunteers/"
-		suffix          = "/heartbeat"
+		relayPrefix = "/api/v1/relays/"
+		suffix      = "/heartbeat"
 	)
 
-	var remainder string
-	switch {
-	case strings.HasPrefix(path, relayPrefix):
-		remainder = strings.TrimPrefix(path, relayPrefix)
-	case strings.HasPrefix(path, volunteerPrefix):
-		remainder = strings.TrimPrefix(path, volunteerPrefix)
-	default:
+	if !strings.HasPrefix(path, relayPrefix) {
 		return "", false
 	}
+	remainder := strings.TrimPrefix(path, relayPrefix)
 
 	id, ok := strings.CutSuffix(remainder, suffix)
 	if !ok || id == "" || strings.ContainsRune(id, '/') {

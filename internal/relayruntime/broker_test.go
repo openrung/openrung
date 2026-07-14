@@ -1,7 +1,6 @@
 package relayruntime
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -38,7 +37,7 @@ func TestBrokerClientUsesCanonicalRoutes(t *testing.T) {
 			t.Errorf("Content-Type = %q, want application/json", got)
 		}
 		switch r.URL.Path {
-		case canonicalRegisterPath:
+		case relayRegisterPath:
 			var req relay.RegisterRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Errorf("decode register request: %v", err)
@@ -52,7 +51,7 @@ func TestBrokerClientUsesCanonicalRoutes(t *testing.T) {
 				PublicPort: 443,
 				ExpiresAt:  expiresAt,
 			})
-		case canonicalHeartbeatPathBase + "relay_canonical/heartbeat":
+		case relayHeartbeatPathBase + "relay_canonical/heartbeat":
 			var body map[string]bool
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Errorf("decode heartbeat request: %v", err)
@@ -89,178 +88,15 @@ func TestBrokerClientUsesCanonicalRoutes(t *testing.T) {
 	gotPaths := append([]string(nil), paths...)
 	mu.Unlock()
 	wantPaths := []string{
-		canonicalRegisterPath,
-		canonicalHeartbeatPathBase + "relay_canonical/heartbeat",
+		relayRegisterPath,
+		relayHeartbeatPathBase + "relay_canonical/heartbeat",
 	}
 	if !reflect.DeepEqual(gotPaths, wantPaths) {
 		t.Fatalf("request paths = %q, want %q", gotPaths, wantPaths)
 	}
 }
 
-func TestBrokerClientRegister404FallbackIsSticky(t *testing.T) {
-	t.Parallel()
-
-	type observedRequest struct {
-		path        string
-		authorize   string
-		contentType string
-		body        []byte
-	}
-	var (
-		mu       sync.Mutex
-		requests []observedRequest
-	)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		mu.Lock()
-		requests = append(requests, observedRequest{
-			path:        r.URL.Path,
-			authorize:   r.Header.Get("Authorization"),
-			contentType: r.Header.Get("Content-Type"),
-			body:        body,
-		})
-		mu.Unlock()
-
-		switch r.URL.Path {
-		case canonicalRegisterPath:
-			http.NotFound(w, r)
-		case legacyRegisterPath:
-			writeBrokerJSON(w, http.StatusCreated, relay.Descriptor{ID: "relay_legacy"})
-		case legacyHeartbeatPathBase + "relay_legacy/heartbeat":
-			writeBrokerJSON(w, http.StatusOK, relay.HeartbeatResponse{OK: true})
-		case legacyHeartbeatPathBase + "relay_missing/heartbeat":
-			writeBrokerJSON(w, http.StatusNotFound, relay.ErrorResponse{Error: "relay not found"})
-		default:
-			writeBrokerJSON(w, http.StatusInternalServerError, relay.ErrorResponse{Error: "unexpected path"})
-		}
-	}))
-	t.Cleanup(server.Close)
-
-	req := testBrokerRegisterRequest()
-	client := &BrokerClient{BaseURL: server.URL, Token: "relay-token", HTTPClient: server.Client()}
-	for i := 0; i < 2; i++ {
-		if _, err := client.Register(context.Background(), req); err != nil {
-			t.Fatalf("Register() call %d error = %v", i+1, err)
-		}
-	}
-	if err := client.Heartbeat(context.Background(), "relay_legacy"); err != nil {
-		t.Fatalf("Heartbeat() error = %v", err)
-	}
-	if err := client.Heartbeat(context.Background(), "relay_missing"); !IsRelayNotFound(err) {
-		t.Fatalf("Heartbeat() missing relay error = %v, want relay-not-found API error", err)
-	}
-
-	mu.Lock()
-	gotRequests := append([]observedRequest(nil), requests...)
-	mu.Unlock()
-	wantPaths := []string{
-		canonicalRegisterPath,
-		legacyRegisterPath,
-		legacyRegisterPath,
-		legacyHeartbeatPathBase + "relay_legacy/heartbeat",
-		legacyHeartbeatPathBase + "relay_missing/heartbeat",
-	}
-	if len(gotRequests) != len(wantPaths) {
-		t.Fatalf("request count = %d, want %d: %+v", len(gotRequests), len(wantPaths), gotRequests)
-	}
-	for i, wantPath := range wantPaths {
-		if gotRequests[i].path != wantPath {
-			t.Errorf("request %d path = %q, want %q", i+1, gotRequests[i].path, wantPath)
-		}
-		if gotRequests[i].authorize != "Bearer relay-token" {
-			t.Errorf("request %d Authorization = %q, want bearer token", i+1, gotRequests[i].authorize)
-		}
-		if gotRequests[i].contentType != "application/json" {
-			t.Errorf("request %d Content-Type = %q, want application/json", i+1, gotRequests[i].contentType)
-		}
-	}
-	wantBody, err := json.Marshal(req)
-	if err != nil {
-		t.Fatalf("Marshal(register request) error = %v", err)
-	}
-	for _, index := range []int{0, 1, 2} {
-		if !bytes.Equal(gotRequests[index].body, wantBody) {
-			t.Errorf("register request %d body = %q, want %q", index+1, gotRequests[index].body, wantBody)
-		}
-	}
-}
-
-func TestBrokerClientHeartbeatFirst405FallbackIsSticky(t *testing.T) {
-	t.Parallel()
-
-	type observedRequest struct {
-		path        string
-		authorize   string
-		contentType string
-		body        []byte
-	}
-	var (
-		mu       sync.Mutex
-		requests []observedRequest
-	)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		mu.Lock()
-		requests = append(requests, observedRequest{
-			path:        r.URL.Path,
-			authorize:   r.Header.Get("Authorization"),
-			contentType: r.Header.Get("Content-Type"),
-			body:        body,
-		})
-		mu.Unlock()
-
-		switch r.URL.Path {
-		case canonicalHeartbeatPathBase + "relay_existing/heartbeat":
-			writeBrokerJSON(w, http.StatusMethodNotAllowed, relay.ErrorResponse{Error: "method not allowed"})
-		case legacyHeartbeatPathBase + "relay_existing/heartbeat":
-			writeBrokerJSON(w, http.StatusOK, relay.HeartbeatResponse{OK: true})
-		case legacyRegisterPath:
-			writeBrokerJSON(w, http.StatusCreated, relay.Descriptor{ID: "relay_existing"})
-		default:
-			writeBrokerJSON(w, http.StatusInternalServerError, relay.ErrorResponse{Error: "unexpected path"})
-		}
-	}))
-	t.Cleanup(server.Close)
-
-	client := &BrokerClient{BaseURL: server.URL, Token: "relay-token", HTTPClient: server.Client()}
-	if err := client.Heartbeat(context.Background(), "relay_existing"); err != nil {
-		t.Fatalf("Heartbeat() error = %v", err)
-	}
-	if _, err := client.Register(context.Background(), testBrokerRegisterRequest()); err != nil {
-		t.Fatalf("Register() error = %v", err)
-	}
-
-	mu.Lock()
-	gotRequests := append([]observedRequest(nil), requests...)
-	mu.Unlock()
-	wantPaths := []string{
-		canonicalHeartbeatPathBase + "relay_existing/heartbeat",
-		legacyHeartbeatPathBase + "relay_existing/heartbeat",
-		legacyRegisterPath,
-	}
-	if len(gotRequests) != len(wantPaths) {
-		t.Fatalf("request count = %d, want %d: %+v", len(gotRequests), len(wantPaths), gotRequests)
-	}
-	for i, wantPath := range wantPaths {
-		if gotRequests[i].path != wantPath {
-			t.Errorf("request %d path = %q, want %q", i+1, gotRequests[i].path, wantPath)
-		}
-		if gotRequests[i].authorize != "Bearer relay-token" {
-			t.Errorf("request %d Authorization = %q, want bearer token", i+1, gotRequests[i].authorize)
-		}
-		if gotRequests[i].contentType != "application/json" {
-			t.Errorf("request %d Content-Type = %q, want application/json", i+1, gotRequests[i].contentType)
-		}
-	}
-	if !bytes.Equal(gotRequests[0].body, gotRequests[1].body) {
-		t.Errorf("heartbeat retry body = %q, want canonical body %q", gotRequests[1].body, gotRequests[0].body)
-	}
-	if !bytes.Equal(gotRequests[0].body, []byte(`{"ok":true}`)) {
-		t.Errorf("heartbeat body = %q, want {\"ok\":true}", gotRequests[0].body)
-	}
-}
-
-func TestBrokerClientRelayNotFoundDoesNotFallback(t *testing.T) {
+func TestBrokerClientRelayNotFoundUsesCanonicalRoute(t *testing.T) {
 	t.Parallel()
 
 	var (
@@ -273,12 +109,12 @@ func TestBrokerClientRelayNotFoundDoesNotFallback(t *testing.T) {
 		mu.Unlock()
 
 		switch r.URL.Path {
-		case canonicalHeartbeatPathBase + "relay_missing/heartbeat":
+		case relayHeartbeatPathBase + "relay_missing/heartbeat":
 			writeBrokerJSON(w, http.StatusNotFound, relay.ErrorResponse{Error: "relay not found"})
-		case canonicalRegisterPath:
+		case relayRegisterPath:
 			writeBrokerJSON(w, http.StatusCreated, relay.Descriptor{ID: "relay_new"})
 		default:
-			writeBrokerJSON(w, http.StatusInternalServerError, relay.ErrorResponse{Error: "legacy route must not be called"})
+			writeBrokerJSON(w, http.StatusInternalServerError, relay.ErrorResponse{Error: "unexpected path"})
 		}
 	}))
 	t.Cleanup(server.Close)
@@ -292,7 +128,7 @@ func TestBrokerClientRelayNotFoundDoesNotFallback(t *testing.T) {
 	if !errors.As(err, &apiErr) {
 		t.Fatalf("Heartbeat() error type = %T, want *APIError", err)
 	}
-	if apiErr.Path != canonicalHeartbeatPathBase+"relay_missing/heartbeat" || apiErr.StatusCode != http.StatusNotFound || apiErr.Message != "relay not found" {
+	if apiErr.Path != relayHeartbeatPathBase+"relay_missing/heartbeat" || apiErr.StatusCode != http.StatusNotFound || apiErr.Message != "relay not found" {
 		t.Errorf("APIError = %+v, want canonical 404 relay not found", apiErr)
 	}
 	if _, err := client.Register(context.Background(), testBrokerRegisterRequest()); err != nil {
@@ -303,19 +139,20 @@ func TestBrokerClientRelayNotFoundDoesNotFallback(t *testing.T) {
 	gotPaths := append([]string(nil), paths...)
 	mu.Unlock()
 	wantPaths := []string{
-		canonicalHeartbeatPathBase + "relay_missing/heartbeat",
-		canonicalRegisterPath,
+		relayHeartbeatPathBase + "relay_missing/heartbeat",
+		relayRegisterPath,
 	}
 	if !reflect.DeepEqual(gotPaths, wantPaths) {
 		t.Fatalf("request paths = %q, want %q", gotPaths, wantPaths)
 	}
 }
 
-func TestBrokerClientDoesNotFallbackOnOtherHTTPFailures(t *testing.T) {
+func TestBrokerClientReturnsCanonicalHTTPFailures(t *testing.T) {
 	t.Parallel()
 
 	for _, status := range []int{
 		http.StatusNotFound,
+		http.StatusMethodNotAllowed,
 		http.StatusBadRequest,
 		http.StatusUnauthorized,
 		http.StatusForbidden,
@@ -327,21 +164,17 @@ func TestBrokerClientDoesNotFallbackOnOtherHTTPFailures(t *testing.T) {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			t.Parallel()
 
-			var canonical, legacy atomic.Int64
+			var requests atomic.Int64
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				switch r.URL.Path {
-				case canonicalRegisterPath:
-					canonical.Add(1)
-					if status == http.StatusTooManyRequests {
-						w.Header().Set("Retry-After", "17")
-					}
-					writeBrokerJSON(w, status, relay.ErrorResponse{Error: "deliberate failure"})
-				case legacyRegisterPath:
-					legacy.Add(1)
-					writeBrokerJSON(w, http.StatusCreated, relay.Descriptor{ID: "must_not_register"})
-				default:
+				if r.URL.Path != relayRegisterPath {
 					writeBrokerJSON(w, http.StatusInternalServerError, relay.ErrorResponse{Error: "unexpected path"})
+					return
 				}
+				requests.Add(1)
+				if status == http.StatusTooManyRequests {
+					w.Header().Set("Retry-After", "17")
+				}
+				writeBrokerJSON(w, status, relay.ErrorResponse{Error: "deliberate failure"})
 			}))
 			t.Cleanup(server.Close)
 
@@ -355,24 +188,21 @@ func TestBrokerClientDoesNotFallbackOnOtherHTTPFailures(t *testing.T) {
 				if !errors.As(err, &apiErr) {
 					t.Fatalf("Register() call %d error type = %T, want *APIError", i+1, err)
 				}
-				if apiErr.Path != canonicalRegisterPath || apiErr.StatusCode != status || apiErr.Message != "deliberate failure" {
+				if apiErr.Path != relayRegisterPath || apiErr.StatusCode != status || apiErr.Message != "deliberate failure" {
 					t.Errorf("APIError = %+v, want canonical status %d", apiErr, status)
 				}
 				if status == http.StatusTooManyRequests && apiErr.RetryAfter != "17" {
 					t.Errorf("RetryAfter = %q, want 17", apiErr.RetryAfter)
 				}
 			}
-			if got := canonical.Load(); got != 2 {
-				t.Errorf("canonical request count = %d, want 2", got)
-			}
-			if got := legacy.Load(); got != 0 {
-				t.Errorf("legacy request count = %d, want 0", got)
+			if got := requests.Load(); got != 2 {
+				t.Errorf("request count = %d, want 2", got)
 			}
 		})
 	}
 }
 
-func TestBrokerClientDoesNotFallbackOnOther404Shapes(t *testing.T) {
+func TestBrokerClientReturnsCanonical404Shapes(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
@@ -383,49 +213,48 @@ func TestBrokerClientDoesNotFallbackOnOther404Shapes(t *testing.T) {
 		{name: "empty body", contentType: "text/plain; charset=utf-8"},
 		{name: "HTML body", contentType: "text/html; charset=utf-8", body: "<h1>Not Found</h1>"},
 		{name: "malformed JSON", contentType: "application/json", body: `{"error":`},
-		{name: "other plaintext", contentType: "text/plain; charset=utf-8", body: "route not found\n"},
-		{name: "legacy body with wrong type", contentType: "text/html", body: legacyServeMuxNotFoundBody},
-		{name: "plaintext prefix type", contentType: "text/plain-legacy", body: legacyServeMuxNotFoundBody},
-		{name: "oversized body", contentType: "text/plain; charset=utf-8", body: legacyServeMuxNotFoundBody + strings.Repeat("x", maxBrokerErrorBodyBytes)},
+		{name: "plaintext", contentType: "text/plain; charset=utf-8", body: "404 page not found\n"},
+		{name: "oversized body", contentType: "application/json", body: `{"error":"` + strings.Repeat("x", maxBrokerErrorBodyBytes)},
 	} {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			var canonical, legacy atomic.Int64
+			var requests atomic.Int64
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				switch r.URL.Path {
-				case canonicalRegisterPath:
-					canonical.Add(1)
-					w.Header().Set("Content-Type", tc.contentType)
-					w.WriteHeader(http.StatusNotFound)
-					_, _ = io.WriteString(w, tc.body)
-				case legacyRegisterPath:
-					legacy.Add(1)
-					writeBrokerJSON(w, http.StatusCreated, relay.Descriptor{ID: "must_not_register"})
-				default:
+				if r.URL.Path != relayRegisterPath {
 					writeBrokerJSON(w, http.StatusInternalServerError, relay.ErrorResponse{Error: "unexpected path"})
+					return
 				}
+				requests.Add(1)
+				w.Header().Set("Content-Type", tc.contentType)
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = io.WriteString(w, tc.body)
 			}))
 			t.Cleanup(server.Close)
 
 			client := &BrokerClient{BaseURL: server.URL, HTTPClient: server.Client()}
 			for i := 0; i < 2; i++ {
-				if _, err := client.Register(context.Background(), testBrokerRegisterRequest()); err == nil {
+				_, err := client.Register(context.Background(), testBrokerRegisterRequest())
+				if err == nil {
 					t.Fatalf("Register() call %d error = nil, want 404 failure", i+1)
 				}
+				var apiErr *APIError
+				if !errors.As(err, &apiErr) {
+					t.Fatalf("Register() call %d error type = %T, want *APIError", i+1, err)
+				}
+				if apiErr.Path != relayRegisterPath || apiErr.StatusCode != http.StatusNotFound || apiErr.Message != "404 Not Found" {
+					t.Errorf("APIError = %+v, want canonical 404 with status-derived message", apiErr)
+				}
 			}
-			if got := canonical.Load(); got != 2 {
-				t.Errorf("canonical request count = %d, want 2", got)
-			}
-			if got := legacy.Load(); got != 0 {
-				t.Errorf("legacy request count = %d, want 0", got)
+			if got := requests.Load(); got != 2 {
+				t.Errorf("request count = %d, want 2", got)
 			}
 		})
 	}
 }
 
-func TestBrokerClientRefusesRedirectsWithoutFallback(t *testing.T) {
+func TestBrokerClientRefusesRedirects(t *testing.T) {
 	t.Parallel()
 
 	for _, redirectStatus := range []int{
@@ -438,18 +267,15 @@ func TestBrokerClientRefusesRedirectsWithoutFallback(t *testing.T) {
 		t.Run(http.StatusText(redirectStatus), func(t *testing.T) {
 			t.Parallel()
 
-			var canonical, redirected, legacy atomic.Int64
+			var requests, redirected atomic.Int64
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
-				case canonicalRegisterPath:
-					canonical.Add(1)
+				case relayRegisterPath:
+					requests.Add(1)
 					http.Redirect(w, r, "/redirect-target", redirectStatus)
 				case "/redirect-target":
 					redirected.Add(1)
 					writeBrokerJSON(w, http.StatusNotFound, relay.ErrorResponse{Error: "route not found"})
-				case legacyRegisterPath:
-					legacy.Add(1)
-					writeBrokerJSON(w, http.StatusCreated, relay.Descriptor{ID: "must_not_register"})
 				default:
 					writeBrokerJSON(w, http.StatusInternalServerError, relay.ErrorResponse{Error: "unexpected path"})
 				}
@@ -463,28 +289,25 @@ func TestBrokerClientRefusesRedirectsWithoutFallback(t *testing.T) {
 					t.Fatalf("Register() call %d error = %v, want redirect refusal", i+1, err)
 				}
 			}
-			if got := canonical.Load(); got != 2 {
-				t.Errorf("canonical request count = %d, want 2", got)
+			if got := requests.Load(); got != 2 {
+				t.Errorf("request count = %d, want 2", got)
 			}
 			if got := redirected.Load(); got != 0 {
 				t.Errorf("redirect-target request count = %d, want 0", got)
-			}
-			if got := legacy.Load(); got != 0 {
-				t.Errorf("legacy request count = %d, want 0", got)
 			}
 		})
 	}
 }
 
-func TestBrokerClientDoesNotFallbackOnNetworkOrDecodeErrors(t *testing.T) {
+func TestBrokerClientReturnsNetworkOrDecodeErrors(t *testing.T) {
 	t.Parallel()
 
 	t.Run("network", func(t *testing.T) {
 		var calls atomic.Int64
 		httpClient := &http.Client{Transport: brokerRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 			calls.Add(1)
-			if req.URL.Path != canonicalRegisterPath {
-				t.Errorf("request path = %q, want %q", req.URL.Path, canonicalRegisterPath)
+			if req.URL.Path != relayRegisterPath {
+				t.Errorf("request path = %q, want %q", req.URL.Path, relayRegisterPath)
 			}
 			return nil, errors.New("network unavailable")
 		})}
@@ -500,20 +323,16 @@ func TestBrokerClientDoesNotFallbackOnNetworkOrDecodeErrors(t *testing.T) {
 	})
 
 	t.Run("decode", func(t *testing.T) {
-		var canonical, legacy atomic.Int64
+		var requests atomic.Int64
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			switch r.URL.Path {
-			case canonicalRegisterPath:
-				canonical.Add(1)
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusOK)
-				_, _ = io.WriteString(w, `{"id":`)
-			case legacyRegisterPath:
-				legacy.Add(1)
-				writeBrokerJSON(w, http.StatusCreated, relay.Descriptor{ID: "must_not_register"})
-			default:
+			if r.URL.Path != relayRegisterPath {
 				writeBrokerJSON(w, http.StatusInternalServerError, relay.ErrorResponse{Error: "unexpected path"})
+				return
 			}
+			requests.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"id":`)
 		}))
 		t.Cleanup(server.Close)
 
@@ -523,76 +342,10 @@ func TestBrokerClientDoesNotFallbackOnNetworkOrDecodeErrors(t *testing.T) {
 				t.Fatalf("Register() call %d error = nil, want decode failure", i+1)
 			}
 		}
-		if got := canonical.Load(); got != 2 {
-			t.Errorf("canonical request count = %d, want 2", got)
-		}
-		if got := legacy.Load(); got != 0 {
-			t.Errorf("legacy request count = %d, want 0", got)
+		if got := requests.Load(); got != 2 {
+			t.Errorf("request count = %d, want 2", got)
 		}
 	})
-}
-
-func TestBrokerClientConcurrentLegacyDiscovery(t *testing.T) {
-	t.Parallel()
-
-	const workers = 48
-	var canonical, legacy atomic.Int64
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case canonicalRegisterPath:
-			canonical.Add(1)
-			http.NotFound(w, r)
-		case legacyRegisterPath:
-			legacy.Add(1)
-			writeBrokerJSON(w, http.StatusCreated, relay.Descriptor{ID: "relay_legacy"})
-		case legacyHeartbeatPathBase + "relay_legacy/heartbeat":
-			legacy.Add(1)
-			writeBrokerJSON(w, http.StatusOK, relay.HeartbeatResponse{OK: true})
-		default:
-			writeBrokerJSON(w, http.StatusInternalServerError, relay.ErrorResponse{Error: "unexpected path"})
-		}
-	}))
-	t.Cleanup(server.Close)
-
-	client := &BrokerClient{BaseURL: server.URL, HTTPClient: server.Client()}
-	start := make(chan struct{})
-	errs := make(chan error, workers)
-	var wg sync.WaitGroup
-	wg.Add(workers)
-	for i := 0; i < workers; i++ {
-		go func() {
-			defer wg.Done()
-			<-start
-			_, err := client.Register(context.Background(), testBrokerRegisterRequest())
-			errs <- err
-		}()
-	}
-	close(start)
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			t.Errorf("concurrent Register() error = %v", err)
-		}
-	}
-
-	canonicalAfterDiscovery := canonical.Load()
-	if canonicalAfterDiscovery < 1 || canonicalAfterDiscovery > workers {
-		t.Errorf("canonical discovery request count = %d, want between 1 and %d", canonicalAfterDiscovery, workers)
-	}
-	if got := legacy.Load(); got != workers {
-		t.Errorf("legacy request count = %d, want %d", got, workers)
-	}
-
-	if err := client.Heartbeat(context.Background(), "relay_legacy"); err != nil {
-		t.Fatalf("Heartbeat() after concurrent discovery error = %v", err)
-	}
-	if got := canonical.Load(); got != canonicalAfterDiscovery {
-		t.Errorf("canonical requests after sticky fallback = %d, want %d", got, canonicalAfterDiscovery)
-	}
-	if got := legacy.Load(); got != workers+1 {
-		t.Errorf("legacy requests after sticky fallback = %d, want %d", got, workers+1)
-	}
 }
 
 func TestBrokerClientSecureTransportAllowsLoopbackHTTP(t *testing.T) {
@@ -601,13 +354,13 @@ func TestBrokerClientSecureTransportAllowsLoopbackHTTP(t *testing.T) {
 			t.Errorf("Authorization = %q, want foundation bearer", got)
 		}
 		switch r.URL.Path {
-		case canonicalRegisterPath:
+		case relayRegisterPath:
 			body, err := json.Marshal(relay.Descriptor{ID: "relay_foundation"})
 			if err != nil {
 				return nil, err
 			}
 			return brokerJSONResponse(r, http.StatusCreated, string(body)), nil
-		case canonicalHeartbeatPathBase + "relay_foundation/heartbeat":
+		case relayHeartbeatPathBase + "relay_foundation/heartbeat":
 			return brokerJSONResponse(r, http.StatusOK, `{}`), nil
 		default:
 			return brokerJSONResponse(r, http.StatusNotFound, `{"error":"not found"}`), nil

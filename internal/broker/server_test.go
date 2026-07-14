@@ -34,7 +34,7 @@ func TestHeartbeatRelayID(t *testing.T) {
 		wantOK bool
 	}{
 		{name: "canonical relay route", path: "/api/v1/relays/relay_abc/heartbeat", wantID: "relay_abc", wantOK: true},
-		{name: "legacy volunteer route", path: "/api/v1/volunteers/relay_abc/heartbeat", wantID: "relay_abc", wantOK: true},
+		{name: "retired legacy prefix", path: "/api/v1/volunteers/relay_abc/heartbeat"},
 		{name: "missing relay ID", path: "/api/v1/relays//heartbeat"},
 		{name: "nested relay ID", path: "/api/v1/relays/group/relay_abc/heartbeat"},
 		{name: "wrong suffix", path: "/api/v1/relays/relay_abc/pulse"},
@@ -51,65 +51,51 @@ func TestHeartbeatRelayID(t *testing.T) {
 	}
 }
 
-func TestRelayRouteAliasesRegisterAndHeartbeat(t *testing.T) {
-	tests := []struct {
-		name          string
-		registerPath  string
-		heartbeatBase string
-	}{
-		{name: "canonical routes", registerPath: "/api/v1/relays/register", heartbeatBase: "/api/v1/relays/"},
-		{name: "canonical register legacy heartbeat", registerPath: "/api/v1/relays/register", heartbeatBase: "/api/v1/volunteers/"},
-		{name: "legacy register canonical heartbeat", registerPath: "/api/v1/volunteers/register", heartbeatBase: "/api/v1/relays/"},
+func TestCanonicalRelayRoutesRegisterAndHeartbeat(t *testing.T) {
+	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed()})
+	body, err := json.Marshal(validRegisterRequest())
+	if err != nil {
+		t.Fatalf("marshal register request: %v", err)
 	}
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed()})
-			body, err := json.Marshal(validRegisterRequest())
-			if err != nil {
-				t.Fatalf("marshal register request: %v", err)
-			}
+	registerRecorder := httptest.NewRecorder()
+	server.ServeHTTP(registerRecorder, httptest.NewRequest(http.MethodPost, "/api/v1/relays/register", bytes.NewReader(body)))
+	if registerRecorder.Code != http.StatusCreated {
+		t.Fatalf("register: expected 201, got %d: %s", registerRecorder.Code, registerRecorder.Body.String())
+	}
 
-			registerRecorder := httptest.NewRecorder()
-			server.ServeHTTP(registerRecorder, httptest.NewRequest(http.MethodPost, test.registerPath, bytes.NewReader(body)))
-			if registerRecorder.Code != http.StatusCreated {
-				t.Fatalf("register: expected 201, got %d: %s", registerRecorder.Code, registerRecorder.Body.String())
-			}
-
-			var desc relay.Descriptor
-			if err := json.Unmarshal(registerRecorder.Body.Bytes(), &desc); err != nil {
-				t.Fatalf("decode descriptor: %v", err)
-			}
-			heartbeatRecorder := httptest.NewRecorder()
-			heartbeatPath := test.heartbeatBase + desc.ID + "/heartbeat"
-			server.ServeHTTP(heartbeatRecorder, httptest.NewRequest(http.MethodPost, heartbeatPath, nil))
-			if heartbeatRecorder.Code != http.StatusOK {
-				t.Fatalf("heartbeat: expected 200, got %d: %s", heartbeatRecorder.Code, heartbeatRecorder.Body.String())
-			}
-		})
+	var desc relay.Descriptor
+	if err := json.Unmarshal(registerRecorder.Body.Bytes(), &desc); err != nil {
+		t.Fatalf("decode descriptor: %v", err)
+	}
+	heartbeatRecorder := httptest.NewRecorder()
+	heartbeatPath := "/api/v1/relays/" + desc.ID + "/heartbeat"
+	server.ServeHTTP(heartbeatRecorder, httptest.NewRequest(http.MethodPost, heartbeatPath, nil))
+	if heartbeatRecorder.Code != http.StatusOK {
+		t.Fatalf("heartbeat: expected 200, got %d: %s", heartbeatRecorder.Code, heartbeatRecorder.Body.String())
 	}
 }
 
-func TestRegisterRouteAliasesRejectMalformedJSONIdentically(t *testing.T) {
+func TestRegisterRouteRejectsMalformedJSON(t *testing.T) {
+	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed()})
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/relays/register", strings.NewReader("{")))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestRetiredVolunteerWriteRoutesReturnNotFound(t *testing.T) {
 	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed()})
 	paths := []string{
-		"/api/v1/relays/register",
 		"/api/v1/volunteers/register",
+		"/api/v1/volunteers/relay_abc/heartbeat",
 	}
-
-	var wantBody string
 	for _, path := range paths {
 		recorder := httptest.NewRecorder()
-		server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, path, strings.NewReader("{")))
-		if recorder.Code != http.StatusBadRequest {
-			t.Fatalf("%s: expected 400, got %d: %s", path, recorder.Code, recorder.Body.String())
-		}
-		if wantBody == "" {
-			wantBody = recorder.Body.String()
-			continue
-		}
-		if recorder.Body.String() != wantBody {
-			t.Fatalf("%s: body = %q, want %q", path, recorder.Body.String(), wantBody)
+		server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, path, nil))
+		if recorder.Code != http.StatusNotFound {
+			t.Errorf("POST %s: expected 404, got %d: %s", path, recorder.Code, recorder.Body.String())
 		}
 	}
 }
@@ -172,7 +158,7 @@ func TestRegisterStoresAndReturnsLabel(t *testing.T) {
 	req.Label = "happy-hippo"
 	body, _ := json.Marshal(req)
 	recorder := httptest.NewRecorder()
-	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/volunteers/register", bytes.NewReader(body)))
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/relays/register", bytes.NewReader(body)))
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", recorder.Code, recorder.Body.String())
 	}
@@ -198,7 +184,7 @@ func TestRegisterRejectsUnsafeLabel(t *testing.T) {
 	req.Label = "<script>alert(1)</script>"
 	body, _ := json.Marshal(req)
 	recorder := httptest.NewRecorder()
-	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/volunteers/register", bytes.NewReader(body)))
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/relays/register", bytes.NewReader(body)))
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for unsafe label, got %d: %s", recorder.Code, recorder.Body.String())
 	}
@@ -209,7 +195,7 @@ func TestRegisterRejectsOversizedBody(t *testing.T) {
 
 	oversized := []byte(`{"public_host":"` + strings.Repeat("a", maxRegisterBodyBytes) + `"}`)
 	recorder := httptest.NewRecorder()
-	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/volunteers/register", bytes.NewReader(oversized)))
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/relays/register", bytes.NewReader(oversized)))
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for oversized register body, got %d: %s", recorder.Code, recorder.Body.String())
 	}
@@ -221,7 +207,7 @@ func TestRegisterResolvesRelayLocation(t *testing.T) {
 
 	body, _ := json.Marshal(validRegisterRequest())
 	recorder := httptest.NewRecorder()
-	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/volunteers/register", bytes.NewReader(body)))
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/relays/register", bytes.NewReader(body)))
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", recorder.Code, recorder.Body.String())
 	}
@@ -253,7 +239,7 @@ func TestRegisterGeolocatesTunnelRelayByExitHostWithoutExposingIt(t *testing.T) 
 	req.ExitHost = "198.51.100.7" // relay's observed exit IP
 	body, _ := json.Marshal(req)
 	recorder := httptest.NewRecorder()
-	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/volunteers/register", bytes.NewReader(body)))
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/relays/register", bytes.NewReader(body)))
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", recorder.Code, recorder.Body.String())
 	}
@@ -281,7 +267,7 @@ func TestHeartbeatBackfillsRelayLocation(t *testing.T) {
 
 	body, _ := json.Marshal(validRegisterRequest())
 	recorder := httptest.NewRecorder()
-	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/volunteers/register", bytes.NewReader(body)))
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/relays/register", bytes.NewReader(body)))
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", recorder.Code, recorder.Body.String())
 	}
@@ -298,7 +284,7 @@ func TestHeartbeatBackfillsRelayLocation(t *testing.T) {
 	heartbeat := func() {
 		t.Helper()
 		heartbeatRecorder := httptest.NewRecorder()
-		server.ServeHTTP(heartbeatRecorder, httptest.NewRequest(http.MethodPost, "/api/v1/volunteers/"+desc.ID+"/heartbeat", nil))
+		server.ServeHTTP(heartbeatRecorder, httptest.NewRequest(http.MethodPost, "/api/v1/relays/"+desc.ID+"/heartbeat", nil))
 		if heartbeatRecorder.Code != http.StatusOK {
 			t.Fatalf("expected 200 heartbeat, got %d: %s", heartbeatRecorder.Code, heartbeatRecorder.Body.String())
 		}
@@ -359,15 +345,13 @@ func TestListRelaysIsNeverCacheable(t *testing.T) {
 	}
 }
 
-func TestHeartbeatRoutesRejectMissingOrMalformedRelays(t *testing.T) {
+func TestHeartbeatRouteRejectsMissingOrMalformedRelays(t *testing.T) {
 	tests := []struct {
 		name string
 		path string
 	}{
-		{name: "canonical missing relay", path: "/api/v1/relays/relay_missing/heartbeat"},
-		{name: "legacy missing relay", path: "/api/v1/volunteers/relay_missing/heartbeat"},
-		{name: "canonical malformed endpoint", path: "/api/v1/relays/relay_missing/pulse"},
-		{name: "legacy malformed endpoint", path: "/api/v1/volunteers/relay_missing/pulse"},
+		{name: "missing relay", path: "/api/v1/relays/relay_missing/heartbeat"},
+		{name: "malformed endpoint", path: "/api/v1/relays/relay_missing/pulse"},
 	}
 
 	for _, test := range tests {
@@ -379,35 +363,6 @@ func TestHeartbeatRoutesRejectMissingOrMalformedRelays(t *testing.T) {
 				t.Fatalf("expected 404, got %d: %s", recorder.Code, recorder.Body.String())
 			}
 		})
-	}
-}
-
-func TestRelayRouteAliasesShareRegistrationRateLimit(t *testing.T) {
-	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed()})
-
-	// Exhaust the registration budget through the legacy alias. Invalid JSON
-	// still consumes a token because limiting deliberately happens before body
-	// parsing and authentication.
-	exhausted := false
-	for i := 0; i < relayRegistrationBurst+32; i++ {
-		recorder := httptest.NewRecorder()
-		server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/volunteers/register", nil))
-		if recorder.Code == http.StatusTooManyRequests {
-			exhausted = true
-			break
-		}
-	}
-	if !exhausted {
-		t.Fatal("expected legacy route to exhaust the shared budget")
-	}
-
-	// The canonical alias must immediately see that exhausted bucket. Separate
-	// limiters would let callers double the effective registration budget by
-	// alternating route names.
-	recorder := httptest.NewRecorder()
-	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/relays/register", nil))
-	if recorder.Code != http.StatusTooManyRequests {
-		t.Fatalf("expected canonical route to share exhausted budget, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 }
 

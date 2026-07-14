@@ -8,7 +8,7 @@ import (
 
 func TestAuthorizedRejectsInvalidTokens(t *testing.T) {
 	withAuth := func(v string) *http.Request {
-		r := httptest.NewRequest(http.MethodPost, "/api/v1/volunteers/register", nil)
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/relays/register", nil)
 		if v != "" {
 			r.Header.Set("Authorization", v)
 		}
@@ -38,7 +38,7 @@ func TestServerRateLimitsRegister(t *testing.T) {
 	status := 0
 	for i := 0; i < relayRegistrationBurst+1; i++ {
 		recorder := httptest.NewRecorder()
-		server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/volunteers/register", nil))
+		server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/relays/register", nil))
 		status = recorder.Code
 		if i < relayRegistrationBurst && status == http.StatusTooManyRequests {
 			t.Fatalf("request %d inside burst unexpectedly limited", i+1)
