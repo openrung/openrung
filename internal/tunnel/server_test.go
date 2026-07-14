@@ -263,7 +263,7 @@ func TestHubReregistersWhenBrokerForgetsRelay(t *testing.T) {
 	echoHost, echoPort := startEchoServer(t)
 	registrar := &fakeRegistrar{
 		relayIDs:          []string{"relay_old", "relay_new"},
-		failHeartbeatOnce: fmt.Errorf("broker /api/v1/volunteers/relay_old/heartbeat: %w", ErrRelayNotFound),
+		failHeartbeatOnce: fmt.Errorf("broker /api/v1/relays/relay_old/heartbeat: %w", ErrRelayNotFound),
 		releaseHeartbeat:  make(chan struct{}),
 	}
 	hub, controlAddr, _ := startTestHub(t, registrar, "secret")

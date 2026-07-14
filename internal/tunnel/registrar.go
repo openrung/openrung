@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"openrung/internal/relay"
@@ -17,6 +19,11 @@ import (
 // longer knows the relay — e.g. an in-memory store lost it across a broker
 // restart. The caller should re-register rather than keep heartbeating.
 var ErrRelayNotFound = errors.New("relay not found")
+
+const (
+	maxBrokerErrorBodyBytes    = 64 << 10
+	legacyServeMuxNotFoundBody = "404 page not found\n"
+)
 
 // RelayRegistration is the result of registering a tunneled relay with the broker.
 type RelayRegistration struct {
@@ -33,13 +40,19 @@ type Registrar interface {
 	Heartbeat(ctx context.Context, relayID string) error
 }
 
-// brokerRegistrar registers relays over the broker's HTTP API using the same
-// bearer token volunteer-class relays use, reusing the relay.RegisterRequest/Descriptor
-// shapes from the existing register and heartbeat endpoints.
+// brokerRegistrar registers relays over the broker's canonical HTTP API using
+// the same bearer token volunteer-class relays use. It keeps the legacy route
+// family available for brokers that predate the canonical write endpoints.
 type brokerRegistrar struct {
 	brokerURL string
 	token     string
 	client    *http.Client
+
+	// legacyRoutes is broker-wide for this registrar: once either canonical
+	// write endpoint proves unavailable, registration and heartbeats both stay
+	// on the compatibility route family. Atomic state keeps concurrent hub
+	// registrations race-safe and the transition monotonic.
+	legacyRoutes atomic.Bool
 }
 
 // NewBrokerRegistrar builds a Registrar backed by the broker HTTP API.
@@ -47,16 +60,37 @@ func NewBrokerRegistrar(brokerURL, token string, client *http.Client) Registrar 
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Second}
 	}
+	// Broker write endpoints are canonical and must never redirect. Refusing
+	// redirects prevents forwarding the bearer token to another URL and ensures
+	// a redirected 404/405 cannot be mistaken for an unsupported route.
+	noRedirectClient := *client
+	noRedirectClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
 	return &brokerRegistrar{
 		brokerURL: strings.TrimRight(brokerURL, "/"),
 		token:     token,
-		client:    client,
+		client:    &noRedirectClient,
 	}
 }
 
 func (b *brokerRegistrar) Register(ctx context.Context, req relay.RegisterRequest) (RelayRegistration, error) {
+	if b.legacyRoutes.Load() {
+		return b.registerAt(ctx, "/api/v1/volunteers/register", req)
+	}
+
+	registration, err := b.registerAt(ctx, "/api/v1/relays/register", req)
+	if !isRouteUnsupported(err) {
+		return registration, err
+	}
+
+	b.legacyRoutes.Store(true)
+	return b.registerAt(ctx, "/api/v1/volunteers/register", req)
+}
+
+func (b *brokerRegistrar) registerAt(ctx context.Context, path string, req relay.RegisterRequest) (RelayRegistration, error) {
 	var desc relay.Descriptor
-	if err := b.postJSON(ctx, "/api/v1/volunteers/register", req, &desc); err != nil {
+	if err := b.postJSON(ctx, path, req, &desc); err != nil {
 		return RelayRegistration{}, err
 	}
 	return RelayRegistration{
@@ -68,8 +102,39 @@ func (b *brokerRegistrar) Register(ctx context.Context, req relay.RegisterReques
 }
 
 func (b *brokerRegistrar) Heartbeat(ctx context.Context, relayID string) error {
+	if b.legacyRoutes.Load() {
+		return b.heartbeatAt(ctx, "/api/v1/volunteers/", relayID)
+	}
+
+	err := b.heartbeatAt(ctx, "/api/v1/relays/", relayID)
+	if !isRouteUnsupported(err) {
+		return err
+	}
+
+	b.legacyRoutes.Store(true)
+	return b.heartbeatAt(ctx, "/api/v1/volunteers/", relayID)
+}
+
+func (b *brokerRegistrar) heartbeatAt(ctx context.Context, routeBase, relayID string) error {
 	var resp relay.HeartbeatResponse
-	return b.postJSON(ctx, "/api/v1/volunteers/"+relayID+"/heartbeat", map[string]bool{"ok": true}, &resp)
+	return b.postJSON(ctx, routeBase+relayID+"/heartbeat", map[string]bool{"ok": true}, &resp)
+}
+
+// brokerHTTPError is a non-2xx broker response.
+type brokerHTTPError struct {
+	path             string
+	statusCode       int
+	message          string
+	routeUnsupported bool
+}
+
+func (e *brokerHTTPError) Error() string {
+	return fmt.Sprintf("broker %s: %s", e.path, e.message)
+}
+
+func isRouteUnsupported(err error) bool {
+	var responseErr *brokerHTTPError
+	return errors.As(err, &responseErr) && responseErr.routeUnsupported
 }
 
 func (b *brokerRegistrar) postJSON(ctx context.Context, path string, body, out any) error {
@@ -91,15 +156,29 @@ func (b *brokerRegistrar) postJSON(ctx context.Context, path string, body, out a
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		errorBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBrokerErrorBodyBytes+1))
+		bodyWithinLimit := len(errorBody) <= maxBrokerErrorBodyBytes
 		var apiErr relay.ErrorResponse
-		_ = json.NewDecoder(resp.Body).Decode(&apiErr)
+		if readErr == nil && bodyWithinLimit {
+			_ = json.Unmarshal(errorBody, &apiErr)
+		}
 		if apiErr.Error == "" {
 			apiErr.Error = resp.Status
 		}
 		if resp.StatusCode == http.StatusNotFound && apiErr.Error == "relay not found" {
 			return fmt.Errorf("broker %s: %w", path, ErrRelayNotFound)
 		}
-		return fmt.Errorf("broker %s: %s", path, apiErr.Error)
+		mediaType, _, _ := strings.Cut(resp.Header.Get("Content-Type"), ";")
+		legacyMux404 := resp.StatusCode == http.StatusNotFound &&
+			readErr == nil && bodyWithinLimit &&
+			strings.EqualFold(strings.TrimSpace(mediaType), "text/plain") &&
+			bytes.Equal(errorBody, []byte(legacyServeMuxNotFoundBody))
+		return &brokerHTTPError{
+			path:             path,
+			statusCode:       resp.StatusCode,
+			message:          apiErr.Error,
+			routeUnsupported: resp.StatusCode == http.StatusMethodNotAllowed || legacyMux404,
+		}
 	}
 	if out != nil {
 		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {

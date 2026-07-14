@@ -87,9 +87,12 @@ volunteer-run relays online:
 - The hub allocates one public TCP port per relay, registers the relay with
   the broker (with `transport: "tunnel"` and `public_host`/`public_port` pointing
   at the hub), and multiplexes inbound client connections to the relay over the
-  tunnel using yamux. The current hub calls the legacy
-  `POST /api/v1/volunteers/register` compatibility alias; the broker also accepts
-  the canonical `POST /api/v1/relays/register` route with identical behavior.
+  tunnel using yamux. The hub prefers the canonical
+  `POST /api/v1/relays/register` route. If a broker reports that route unsupported
+  with the old ServeMux's route-missing `404` response or with `405`, the hub
+  selects the legacy `POST /api/v1/volunteers/register` compatibility alias for
+  subsequent registrations and heartbeats. Other broker errors never trigger
+  fallback.
   Clients connect to `hub:port` exactly as they would any direct relay — no client
   changes.
 - Descriptor liveness is tied to the tunnel: the hub heartbeats while the tunnel
