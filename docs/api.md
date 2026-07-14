@@ -210,9 +210,7 @@ Authorization: Bearer <registration-token>
 Content-Type: application/json
 ```
 
-The legacy `POST /api/v1/volunteers/register` path is retained as a
-compatibility alias with identical authentication, rate limiting, validation,
-and response behavior. It has no scheduled removal date. Both paths register
+This is the only supported relay registration route. It registers both
 `volunteer`-class and `foundation`-class relays.
 
 Request:
@@ -334,10 +332,6 @@ resolves.
 POST /api/v1/relays/{id}/heartbeat
 Authorization: Bearer <registration-token>
 ```
-
-The legacy `POST /api/v1/volunteers/{id}/heartbeat` path is retained as a
-compatibility alias with identical authentication, rate limiting, validation,
-and response behavior. It has no scheduled removal date.
 
 Response:
 

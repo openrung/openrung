@@ -37,14 +37,11 @@ func freePort(t *testing.T) int {
 	return port
 }
 
-// fakeBroker implements only the canonical relay endpoints with configurable
-// heartbeat failures. Legacy requests are recorded so the integration test can
-// prove the desktop engine does not need compatibility routing on a new broker.
+// fakeBroker implements the relay endpoints with configurable heartbeat failures.
 type fakeBroker struct {
 	mu           sync.Mutex
 	registers    int
 	heartbeats   int
-	legacyCalls  int
 	nextRelayID  int
 	lastRegister relay.RegisterRequest
 	// notFoundOnce makes the next heartbeat return the broker's pruned-relay
@@ -79,12 +76,6 @@ func (f *fakeBroker) handler() http.Handler {
 		}
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	})
-	mux.HandleFunc("/api/v1/volunteers/", func(w http.ResponseWriter, _ *http.Request) {
-		f.mu.Lock()
-		f.legacyCalls++
-		f.mu.Unlock()
-		http.Error(w, "legacy route used", http.StatusInternalServerError)
-	})
 	return mux
 }
 
@@ -92,12 +83,6 @@ func (f *fakeBroker) stats() (registers, heartbeats int, last relay.RegisterRequ
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.registers, f.heartbeats, f.lastRegister
-}
-
-func (f *fakeBroker) legacyCallCount() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.legacyCalls
 }
 
 func eventually(t *testing.T, timeout time.Duration, what string, cond func() bool) {
@@ -177,10 +162,6 @@ func TestDirectSessionRegistersAndRecovers(t *testing.T) {
 	if last.Label != "test-relay" {
 		t.Fatalf("registered label = %q", last.Label)
 	}
-	if legacyCalls := broker.legacyCallCount(); legacyCalls != 0 {
-		t.Fatalf("legacy broker calls = %d, want 0", legacyCalls)
-	}
-
 	mu.Lock()
 	sawRegistering := false
 	for _, s := range statuses {

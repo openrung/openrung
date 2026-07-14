@@ -15,16 +15,11 @@ import (
 
 func postRegister(t *testing.T, server http.Handler, req relay.RegisterRequest, bearer string) *httptest.ResponseRecorder {
 	t.Helper()
-	return postRegisterAt(t, server, "/api/v1/volunteers/register", req, bearer)
-}
-
-func postRegisterAt(t *testing.T, server http.Handler, path string, req relay.RegisterRequest, bearer string) *httptest.ResponseRecorder {
-	t.Helper()
 	body, err := json.Marshal(req)
 	if err != nil {
 		t.Fatalf("marshal register request: %v", err)
 	}
-	httpReq := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+	httpReq := httptest.NewRequest(http.MethodPost, "/api/v1/relays/register", bytes.NewReader(body))
 	if bearer != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+bearer)
 	}
@@ -60,14 +55,7 @@ func TestRegisterDefaultsNodeClassVolunteer(t *testing.T) {
 	}
 }
 
-func TestRegisterRouteAliasesPreserveNodeClassAuthorization(t *testing.T) {
-	routes := []struct {
-		name string
-		path string
-	}{
-		{name: "canonical", path: "/api/v1/relays/register"},
-		{name: "legacy", path: "/api/v1/volunteers/register"},
-	}
+func TestRegisterPreservesNodeClassAuthorization(t *testing.T) {
 	tests := []struct {
 		name          string
 		bearer        string
@@ -101,27 +89,25 @@ func TestRegisterRouteAliasesPreserveNodeClassAuthorization(t *testing.T) {
 		},
 	}
 
-	for _, route := range routes {
-		for _, test := range tests {
-			t.Run(route.name+"/"+test.name, func(t *testing.T) {
-				server := NewServer(NewStore(), Config{
-					SigningSeed:       testSigningSeed(),
-					RegistrationToken: "volunteer-token",
-					FoundationToken:   "foundation-token",
-				})
-				req := validRegisterRequest()
-				req.NodeClass = test.claimClass
-				recorder := postRegisterAt(t, server, route.path, req, test.bearer)
-				if recorder.Code != test.wantStatus {
-					t.Fatalf("expected %d, got %d: %s", test.wantStatus, recorder.Code, recorder.Body.String())
-				}
-				if test.wantStatus == http.StatusCreated {
-					if desc := decodeDescriptor(t, recorder); desc.NodeClass != test.wantNodeClass {
-						t.Fatalf("node_class = %q, want %q", desc.NodeClass, test.wantNodeClass)
-					}
-				}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := NewServer(NewStore(), Config{
+				SigningSeed:       testSigningSeed(),
+				RegistrationToken: "volunteer-token",
+				FoundationToken:   "foundation-token",
 			})
-		}
+			req := validRegisterRequest()
+			req.NodeClass = test.claimClass
+			recorder := postRegister(t, server, req, test.bearer)
+			if recorder.Code != test.wantStatus {
+				t.Fatalf("expected %d, got %d: %s", test.wantStatus, recorder.Code, recorder.Body.String())
+			}
+			if test.wantStatus == http.StatusCreated {
+				if desc := decodeDescriptor(t, recorder); desc.NodeClass != test.wantNodeClass {
+					t.Fatalf("node_class = %q, want %q", desc.NodeClass, test.wantNodeClass)
+				}
+			}
+		})
 	}
 }
 
@@ -239,7 +225,7 @@ func TestHeartbeatAcceptsFoundationToken(t *testing.T) {
 	}
 	desc := decodeDescriptor(t, recorder)
 
-	heartbeat := httptest.NewRequest(http.MethodPost, "/api/v1/volunteers/"+desc.ID+"/heartbeat", nil)
+	heartbeat := httptest.NewRequest(http.MethodPost, "/api/v1/relays/"+desc.ID+"/heartbeat", nil)
 	heartbeat.Header.Set("Authorization", "Bearer foundation-token")
 	heartbeatRecorder := httptest.NewRecorder()
 	server.ServeHTTP(heartbeatRecorder, heartbeat)
@@ -248,7 +234,7 @@ func TestHeartbeatAcceptsFoundationToken(t *testing.T) {
 	}
 }
 
-func TestCanonicalHeartbeatEnforcesFoundationToken(t *testing.T) {
+func TestHeartbeatEnforcesFoundationToken(t *testing.T) {
 	server := NewServer(NewStore(), Config{
 		SigningSeed:       testSigningSeed(),
 		RegistrationToken: "volunteer-token",
@@ -257,7 +243,7 @@ func TestCanonicalHeartbeatEnforcesFoundationToken(t *testing.T) {
 
 	req := validRegisterRequest()
 	req.NodeClass = relay.NodeClassFoundation
-	recorder := postRegisterAt(t, server, "/api/v1/relays/register", req, "foundation-token")
+	recorder := postRegister(t, server, req, "foundation-token")
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("register: expected 201, got %d: %s", recorder.Code, recorder.Body.String())
 	}
@@ -283,7 +269,7 @@ func TestCanonicalHeartbeatEnforcesFoundationToken(t *testing.T) {
 
 func TestCredentialNodeClass(t *testing.T) {
 	withAuth := func(v string) *http.Request {
-		r := httptest.NewRequest(http.MethodPost, "/api/v1/volunteers/register", nil)
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/relays/register", nil)
 		if v != "" {
 			r.Header.Set("Authorization", v)
 		}
@@ -376,14 +362,14 @@ func TestHeartbeatForbiddenForFoundationRelayWithoutFoundationCredential(t *test
 
 	// Anonymous heartbeat (valid volunteer-class credential on this open broker)
 	// must not extend a foundation relay's lease.
-	anonymous := httptest.NewRequest(http.MethodPost, "/api/v1/volunteers/"+desc.ID+"/heartbeat", nil)
+	anonymous := httptest.NewRequest(http.MethodPost, "/api/v1/relays/"+desc.ID+"/heartbeat", nil)
 	anonymousRecorder := httptest.NewRecorder()
 	server.ServeHTTP(anonymousRecorder, anonymous)
 	if anonymousRecorder.Code != http.StatusForbidden {
 		t.Fatalf("anonymous heartbeat: expected 403, got %d: %s", anonymousRecorder.Code, anonymousRecorder.Body.String())
 	}
 
-	authorized := httptest.NewRequest(http.MethodPost, "/api/v1/volunteers/"+desc.ID+"/heartbeat", nil)
+	authorized := httptest.NewRequest(http.MethodPost, "/api/v1/relays/"+desc.ID+"/heartbeat", nil)
 	authorized.Header.Set("Authorization", "Bearer foundation-token")
 	authorizedRecorder := httptest.NewRecorder()
 	server.ServeHTTP(authorizedRecorder, authorized)

@@ -7,12 +7,7 @@ carried the high-value **Foundation registration token** (the `Authorization`
 header on relay registration requests) in cleartext across the public internet.
 This runbook closes that leg with a TLS-terminating reverse proxy on the broker
 box so the token is encrypted **relay → CloudFront edge → origin**. Current
-relays use `POST /api/v1/relays/register`; older runtimes used the compatibility
-path below.
-
-The legacy `POST /api/v1/volunteers/register` route reaches the same handler and
-is retained as a compatibility alias with no scheduled removal date. New
-operational checks should use the canonical relay route shown here.
+relays use the canonical `POST /api/v1/relays/register` route.
 
 ```
 relay ──HTTPS──► CloudFront edge ──HTTPS(:443)──► Caddy ──HTTP(127.0.0.1:8080)──► broker
