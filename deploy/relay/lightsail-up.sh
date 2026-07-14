@@ -23,10 +23,7 @@ REGION="${OPENRUNG_REGION:-ap-northeast-1}"
 AZ="${OPENRUNG_AZ:-${REGION}a}"
 BUNDLE="${OPENRUNG_BUNDLE:-micro_3_0}"          # 1GB RAM / 2 vCPU / 40GB / 2TB
 BLUEPRINT="${OPENRUNG_BLUEPRINT:-ubuntu_24_04}"
-# Keep anonymous bootstrap on the existing public package until openrung-relay
-# has been published, made public, and anonymously verified. CI publishes both
-# package names from one build, so they resolve to the same multi-arch manifest.
-IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-volunteer:main}"
+IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-relay:main}"
 BROKER_URL="${OPENRUNG_BROKER_URL:-http://54.238.185.205:8080}"
 
 if [ "${OPENRUNG_VOLUNTEER_TOKEN+x}" = x ] || [ "${OPENRUNG_FOUNDATION_TOKEN+x}" = x ] || [ "${OPENRUNG_NODE_CLASS+x}" = x ]; then
