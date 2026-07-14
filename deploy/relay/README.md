@@ -2,14 +2,34 @@
 
 A self-contained image for running an OpenRung relay on a cloud VPS (AWS EC2,
 DigitalOcean, Hetzner, Linode, …). The same runtime serves Foundation-operated
-and volunteer-run relays. The image bundles the legacy-named `volunteer` binary
-and a pinned [Xray-core](https://github.com/XTLS/Xray-core); it is configured
-entirely through environment variables.
+and volunteer-run relays. The image bundles the `relay` binary and a pinned
+[Xray-core](https://github.com/XTLS/Xray-core); it is configured entirely
+through environment variables.
+
+## Migrating from `deploy/volunteer`
+
+The repository rename cannot move an ignored `.env` file. Preserve the existing
+registration credentials and stable relay identity **before** stopping the old
+container; do not replace them with a fresh `.env.example`:
+
+```sh
+# Run from the repository root while the old container is still serving.
+install -m 0600 deploy/volunteer/.env deploy/relay/.env
+docker compose -f deploy/relay/docker-compose.yml config -q
+docker compose -f deploy/relay/docker-compose.yml build
+
+# Only cut over after the canonical config and image build both succeed.
+docker rm -f openrung-volunteer 2>/dev/null || true
+docker compose -f deploy/relay/docker-compose.yml up -d
+```
+
+Keep the old `.env` securely until the canonical container has registered and
+heartbeats normally, so it remains available for rollback.
 
 ## TL;DR
 
 ```sh
-cd deploy/volunteer
+cd deploy/relay
 cp .env.example .env          # edit: set OPENRUNG_BROKER_URL and OPENRUNG_PUBLIC_HOST
 docker compose up -d --build
 docker compose logs -f        # expect: registered relay … / heartbeat ok
@@ -75,7 +95,7 @@ Generate one once and paste the values into `.env`
 `OPENRUNG_SHORT_ID`):
 
 ```sh
-docker run --rm --entrypoint xray openrung-volunteer:latest x25519
+docker run --rm --entrypoint xray openrung-relay:latest x25519
 ```
 
 (`x25519` prints the Reality key pair; pick a random 16-hex-char `short-id` and any
@@ -94,16 +114,19 @@ lets the connection log show real client IPs (Docker's bridge NAT would mask the
 docker compose up -d --build
 ```
 
+If this host previously used the legacy Compose project, follow the migration
+procedure above; the old and new host-network containers cannot share port 443.
+
 ### Plain `docker run`
 
 ```sh
-docker build -f deploy/volunteer/Dockerfile -t openrung-volunteer .   # from repo root
-docker run -d --name openrung-volunteer --restart unless-stopped \
+docker build -f deploy/relay/Dockerfile -t openrung-relay .   # from repo root
+docker run -d --name openrung-relay --restart unless-stopped \
   --network host --cap-drop ALL --cap-add NET_BIND_SERVICE \
   --read-only --tmpfs /tmp \
   -e OPENRUNG_BROKER_URL=https://broker.example.com \
   -e OPENRUNG_PUBLIC_HOST=2001:db8::1234 \
-  openrung-volunteer
+  openrung-relay
 ```
 
 ### Pull a pre-built image
@@ -111,8 +134,15 @@ docker run -d --name openrung-volunteer --restart unless-stopped \
 If you publish via the CI workflow, pull instead of building:
 
 ```sh
-docker pull ghcr.io/<owner>/openrung-volunteer:latest
+docker pull ghcr.io/openrung/openrung-relay:main
 ```
+
+The `openrung-relay` GHCR package must be **public** before unauthenticated relay
+hosts can pull it. After its first workflow publication, verify the package
+visibility under the OpenRung organization’s **Packages** settings, then verify
+an unauthenticated pull. Until that gate passes, the cloud provisioning helpers
+default to the public `openrung-volunteer` compatibility package; CI publishes
+it from the same build and verifies that both package names have the same digest.
 
 ## Networking notes
 

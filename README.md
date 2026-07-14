@@ -124,7 +124,7 @@ protected in transit.
 ### Run a relay
 
 ```sh
-go run ./cmd/volunteer \
+go run ./cmd/relay \
   -broker http://localhost:8080 \
   -public-port 443 \
   -listen-port 443 \
@@ -170,7 +170,7 @@ Then run the relay in tunnel mode — it binds Xray to loopback and dials the hu
 instead of exposing a port (no `-public-host` needed):
 
 ```sh
-go run ./cmd/volunteer -tunnel -hub hub.example.com:9443 -xray /path/to/xray
+go run ./cmd/relay -tunnel -hub hub.example.com:9443 -xray /path/to/xray
 ```
 
 All traffic for a CGNAT relay transits the hub, so keep the relay path opt-in
@@ -196,7 +196,7 @@ retired from this one.
 
 ```text
 cmd/broker/          Broker HTTP API (control plane).
-cmd/volunteer/       Relay CLI for Xray-backed registration (legacy path name).
+cmd/relay/           Relay CLI for Xray-backed registration.
 cmd/relayhub/        Relay hub for CGNAT volunteer-run relays
                      (reverse-tunnel data plane).
 cmd/client/          Desktop CLI client.
@@ -207,7 +207,7 @@ internal/punch/      NAT hole-punch QUIC layer (session, transport, bridges) ove
 internal/relay/      Shared relay descriptor models.
 internal/relayhub/   Relay hub configuration.
 internal/tunnel/     Reverse-tunnel transport (hub + relay client, yamux).
-internal/volunteer/  Relay Xray config helpers (legacy package name).
+internal/relayruntime/  Relay runtime, Xray config, and broker client helpers.
 punchcore/           Shared NAT hole-punch protocol core (nested Go module
                      github.com/openrung/openrung/punchcore) consumed by the
                      servers, the desktop client, and the mobile app's binding.

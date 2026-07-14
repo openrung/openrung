@@ -1,6 +1,6 @@
 #!/bin/sh
 # Translate OPENRUNG_* environment variables into relay CLI flags, then exec the
-# legacy-named binary so it receives SIGTERM directly for a clean shutdown.
+# relay binary so it receives SIGTERM directly for a clean shutdown.
 set -eu
 
 # Resolve the connection mode the same way the binary's normalizeMode does:
@@ -40,12 +40,12 @@ fi
 case "$mode" in
   tunnel | direct | auto) ;;
   *)
-    echo "openrung-volunteer: OPENRUNG_MODE must be auto, direct, or tunnel (got '${OPENRUNG_MODE:-}')" >&2
+    echo "openrung-relay: OPENRUNG_MODE must be auto, direct, or tunnel (got '${OPENRUNG_MODE:-}')" >&2
     exit 2
     ;;
 esac
 
-set -- /usr/local/bin/volunteer \
+set -- /usr/local/bin/relay \
   -mode "$mode" \
   -xray "${OPENRUNG_XRAY_PATH:-/usr/local/bin/xray}" \
   -config-out "${OPENRUNG_CONFIG_OUT:-/tmp/openrung-xray-config.json}"
@@ -95,7 +95,7 @@ case "$mode" in
     ;;
 esac
 
-echo "openrung-volunteer: mode=${mode}${OPENRUNG_HUB_ADDR:+ hub=${OPENRUNG_HUB_ADDR}}${OPENRUNG_BROKER_URL:+ broker=${OPENRUNG_BROKER_URL}}" >&2
+echo "openrung-relay: mode=${mode}${OPENRUNG_HUB_ADDR:+ hub=${OPENRUNG_HUB_ADDR}}${OPENRUNG_BROKER_URL:+ broker=${OPENRUNG_BROKER_URL}}" >&2
 
 # --- Optional flags shared by all modes (appended only when the env var is set) ---
 if [ -n "${OPENRUNG_SERVER_NAME:-}" ]; then set -- "$@" -server-name "${OPENRUNG_SERVER_NAME}"; fi

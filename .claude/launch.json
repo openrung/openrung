@@ -26,11 +26,11 @@
       "port": 8093
     },
     {
-      "name": "volunteer",
+      "name": "relay",
       "runtimeExecutable": "go",
       "runtimeArgs": [
         "run",
-        "./cmd/volunteer",
+        "./cmd/relay",
         "-broker",
         "http://localhost:8080",
         "-public-host",

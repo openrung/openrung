@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"time"
 
-	"openrung/internal/volunteer"
+	"openrung/internal/relayruntime"
 )
 
 // resolveAutoMode runs the startup reachability probe and mutates cfg to either
@@ -17,11 +17,11 @@ import (
 // all (hub HTTP API down) is inconclusive and defaults to tunnel, since tunnel
 // mode's reconnect loop tolerates a temporarily-unavailable hub.
 func resolveAutoMode(ctx context.Context, cfg *cliConfig) {
-	hubHTTP := volunteer.DeriveHubHTTPBase(cfg.HubHTTP, cfg.HubAddr, cfg.HubTLS)
+	hubHTTP := relayruntime.DeriveHubHTTPBase(cfg.HubHTTP, cfg.HubAddr, cfg.HubTLS)
 	port := cfg.ListenPort
 	slog.Info("auto-detecting reachability", "hub_http", hubHTTP, "probe_port", port)
 
-	reachable, observed, err := volunteer.DetectDirectReachable(ctx, hubHTTP, cfg.RegistrationToken, cfg.ListenHost, port, probeHTTPClient(cfg))
+	reachable, observed, err := relayruntime.DetectDirectReachable(ctx, hubHTTP, cfg.RegistrationToken, cfg.ListenHost, port, probeHTTPClient(cfg))
 	if err != nil {
 		slog.Warn("reachability probe unavailable; defaulting to tunnel mode", "error", err)
 		cfg.TunnelMode = true

@@ -37,7 +37,7 @@ The broker should avoid storing:
 
 ## Relay Hardening
 
-The relay CLI (currently `cmd/volunteer`) should eventually support:
+The relay CLI (`cmd/relay`) should eventually support:
 
 - OS-level firewall policy generation.
 - Bandwidth ceilings.

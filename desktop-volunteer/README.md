@@ -2,7 +2,7 @@
 
 A cross-platform GUI (macOS / Linux / Windows) that lets home users volunteer
 their computer as an OpenRung relay — the same relay that powers the Docker
-deployment (`deploy/volunteer/`), wrapped in a point-and-click app with
+deployment (`deploy/relay/`), wrapped in a point-and-click app with
 start/stop, live status, and settings.
 
 ## Architecture
@@ -11,7 +11,7 @@ The UI is a Wails v2 app with a React frontend (`frontend/`), the same stack
 as the sibling desktop client (`desktop/`). `volunteerservice/` is the
 Wails-bound bridge — it owns settings persistence, state events, and log
 capture, and stays free of Wails imports so it is unit-testable.
-Underneath, the embedded relay engine from `internal/volunteer/engine`
+Underneath, the embedded relay engine from `internal/relayruntime/engine`
 registers with the broker and drives a bundled, external
 [Xray-core](https://github.com/XTLS/Xray-core) (`xray`) process for the
 VLESS + REALITY data plane.
@@ -50,7 +50,7 @@ unmodified and run as a separate process (aggregation, not linking). See
 
 CI (`.github/workflows/volunteer-desktop-release.yml`) builds all three
 platforms with a pinned Xray-core (v26.3.27, same pin as
-`deploy/volunteer/Dockerfile`), SHA-256-verified against the release `.dgst`
+`deploy/relay/Dockerfile`), SHA-256-verified against the release `.dgst`
 on every platform. Push a `volunteer-vX.Y.Z` tag to publish a GitHub release
 with all three artifacts; a manual `workflow_dispatch` run builds artifacts
 only.

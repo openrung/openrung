@@ -2,7 +2,7 @@
 #
 # Provision an OpenRung volunteer-run relay on AWS Lightsail.
 #
-#   deploy/volunteer/lightsail-up.sh [name]
+#   deploy/relay/lightsail-up.sh [name]
 #
 # If no name is given, a random "adjective-noun" name is generated and used as
 # BOTH the Lightsail instance name and the relay label (OPENRUNG_LABEL), so the
@@ -23,6 +23,9 @@ REGION="${OPENRUNG_REGION:-ap-northeast-1}"
 AZ="${OPENRUNG_AZ:-${REGION}a}"
 BUNDLE="${OPENRUNG_BUNDLE:-micro_3_0}"          # 1GB RAM / 2 vCPU / 40GB / 2TB
 BLUEPRINT="${OPENRUNG_BLUEPRINT:-ubuntu_24_04}"
+# Keep anonymous bootstrap on the existing public package until openrung-relay
+# has been published, made public, and anonymously verified. CI publishes both
+# package names from one build, so they resolve to the same multi-arch manifest.
 IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-volunteer:main}"
 BROKER_URL="${OPENRUNG_BROKER_URL:-http://54.238.185.205:8080}"
 
@@ -75,8 +78,10 @@ apt-get -o DPkg::Lock::Timeout=300 update
 apt-get -o DPkg::Lock::Timeout=300 install -y docker.io
 systemctl enable --now docker
 docker pull ${IMAGE}
-docker rm -f openrung-volunteer 2>/dev/null || true
-docker run -d --name openrung-volunteer --restart unless-stopped \\
+# Remove both names during the artifact migration so a stale host-network relay
+# cannot retain port 443 or keep a duplicate broker registration.
+docker rm -f openrung-relay openrung-volunteer 2>/dev/null || true
+docker run -d --name openrung-relay --restart unless-stopped \\
   --network host --cap-drop ALL --cap-add NET_BIND_SERVICE --read-only --tmpfs /tmp \\
   -e OPENRUNG_BROKER_URL=${BROKER_URL} \\
   -e OPENRUNG_PUBLIC_HOST=${STATIC_IP} \\

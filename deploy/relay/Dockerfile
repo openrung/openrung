@@ -1,16 +1,15 @@
 # syntax=docker/dockerfile:1
 #
-# OpenRung relay runtime — a self-contained image bundling the legacy-named
-# legacy-named `volunteer` binary and a pinned Xray-core. Build from the repository
-# ROOT so the Go
-# sources are in the build context:
+# OpenRung relay runtime — a self-contained image bundling the `relay` binary
+# and a pinned Xray-core. Build from the repository ROOT so the Go sources are
+# in the build context:
 #
-#   docker build -f deploy/volunteer/Dockerfile -t openrung-volunteer .
+#   docker build -f deploy/relay/Dockerfile -t openrung-relay .
 #
 # Multi-arch (amd64 + arm64) via buildx:
 #
 #   docker buildx build --platform linux/amd64,linux/arm64 \
-#     -f deploy/volunteer/Dockerfile -t <registry>/openrung-volunteer .
+#     -f deploy/relay/Dockerfile -t <registry>/openrung-relay .
 
 ARG XRAY_VERSION=v26.3.27
 
@@ -41,7 +40,7 @@ RUN set -eux; \
     unzip -o /tmp/xray.zip LICENSE README.md -d /xray-licenses; \
     chmod +x /xray/xray
 
-# --- Stage 2: build the relay binary (legacy output name; cross-compiled, no cgo) ---
+# --- Stage 2: build the relay binary (cross-compiled, no cgo) ---
 FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -53,7 +52,7 @@ COPY . .
 ARG TARGETARCH
 ARG TARGETOS=linux
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -trimpath -ldflags="-s -w" -o /out/volunteer ./cmd/volunteer
+    go build -trimpath -ldflags="-s -w" -o /out/relay ./cmd/relay
 
 # --- Stage 3: minimal runtime ---
 FROM alpine:3.21
@@ -62,14 +61,14 @@ FROM alpine:3.21
 # and MIT/BSD components. See /usr/local/share/openrung/THIRD_PARTY_NOTICES.md.
 LABEL org.opencontainers.image.source="https://github.com/openrung/openrung" \
       org.opencontainers.image.licenses="GPL-3.0-or-later AND MPL-2.0 AND GPL-2.0-only AND CC-BY-SA-4.0 AND MIT AND BSD-3-Clause" \
-      org.opencontainers.image.title="openrung-volunteer"
+      org.opencontainers.image.title="openrung-relay"
 RUN apk add --no-cache ca-certificates tzdata \
     && addgroup -S openrung \
     && adduser -S -G openrung openrung
 COPY --from=xray /xray/ /usr/local/bin/
 COPY --from=xray /xray-licenses/ /usr/local/share/openrung/xray/
-COPY --from=build /out/volunteer /usr/local/bin/volunteer
-COPY deploy/volunteer/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY --from=build /out/relay /usr/local/bin/relay
+COPY deploy/relay/entrypoint.sh /usr/local/bin/entrypoint.sh
 # Third-party attribution + GPL/MPL source offers travel with the distributed image.
 COPY THIRD_PARTY_NOTICES.md /usr/local/share/openrung/THIRD_PARTY_NOTICES.md
 # Let the non-root relay process bind the privileged public port (443). Pairs with
@@ -77,7 +76,8 @@ COPY THIRD_PARTY_NOTICES.md /usr/local/share/openrung/THIRD_PARTY_NOTICES.md
 # under no-new-privileges, so do not enable that flag for this image (or switch
 # to a public port >= 1024 and run with zero capabilities instead).
 RUN apk add --no-cache --virtual .setcap libcap \
-    && setcap 'cap_net_bind_service=+ep' /usr/local/bin/volunteer \
+    && setcap 'cap_net_bind_service=+ep' /usr/local/bin/relay \
+    && getcap /usr/local/bin/relay | grep -q 'cap_net_bind_service=ep' \
     && apk del .setcap \
     && chmod +x /usr/local/bin/entrypoint.sh
 USER openrung

@@ -36,7 +36,7 @@ func yamuxConfig() *yamux.Config {
 
 // pipe copies bytes in both directions between two connections until either side
 // closes, then closes both. Mirrors the forwarding pattern in
-// internal/volunteer/connection_observer.go.
+// internal/relayruntime/connection_observer.go.
 func pipe(a, b net.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(2)

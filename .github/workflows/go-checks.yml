@@ -96,7 +96,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [broker, relayhub, volunteer]
+        image: [broker, relayhub, relay]
     steps:
       - uses: actions/checkout@v4
 

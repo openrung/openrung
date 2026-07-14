@@ -46,7 +46,7 @@ docker compose logs -f
 ```
 
 Then start a CGNAT volunteer-run relay pointing at this hub (see
-`deploy/volunteer/.env.example`):
+`deploy/relay/.env.example`):
 
 ```sh
 OPENRUNG_TUNNEL=true

@@ -253,7 +253,7 @@ claim is only accepted when the request presents the broker's
 The foundation token bounds the claimable class without forcing it — its holder
 may still register `volunteer` relays, but routine volunteer-class relay and hub
 traffic should use the volunteer token so the privileged bearer stays out of
-the hub path. On the shipped relay executable (`cmd/volunteer`), presenting
+the hub path. On the shipped relay executable (`cmd/relay`), presenting
 `OPENRUNG_FOUNDATION_TOKEN` is self-contained: it **forces** direct mode,
 overriding any `auto`/`tunnel` setting, so operators do not configure the mode
 themselves and the bearer never reaches a hub probe. (The hub path would receive
