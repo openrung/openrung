@@ -16,6 +16,7 @@ import (
 
 	"openrung/internal/relay"
 	"openrung/internal/tunnel"
+	"openrung/internal/volunteer"
 )
 
 var testIdentity = Identity{
@@ -36,12 +37,14 @@ func freePort(t *testing.T) int {
 	return port
 }
 
-// fakeBroker implements the two legacy-named relay endpoints with configurable
-// heartbeat failures.
+// fakeBroker implements only the canonical relay endpoints with configurable
+// heartbeat failures. Legacy requests are recorded so the integration test can
+// prove the desktop engine does not need compatibility routing on a new broker.
 type fakeBroker struct {
 	mu           sync.Mutex
 	registers    int
 	heartbeats   int
+	legacyCalls  int
 	nextRelayID  int
 	lastRegister relay.RegisterRequest
 	// notFoundOnce makes the next heartbeat return the broker's pruned-relay
@@ -51,7 +54,7 @@ type fakeBroker struct {
 
 func (f *fakeBroker) handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/volunteers/register", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/relays/register", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.registers++
 		f.nextRelayID++
@@ -63,7 +66,7 @@ func (f *fakeBroker) handler() http.Handler {
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(relay.Descriptor{ID: id, Label: req.Label, PublicHost: req.PublicHost, PublicPort: req.PublicPort})
 	})
-	mux.HandleFunc("/api/v1/volunteers/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/relays/", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.heartbeats++
 		notFound := f.notFoundOnce
@@ -76,6 +79,12 @@ func (f *fakeBroker) handler() http.Handler {
 		}
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	})
+	mux.HandleFunc("/api/v1/volunteers/", func(w http.ResponseWriter, _ *http.Request) {
+		f.mu.Lock()
+		f.legacyCalls++
+		f.mu.Unlock()
+		http.Error(w, "legacy route used", http.StatusInternalServerError)
+	})
 	return mux
 }
 
@@ -83,6 +92,12 @@ func (f *fakeBroker) stats() (registers, heartbeats int, last relay.RegisterRequ
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.registers, f.heartbeats, f.lastRegister
+}
+
+func (f *fakeBroker) legacyCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.legacyCalls
 }
 
 func eventually(t *testing.T, timeout time.Duration, what string, cond func() bool) {
@@ -125,9 +140,10 @@ func TestDirectSessionRegistersAndRecovers(t *testing.T) {
 	// session's public host through the auto-mode "observed" path instead by
 	// injecting a fast heartbeat and running the exported surface only.
 	eng.cfg.HeartbeatInterval = 50 * time.Millisecond
+	brokerClient := &volunteer.BrokerClient{BaseURL: ts.URL}
 	// Bypass IPv6 detection: pretend probing already resolved us.
 	go func() {
-		_ = eng.runDirectSession(context.Background(), eng.cfg, "test-relay", testIdentity, "127.0.0.1")
+		_ = eng.runDirectSession(context.Background(), brokerClient, eng.cfg, "test-relay", testIdentity, "127.0.0.1")
 	}()
 
 	eventually(t, 5*time.Second, "online status", func() bool {
@@ -160,6 +176,9 @@ func TestDirectSessionRegistersAndRecovers(t *testing.T) {
 	}
 	if last.Label != "test-relay" {
 		t.Fatalf("registered label = %q", last.Label)
+	}
+	if legacyCalls := broker.legacyCallCount(); legacyCalls != 0 {
+		t.Fatalf("legacy broker calls = %d, want 0", legacyCalls)
 	}
 
 	mu.Lock()

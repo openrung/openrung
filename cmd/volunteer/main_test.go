@@ -16,9 +16,9 @@ func TestHeartbeatOrRegisterRecoversForgottenRelay(t *testing.T) {
 	var registrations atomic.Int32
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		switch r.URL.Path {
-		case "/api/v1/volunteers/relay_old/heartbeat":
+		case "/api/v1/relays/relay_old/heartbeat":
 			return jsonResponse(http.StatusNotFound, `{"error":"relay not found"}`), nil
-		case "/api/v1/volunteers/register":
+		case "/api/v1/relays/register":
 			registrations.Add(1)
 			return jsonResponse(http.StatusCreated, `{"id":"relay_new","public_host":"relay.example","public_port":443}`), nil
 		default:
@@ -27,7 +27,8 @@ func TestHeartbeatOrRegisterRecoversForgottenRelay(t *testing.T) {
 	})}
 
 	cfg := cliConfig{BrokerURL: "http://broker.test", PublicHost: "relay.example", PublicPort: 443, HTTPClient: client}
-	desc, reRegistered, err := heartbeatOrRegister(context.Background(), cfg, preparedRuntime{}, relay.Descriptor{ID: "relay_old"})
+	broker := cfg.brokerClient()
+	desc, reRegistered, err := heartbeatOrRegister(context.Background(), broker, cfg, preparedRuntime{}, relay.Descriptor{ID: "relay_old"})
 	if err != nil {
 		t.Fatalf("heartbeatOrRegister() error = %v", err)
 	}
@@ -45,15 +46,16 @@ func TestHeartbeatOrRegisterRecoversForgottenRelay(t *testing.T) {
 func TestHeartbeatOrRegisterDoesNotRegisterOnOtherErrors(t *testing.T) {
 	var registrations atomic.Int32
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		if r.URL.Path == "/api/v1/volunteers/register" {
+		if r.URL.Path == "/api/v1/relays/register" {
 			registrations.Add(1)
 		}
 		return jsonResponse(http.StatusInternalServerError, `{"error":"temporary failure"}`), nil
 	})}
 
 	cfg := cliConfig{BrokerURL: "http://broker.test", HTTPClient: client}
+	broker := cfg.brokerClient()
 	original := relay.Descriptor{ID: "relay_old"}
-	desc, reRegistered, err := heartbeatOrRegister(context.Background(), cfg, preparedRuntime{}, original)
+	desc, reRegistered, err := heartbeatOrRegister(context.Background(), broker, cfg, preparedRuntime{}, original)
 	if err == nil {
 		t.Fatal("heartbeatOrRegister() error = nil, want an error")
 	}
@@ -177,7 +179,7 @@ func TestRegisterRejectsUnattestedFoundationClass(t *testing.T) {
 	})}
 
 	cfg := cliConfig{BrokerURL: "http://broker.test", PublicHost: "relay.example", PublicPort: 443, HTTPClient: client, NodeClass: relay.NodeClassFoundation}
-	if _, err := register(context.Background(), cfg, preparedRuntime{}); err == nil {
+	if _, err := register(context.Background(), cfg.brokerClient(), cfg, preparedRuntime{}); err == nil {
 		t.Fatal("register() error = nil, want an unattested-node-class error")
 	}
 }
@@ -188,7 +190,7 @@ func TestRegisterAcceptsAttestedFoundationClass(t *testing.T) {
 	})}
 
 	cfg := cliConfig{BrokerURL: "https://broker.test", PublicHost: "relay.example", PublicPort: 443, HTTPClient: client, NodeClass: relay.NodeClassFoundation}
-	desc, err := register(context.Background(), cfg, preparedRuntime{})
+	desc, err := register(context.Background(), cfg.brokerClient(), cfg, preparedRuntime{})
 	if err != nil {
 		t.Fatalf("register() error = %v", err)
 	}
@@ -207,7 +209,7 @@ func TestRegisterRefusesFoundationOverPlaintext(t *testing.T) {
 		return jsonResponse(http.StatusCreated, `{"id":"relay_new","node_class":"foundation"}`), nil
 	})}
 	cfg := cliConfig{BrokerURL: "http://broker.test", PublicHost: "relay.example", PublicPort: 443, HTTPClient: client, NodeClass: relay.NodeClassFoundation}
-	if _, err := register(context.Background(), cfg, preparedRuntime{}); err == nil {
+	if _, err := register(context.Background(), cfg.brokerClient(), cfg, preparedRuntime{}); err == nil {
 		t.Fatal("register() error = nil, want a cleartext-broker error")
 	}
 	if sent.Load() != 0 {
@@ -229,7 +231,7 @@ func TestHeartbeatRefusesFoundationOverPlaintext(t *testing.T) {
 		HTTPClient:        client,
 		NodeClass:         relay.NodeClassFoundation,
 	}
-	if err := heartbeat(context.Background(), cfg, "relay_foundation"); err == nil {
+	if err := heartbeat(context.Background(), cfg.brokerClient(), "relay_foundation"); err == nil {
 		t.Fatal("heartbeat() error = nil, want a cleartext-broker error")
 	}
 	if sent.Load() != 0 {
@@ -266,7 +268,7 @@ func TestFoundationTokenRegistersAsFoundationWithoutNodeClass(t *testing.T) {
 	if cfg.Mode != "direct" {
 		t.Fatalf("mode = %q, want direct (forced by the token)", cfg.Mode)
 	}
-	desc, err := register(context.Background(), cfg, preparedRuntime{})
+	desc, err := register(context.Background(), cfg.brokerClient(), cfg, preparedRuntime{})
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -332,7 +334,7 @@ func TestFoundationTokenRefusesPlaintextBroker(t *testing.T) {
 	if err := cfg.ApplyDefaults(); err != nil {
 		t.Fatalf("ApplyDefaults: %v", err)
 	}
-	if _, err := register(context.Background(), cfg, preparedRuntime{}); err == nil {
+	if _, err := register(context.Background(), cfg.brokerClient(), cfg, preparedRuntime{}); err == nil {
 		t.Fatal("register() error = nil, want a cleartext-broker refusal")
 	}
 	if sent.Load() != 0 {
