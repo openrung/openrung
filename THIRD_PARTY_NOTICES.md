@@ -9,8 +9,6 @@ must surface it:
 
 - **`openrung-relay` / `openrung-relayhub` Docker images** — the file is
   copied to `/usr/local/share/openrung/THIRD_PARTY_NOTICES.md` in each image.
-  During the relay artifact cutover, the identical `openrung-relay` image is
-  also published under the temporary `openrung-volunteer` package name.
 - **Server binaries on the host** — ship this file alongside the binary.
 - **Desktop app (Wails GUI)** — the in-app "Open-source licenses" screen
   renders these notices (`desktop/frontend/src/licenses/notices.ts` mirrors
@@ -73,8 +71,7 @@ recipients of the MPL-2.0 terms and where to obtain the source.
 ### Xray-core (VLESS + REALITY + Vision)
 
 - **Component:** `github.com/XTLS/Xray-core` — the `xray` binary, plus
-  `geoip.dat` / `geosite.dat`, bundled into the `openrung-relay` image (also
-  temporarily published as `openrung-volunteer`).
+  `geoip.dat` / `geosite.dat`, bundled into the `openrung-relay` image.
   The OpenRung Volunteer desktop app (`desktop-volunteer/`) bundles the
   `xray` binary **only** — no geo data files — so section 4 does not apply
   to that channel.
@@ -107,9 +104,8 @@ recipients of the MPL-2.0 terms and where to obtain the source.
 
 ## 3. Strong copyleft in the base image (GPL-2.0) — written source offer
 
-The `alpine:3.21` base of the `openrung-relay` (also temporarily published as
-`openrung-volunteer`) and `openrung-relayhub` images includes GPL-2.0-only
-userland. These are aggregated with — and do not
+The `alpine:3.21` base of the `openrung-relay` and `openrung-relayhub` images
+includes GPL-2.0-only userland. These are aggregated with — and do not
 relicense — OpenRung's own binaries, but conveying the images still requires a
 source offer for the GPL components themselves.
 
@@ -130,8 +126,7 @@ source offer for the GPL components themselves.
 ## 4. Bundled data files (license differs from the code that ships them)
 
 Both files are extracted from the Xray-core release zip and bundled, unmodified,
-into the `openrung-relay` image (also temporarily published as
-`openrung-volunteer`). They are **not** bundled in the OpenRung
+into the `openrung-relay` image. They are **not** bundled in the OpenRung
 Volunteer desktop app (which ships the `xray` binary only), so these notices
 apply to the Docker image channel only.
 

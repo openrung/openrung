@@ -138,9 +138,6 @@ docker pull ghcr.io/openrung/openrung-relay:main
 ```
 
 The cloud provisioning helpers pull this public canonical package by default.
-During the compatibility window, CI also publishes the same manifest under the
-legacy `openrung-volunteer` package name and verifies that both names resolve to
-the same digest.
 
 ## Networking notes
 
