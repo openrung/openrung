@@ -63,6 +63,8 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 	telemetryLimiter := newIPRateLimiter(telemetryRatePerSecond, telemetryBurst, rateLimiterMaxTrackedIPs)
 	speedTestLimiter := newIPRateLimiter(speedTestRatePerSecond, speedTestBurst, rateLimiterMaxTrackedIPs)
 	relayRegistrationLimiter := newIPRateLimiter(relayRegistrationRatePerSecond, relayRegistrationBurst, rateLimiterMaxTrackedIPs)
+	registerRelay := rateLimited(relayRegistrationLimiter, clientIP, 10, registerHandler(store, cfg))
+	heartbeatRelay := rateLimited(relayRegistrationLimiter, clientIP, 10, heartbeatHandler(store, cfg))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -75,8 +77,14 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 		// lets the monitor assert the active key without parsing a relay list.
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "signing_key_id": relaySigner.keyID})
 	})
-	mux.HandleFunc("POST /api/v1/volunteers/register", rateLimited(relayRegistrationLimiter, clientIP, 10, registerHandler(store, cfg)))
-	mux.HandleFunc("POST /api/v1/volunteers/", rateLimited(relayRegistrationLimiter, clientIP, 10, heartbeatHandler(store, cfg)))
+	mux.HandleFunc("POST /api/v1/relays/register", registerRelay)
+	mux.HandleFunc("POST /api/v1/relays/", heartbeatRelay)
+	// Keep the original volunteer-named routes as compatibility aliases for
+	// deployed relays. Both route families intentionally share the same handler
+	// closures and rate limiter so aliases cannot change behavior or double a
+	// client's registration budget.
+	mux.HandleFunc("POST /api/v1/volunteers/register", registerRelay)
+	mux.HandleFunc("POST /api/v1/volunteers/", heartbeatRelay)
 	mux.HandleFunc("GET /api/v1/relays", rateLimited(relayListLimiter, clientIP, 10, listRelaysHandler(store, cfg.TelemetrySink, clientIP, clientSeen, relaySigner)))
 	mux.HandleFunc("GET /api/v1/relays.mirror", rateLimited(relayListLimiter, clientIP, 10, listRelaysMirrorHandler(store, relaySigner)))
 	mux.HandleFunc("POST /api/v1/telemetry/events", rateLimited(telemetryLimiter, clientIP, 10, telemetryHandler(cfg.TelemetrySink, store, clientIP)))
@@ -333,13 +341,27 @@ func validateRegisterRequest(req relay.RegisterRequest) error {
 }
 
 func heartbeatRelayID(path string) (string, bool) {
-	const prefix = "/api/v1/volunteers/"
-	const suffix = "/heartbeat"
-	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) {
+	const (
+		relayPrefix     = "/api/v1/relays/"
+		volunteerPrefix = "/api/v1/volunteers/"
+		suffix          = "/heartbeat"
+	)
+
+	var remainder string
+	switch {
+	case strings.HasPrefix(path, relayPrefix):
+		remainder = strings.TrimPrefix(path, relayPrefix)
+	case strings.HasPrefix(path, volunteerPrefix):
+		remainder = strings.TrimPrefix(path, volunteerPrefix)
+	default:
 		return "", false
 	}
-	id := strings.TrimSuffix(strings.TrimPrefix(path, prefix), suffix)
-	return id, id != ""
+
+	id, ok := strings.CutSuffix(remainder, suffix)
+	if !ok || id == "" || strings.ContainsRune(id, '/') {
+		return "", false
+	}
+	return id, true
 }
 
 func authorized(r *http.Request, token string) bool {
