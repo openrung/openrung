@@ -179,8 +179,8 @@ func TestBrokerRegistrarReturnsCanonicalHTTPFailures(t *testing.T) {
 			if !errors.As(err, &responseErr) {
 				t.Fatalf("Register() error type = %T, want *brokerHTTPError", err)
 			}
-			if responseErr.path != canonicalRegisterPath || responseErr.statusCode != status || responseErr.message != "deliberate failure" {
-				t.Errorf("brokerHTTPError = %+v, want canonical status %d", responseErr, status)
+			if responseErr.path != canonicalRegisterPath || responseErr.message != "deliberate failure" {
+				t.Errorf("brokerHTTPError = %+v, want canonical failure for status %d", responseErr, status)
 			}
 			if got := calls.Load(); got != 1 {
 				t.Errorf("request count = %d, want 1", got)

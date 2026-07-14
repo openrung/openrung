@@ -82,9 +82,8 @@ func (b *brokerRegistrar) Heartbeat(ctx context.Context, relayID string) error {
 
 // brokerHTTPError is a non-2xx broker response.
 type brokerHTTPError struct {
-	path       string
-	statusCode int
-	message    string
+	path    string
+	message string
 }
 
 func (e *brokerHTTPError) Error() string {
@@ -123,9 +122,8 @@ func (b *brokerRegistrar) postJSON(ctx context.Context, path string, body, out a
 			return fmt.Errorf("broker %s: %w", path, ErrRelayNotFound)
 		}
 		return &brokerHTTPError{
-			path:       path,
-			statusCode: resp.StatusCode,
-			message:    apiErr.Error,
+			path:    path,
+			message: apiErr.Error,
 		}
 	}
 	if out != nil {
