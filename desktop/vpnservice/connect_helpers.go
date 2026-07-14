@@ -162,7 +162,7 @@ func writeTempConfig(data []byte) (string, error) {
 }
 
 // geoLabel is the user-facing relay label: "City, Country", else country, else
-// the volunteer's chosen label. It never returns a raw IP (contract §3).
+// the relay's friendly label. It never returns a raw IP (contract §3).
 func geoLabel(r relay.Descriptor) string {
 	city := strings.TrimSpace(r.City)
 	country := strings.TrimSpace(r.Country)

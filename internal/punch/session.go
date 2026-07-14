@@ -173,7 +173,7 @@ func (d *Dialer) Establish(ctx context.Context) (*Establishment, punchcore.Punch
 	}, res, nil
 }
 
-// RespondToDirective runs the volunteer side of a punch. It synchronously gathers
+// RespondToDirective runs the relay side of a punch. It synchronously gathers
 // its own reflexive candidates and returns a PunchAck for the hub to relay to the
 // client, then punches and serves QUIC in the background (bounded by the
 // directive TTL and ctx), bridging streams to targetHost:targetPort (the loopback
@@ -246,7 +246,7 @@ func RespondToDirective(ctx context.Context, dir punchcore.PunchDirective, targe
 			logger.Warn("punch listen quic failed", "session", dir.SessionID, "error", err)
 			return
 		}
-		if err := VolunteerBridge(ctx, ln, token, targetHost, targetPort, logger); err != nil && ctx.Err() == nil {
+		if err := RelayBridge(ctx, ln, token, targetHost, targetPort, logger); err != nil && ctx.Err() == nil {
 			logger.Info("punch bridge closed", "session", dir.SessionID, "error", err)
 		}
 	}()

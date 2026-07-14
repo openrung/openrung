@@ -207,7 +207,7 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 		ExitMode:         req.ExitMode,
 		MaxSessions:      req.MaxSessions,
 		MaxMbps:          req.MaxMbps,
-		VolunteerVersion: req.VolunteerVersion,
+		RelayVersion:     req.RelayVersion,
 		Transport:        normalizeTransport(req.Transport),
 		PunchCapable:     req.PunchCapable,
 		PunchEndpoint:    req.PunchEndpoint,
@@ -219,7 +219,7 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 	// Geo columns are deliberately absent from the INSERT: a re-registration
 	// at the same host:port keeps its previously resolved location until the
 	// handler's next successful UpdateGeo — except when the exit host changed
-	// (a hub port reused by a different volunteer), where the upsert clears
+	// (a hub port reused by a different relay), where the upsert clears
 	// the stale location so the handler resolves the new exit.
 	//
 	// The DO UPDATE WHERE guards a LIVE foundation endpoint: a foundation row
@@ -227,7 +227,7 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 	// public_host:public_port is client-supplied and foundation endpoints are
 	// public in the signed list, so without this guard an anonymous
 	// registration could seize a foundation relay's row (new id, attacker's
-	// keys, downgraded class) and knock the real node into a re-registration
+	// keys, downgraded class) and knock the real relay into a re-registration
 	// race. The handler already gates node_class=foundation behind the
 	// foundation token, so "EXCLUDED.node_class = foundation" can only be true
 	// for a token-authorized caller. The expires_at disjunct keeps this to
@@ -306,7 +306,7 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 		desc.ExitMode,
 		desc.MaxSessions,
 		desc.MaxMbps,
-		desc.VolunteerVersion,
+		desc.RelayVersion,
 		desc.RegisteredAt,
 		desc.LastHeartbeatAt,
 		desc.ExpiresAt,
@@ -733,7 +733,7 @@ func scanDescriptor(row pgx.Row) (relay.Descriptor, error) {
 		&desc.ExitMode,
 		&desc.MaxSessions,
 		&desc.MaxMbps,
-		&desc.VolunteerVersion,
+		&desc.RelayVersion,
 		&desc.RegisteredAt,
 		&desc.LastHeartbeatAt,
 		&desc.ExpiresAt,

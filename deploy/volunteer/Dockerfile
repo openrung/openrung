@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1
 #
-# OpenRung volunteer relay — a self-contained image bundling the volunteer
-# binary and a pinned Xray-core. Build from the repository ROOT so the Go
+# OpenRung relay runtime — a self-contained image bundling the legacy-named
+# legacy-named `volunteer` binary and a pinned Xray-core. Build from the repository
+# ROOT so the Go
 # sources are in the build context:
 #
 #   docker build -f deploy/volunteer/Dockerfile -t openrung-volunteer .
@@ -40,7 +41,7 @@ RUN set -eux; \
     unzip -o /tmp/xray.zip LICENSE README.md -d /xray-licenses; \
     chmod +x /xray/xray
 
-# --- Stage 2: build the volunteer binary (cross-compiled, no cgo) ---
+# --- Stage 2: build the relay binary (legacy output name; cross-compiled, no cgo) ---
 FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -71,7 +72,7 @@ COPY --from=build /out/volunteer /usr/local/bin/volunteer
 COPY deploy/volunteer/entrypoint.sh /usr/local/bin/entrypoint.sh
 # Third-party attribution + GPL/MPL source offers travel with the distributed image.
 COPY THIRD_PARTY_NOTICES.md /usr/local/share/openrung/THIRD_PARTY_NOTICES.md
-# Let the (non-root) volunteer bind the privileged public port (443). Pairs with
+# Let the non-root relay process bind the privileged public port (443). Pairs with
 # `cap_add: NET_BIND_SERVICE` at runtime. NOTE: file capabilities are ignored
 # under no-new-privileges, so do not enable that flag for this image (or switch
 # to a public port >= 1024 and run with zero capabilities instead).

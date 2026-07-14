@@ -1,4 +1,4 @@
-# OpenRung volunteer relay.
+# OpenRung relay runtime (legacy service/image names retained for compatibility).
 #
 #   cp .env.example .env      # then edit .env (set OPENRUNG_BROKER_URL + OPENRUNG_PUBLIC_HOST)
 #   docker compose up -d --build

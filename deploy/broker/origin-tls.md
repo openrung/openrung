@@ -14,7 +14,7 @@ relay ──HTTPS──► CloudFront edge ──HTTPS(:443)──► Caddy ─�
 ```
 
 The broker container is **not touched** — the proxy is purely additive, and the
-plaintext `:8080` path stays open for community volunteer relays and for the
+plaintext `:8080` path stays open for volunteer-run relays and for the
 Cloudflare Worker front. Set up 2026-07-13.
 
 ## What must not be undone
@@ -24,7 +24,7 @@ Cloudflare Worker front. Set up 2026-07-13.
   reintroduce Cloudflare's datacenter challenge on the origin and loop the
   Cloudflare Worker's subrequest back into the edge. Both CDN fronts depend on
   this record resolving straight to the broker IP.
-- **Keep `:8080` open.** Community volunteers (Hetzner + Lightsail, see
+- **Keep `:8080` open.** Volunteer-run relays (Hetzner + Lightsail, see
   `deploy/volunteer/hetzner-up.sh`) register directly against
   `http://54.238.185.205:8080`, and the Cloudflare Worker front fetches the
   origin on `:8080`. Do not firewall it off as part of this change.
@@ -175,7 +175,7 @@ curl -v https://broker-origin.openrung.org/api/v1/relays        # 200, cert veri
 # Cloudflare Worker front 403s datacenter IPs by design):
 curl https://d2r7mdpyevvs1m.cloudfront.net/api/v1/relays?limit=1 # 200, X-OpenRung-Relays-Signature present
 
-# Volunteer plaintext path still intact:
+# Volunteer-class relay plaintext path still intact:
 curl http://54.238.185.205:8080/api/v1/relays                   # 200
 
 # Confirm CloudFront connects over TLS (SNI = origin, not the CF domain):

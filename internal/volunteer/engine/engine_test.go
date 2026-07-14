@@ -36,7 +36,7 @@ func freePort(t *testing.T) int {
 	return port
 }
 
-// fakeBroker implements the two volunteer endpoints with configurable
+// fakeBroker implements the two legacy-named relay endpoints with configurable
 // heartbeat failures.
 type fakeBroker struct {
 	mu           sync.Mutex

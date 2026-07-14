@@ -16,7 +16,7 @@ import (
 	"github.com/openrung/openrung/punchcore"
 )
 
-// punchControlTimeout bounds the hub<->volunteer punch-control exchange over the
+// punchControlTimeout bounds the hub<->relay punch-control exchange over the
 // yamux stream.
 const punchControlTimeout = 5 * time.Second
 
@@ -30,7 +30,7 @@ var (
 	// ErrRelayNotConnected means no live tunnel is registered for the relay ID
 	// (stale/rotated descriptor); the client should re-fetch relays.
 	ErrRelayNotConnected = errors.New("relay not connected to hub")
-	// ErrPunchUnsupported means the connected volunteer did not negotiate stream
+	// ErrPunchUnsupported means the connected relay did not negotiate stream
 	// typing and cannot receive punch directives.
 	ErrPunchUnsupported = errors.New("relay does not support punch")
 )
@@ -61,8 +61,8 @@ func (h *Hub) lookupTunnel(relayID string) *tunnel {
 	return h.registry[relayID]
 }
 
-// SendPunchDirective pushes a punch directive to the connected volunteer over its
-// existing control connection and returns the volunteer's ack. It re-looks up the
+// SendPunchDirective pushes a punch directive to the connected relay over its
+// existing control connection and returns the relay's ack. It re-looks up the
 // live tunnel at send time so a reconnect between coordination steps is handled
 // cleanly.
 func (h *Hub) SendPunchDirective(ctx context.Context, relayID string, dir punchcore.PunchDirective) (punchcore.PunchAck, error) {
@@ -195,11 +195,11 @@ func (c *PunchCoordinator) handleRequest(w http.ResponseWriter, r *http.Request)
 	// Classify the client from the hub's OWN reflector observations (keyed by the
 	// client nonce), never trusting the client's self-declared class or reflexive
 	// address. A client-declared reflexive could name any victim IP, which the
-	// volunteer would then spray with punch probes — an open UDP reflector. So we
+	// relay would then spray with punch probes — an open UDP reflector. So we
 	// forward ONLY reflector-observed reflexive endpoints; when the reflector saw
 	// nothing for this nonce we send none (the client falls back to the hub
 	// relay). Host candidates are clamped and filtered to non-routable addresses
-	// (see punchcore.Policy.SanitizePeers) so they can only reach the volunteer's
+	// (see punchcore.Policy.SanitizePeers) so they can only reach the relay's
 	// own LAN.
 	var clientReflexive []punchcore.Endpoint
 	clientClass := punchcore.ClassUnknown
@@ -244,11 +244,11 @@ func (c *PunchCoordinator) handleRequest(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		c.Logger.Warn("punch directive failed", "relay_id", req.RelayID, "error", err)
-		writeJSONResponse(w, http.StatusOK, punchcore.PunchResponse{OK: false, Error: "volunteer unreachable"})
+		writeJSONResponse(w, http.StatusOK, punchcore.PunchResponse{OK: false, Error: "relay unreachable"})
 		return
 	}
 	if !ack.OK {
-		writeJSONResponse(w, http.StatusOK, punchcore.PunchResponse{OK: false, Error: "volunteer declined: " + ack.Error})
+		writeJSONResponse(w, http.StatusOK, punchcore.PunchResponse{OK: false, Error: "relay declined: " + ack.Error})
 		return
 	}
 

@@ -1,4 +1,4 @@
-.PHONY: test fmt broker volunteer relayhub client docker-build docker-keygen docker-run relayhub-docker-build broker-docker-build
+.PHONY: test fmt broker relay volunteer relayhub client docker-build docker-keygen docker-run relayhub-docker-build broker-docker-build
 
 VOLUNTEER_IMAGE ?= openrung-volunteer:latest
 RELAYHUB_IMAGE ?= openrung-relayhub:latest
@@ -14,7 +14,7 @@ test:
 broker:
 	OPENRUNG_ALLOW_ANONYMOUS_REGISTRATION=true go run ./cmd/broker -addr :8080
 
-volunteer:
+relay:
 	go run ./cmd/volunteer \
 		-broker http://localhost:8080 \
 		-public-host 127.0.0.1 \
@@ -24,6 +24,9 @@ volunteer:
 		-reality-public-key dev-public-key \
 		-short-id 5f7a8d9c01ab23cd \
 		-skip-xray-run
+
+# Legacy local-development alias; the executable path is migrated separately.
+volunteer: relay
 
 relayhub:
 	OPENRUNG_ALLOW_ANONYMOUS_VOLUNTEERS=true go run ./cmd/relayhub \
@@ -35,7 +38,7 @@ relayhub:
 client:
 	go run ./cmd/client check -broker http://localhost:8080
 
-# Build the volunteer relay image (run from the repo root).
+# Build the relay runtime image (legacy target/image names retained for compatibility).
 docker-build:
 	docker build -f deploy/volunteer/Dockerfile -t $(VOLUNTEER_IMAGE) .
 

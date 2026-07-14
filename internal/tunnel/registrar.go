@@ -34,7 +34,7 @@ type Registrar interface {
 }
 
 // brokerRegistrar registers relays over the broker's HTTP API using the same
-// Bearer token volunteers use, reusing the relay.RegisterRequest/Descriptor
+// bearer token volunteer-class relays use, reusing the relay.RegisterRequest/Descriptor
 // shapes from the existing register and heartbeat endpoints.
 type brokerRegistrar struct {
 	brokerURL string

@@ -19,7 +19,7 @@ import (
 // not advertise a punch_endpoint (its public host is then the hub).
 const defaultPunchPort = "9444"
 
-// maybePunch attempts a direct NAT-punched path to a punch-capable volunteer,
+// maybePunch attempts a direct NAT-punched path to a punch-capable relay,
 // bypassing the relay hub's data plane. On success it returns a live
 // Establishment whose loopback bridge sing-box dials in place of the hub; the
 // caller must run Bridge.Serve and Close it on teardown. On any failure (not
@@ -62,9 +62,9 @@ func punchBaseURL(selected relay.Descriptor) string {
 
 // punchHTTPClient returns the HTTP client for the hub punch coordination API.
 // With insecure set it skips TLS verification, for a hub serving a self-signed
-// cert on its HTTPS punch endpoint (volunteer-run hubs on bare IPs cannot get a
+// cert on its HTTPS punch endpoint (relay hubs on bare IPs cannot get a
 // CA cert). This weakens ONLY the hub coordination channel: the punched QUIC
-// data path still pins the volunteer's per-session cert by fingerprint, and the
+// data path still pins the relay's per-session cert by fingerprint, and the
 // tunnel itself is VLESS+REALITY keyed by broker-delivered credentials, so a hub
 // MITM can at worst force a fallback to the relay path, never read or redirect
 // the tunnel.

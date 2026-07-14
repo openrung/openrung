@@ -100,7 +100,7 @@ The JSONL sink updates the dashboard's in-memory records immediately, flushes
 buffered JSONL output every five seconds, syncs it to durable storage every 30
 seconds, and performs a final flush and sync during graceful broker shutdown.
 
-The Settings screen offers a manual volunteer speed test. It downloads from the
+The Settings screen offers a manual relay speed test. It downloads from the
 configured broker, avoiding a dependency on external DNS while the VPN is
 active. It performs a 1 MB warm-up followed by a measured 10 MB download through
 the active tunnel and emits `speed_test_completed` with the active `relay_id`
@@ -174,7 +174,7 @@ top-ISP rankings counted by unique session.
 The session `source_ip` prefers the broker-observed pre-tunnel `client_seen`
 address, then the client's pre-tunnel `client_ip` attribute. The source address
 of later telemetry uploads is used only as a fallback because connected uploads
-can reach the broker through a volunteer relay.
+can reach the broker through a relay.
 
 Dashboard totals include active clients and active sessions. Active-session
 breakdowns are available by relay, country, city, ISP, and operating system.
@@ -202,13 +202,16 @@ When the broker uses PostgreSQL relay state, `/healthz` also verifies database
 connectivity. If relay state is unavailable, it returns `503` with an error
 payload so a load balancer can stop routing to that broker instance.
 
-## Register Volunteer
+## Register Relay
 
 ```http
 POST /api/v1/volunteers/register
 Authorization: Bearer <registration-token>
 Content-Type: application/json
 ```
+
+The `/api/v1/volunteers/register` path is a legacy compatibility name. It
+registers both `volunteer`-class and `foundation`-class relays.
 
 Request:
 
@@ -231,9 +234,13 @@ Request:
 }
 ```
 
+`volunteer_version` is a frozen legacy wire name retained for compatibility. It
+reports the relay runtime version for both `volunteer`-class and
+`foundation`-class relays.
+
 `transport` is optional and defaults to `direct`. The relay hub registers CGNAT
-volunteers with `transport: "tunnel"` and a `public_host`/`public_port` pointing
-at the hub; clients treat both the same.
+volunteer-run relays with `transport: "tunnel"` and a
+`public_host`/`public_port` pointing at the hub; clients treat both the same.
 
 `node_class` records who operates the relay: `volunteer` (the default when
 omitted) for community-run hardware, or `foundation` for relays the OpenRung
@@ -242,15 +249,15 @@ claim is only accepted when the request presents the broker's
 `OPENRUNG_FOUNDATION_TOKEN` as its bearer token; any other credential claiming
 `foundation` is rejected with `403` (fail loudly, never silently downgrade).
 The foundation token bounds the claimable class without forcing it — its holder
-may still register `volunteer` relays, but routine volunteer and hub traffic
-should use the volunteer token so the privileged bearer stays out of the hub
-path. On the shipped volunteer, presenting the foundation token
-(`OPENRUNG_FOUNDATION_TOKEN`) is self-contained: it **forces** direct mode,
+may still register `volunteer` relays, but routine volunteer-class relay and hub
+traffic should use the volunteer token so the privileged bearer stays out of
+the hub path. On the shipped relay executable (`cmd/volunteer`), presenting
+`OPENRUNG_FOUNDATION_TOKEN` is self-contained: it **forces** direct mode,
 overriding any `auto`/`tunnel` setting, so operators do not configure the mode
 themselves and the bearer never reaches a hub probe. (The hub path would receive
 the registration bearer, and the shipped hub always registers the tunneled exit
 operator as `volunteer`, so a Foundation-operated hub does not elevate the
-community volunteers behind it.) The class is served back inside the signed
+volunteer-run relays behind it.) The class is served back inside the signed
 relay-list body, so clients receive it with the same Ed25519 authenticity as
 every other descriptor field.
 
@@ -261,26 +268,26 @@ foundation relay's directory entry: a registration at a
 with `403` unless it is itself a foundation-class registration (which requires
 the token). Without this, an anonymous registrant could otherwise seize a
 foundation relay's row — new id, its own keys, downgraded class — and force
-the real node into a re-registration race. A foundation operator re-registers
+the real relay into a re-registration race. A foundation operator re-registers
 (refreshes) its own endpoint normally with the token. The same rule guards
 heartbeats: extending a `foundation` relay's lease requires the foundation
 token, so an orphaned foundation row expires from the origin store within one
 lease TTL.
 
 Foundation registrations must be sent over TLS: the foundation token is
-high-value, and the volunteer client refuses to transmit it over a cleartext
+high-value, and the relay client refuses to transmit it over a cleartext
 `http://` broker URL (loopback excepted for local testing). It also refuses all
 broker redirects in Foundation mode, preventing an HTTPS request from following
-a downgrade. The plaintext broker origin used by community volunteers —
+a downgrade. The plaintext broker origin used by volunteer-run relays —
 reachable because Cloudflare challenges datacenter IPs on the TLS front — is
 therefore volunteer-only.
 
-For tunnel registrations the hub also sends `exit_host`: the volunteer's public
-source IP as observed on its control connection, i.e. where tunneled traffic
-actually exits. The broker uses it only to geolocate the relay and never
-exposes it through any public endpoint, so a CGNAT volunteer's real IP stays
-private. `exit_host` is rejected for direct transport, where `public_host`
-already is the exit.
+For tunnel registrations the hub also sends `exit_host`: the volunteer-run
+relay's public source IP as observed on its control connection, i.e. where
+tunneled traffic actually exits. The broker uses it only to geolocate the relay
+and never exposes it through any public endpoint, so the relay host's observed
+exit IP stays private. `exit_host` is rejected for direct transport, where
+`public_host` already is the exit.
 
 Response:
 
@@ -312,7 +319,8 @@ Response:
 ```
 
 `city`, `country`, and `country_code` are resolved by the broker (never taken
-from the volunteer request) so clients can show where a relay's traffic
+from the relay's registration request) so clients can show where a relay's
+traffic
 physically exits: from `exit_host` for tunnel relays and from `public_host`
 for direct relays. The lookup is best-effort: when it has not succeeded yet
 the fields are omitted, and the broker retries on heartbeats until it
@@ -428,7 +436,7 @@ Response:
 }
 ```
 
-`node_class` (`volunteer` or `foundation`, see Register Volunteer) is
+`node_class` (`volunteer` or `foundation`, see Register Relay) is
 broker-attested and covered by the list signature. Clients written before the
 field existed ignore it; clients that read it must treat a missing value as
 `volunteer` and must not relax any signature or transport verification for

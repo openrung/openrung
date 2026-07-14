@@ -383,7 +383,7 @@ func punchBaseURL(override string, selected relay.Descriptor) string {
 // punchHTTPClient returns the HTTP client for the hub punch API. With insecure
 // set it skips TLS verification, for a hub serving a self-signed cert on its
 // HTTPS punch endpoint. The punched QUIC path is unaffected (it pins the
-// volunteer's per-session cert by fingerprint regardless).
+// relay's per-session cert by fingerprint regardless).
 func punchHTTPClient(insecure bool) *http.Client {
 	if !insecure {
 		return nil // punchcore.HubClient uses its default client

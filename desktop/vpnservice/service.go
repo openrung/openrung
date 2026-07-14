@@ -153,9 +153,9 @@ type Service struct {
 	SingBoxPath string
 
 	// PunchEnabled attempts a direct NAT-punched path to punch-capable
-	// volunteers before falling back to the relay hub's data plane.
+	// relays before falling back to the relay hub's data plane.
 	// PunchInsecure skips TLS verification of the hub's self-signed punch
-	// coordination endpoint (volunteer hubs on bare IPs cannot get a CA cert);
+	// coordination endpoint (relay hubs on bare IPs cannot get a CA cert);
 	// see punchHTTPClient for why that stays safe.
 	PunchEnabled  bool
 	PunchInsecure bool
@@ -536,7 +536,7 @@ func (s *Service) candidatesFor(resp relay.ListResponse, targetCountry, targetRe
 		}
 		s.appendLog(fmt.Sprintf("connecting to relay %s", name))
 	case strings.TrimSpace(targetCountry) != "":
-		s.appendLog(fmt.Sprintf("connecting to a volunteer in %s", strings.ToUpper(strings.TrimSpace(targetCountry))))
+		s.appendLog(fmt.Sprintf("connecting to a relay in %s", strings.ToUpper(strings.TrimSpace(targetCountry))))
 	}
 	return cands, "", nil
 }

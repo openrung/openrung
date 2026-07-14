@@ -16,15 +16,15 @@ import (
 	"openrung/internal/relay"
 )
 
-// Hub is the public, relay-side of the reverse tunnel. It accepts outbound
-// control connections from CGNAT volunteers, authenticates them, allocates a
-// public TCP port per volunteer, registers the relay with the broker, and pipes
-// inbound client connections through yamux streams to the volunteer.
+// Hub is the public side of the reverse tunnel. It accepts outbound control
+// connections from CGNAT relays, authenticates them, allocates a public TCP port
+// per relay, registers each relay with the broker, and pipes inbound client
+// connections through yamux streams to it.
 //
 // The hub forwards opaque bytes only; it never holds the Reality private key and
 // cannot decrypt the end-to-end VLESS Reality traffic.
 type Hub struct {
-	// ControlListener accepts volunteer control connections. In production this
+	// ControlListener accepts relay control connections. In production this
 	// is a TLS listener (see crypto/tls.NewListener); tests may use plain TCP.
 	ControlListener net.Listener
 	// PublicHost is advertised to clients as the relay's public host.
@@ -44,7 +44,7 @@ type Hub struct {
 	// HandshakeTimeout bounds the HELLO/HELLO_ACK exchange. Defaults to 10s.
 	HandshakeTimeout time.Duration
 	// ReflectorAddrs are the hub's UDP reflector endpoints advertised to punch-
-	// capable volunteers (in HELLO_ACK and each PunchDirective). Empty means the
+	// capable relays (in HELLO_ACK and each PunchDirective). Empty means the
 	// hub offers no punch coordination, so no relay is advertised punch-capable.
 	ReflectorAddrs []string
 	// PunchEndpoint is the hub's punch coordinator HTTP(S) base URL advertised to
@@ -130,7 +130,7 @@ func (h *Hub) handleControl(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	// Negotiate stream typing: the hub supports it, so it is on iff the volunteer
+	// Negotiate stream typing: the hub supports it, so it is on iff the relay
 	// asked for it. Only a typed session can carry punch-control streams.
 	streamTyping := hello.StreamTyping
 	ack := HelloAckFrame{
@@ -172,7 +172,7 @@ func (h *Hub) handleControl(ctx context.Context, conn net.Conn) {
 		logger:         logger.With("relay_id", registration.RelayID, "public_port", port, "remote", remote),
 	}
 	// Publish before the blocking accept loop so the punch coordinator can find
-	// this volunteer as soon as it is registered.
+	// this relay as soon as it is registered.
 	h.addTunnel(registration.RelayID, t)
 	// The relay ID can change if the heartbeat loop re-registers (broker forgot
 	// us), so remove whatever ID the tunnel holds at teardown time.
@@ -199,7 +199,7 @@ func (h *Hub) registerRequest(hello HelloFrame, port int, exitHost string) relay
 		ExitMode:         hello.ExitMode,
 		MaxSessions:      hello.MaxSessions,
 		MaxMbps:          hello.MaxMbps,
-		VolunteerVersion: hello.VolunteerVersion,
+		RelayVersion:     hello.RelayVersion,
 		Label:            hello.Label,
 		Transport:        relay.TransportTunnel,
 		PunchCapable:     punchOn,
@@ -207,7 +207,7 @@ func (h *Hub) registerRequest(hello HelloFrame, port int, exitHost string) relay
 	}
 }
 
-// remoteHost extracts the bare IP of the volunteer's control connection — its
+// remoteHost extracts the bare IP of the relay's control connection — its
 // public (post-NAT) source address, which is where tunneled traffic exits.
 // Returns "" when the address cannot be parsed so registration proceeds
 // without an exit host rather than sending junk to the broker.
@@ -260,8 +260,8 @@ func (h *Hub) heartbeatInterval() time.Duration {
 	return 30 * time.Second
 }
 
-// tunnel is one live volunteer connection: a yamux session plus the public
-// listener whose inbound connections are multiplexed to the volunteer.
+// tunnel is one live relay connection: a yamux session plus the public listener
+// whose inbound connections are multiplexed to the relay.
 type tunnel struct {
 	hub            *Hub
 	session        *yamux.Session
@@ -304,7 +304,7 @@ func (t *tunnel) run(parent context.Context) {
 		t.heartbeatLoop(ctx)
 	}()
 
-	// Tear down when the yamux session dies (volunteer disconnected) or the
+	// Tear down when the yamux session dies (relay disconnected) or the
 	// parent context is cancelled (hub shutting down).
 	go func() {
 		select {
@@ -317,8 +317,8 @@ func (t *tunnel) run(parent context.Context) {
 	}()
 
 	// Bound concurrent public-port connections: each costs a goroutine, a yamux
-	// stream, and a volunteer-side dial, so an unbounded accept loop lets anyone
-	// exhaust hub/volunteer file descriptors and the yamux stream window just by
+	// stream, and a relay-side dial, so an unbounded accept loop lets anyone
+	// exhaust hub/relay file descriptors and the yamux stream window just by
 	// opening TCP connections. Excess connections are dropped, not queued.
 	sem := make(chan struct{}, t.maxConcurrentConns())
 	t.logger.Info("tunnel ready", "max_conns", cap(sem))
@@ -359,8 +359,8 @@ func (t *tunnel) handleClient(clientConn net.Conn) {
 	}
 	defer stream.Close()
 	// With stream typing negotiated, prefix client-data streams with the data
-	// discriminator so the volunteer can distinguish them from punch-control
-	// streams. Untyped sessions (old volunteers) get raw bytes as before.
+	// discriminator so the relay can distinguish them from punch-control streams.
+	// Untyped sessions (old relays) get raw bytes as before.
 	if t.streamTyping {
 		if _, err := stream.Write([]byte{StreamTypeData}); err != nil {
 			t.logger.Warn("write stream type failed", "error", err)
@@ -392,7 +392,7 @@ func (t *tunnel) handleClient(clientConn net.Conn) {
 var clientHandshakeTimeout = 30 * time.Second
 
 // Per-tunnel bound on concurrent public-port connections. The cap scales with
-// the volunteer's advertised session capacity (one session fans out into many
+// the relay's advertised session capacity (one session fans out into many
 // short-lived connections) but is clamped so it can be neither unbounded nor
 // trivially small. Overflow from a hostile MaxSessions falls through to the
 // floor, never a panic.

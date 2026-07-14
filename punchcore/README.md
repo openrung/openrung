@@ -5,7 +5,7 @@ only) core of OpenRung's NAT hole-punch protocol. It is a nested Go module of
 the OpenRung repository and the **single source of truth** for the punch wire
 format and mechanics, consumed by:
 
-- the relay hub and volunteer servers (this repository, via `internal/punch`
+- the relay hub and relay runtimes (this repository, via `internal/punch`
   and `internal/tunnel`),
 - the desktop CLI and GUI clients (this repository),
 - the Android app's gomobile binding (`android/punchbridge` in
@@ -22,7 +22,7 @@ format and mechanics, consumed by:
 - **The UDP `Reflector` server** the hub runs.
 - **The hub HTTP client** (`HubClient`) and `HardenedHTTPClient`.
 - **The `Policy` presets**: `DesktopPolicy()` (historical
-  `internal/punch` behavior; also what the hub and volunteers run) and
+  `internal/punch` behavior; also what the hub and relay runtimes run) and
   `MobilePolicy()` (the hardened Android profile). Zero-value `Policy` is not
   valid; always start from a preset.
 
@@ -44,7 +44,7 @@ protocol change and must be treated as one (see `ProtoVersion`).
 
 ## Pin/upgrade procedure (wire changes)
 
-1. Edit punchcore in an OpenRung PR — the hub, volunteers, and desktop clients
+1. Edit punchcore in an OpenRung PR — the hub, relay runtimes, and desktop clients
    consume it via the in-repo `replace`, so servers and desktop stay atomically
    consistent.
 2. Bump `punchcore/VERSION` in the same PR — a `go-checks` job fails any PR

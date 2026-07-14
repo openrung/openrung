@@ -27,8 +27,8 @@ func freeTCPPort(t *testing.T) int {
 	return port
 }
 
-// TestDetectDirectReachableReachable wires the real hub prober to the volunteer
-// detection client on loopback: the volunteer opens its temp listener, the hub
+// TestDetectDirectReachableReachable wires the real hub prober to the relay
+// detection client on loopback: the relay opens its temporary listener, the hub
 // dials it back at the observed source IP, and detection reports reachable.
 func TestDetectDirectReachableReachable(t *testing.T) {
 	prober := tunnel.NewReachabilityProber("token123", testLogger())

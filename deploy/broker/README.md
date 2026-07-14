@@ -3,7 +3,7 @@
 The broker is the **control plane**: it matches clients with healthy relays and
 records operational telemetry. It never carries user traffic and never holds any
 Reality key — it only serves the relay directory (`GET /api/v1/relays`), accepts
-volunteer registrations/heartbeats, ingests client telemetry, and (optionally)
+relay registrations/heartbeats, ingests client telemetry, and (optionally)
 serves a protected telemetry dashboard.
 
 Because its traffic is tiny (control-plane only), the broker can run anywhere —
@@ -18,8 +18,8 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-The broker listens on `:8080` (host networking). Point hubs and volunteers at it
-with `OPENRUNG_BROKER_URL`, and check it:
+The broker listens on `:8080` (host networking). Point hubs and relay runtimes
+at it with `OPENRUNG_BROKER_URL`, and check it:
 
 ```sh
 curl http://localhost:8080/healthz
@@ -45,7 +45,7 @@ With no `OPENRUNG_VOLUNTEER_TOKEN` set it runs open (anonymous registration); se
 one to require auth. Optional overrides: `OPENRUNG_REGION`, `OPENRUNG_BUNDLE`,
 `OPENRUNG_DASHBOARD_TOKEN`, `OPENRUNG_RELAY_STORE` / `OPENRUNG_RELAY_DATABASE_URL`,
 `OPENRUNG_GEOIP_ENDPOINT`. The script prints the health URL and the
-`OPENRUNG_BROKER_URL=http://<ip>:8080` to point hubs and volunteers at. Front the
+`OPENRUNG_BROKER_URL=http://<ip>:8080` to point hubs and relay runtimes at. Front the
 origin with Cloudflare for TLS (below) and set the client apps' HTTPS broker URL
 to the Cloudflare hostname.
 
@@ -61,7 +61,7 @@ anyone can register a relay into the directory clients route their VPN traffic
 through. You must either:
 
 - set `OPENRUNG_VOLUNTEER_TOKEN` to a long random string (shared with your hubs
-  and volunteers), **or**
+  and volunteer-run relays), **or**
 - explicitly opt into an open, unauthenticated broker with
   `OPENRUNG_ALLOW_ANONYMOUS_REGISTRATION=true` (the `.env.example` default).
   OpenRung's public network intentionally runs open so any volunteer can
@@ -103,9 +103,9 @@ not reload a changed env file). `lightsail-up.sh` intentionally rejects
 > **Rolling back past `node_class`:** a broker image that predates the
 > `node_class` column does not guard registrations or heartbeats, so it can
 > overwrite a foundation relay's `host:port` row — replacing its id, keys, and
-> endpoint with an attacker's or volunteer's — while leaving `node_class`
-> stuck at `'foundation'`. An upgraded broker would then sign that forged
-> descriptor as Foundation.
+> endpoint with one controlled by an attacker or volunteer-run relay — while
+> leaving `node_class` stuck at `'foundation'`. An upgraded broker would then
+> sign that forged descriptor as Foundation.
 >
 > **Never run pre-`node_class` and `node_class`-aware broker binaries against
 > the same database while any foundation row exists** — a mixed-version fleet
@@ -238,7 +238,7 @@ read-only rootfs):
 - `--cap-drop ALL` — the broker binds `:8080` (≥ 1024) and never changes user or
   mounts, so it needs no Linux capabilities.
 - `--security-opt no-new-privileges` — nothing in the image escalates via setuid
-  or file capabilities. (Unlike the volunteer relay, which must **not** set this:
+  or file capabilities. (Unlike the relay runtime, which must **not** set this:
   it binds 443 through a `cap_net_bind_service` file capability that
   `no-new-privileges` would disable.)
 - `--read-only` root filesystem with `--tmpfs /tmp` — the only writable paths are
@@ -261,7 +261,7 @@ docker inspect openrung-broker \
 
 | Variable                             | Required | Default                             | Purpose                                                        |
 | ------------------------------------ | -------- | ----------------------------------- | -------------------------------------------------------------- |
-| `OPENRUNG_VOLUNTEER_TOKEN`           | yes\*    | —                                   | Shared registration token (must match hubs/volunteers)         |
+| `OPENRUNG_VOLUNTEER_TOKEN`           | yes\*    | —                                   | Shared registration token (must match hubs/relay runtimes)     |
 | `OPENRUNG_ALLOW_ANONYMOUS_REGISTRATION` | yes\* | —                                   | Set `true` to run open when no token is set (\*one of these)   |
 | `OPENRUNG_FOUNDATION_TOKEN`          | no       | —                                   | Privileged token for `node_class=foundation` registrations; must differ from the volunteer token |
 | `OPENRUNG_RELAY_SIGNING_KEY`         | yes      | —                                   | Std-base64 32-byte Ed25519 seed; signs every relay-list response |

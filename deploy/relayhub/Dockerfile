@@ -1,9 +1,10 @@
 # syntax=docker/dockerfile:1
 #
 # OpenRung relay hub — the publicly reachable component that terminates reverse
-# tunnels from CGNAT volunteers and forwards client traffic to them. Unlike the
-# volunteer image it bundles no Xray (it only copies opaque bytes). Build from
-# the repository ROOT so the Go sources are in the build context:
+# tunnels from CGNAT volunteer-run relays and forwards client traffic to them.
+# Unlike the relay runtime image it bundles no Xray (it only copies opaque
+# bytes). Build from the repository ROOT so the Go sources are in the build
+# context:
 #
 #   docker build -f deploy/relayhub/Dockerfile -t openrung-relayhub .
 #

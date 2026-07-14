@@ -8,8 +8,8 @@ import { openExternal } from '../native/openExternal';
 
 const HOW_STEPS = [
   {
-    title: 'Volunteers share bandwidth',
-    body: 'People everywhere run small relay nodes on their own connections and register them with the network.',
+    title: 'Relay operators provide capacity',
+    body: 'The OpenRung Foundation and community volunteers run relays and register them with the network.',
   },
   {
     title: 'The broker finds your relay',
@@ -35,11 +35,11 @@ export function AboutScreen({ onOpenLicenses }: Props) {
           <span className="or-about-wordmark">OpenRung</span>
           <span className="or-about-version">v{APP_VERSION}</span>
         </div>
-        <span className="or-tagline">volunteer relay network</span>
+        <span className="or-tagline">relay network</span>
         <p className="or-about-mission">
-          OpenRung routes your traffic through relays run by volunteers around the world, keeping the
-          open internet reachable when networks are filtered. No accounts, no ads, no tracking — just
-          people sharing bandwidth.
+          OpenRung routes your traffic through relays around the world, keeping the open internet
+          reachable when networks are filtered. No account is required and there are no ads. During
+          early testing, OpenRung collects diagnostic connection metadata to improve reliability.
         </p>
       </div>
 

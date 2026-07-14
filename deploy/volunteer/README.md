@@ -1,9 +1,10 @@
-# OpenRung volunteer relay — Docker deployment
+# OpenRung relay — Docker deployment
 
-A self-contained image for running an OpenRung volunteer relay on a cloud VPS
-(AWS EC2, DigitalOcean, Hetzner, Linode, …). The image bundles the `volunteer`
-binary and a pinned [Xray-core](https://github.com/XTLS/Xray-core); it is
-configured entirely through environment variables.
+A self-contained image for running an OpenRung relay on a cloud VPS (AWS EC2,
+DigitalOcean, Hetzner, Linode, …). The same runtime serves Foundation-operated
+and volunteer-run relays. The image bundles the legacy-named `volunteer` binary
+and a pinned [Xray-core](https://github.com/XTLS/Xray-core); it is configured
+entirely through environment variables.
 
 ## TL;DR
 
@@ -57,14 +58,14 @@ also set `OPENRUNG_NODE_CLASS` or `OPENRUNG_MODE`:
   downgrade.
 - Never put the token in cloud-init/user-data, provider metadata, inline
   `docker -e` arguments, or traced shell commands. The bundled Lightsail and
-  Hetzner bootstrap helpers intentionally provision anonymous volunteers only
-  and reject registration tokens; provision the host first, transfer the env
-  file over an authenticated channel, and recreate the container with
-  `--env-file`.
+  Hetzner bootstrap helpers intentionally provision anonymous volunteer-class
+  relays only and reject registration tokens; provision the host first,
+  transfer the env file over an authenticated channel, and recreate the
+  container with `--env-file`.
 
 `node_class` describes the operator of the exit relay, not the infrastructure it
-traverses. A Foundation-operated relay hub therefore does not make the community
-volunteers tunneled through it Foundation-operated.
+traverses. A Foundation-operated relay hub therefore does not make the
+volunteer-run relays tunneled through it Foundation-operated.
 
 ### Stable relay identity (recommended)
 
@@ -139,8 +140,8 @@ docker compose restart            # restart the relay
 docker compose down               # stop and remove
 ```
 
-Shutdown is graceful: `docker stop` sends SIGTERM, the volunteer stops xray and
-the connection observer and exits cleanly.
+Shutdown is graceful: `docker stop` sends SIGTERM, the relay runtime stops xray
+and the connection observer and exits cleanly.
 
 ## Updating Xray-core
 

@@ -24,7 +24,7 @@ func main() {
 
 func run() error {
 	addr := flag.String("addr", envDefault("OPENRUNG_ADDR", ":8080"), "HTTP listen address")
-	leaseTTL := flag.Duration("lease-ttl", 3*time.Minute, "volunteer relay lease TTL")
+	leaseTTL := flag.Duration("lease-ttl", 3*time.Minute, "relay lease TTL")
 	telemetryFile := flag.String("telemetry-file", envDefault("OPENRUNG_TELEMETRY_FILE", "openrung-telemetry.jsonl"), "append-only client telemetry JSONL file (its directory must be writable)")
 	telemetryStore := flag.String("telemetry-store", envDefault("OPENRUNG_TELEMETRY_STORE", "jsonl"), "telemetry storage backend: jsonl or postgres")
 	telemetryDatabaseURL := flag.String("telemetry-database-url", envDefault("OPENRUNG_TELEMETRY_DATABASE_URL", os.Getenv("OPENRUNG_RELAY_DATABASE_URL")), "PostgreSQL database URL for telemetry (defaults to the relay database URL)")
@@ -50,11 +50,11 @@ func run() error {
 
 	// The foundation token authorizes node_class=foundation registrations. It
 	// must not equal the (shared, widely distributed) volunteer token, or every
-	// volunteer could label its relay as foundation-operated and clients would
-	// trust the signed lie.
+	// volunteer-token holder could label a relay as foundation-operated and
+	// clients would trust the signed lie.
 	foundationToken := os.Getenv("OPENRUNG_FOUNDATION_TOKEN")
 	if foundationToken != "" && foundationToken == registrationToken {
-		return errors.New("OPENRUNG_FOUNDATION_TOKEN must differ from OPENRUNG_VOLUNTEER_TOKEN: a shared value would let any volunteer register as a foundation relay")
+		return errors.New("OPENRUNG_FOUNDATION_TOKEN must differ from OPENRUNG_VOLUNTEER_TOKEN: a shared value would let any holder of the volunteer token register a foundation relay")
 	}
 
 	// Fail closed on the signing key too: a missing or malformed seed must
@@ -82,7 +82,7 @@ func run() error {
 	cfg := broker.Config{
 		RegistrationToken: registrationToken,
 		FoundationToken:   foundationToken,
-		VolunteerLeaseTTL: *leaseTTL,
+		RelayLeaseTTL:     *leaseTTL,
 		TelemetrySink:     telemetrySink,
 		DashboardToken:    os.Getenv("OPENRUNG_DASHBOARD_TOKEN"),
 		// Cloudflare's published ranges are trusted by default; add more (e.g. an upstream LB) here.
@@ -250,7 +250,7 @@ func maintainBroker(store broker.RelayStore, telemetry broker.TelemetryReader, i
 			continue
 		}
 		for _, desc := range expired {
-			slog.Info("volunteer expired", "relay_id", desc.ID, "last_heartbeat_at", desc.LastHeartbeatAt)
+			slog.Info("relay expired", "relay_id", desc.ID, "last_heartbeat_at", desc.LastHeartbeatAt)
 		}
 		pruneTelemetryPartitions(telemetry, now)
 		if !logStatus {

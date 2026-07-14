@@ -4,7 +4,7 @@
 # broker-origin.openrung.org and reverse-proxies to the broker container, which
 # is untouched on 127.0.0.1:8080. Auto-renewal is native to Caddy (the running
 # service renews ~30 days before expiry). The plaintext :8080 origin stays open
-# for community volunteer relay registration and for the Cloudflare Worker front
+# for volunteer-run relay registration and for the Cloudflare Worker front
 # (broker.openrung.org), neither of which pass through here.
 #
 # Serves its cert on SNI broker-origin.openrung.org. CloudFront (distribution

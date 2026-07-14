@@ -11,7 +11,7 @@ import (
 )
 
 // serveNonceListener starts a listener that writes the probe nonce line to every
-// accepted connection, standing in for a volunteer's temporary probe listener.
+// accepted connection, standing in for a relay's temporary probe listener.
 func serveNonceListener(t *testing.T, nonce string) int {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

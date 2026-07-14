@@ -57,7 +57,7 @@ func main() {
 			opts := wailsruntime.MessageDialogOptions{
 				Type:          wailsruntime.QuestionDialog,
 				Title:         "Stop volunteering?",
-				Message:       "Quitting stops your relay, and people connected through it will be moved to other volunteers. Quit anyway?",
+				Message:       "Quitting stops your relay, and people connected through it will be moved to other relays. Quit anyway?",
 				Buttons:       []string{"Quit", "Keep running"},
 				DefaultButton: "Keep running",
 				CancelButton:  "Keep running",

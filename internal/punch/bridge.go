@@ -15,17 +15,17 @@ import (
 	"github.com/openrung/openrung/punchcore"
 )
 
-// streamAuthTimeout bounds how long the volunteer waits for a stream's token
+// streamAuthTimeout bounds how long the relay waits for a stream's token
 // prefix before dropping it.
 const streamAuthTimeout = 5 * time.Second
 
-// VolunteerBridge accepts the client's QUIC connection on the punched socket and
-// bridges each stream to the volunteer's loopback Xray listener. Every stream is
+// RelayBridge accepts the client's QUIC connection on the punched socket and
+// bridges each stream to the relay's loopback Xray listener. Every stream is
 // prefixed by the punch token, verified constant-time, as defence-in-depth over
 // the pinned certificate. It returns when ctx is done or the connection drops;
 // the listener (and therefore the punched socket) is closed on return so a failed
 // or finished punch never leaks the socket.
-func VolunteerBridge(ctx context.Context, ln *quic.Listener, token []byte, targetHost string, targetPort int, logger *slog.Logger) error {
+func RelayBridge(ctx context.Context, ln *quic.Listener, token []byte, targetHost string, targetPort int, logger *slog.Logger) error {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -52,12 +52,12 @@ func VolunteerBridge(ctx context.Context, ln *quic.Listener, token []byte, targe
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			handleVolunteerStream(conn, stream, token, targetHost, targetPort, logger)
+			handleRelayStream(conn, stream, token, targetHost, targetPort, logger)
 		}()
 	}
 }
 
-func handleVolunteerStream(conn *quic.Conn, stream *quic.Stream, token []byte, targetHost string, targetPort int, logger *slog.Logger) {
+func handleRelayStream(conn *quic.Conn, stream *quic.Stream, token []byte, targetHost string, targetPort int, logger *slog.Logger) {
 	defer stream.Close()
 
 	_ = stream.SetReadDeadline(time.Now().Add(streamAuthTimeout))

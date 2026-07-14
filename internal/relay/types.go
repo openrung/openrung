@@ -14,9 +14,9 @@ const (
 	ExitModeDirect             = "direct"
 	ExitModeDedicated          = "dedicated"
 
-	// TransportDirect means clients reach the volunteer directly at its
+	// TransportDirect means clients reach the relay directly at its
 	// advertised public endpoint. TransportTunnel means the endpoint is a relay
-	// hub forwarding opaque bytes to a volunteer behind CGNAT over a reverse
+	// hub forwarding opaque bytes to a relay behind CGNAT over a reverse
 	// tunnel.
 	TransportDirect = "direct"
 	TransportTunnel = "tunnel"
@@ -30,7 +30,7 @@ const (
 
 	// NodeClassFoundation marks a relay operated by the OpenRung Foundation
 	// itself; NodeClassVolunteer (the default) marks community-operated
-	// hardware. The class records provenance — who runs the node — not a
+	// hardware. The class records provenance — who runs the relay — not a
 	// quality score: reliability is measured per-relay by telemetry either
 	// way. The broker only accepts a foundation claim from a registration
 	// that presents the foundation token, and the class travels inside the
@@ -52,8 +52,10 @@ type RegisterRequest struct {
 	ExitMode         string `json:"exit_mode"`
 	MaxSessions      int    `json:"max_sessions"`
 	MaxMbps          int    `json:"max_mbps"`
-	VolunteerVersion string `json:"volunteer_version"`
-	Label            string `json:"label,omitempty"`
+	// RelayVersion retains the legacy volunteer_version JSON name for wire
+	// compatibility with deployed brokers, relays, and clients.
+	RelayVersion string `json:"volunteer_version"`
+	Label        string `json:"label,omitempty"`
 	// NodeClass declares who operates this relay: NodeClassVolunteer (the
 	// default when empty) or NodeClassFoundation. A foundation claim is only
 	// honored when the request presents the broker's foundation token;
@@ -62,8 +64,8 @@ type RegisterRequest struct {
 	NodeClass string `json:"node_class,omitempty"`
 	Transport string `json:"transport,omitempty"`
 	// PunchCapable reports that this relay can attempt a direct NAT-hole-punched
-	// path (client<->volunteer) via the hub's punch coordinator, bypassing the
-	// hub data path. Only tunnel-transport volunteers set it. Clients that do not
+	// path (client<->relay) via the hub's punch coordinator, bypassing the
+	// hub data path. Only tunnel-transport relays set it. Clients that do not
 	// understand it ignore it and use the advertised public endpoint as today.
 	PunchCapable bool `json:"punch_capable,omitempty"`
 	// PunchEndpoint is the hub's punch coordinator HTTP(S) base URL (e.g.
@@ -72,7 +74,7 @@ type RegisterRequest struct {
 	// actual listener. Empty means "derive http://PublicHost:9444".
 	PunchEndpoint string `json:"punch_endpoint,omitempty"`
 	// ExitHost is set by the relay hub for tunnel-transport registrations: the
-	// volunteer's source IP as observed on its control connection, i.e. where
+	// relay's source IP as observed on its control connection, i.e. where
 	// tunneled traffic actually exits. The broker uses it only to geolocate the
 	// relay (instead of PublicHost, which is the hub for tunnel transport) and
 	// never serves it to clients. Rejected for direct transport, where
@@ -82,7 +84,7 @@ type RegisterRequest struct {
 
 // GeoLocation is the broker-resolved physical location of the relay's exit:
 // exit_host for tunnel relays, public_host for direct relays. It is derived by
-// the broker, never supplied by the volunteer, and is best-effort: all fields
+// the broker, never supplied by the relay, and is best-effort: all fields
 // are empty when the lookup has not succeeded (yet).
 type GeoLocation struct {
 	City        string `json:"city,omitempty"`
@@ -103,30 +105,32 @@ type Descriptor struct {
 	GeoLocation
 	// ExitHost is stored so heartbeat-time geo backfills keep resolving the
 	// true exit location of tunnel relays, but it is never serialized: exposing
-	// a CGNAT volunteer's real IP through the public API would defeat the
+	// a CGNAT relay's observed exit IP through the public API would defeat the
 	// privacy the hub provides.
 	ExitHost string `json:"-"`
 	// NodeClass is the broker-attested operator class (NodeClassFoundation or
 	// NodeClassVolunteer). Always serialized, and covered by the relay-list
 	// signature like every other descriptor field; clients that predate it
-	// ignore it, clients that read it treat a missing value as volunteer.
-	NodeClass        string    `json:"node_class"`
-	Protocol         string    `json:"protocol"`
-	ClientID         string    `json:"client_id"`
-	RealityPublicKey string    `json:"reality_public_key"`
-	ShortID          string    `json:"short_id"`
-	ServerName       string    `json:"server_name"`
-	Flow             string    `json:"flow"`
-	ExitMode         string    `json:"exit_mode"`
-	MaxSessions      int       `json:"max_sessions"`
-	MaxMbps          int       `json:"max_mbps"`
-	VolunteerVersion string    `json:"volunteer_version"`
-	Transport        string    `json:"transport,omitempty"`
-	PunchCapable     bool      `json:"punch_capable,omitempty"`
-	PunchEndpoint    string    `json:"punch_endpoint,omitempty"`
-	RegisteredAt     time.Time `json:"registered_at"`
-	LastHeartbeatAt  time.Time `json:"last_heartbeat_at"`
-	ExpiresAt        time.Time `json:"expires_at"`
+	// ignore it, clients that read it treat a missing value as the volunteer class.
+	NodeClass        string `json:"node_class"`
+	Protocol         string `json:"protocol"`
+	ClientID         string `json:"client_id"`
+	RealityPublicKey string `json:"reality_public_key"`
+	ShortID          string `json:"short_id"`
+	ServerName       string `json:"server_name"`
+	Flow             string `json:"flow"`
+	ExitMode         string `json:"exit_mode"`
+	MaxSessions      int    `json:"max_sessions"`
+	MaxMbps          int    `json:"max_mbps"`
+	// RelayVersion retains the legacy volunteer_version JSON name for wire
+	// compatibility with deployed brokers, relays, and clients.
+	RelayVersion    string    `json:"volunteer_version"`
+	Transport       string    `json:"transport,omitempty"`
+	PunchCapable    bool      `json:"punch_capable,omitempty"`
+	PunchEndpoint   string    `json:"punch_endpoint,omitempty"`
+	RegisteredAt    time.Time `json:"registered_at"`
+	LastHeartbeatAt time.Time `json:"last_heartbeat_at"`
+	ExpiresAt       time.Time `json:"expires_at"`
 }
 
 // ListResponse is the signed relay directory. The whole marshaled body is

@@ -50,7 +50,7 @@ func TestHubReapsSilentClientConnection(t *testing.T) {
 		Hello: HelloFrame{
 			Token: "secret", RealityPublicKey: "pk", ShortID: "sid", ServerName: "www.example.com",
 			ClientID: "cid", Flow: relay.FlowVision, ExitMode: relay.ExitModeDirect,
-			MaxSessions: 4, MaxMbps: 10, VolunteerVersion: "test",
+			MaxSessions: 4, MaxMbps: 10, RelayVersion: "test",
 		},
 		TargetHost:   echoHost,
 		TargetPort:   echoPort,

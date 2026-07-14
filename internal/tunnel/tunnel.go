@@ -1,12 +1,12 @@
-// Package tunnel implements a minimal reverse tunnel that lets a volunteer relay
+// Package tunnel implements a minimal reverse tunnel that lets a relay
 // behind CGNAT serve client traffic without any inbound port.
 //
-// A volunteer (Client) dials a publicly reachable relay hub (Hub) over a single
+// A relay Client dials a publicly reachable relay hub (Hub) over a single
 // outbound TLS connection, authenticates, and announces its relay metadata. The
 // hub allocates a public TCP port, registers the relay with the broker, and then
 // multiplexes inbound client connections over the same connection using yamux:
 // for each client connection on the public port the hub opens a stream that the
-// volunteer pipes to its loopback Xray listener.
+// relay pipes to its loopback Xray listener.
 //
 // The hub only copies opaque bytes between the public connection and the stream;
 // it never holds the Reality private key, so it cannot decrypt the end-to-end

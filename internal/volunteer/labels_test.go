@@ -25,7 +25,7 @@ func TestGenerateLabelProducesValidNames(t *testing.T) {
 
 // minLabelCombinations guards against the vocabulary shrinking back toward a
 // collision-prone size. The adjective-noun namespace should stay comfortably
-// large so independently-named volunteer relays rarely clash.
+// large so independently named relays rarely clash.
 const minLabelCombinations = 10000
 
 func TestLabelVocabularyIsLargeAndUnique(t *testing.T) {

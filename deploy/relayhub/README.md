@@ -1,11 +1,11 @@
 # OpenRung Relay Hub
 
-The relay hub is the publicly reachable component that lets volunteers behind
-**CGNAT** (carrier-grade NAT, no inbound port) join the network. A CGNAT
-volunteer dials the hub outbound over a single TLS connection; the hub allocates
-a public TCP port, registers the relay with the broker on the volunteer's
+The relay hub is the publicly reachable component that lets volunteer-run
+relays behind **CGNAT** (carrier-grade NAT, no inbound port) join the network. A
+CGNAT relay dials the hub outbound over a single TLS connection; the hub
+allocates a public TCP port, registers the relay with the broker on the relay's
 behalf, and forwards inbound client connections through the tunnel to the
-volunteer's local Xray. Clients reach `hub_public_host:allocated_port` exactly
+relay's local Xray. Clients reach `hub_public_host:allocated_port` exactly
 as they would any direct relay — no client changes.
 
 The hub copies **opaque bytes** only. It never holds the Reality private key, so
@@ -13,26 +13,28 @@ it cannot decrypt the end-to-end VLESS Reality traffic flowing through it.
 
 ## ⚠️ Run this where bandwidth is cheap — NOT on AWS egress
 
-For a CGNAT volunteer, **all** of its client traffic transits the hub in both
-directions (this is intrinsic to CGNAT — there is no direct path). The hub is
-therefore a pure bandwidth mover, and egress pricing dominates its cost:
+Without a successful NAT punch, **all** client traffic for a CGNAT relay
+transits the hub in both directions. The hub is therefore a pure bandwidth
+mover on the tunnel/fallback path, and egress pricing dominates its cost:
 
-| Sustained per volunteer | Monthly transfer | AWS egress (~$0.09/GB) | Unmetered host |
-| ----------------------- | ---------------- | ---------------------- | -------------- |
-| 20 Mbps                 | ~6.3 TB          | **~$575 / mo**         | ~$0            |
+| Sustained per relay | Monthly transfer | AWS egress (~$0.09/GB) | Unmetered host |
+| ------------------- | ---------------- | ---------------------- | -------------- |
+| 20 Mbps             | ~6.3 TB          | **~$575 / mo**         | ~$0            |
 
 Run relay hubs on **unmetered or cheap-bandwidth providers** (Hetzner — ~20 TB
 included then ~€1/TB, OVH, Fly, bare metal). Keep the broker (tiny control-plane
-traffic) wherever you like. Scale horizontally and place hubs near volunteers to
+traffic) wherever you like. Scale horizontally and place hubs near relays to
 spread load.
 
 > The MVP does **not** enforce per-relay or per-hub bandwidth caps. Size the
 > `OPENRUNG_HUB_PORT_RANGE` to the number of concurrent tunnels you intend to
 > host, and run on infrastructure whose bandwidth cost you control.
 
-Only point volunteers at a hub when they genuinely cannot expose a port. Hosts
-with a public IP — including public IPv6, which most residential ISPs provide —
-should run the volunteer in its default **direct** mode and never touch the hub.
+Only use the hub's tunnel data path when a volunteer-run relay cannot expose a
+port. Relays in `-mode auto` may still contact the hub to probe reachability; a
+successful callback selects **direct** mode, so client traffic bypasses the hub.
+Operators who already know the relay is publicly reachable can select
+**direct** mode explicitly.
 
 ## Quick start
 
@@ -43,7 +45,7 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-Then start a CGNAT volunteer pointing at this hub (see
+Then start a CGNAT volunteer-run relay pointing at this hub (see
 `deploy/volunteer/.env.example`):
 
 ```sh
@@ -68,7 +70,7 @@ hub image published to GHCR and made **public** (see note below).
 This allocates a static IP, generates a self-signed TLS cert for that IP, installs Docker, pulls
 `ghcr.io/openrung/openrung-relayhub:main`, runs the hub (host networking, certs mounted read-only),
 and opens the control port (9443) plus the tunnel port range (20000-20100) in the firewall. It
-prints the exact env to point a CGNAT volunteer at the hub:
+prints the exact env to point a CGNAT relay at the hub:
 
 ```sh
 OPENRUNG_TUNNEL=true OPENRUNG_HUB_ADDR=<static-ip>:9443 OPENRUNG_HUB_INSECURE=true
@@ -108,9 +110,9 @@ hourly — run it where that is acceptable, or fall back to Lightsail single-IP 
 The control channel carries the shared auth token, so TLS is strongly
 recommended. Provide a certificate and key via `OPENRUNG_HUB_TLS_CERT` /
 `OPENRUNG_HUB_TLS_KEY` (mounted read-only into the container). With a real CA
-certificate, volunteers verify it with their system roots out of the box. For a
-self-signed cert during testing, volunteers can set `OPENRUNG_HUB_INSECURE=true`
-to skip verification.
+certificate, relay runtimes verify it with their system roots out of the box.
+For a self-signed cert during testing, relay runtimes can set
+`OPENRUNG_HUB_INSECURE=true` to skip verification.
 
 Without a cert/key the hub logs a warning and runs the control channel in
 plaintext (local development only).
@@ -124,7 +126,7 @@ flags — run `relayhub -h`). See `.env.example` for the full list. The essentia
 | ----------------------------- | -------- | -------------- | -------------------------------------------------- |
 | `OPENRUNG_HUB_PUBLIC_HOST`    | yes      | —              | Host advertised to clients for tunneled relays     |
 | `OPENRUNG_BROKER_URL`         | yes      | —              | Broker the hub registers relays with               |
-| `OPENRUNG_HUB_CONTROL_ADDR`   | no       | `:9443`        | Address volunteers dial                            |
+| `OPENRUNG_HUB_CONTROL_ADDR`   | no       | `:9443`        | Address dialed by volunteer-run relays              |
 | `OPENRUNG_HUB_PORT_RANGE`     | no       | `20000-20100`  | Public ports allocated to tunnels (one each)       |
 | `OPENRUNG_VOLUNTEER_TOKEN`    | yes\*    | —              | Shared auth token (must match the broker). Required: the hub refuses to start without it unless `OPENRUNG_ALLOW_ANONYMOUS_VOLUNTEERS=true` |
 | `OPENRUNG_HUB_TLS_CERT/KEY`   | no       | —              | TLS for the control channel                        |
@@ -138,20 +140,22 @@ Open the control port and the entire public port range in your firewall.
 ## Hub HTTP API: reachability probe + auto-detect
 
 Set `OPENRUNG_HUB_HTTP_ADDR` (e.g. `:9444`) to enable the hub's HTTP API. Even
-without punch, this powers **volunteer auto-detection**: a volunteer started with
-`-mode auto` (the default when it has a `-hub`) opens its listener and asks the
-hub to dial it back at its observed public IP. If the callback succeeds the
-volunteer registers **directly**; if not (CGNAT / firewalled) it falls back to
+without punch, this powers **reachability auto-detection for volunteer-run
+relays**: a relay started with `-mode auto` (the default when it has a `-hub`)
+opens its listener and asks the hub to dial it back at its observed public IP.
+If the callback succeeds the relay registers **directly**; if not (CGNAT /
+firewalled) it falls back to
 **tunnel** mode automatically — no manual `-tunnel` guesswork. The prober only
 ever dials the caller's own source IP (never a caller-chosen host), so it is not
 an SSRF vector; it requires the shared token and is rate-limited. Open the HTTP
-API's TCP port in the firewall, and do **not** put it behind a proxy (the
-observed source IP must be the volunteer's real IP).
+API's TCP port in the firewall, and do **not** put it behind a proxy: the hub
+must observe the relay connection's public source IP directly.
 
 ## NAT hole punching (optional, cuts hub egress)
 
-When enabled, the hub coordinates a **direct** client ↔ CGNAT-volunteer path so
-the bytes bypass the hub entirely (it only signals). See
+When enabled, the hub coordinates a **direct** path between the client and a
+CGNAT volunteer-run relay, so the bytes bypass the hub entirely (it only
+signals). See
 [`docs/architecture.md`](../../docs/architecture.md) for the full design. Punching
 is **off** unless both `OPENRUNG_HUB_HTTP_ADDR` and `OPENRUNG_HUB_REFLECTOR_ADDRS`
 are set.
@@ -183,6 +187,6 @@ are set.
 - **Exposure.** The punch coordinator HTTP endpoint is direct-internet (not
   Cloudflare-fronted) and carries its own per-source-IP + per-relay rate limiting;
   the reflector enforces a request-size floor so it can never amplify traffic.
-- **Volunteers** offer punching by default (`-punch`, tunnel mode). A volunteer on
-  a public IP or global IPv6 should keep using direct/registration mode instead —
-  punching only helps genuinely NAT'd volunteers.
+- **Volunteer-run relays** offer punching by default (`-punch`, tunnel mode). A
+  relay on a public IP or global IPv6 should keep using direct/registration mode
+  instead — punching only helps genuinely NAT'd relays.

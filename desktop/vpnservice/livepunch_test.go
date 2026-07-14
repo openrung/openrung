@@ -13,7 +13,7 @@ import (
 )
 
 // TestLivePunchCGNAT drives the real maybePunch path against the live broker and
-// the cgnat-test volunteer's hub. Skipped by default (it needs network and a
+// the cgnat-test relay's hub. Skipped by default (it needs network and a
 // punchable NAT on both ends); run explicitly:
 //
 //	OPENRUNG_LIVE_PUNCH=1 go test ./vpnservice/ -run TestLivePunchCGNAT -v

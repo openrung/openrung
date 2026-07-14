@@ -5,7 +5,7 @@
 #   deploy/broker/lightsail-up.sh [name]
 #
 # The broker is the control-plane HTTP API: it serves the relay directory to
-# clients, accepts volunteer/hub registrations and heartbeats, and ingests client
+# clients, accepts relay/hub registrations and heartbeats, and ingests client
 # telemetry. It carries NO user traffic. This stands one up on a micro_3_0
 # instance (1 GB RAM / 2 vCPU), gives it a static IP, pulls the prebuilt image
 # from GHCR, runs it with host networking + a persistent telemetry volume, and
@@ -67,7 +67,7 @@ IPNAME="${NAME}-ip"
 echo "Provisioning Lightsail broker '${NAME}' in ${REGION} (${BUNDLE}, ${BLUEPRINT})"
 
 # Static IP (free while attached; gives the broker a stable public host to point
-# hubs/volunteers and the Cloudflare origin at).
+# hubs/relay runtimes and the Cloudflare origin at).
 aws lightsail allocate-static-ip --static-ip-name "$IPNAME" --region "$REGION" >/dev/null 2>&1 || true
 STATIC_IP="$(aws lightsail get-static-ip --static-ip-name "$IPNAME" --region "$REGION" --query 'staticIp.ipAddress' --output text)"
 
@@ -109,7 +109,7 @@ GEOIP_ENV=""; [ -n "$GEOIP_ENDPOINT" ] && GEOIP_ENV="OPENRUNG_GEOIP_ENDPOINT=${G
 #                                     Linux capabilities.
 #   --security-opt no-new-privileges  nothing in the image escalates via setuid
 #                                     or file capabilities, so this is safe here.
-#                                     (The volunteer relay must NOT set this — it
+#                                     (The relay runtime must NOT set this — it
 #                                     binds 443 through a file capability, which
 #                                     no-new-privileges disables. See its script.)
 #   --read-only --tmpfs /tmp          read-only rootfs; the only writable paths
@@ -219,7 +219,7 @@ if [ -n "$DASHBOARD_TOKEN" ]; then
   echo "  Dashboard: http://${STATIC_IP}:${PORT}/admin/telemetry"
 fi
 echo
-echo "Point hubs and volunteers at it with:"
+echo "Point hubs and relay runtimes at it with:"
 echo "  OPENRUNG_BROKER_URL=http://${STATIC_IP}:${PORT}"
 echo
 echo "Front it with Cloudflare for TLS, and set the client apps' HTTPS broker URL"

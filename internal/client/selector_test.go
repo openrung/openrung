@@ -157,7 +157,7 @@ func TestParseRelayFamilyRejectsUnknownValue(t *testing.T) {
 func validRelay(now time.Time) relay.Descriptor {
 	return relay.Descriptor{
 		ID:               "relay_123",
-		PublicHost:       "volunteer.example.com",
+		PublicHost:       "relay.example.com",
 		PublicPort:       443,
 		Protocol:         relay.ProtocolVLESSRealityVision,
 		ClientID:         "2c08df10-4ef4-4ab9-95c6-cb1e94cdb2ff",
@@ -168,7 +168,7 @@ func validRelay(now time.Time) relay.Descriptor {
 		ExitMode:         relay.ExitModeDirect,
 		MaxSessions:      8,
 		MaxMbps:          20,
-		VolunteerVersion: "dev",
+		RelayVersion:     "dev",
 		RegisteredAt:     now.Add(-time.Minute),
 		LastHeartbeatAt:  now.Add(-time.Second),
 		ExpiresAt:        now.Add(time.Minute),

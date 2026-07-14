@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Provision an OpenRung volunteer relay on AWS Lightsail.
+# Provision an OpenRung volunteer-run relay on AWS Lightsail.
 #
 #   deploy/volunteer/lightsail-up.sh [name]
 #

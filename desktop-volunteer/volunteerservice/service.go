@@ -280,7 +280,7 @@ func (s *Service) Start() error {
 	s.mu.Unlock()
 	_ = eng.UpdateConfig(cfg)
 
-	s.appendLog("starting volunteer relay…")
+	s.appendLog("starting relay…")
 	if err := eng.Start(); err != nil {
 		s.appendLog("start failed: " + err.Error())
 		return err
@@ -299,7 +299,7 @@ func (s *Service) Stop() error {
 	}
 	go func() {
 		eng.Stop()
-		s.appendLog("volunteer relay stopped")
+		s.appendLog("relay stopped")
 		s.emitCurrent()
 	}()
 	s.emitCurrent()

@@ -14,7 +14,7 @@ import (
 	"openrung/internal/relay"
 )
 
-// BrokerClient speaks the volunteer side of the broker HTTP API: registration
+// BrokerClient speaks the relay side of the broker HTTP API: registration
 // and heartbeats. The zero HTTPClient falls back to http.DefaultClient; Token
 // is optional (anonymous registration when the broker allows it).
 type BrokerClient struct {

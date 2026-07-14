@@ -29,7 +29,7 @@ func TestBuildSingBoxConfig(t *testing.T) {
 
 	outbounds := decoded["outbounds"].([]any)
 	proxy := outbounds[0].(map[string]any)
-	if proxy["type"] != "vless" || proxy["server"] != "volunteer.example.com" {
+	if proxy["type"] != "vless" || proxy["server"] != "relay.example.com" {
 		t.Fatalf("unexpected proxy outbound: %+v", proxy)
 	}
 	if proxy["server_port"].(float64) != 443 {
@@ -120,7 +120,7 @@ func TestBuildSingBoxConfigPunchBridgeRedirectsAndExcludesPeer(t *testing.T) {
 		Relay:                   rly,
 		BridgeHost:              "127.0.0.1",
 		BridgePort:              54321,
-		PunchPeerExcludeAddress: "198.51.100.7", // the volunteer's reflexive IP
+		PunchPeerExcludeAddress: "198.51.100.7", // the relay's reflexive IP
 	})
 	if err != nil {
 		t.Fatalf("build sing-box config: %v", err)
@@ -136,13 +136,13 @@ func TestBuildSingBoxConfigPunchBridgeRedirectsAndExcludesPeer(t *testing.T) {
 	if proxy["server"] != "127.0.0.1" || proxy["server_port"].(float64) != 54321 {
 		t.Fatalf("outbound not pointed at the bridge: %+v", proxy)
 	}
-	// ...but the Reality identity must be unchanged (still targets the volunteer).
+	// ...but the Reality identity must be unchanged (still targets the relay).
 	reality := proxy["tls"].(map[string]any)["reality"].(map[string]any)
 	if reality["public_key"] != "public-key" {
 		t.Fatalf("reality identity changed on punch path: %+v", reality)
 	}
 
-	// Correction #1: the volunteer's reflexive peer IP MUST be excluded from the
+	// Correction #1: the relay's reflexive peer IP MUST be excluded from the
 	// TUN route so the QUIC datagrams are not captured and looped.
 	tun := decoded["inbounds"].([]any)[0].(map[string]any)
 	excluded := tun["route_exclude_address"].([]any)
@@ -188,7 +188,7 @@ func TestBuildSingBoxProxyModeUsesMixedInbound(t *testing.T) {
 	}
 	// The outbound (VLESS+Reality) and final route are shared with TUN mode.
 	proxy := decoded["outbounds"].([]any)[0].(map[string]any)
-	if proxy["type"] != "vless" || proxy["server"] != "volunteer.example.com" {
+	if proxy["type"] != "vless" || proxy["server"] != "relay.example.com" {
 		t.Fatalf("proxy mode should keep the VLESS outbound: %+v", proxy)
 	}
 	if decoded["route"].(map[string]any)["final"] != "proxy" {
