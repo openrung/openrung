@@ -1,6 +1,6 @@
-.PHONY: test fmt broker relay volunteer relayhub client docker-build docker-keygen docker-run relayhub-docker-build broker-docker-build
+.PHONY: test fmt broker relay relayhub client docker-build docker-keygen docker-run relayhub-docker-build broker-docker-build
 
-VOLUNTEER_IMAGE ?= openrung-volunteer:latest
+RELAY_IMAGE ?= openrung-relay:latest
 RELAYHUB_IMAGE ?= openrung-relayhub:latest
 BROKER_IMAGE ?= openrung-broker:latest
 
@@ -25,9 +25,6 @@ relay:
 		-short-id 5f7a8d9c01ab23cd \
 		-skip-xray-run
 
-# Legacy local-development alias; the executable path is migrated separately.
-volunteer: relay
-
 relayhub:
 	OPENRUNG_ALLOW_ANONYMOUS_VOLUNTEERS=true go run ./cmd/relayhub \
 		-broker http://localhost:8080 \
@@ -38,9 +35,9 @@ relayhub:
 client:
 	go run ./cmd/client check -broker http://localhost:8080
 
-# Build the relay runtime image (legacy target/image names retained for compatibility).
+# Build the relay runtime image.
 docker-build:
-	docker build -f deploy/volunteer/Dockerfile -t $(VOLUNTEER_IMAGE) .
+	docker build -f deploy/relay/Dockerfile -t $(RELAY_IMAGE) .
 
 # Build the relay hub image (run from the repo root).
 relayhub-docker-build:
@@ -52,11 +49,11 @@ broker-docker-build:
 
 # Print a fresh Reality key pair for a stable relay identity.
 docker-keygen:
-	docker run --rm --entrypoint xray $(VOLUNTEER_IMAGE) x25519
+	docker run --rm --entrypoint xray $(RELAY_IMAGE) x25519
 
-# Run the relay using deploy/volunteer/.env (host networking, least privilege).
+# Run the relay using deploy/relay/.env (host networking, least privilege).
 docker-run:
 	docker run --rm --network host \
 		--cap-drop ALL --cap-add NET_BIND_SERVICE \
 		--read-only --tmpfs /tmp \
-		--env-file deploy/volunteer/.env $(VOLUNTEER_IMAGE)
+		--env-file deploy/relay/.env $(RELAY_IMAGE)

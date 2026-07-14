@@ -1,0 +1,82 @@
+name: relay-image
+
+# Build and publish the relay runtime image to GHCR. During the fleet cutover,
+# publish the same manifest under the legacy openrung-volunteer package name.
+# Remove that second image after every controlled relay uses openrung-relay.
+# Multi-arch (amd64 + arm64) so it runs on x86 and Graviton/ARM VPSes.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - 'cmd/relay/**'
+      - 'internal/relayruntime/**'
+      - 'internal/tunnel/**'
+      - 'internal/relay/**'
+      - 'internal/punch/**'
+      - 'punchcore/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.dockerignore'
+      - 'THIRD_PARTY_NOTICES.md'
+      - 'deploy/relay/**'
+      - '.github/workflows/relay-image.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ghcr.io/${{ github.repository_owner }}/openrung-relay
+            ghcr.io/${{ github.repository_owner }}/openrung-volunteer
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/relay/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify canonical and compatibility tags
+        env:
+          EXPECTED_DIGEST: ${{ steps.build.outputs.digest }}
+          PUBLISHED_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$PUBLISHED_TAGS" | while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            actual="$(docker buildx imagetools inspect "$tag" --format '{{.Manifest.Digest}}')"
+            if [ "$actual" != "$EXPECTED_DIGEST" ]; then
+              echo "digest mismatch for $tag: got $actual, want $EXPECTED_DIGEST" >&2
+              exit 1
+            fi
+          done

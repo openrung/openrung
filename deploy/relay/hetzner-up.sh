@@ -2,7 +2,7 @@
 #
 # Provision an OpenRung volunteer-run relay on Hetzner Cloud.
 #
-#   deploy/volunteer/hetzner-up.sh [name]
+#   deploy/relay/hetzner-up.sh [name]
 #
 # If no name is given, a random "adjective-noun" name is generated and used as
 # BOTH the Hetzner server name and the relay label (OPENRUNG_LABEL), so the relay
@@ -26,6 +26,9 @@ set -euo pipefail
 LOCATION="${OPENRUNG_LOCATION:-hel1}"          # Helsinki (EU: 20TB included traffic)
 SERVER_TYPE="${OPENRUNG_SERVER_TYPE:-cax11}"   # ARM Ampere, 2 vCPU / 4GB / 40GB
 OS_IMAGE="${OPENRUNG_OS_IMAGE:-ubuntu-24.04}"
+# Keep anonymous bootstrap on the existing public package until openrung-relay
+# has been published, made public, and anonymously verified. CI publishes both
+# package names from one build, so they resolve to the same multi-arch manifest.
 IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-volunteer:main}"  # multi-arch: pulls arm64 on CAX
 # Register against the broker ORIGIN, not the Cloudflare front (broker.openrung.org).
 # That hostname is a Worker front for *client* discovery; its edge serves a Managed
@@ -34,6 +37,8 @@ IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-volunteer:main}"  # multi-arc
 # exactly like the Lightsail fleet (see lightsail-up.sh).
 BROKER_URL="${OPENRUNG_BROKER_URL:-http://54.238.185.205:8080}"
 SSH_KEY_NAME="${OPENRUNG_SSH_KEY_NAME:-openrung}"
+# This helper provisions volunteer-class nodes, and the live fleet already shares
+# this firewall resource. Keep its semantic class name to avoid orphaning it.
 FIREWALL_NAME="${OPENRUNG_FIREWALL_NAME:-openrung-volunteer}"
 
 if [ "${OPENRUNG_VOLUNTEER_TOKEN+x}" = x ] || [ "${OPENRUNG_FOUNDATION_TOKEN+x}" = x ]; then
@@ -109,8 +114,10 @@ systemctl enable --now docker
 # Public IPv4 from the Hetzner metadata service; clients reach the relay here.
 PUBLIC_IP="\$(curl -fsS http://169.254.169.254/hetzner/v1/metadata/public-ipv4)"
 docker pull ${IMAGE}
-docker rm -f openrung-volunteer 2>/dev/null || true
-docker run -d --name openrung-volunteer --restart unless-stopped \\
+# Remove both names during the artifact migration so a stale host-network relay
+# cannot retain port 443 or keep a duplicate broker registration.
+docker rm -f openrung-relay openrung-volunteer 2>/dev/null || true
+docker run -d --name openrung-relay --restart unless-stopped \\
   --network host --cap-drop ALL --cap-add NET_BIND_SERVICE --read-only --tmpfs /tmp \\
   -e OPENRUNG_BROKER_URL=${BROKER_URL} \\
   -e OPENRUNG_PUBLIC_HOST="\$PUBLIC_IP" \\

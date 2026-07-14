@@ -1,18 +1,18 @@
-# OpenRung relay runtime (legacy service/image names retained for compatibility).
+# OpenRung relay runtime.
 #
 #   cp .env.example .env      # then edit .env (set OPENRUNG_BROKER_URL + OPENRUNG_PUBLIC_HOST)
 #   docker compose up -d --build
 #   docker compose logs -f
 #
 services:
-  volunteer:
+  relay:
     build:
       context: ../..
-      dockerfile: deploy/volunteer/Dockerfile
+      dockerfile: deploy/relay/Dockerfile
       args:
         XRAY_VERSION: v26.3.27
-    image: openrung-volunteer:latest
-    container_name: openrung-volunteer
+    image: openrung-relay:latest
+    container_name: openrung-relay
     restart: unless-stopped
     env_file: [.env]
 

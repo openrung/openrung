@@ -17,7 +17,7 @@ on:
 env:
   # Xray-core release to bundle. Bump as needed; must exist as a GitHub
   # release with companion .dgst checksum files. Keep in sync with
-  # deploy/volunteer/Dockerfile (ARG XRAY_VERSION).
+  # deploy/relay/Dockerfile (ARG XRAY_VERSION).
   XRAY_VERSION: ${{ github.event.inputs.xray_version || '26.3.27' }}
 
 jobs:
@@ -62,10 +62,10 @@ jobs:
       - name: Fetch and verify xray (unix)
         if: runner.os != 'Windows'
         # The .dgst file lists hashes as "SHA2-256= <hex>"; verify the download
-        # (same approach as deploy/volunteer/Dockerfile). Only the xray binary
+        # (same approach as deploy/relay/Dockerfile). Only the xray binary
         # and its LICENSE are extracted — the desktop app does not bundle the
         # geo data files, but MPL-2.0 §3.1 requires Xray's license to travel
-        # with the binary (deploy/volunteer/Dockerfile keeps it for the same
+        # with the binary (deploy/relay/Dockerfile keeps it for the same
         # reason).
         run: |
           V="$XRAY_VERSION"

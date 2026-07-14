@@ -2,7 +2,7 @@
 
 A cross-platform GUI (macOS / Linux / Windows) that lets home users volunteer
 their computer as an OpenRung relay — the same relay that powers the Docker
-deployment (`deploy/volunteer/`), wrapped in a point-and-click app with
+deployment (`deploy/relay/`), wrapped in a point-and-click app with
 start/stop, live status, and settings.
 
 ## Architecture
@@ -50,7 +50,7 @@ unmodified and run as a separate process (aggregation, not linking). See
 
 CI (`.github/workflows/volunteer-desktop-release.yml`) builds all three
 platforms with a pinned Xray-core (v26.3.27, same pin as
-`deploy/volunteer/Dockerfile`), SHA-256-verified against the release `.dgst`
+`deploy/relay/Dockerfile`), SHA-256-verified against the release `.dgst`
 on every platform. Push a `volunteer-vX.Y.Z` tag to publish a GitHub release
 with all three artifacts; a manual `workflow_dispatch` run builds artifacts
 only.

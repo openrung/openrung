@@ -31,7 +31,7 @@ Cloudflare Worker front. Set up 2026-07-13.
   Cloudflare Worker's subrequest back into the edge. Both CDN fronts depend on
   this record resolving straight to the broker IP.
 - **Keep `:8080` open.** Volunteer-run relays (Hetzner + Lightsail, see
-  `deploy/volunteer/hetzner-up.sh`) register directly against
+  `deploy/relay/hetzner-up.sh`) register directly against
   `http://54.238.185.205:8080`, and the Cloudflare Worker front fetches the
   origin on `:8080`. Do not firewall it off as part of this change.
 - **The CloudFront behavior must use `Managed-AllViewerExceptHostHeader`, not
