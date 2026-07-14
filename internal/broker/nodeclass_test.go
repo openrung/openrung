@@ -15,11 +15,16 @@ import (
 
 func postRegister(t *testing.T, server http.Handler, req relay.RegisterRequest, bearer string) *httptest.ResponseRecorder {
 	t.Helper()
+	return postRegisterAt(t, server, "/api/v1/volunteers/register", req, bearer)
+}
+
+func postRegisterAt(t *testing.T, server http.Handler, path string, req relay.RegisterRequest, bearer string) *httptest.ResponseRecorder {
+	t.Helper()
 	body, err := json.Marshal(req)
 	if err != nil {
 		t.Fatalf("marshal register request: %v", err)
 	}
-	httpReq := httptest.NewRequest(http.MethodPost, "/api/v1/volunteers/register", bytes.NewReader(body))
+	httpReq := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
 	if bearer != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+bearer)
 	}
@@ -52,6 +57,71 @@ func TestRegisterDefaultsNodeClassVolunteer(t *testing.T) {
 	server.ServeHTTP(listRecorder, httptest.NewRequest(http.MethodGet, "/api/v1/relays", nil))
 	if !strings.Contains(listRecorder.Body.String(), `"node_class":"volunteer"`) {
 		t.Fatalf("expected node_class in signed list response: %s", listRecorder.Body.String())
+	}
+}
+
+func TestRegisterRouteAliasesPreserveNodeClassAuthorization(t *testing.T) {
+	routes := []struct {
+		name string
+		path string
+	}{
+		{name: "canonical", path: "/api/v1/relays/register"},
+		{name: "legacy", path: "/api/v1/volunteers/register"},
+	}
+	tests := []struct {
+		name          string
+		bearer        string
+		claimClass    string
+		wantStatus    int
+		wantNodeClass string
+	}{
+		{
+			name:          "volunteer credential registers volunteer relay",
+			bearer:        "volunteer-token",
+			wantStatus:    http.StatusCreated,
+			wantNodeClass: relay.NodeClassVolunteer,
+		},
+		{
+			name:          "foundation credential registers foundation relay",
+			bearer:        "foundation-token",
+			claimClass:    relay.NodeClassFoundation,
+			wantStatus:    http.StatusCreated,
+			wantNodeClass: relay.NodeClassFoundation,
+		},
+		{
+			name:       "volunteer credential cannot claim foundation relay",
+			bearer:     "volunteer-token",
+			claimClass: relay.NodeClassFoundation,
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "invalid credential is rejected",
+			bearer:     "wrong-token",
+			wantStatus: http.StatusUnauthorized,
+		},
+	}
+
+	for _, route := range routes {
+		for _, test := range tests {
+			t.Run(route.name+"/"+test.name, func(t *testing.T) {
+				server := NewServer(NewStore(), Config{
+					SigningSeed:       testSigningSeed(),
+					RegistrationToken: "volunteer-token",
+					FoundationToken:   "foundation-token",
+				})
+				req := validRegisterRequest()
+				req.NodeClass = test.claimClass
+				recorder := postRegisterAt(t, server, route.path, req, test.bearer)
+				if recorder.Code != test.wantStatus {
+					t.Fatalf("expected %d, got %d: %s", test.wantStatus, recorder.Code, recorder.Body.String())
+				}
+				if test.wantStatus == http.StatusCreated {
+					if desc := decodeDescriptor(t, recorder); desc.NodeClass != test.wantNodeClass {
+						t.Fatalf("node_class = %q, want %q", desc.NodeClass, test.wantNodeClass)
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -175,6 +245,39 @@ func TestHeartbeatAcceptsFoundationToken(t *testing.T) {
 	server.ServeHTTP(heartbeatRecorder, heartbeat)
 	if heartbeatRecorder.Code != http.StatusOK {
 		t.Fatalf("heartbeat: expected 200, got %d: %s", heartbeatRecorder.Code, heartbeatRecorder.Body.String())
+	}
+}
+
+func TestCanonicalHeartbeatEnforcesFoundationToken(t *testing.T) {
+	server := NewServer(NewStore(), Config{
+		SigningSeed:       testSigningSeed(),
+		RegistrationToken: "volunteer-token",
+		FoundationToken:   "foundation-token",
+	})
+
+	req := validRegisterRequest()
+	req.NodeClass = relay.NodeClassFoundation
+	recorder := postRegisterAt(t, server, "/api/v1/relays/register", req, "foundation-token")
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("register: expected 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	desc := decodeDescriptor(t, recorder)
+	heartbeatPath := "/api/v1/relays/" + desc.ID + "/heartbeat"
+
+	volunteerHeartbeat := httptest.NewRequest(http.MethodPost, heartbeatPath, nil)
+	volunteerHeartbeat.Header.Set("Authorization", "Bearer volunteer-token")
+	volunteerRecorder := httptest.NewRecorder()
+	server.ServeHTTP(volunteerRecorder, volunteerHeartbeat)
+	if volunteerRecorder.Code != http.StatusForbidden {
+		t.Fatalf("volunteer heartbeat: expected 403, got %d: %s", volunteerRecorder.Code, volunteerRecorder.Body.String())
+	}
+
+	foundationHeartbeat := httptest.NewRequest(http.MethodPost, heartbeatPath, nil)
+	foundationHeartbeat.Header.Set("Authorization", "Bearer foundation-token")
+	foundationRecorder := httptest.NewRecorder()
+	server.ServeHTTP(foundationRecorder, foundationHeartbeat)
+	if foundationRecorder.Code != http.StatusOK {
+		t.Fatalf("foundation heartbeat: expected 200, got %d: %s", foundationRecorder.Code, foundationRecorder.Body.String())
 	}
 }
 

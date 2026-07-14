@@ -205,13 +205,15 @@ payload so a load balancer can stop routing to that broker instance.
 ## Register Relay
 
 ```http
-POST /api/v1/volunteers/register
+POST /api/v1/relays/register
 Authorization: Bearer <registration-token>
 Content-Type: application/json
 ```
 
-The `/api/v1/volunteers/register` path is a legacy compatibility name. It
-registers both `volunteer`-class and `foundation`-class relays.
+The legacy `POST /api/v1/volunteers/register` path is retained as a
+compatibility alias with identical authentication, rate limiting, validation,
+and response behavior. It has no scheduled removal date. Both paths register
+`volunteer`-class and `foundation`-class relays.
 
 Request:
 
@@ -329,9 +331,13 @@ resolves.
 ## Heartbeat
 
 ```http
-POST /api/v1/volunteers/{id}/heartbeat
+POST /api/v1/relays/{id}/heartbeat
 Authorization: Bearer <registration-token>
 ```
+
+The legacy `POST /api/v1/volunteers/{id}/heartbeat` path is retained as a
+compatibility alias with identical authentication, rate limiting, validation,
+and response behavior. It has no scheduled removal date.
 
 Response:
 

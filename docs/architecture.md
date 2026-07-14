@@ -85,11 +85,13 @@ volunteer-run relays online:
   single TLS connection (`-tunnel -hub <addr>`), authenticating with the same
   registration token.
 - The hub allocates one public TCP port per relay, registers the relay with
-  the broker over the existing `POST /api/v1/volunteers/register` API (with
-  `transport: "tunnel"` and `public_host`/`public_port` pointing at the hub), and
-  multiplexes inbound client connections to the relay over the tunnel using
-  yamux. Clients connect to `hub:port` exactly as they would any direct relay — no
-  client changes.
+  the broker (with `transport: "tunnel"` and `public_host`/`public_port` pointing
+  at the hub), and multiplexes inbound client connections to the relay over the
+  tunnel using yamux. The current hub calls the legacy
+  `POST /api/v1/volunteers/register` compatibility alias; the broker also accepts
+  the canonical `POST /api/v1/relays/register` route with identical behavior.
+  Clients connect to `hub:port` exactly as they would any direct relay — no client
+  changes.
 - Descriptor liveness is tied to the tunnel: the hub heartbeats while the tunnel
   is healthy and stops when it drops, so the relay expires via the broker's normal
   lease TTL.

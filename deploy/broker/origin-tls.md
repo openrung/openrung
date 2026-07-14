@@ -4,9 +4,14 @@ The broker runs plaintext HTTP on `:8080`. Fronts terminate client TLS at the
 edge, but the **edge → origin** leg was HTTP. On the AWS CloudFront front
 (distribution `E2PLKW8FO3JZSA`, `d2r7mdpyevvs1m.cloudfront.net`) that leg
 carried the high-value **Foundation registration token** (`Authorization`
-header on `POST /api/v1/volunteers/register`) in cleartext across the public
-internet. This runbook closes that leg with a TLS-terminating reverse proxy on
-the broker box so the token is encrypted **relay → CloudFront edge → origin**.
+header on the shipped runtime's `POST /api/v1/volunteers/register` request) in
+cleartext across the public internet. This runbook closes that leg with a
+TLS-terminating reverse proxy on the broker box so the token is encrypted
+**relay → CloudFront edge → origin**.
+
+The legacy `POST /api/v1/volunteers/register` route reaches the same handler and
+is retained as a compatibility alias with no scheduled removal date. New
+operational checks should use the canonical relay route shown here.
 
 ```
 relay ──HTTPS──► CloudFront edge ──HTTPS(:443)──► Caddy ──HTTP(127.0.0.1:8080)──► broker
@@ -212,7 +217,7 @@ sudo bash -c '
   # sed strips ONLY the first NAME= prefix, so a token containing = (base64
   # padding) survives verbatim; awk -F= "{print \$2}" would truncate it and 403.
   sed -n "s|^OPENRUNG_FOUNDATION_TOKEN=|Authorization: Bearer |p" /etc/openrung/broker.env > "$hdr"
-  CF=https://d2r7mdpyevvs1m.cloudfront.net/api/v1/volunteers/register
+  CF=https://d2r7mdpyevvs1m.cloudfront.net/api/v1/relays/register
   # WITH token   -> 400 public_host is required  => token SURVIVED CloudFront->origin
   curl -sS -H @"$hdr" -o /dev/null -w "with-token: %{http_code}\n" \
     -X POST -H "Content-Type: application/json" -d "{\"node_class\":\"foundation\"}" "$CF"
@@ -233,7 +238,7 @@ bash -c '
   hdr=$(mktemp); trap "rm -f \"$hdr\"" EXIT INT TERM
   read -rs -p "Foundation token: " FT </dev/tty; echo
   printf "Authorization: Bearer %s\n" "$FT" > "$hdr"; unset FT
-  CF=https://d2r7mdpyevvs1m.cloudfront.net/api/v1/volunteers/register
+  CF=https://d2r7mdpyevvs1m.cloudfront.net/api/v1/relays/register
   curl -sS -H @"$hdr" -o /dev/null -w "with-token: %{http_code}\n" \
     -X POST -H "Content-Type: application/json" -d "{\"node_class\":\"foundation\"}" "$CF"
   curl -sS          -o /dev/null -w "no-token:   %{http_code}\n" \
