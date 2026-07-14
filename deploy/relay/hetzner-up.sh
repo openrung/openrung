@@ -26,10 +26,7 @@ set -euo pipefail
 LOCATION="${OPENRUNG_LOCATION:-hel1}"          # Helsinki (EU: 20TB included traffic)
 SERVER_TYPE="${OPENRUNG_SERVER_TYPE:-cax11}"   # ARM Ampere, 2 vCPU / 4GB / 40GB
 OS_IMAGE="${OPENRUNG_OS_IMAGE:-ubuntu-24.04}"
-# Keep anonymous bootstrap on the existing public package until openrung-relay
-# has been published, made public, and anonymously verified. CI publishes both
-# package names from one build, so they resolve to the same multi-arch manifest.
-IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-volunteer:main}"  # multi-arch: pulls arm64 on CAX
+IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-relay:main}"  # multi-arch: pulls arm64 on CAX
 # Register against the broker ORIGIN, not the Cloudflare front (broker.openrung.org).
 # That hostname is a Worker front for *client* discovery; its edge serves a Managed
 # Challenge to datacenter IP ranges (incl. Hetzner), which a relay's HTTP client

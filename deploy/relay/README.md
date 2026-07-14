@@ -137,12 +137,10 @@ If you publish via the CI workflow, pull instead of building:
 docker pull ghcr.io/openrung/openrung-relay:main
 ```
 
-The `openrung-relay` GHCR package must be **public** before unauthenticated relay
-hosts can pull it. After its first workflow publication, verify the package
-visibility under the OpenRung organization’s **Packages** settings, then verify
-an unauthenticated pull. Until that gate passes, the cloud provisioning helpers
-default to the public `openrung-volunteer` compatibility package; CI publishes
-it from the same build and verifies that both package names have the same digest.
+The cloud provisioning helpers pull this public canonical package by default.
+During the compatibility window, CI also publishes the same manifest under the
+legacy `openrung-volunteer` package name and verifies that both names resolve to
+the same digest.
 
 ## Networking notes
 
