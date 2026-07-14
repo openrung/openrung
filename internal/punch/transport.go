@@ -93,7 +93,7 @@ func clientTLSConfig(fingerprint string) *tls.Config {
 }
 
 // ListenQUIC starts a QUIC listener on the (unconnected) punched socket. The
-// volunteer accepts one connection from the client, then bridges its streams.
+// relay accepts one connection from the client, then bridges its streams.
 func ListenQUIC(sock net.PacketConn, cert tls.Certificate) (*quic.Listener, error) {
 	return quic.Listen(sock, serverTLSConfig(cert), quicConfig())
 }

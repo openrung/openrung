@@ -169,7 +169,7 @@ func TestRegisterGeolocatesTunnelRelayByExitHostWithoutExposingIt(t *testing.T) 
 	req := validRegisterRequest()
 	req.PublicHost = "203.0.113.1" // relay hub
 	req.Transport = relay.TransportTunnel
-	req.ExitHost = "198.51.100.7" // volunteer's real IP
+	req.ExitHost = "198.51.100.7" // relay's observed exit IP
 	body, _ := json.Marshal(req)
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/volunteers/register", bytes.NewReader(body)))
@@ -186,7 +186,7 @@ func TestRegisterGeolocatesTunnelRelayByExitHostWithoutExposingIt(t *testing.T) 
 	if !strings.Contains(listBody, `"city":"Tehran"`) {
 		t.Fatalf("expected exit-host geo in list response: %s", listBody)
 	}
-	// The volunteer's real IP must never leak through the public API.
+	// The relay's observed exit IP must never leak through the public API.
 	for _, response := range []string{recorder.Body.String(), listBody} {
 		if strings.Contains(response, "198.51.100.7") {
 			t.Fatalf("exit host leaked into API response: %s", response)

@@ -19,7 +19,7 @@ import (
 // probeClient ignored HubCertFingerprint: the reachability probe hits the hub's
 // HTTPS API, so if it does not apply the same cert pin as the tunnel dial it
 // fails verification against the hub's self-signed cert, and auto mode can never
-// choose direct — every publicly reachable volunteer is forced through the hub.
+// choose direct — every publicly reachable relay is forced through the hub.
 //
 // It stands up the real reachability prober behind a self-signed TLS server and
 // asserts that with the matching pin the probe SUCCEEDS (reachable → direct
@@ -40,7 +40,7 @@ func TestProbePinnedSelfSignedHubSelectsDirect(t *testing.T) {
 	eng := New(Config{}, Events{})
 	port := freePort(t)
 
-	// Matching pin: the HTTPS probe validates, the hub dials the volunteer's
+	// Matching pin: the HTTPS probe validates, the hub dials the relay's
 	// loopback listener back, and detection reports reachable → direct mode.
 	reachable, host, err := volunteer.DetectDirectReachable(
 		context.Background(), ts.URL, "", "::", port, eng.probeClient(Config{HubCertFingerprint: fp}))

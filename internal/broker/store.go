@@ -57,7 +57,7 @@ type Store struct {
 }
 
 type StoreStats struct {
-	// ActiveRelays counts every unexpired relay, foundation and volunteer alike.
+	// ActiveRelays counts every unexpired foundation- and volunteer-class relay.
 	ActiveRelays              int
 	AdvertisedSessionCapacity int
 }
@@ -96,7 +96,7 @@ func (s *Store) Register(req relay.RegisterRequest, now time.Time, ttl time.Dura
 		ExitMode:         req.ExitMode,
 		MaxSessions:      req.MaxSessions,
 		MaxMbps:          req.MaxMbps,
-		VolunteerVersion: req.VolunteerVersion,
+		RelayVersion:     req.RelayVersion,
 		Transport:        normalizeTransport(req.Transport),
 		PunchCapable:     req.PunchCapable,
 		PunchEndpoint:    req.PunchEndpoint,
@@ -385,7 +385,7 @@ func normalizeTransport(transport string) string {
 	return transport
 }
 
-// normalizeNodeClass defaults an empty node class to volunteer so every
+// normalizeNodeClass defaults an empty node class to the volunteer class so every
 // stored descriptor carries a concrete value. Authorization of a foundation
 // claim happens in the handler; the store trusts its caller.
 func normalizeNodeClass(class string) string {

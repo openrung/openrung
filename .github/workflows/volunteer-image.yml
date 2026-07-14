@@ -1,6 +1,7 @@
 name: volunteer-image
 
-# Build and publish the volunteer relay image to GHCR.
+# Build and publish the relay runtime image to GHCR. The workflow and image keep
+# their legacy volunteer names until the artifact-alias migration.
 # Multi-arch (amd64 + arm64) so it runs on x86 and Graviton/ARM VPSes.
 
 on:

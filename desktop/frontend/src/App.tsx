@@ -88,7 +88,7 @@ export default function App() {
                     <span className="or-wordmark">OpenRung</span>
                     <span className="or-cursor">▍</span>
                   </div>
-                  <span className="or-tagline">volunteer relay network</span>
+                  <span className="or-tagline">relay network</span>
                 </div>
                 <div className="or-header-right">
                   <div className={`or-map-chip ${state.directoryStatus === 'failed' ? 'is-failed' : ''}`}>

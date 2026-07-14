@@ -19,16 +19,16 @@ import (
 	"openrung/internal/punch"
 )
 
-// Client is the volunteer side of the reverse tunnel. It dials the hub, performs
+// Client is the relay side of the reverse tunnel. It dials the hub, performs
 // the HELLO handshake, then accepts multiplexed streams from the hub and pipes
-// each one to the volunteer's local (loopback) Xray listener.
+// each one to the relay's local (loopback) Xray listener.
 type Client struct {
 	// HubAddr is the hub control address (host:port).
 	HubAddr string
 	// TLSConfig configures the control connection to the hub. When nil the
 	// client dials plaintext TCP (local development and tests only).
 	TLSConfig *tls.Config
-	// Hello is the handshake the volunteer announces (token + relay metadata).
+	// Hello is the handshake the relay announces (token + relay metadata).
 	Hello HelloFrame
 	// TargetHost and TargetPort point at the local Xray listener that streams
 	// are piped to.
@@ -213,11 +213,11 @@ func (c *Client) handleAccepted(ctx context.Context, stream net.Conn, typed bool
 	}
 }
 
-// handlePunchControl reads a punch directive, gathers the volunteer's reflexive
+// handlePunchControl reads a punch directive, gathers the relay's reflexive
 // candidates, replies with an ack, and lets the punch package run the direct path
 // in the background (bridging to the same loopback Xray listener as tunnelled
 // traffic). ctx is the long-lived tunnel context so the punched session survives
-// this control stream closing but stops on volunteer shutdown.
+// this control stream closing but stops on relay shutdown.
 func (c *Client) handlePunchControl(ctx context.Context, stream net.Conn) {
 	defer stream.Close()
 	_ = stream.SetReadDeadline(time.Now().Add(punchControlTimeout))

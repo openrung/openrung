@@ -5,8 +5,8 @@
 #   deploy/relayhub/lightsail-up.sh [name]
 #
 # The relay hub is the public component that terminates reverse tunnels from
-# CGNAT volunteers and forwards client traffic to them. This stands one up on a
-# micro_3_0 instance (1 GB RAM / 2 vCPU / 40 GB / 2 TB transfer), gives it a
+# CGNAT volunteer-run relays and forwards client traffic to them. This stands
+# one up on a micro_3_0 instance (1 GB RAM / 2 vCPU / 40 GB / 2 TB transfer), gives it a
 # static IP, generates a self-signed TLS cert for the control channel (with the
 # static IP in the cert SAN), pulls the prebuilt image from GHCR, and opens the
 # control port plus the public tunnel port range in the firewall.
@@ -27,7 +27,8 @@ IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-relayhub:main}"
 BROKER_URL="${OPENRUNG_BROKER_URL:-http://54.238.185.205:8080}"
 CONTROL_PORT="${OPENRUNG_HUB_CONTROL_PORT:-9443}"
 PORT_RANGE="${OPENRUNG_HUB_PORT_RANGE:-20000-20100}"
-# HTTP API port for the reachability prober (enables volunteer -mode auto).
+# HTTP API port for the reachability prober (enables the relay runtime's
+# `-mode auto`).
 # Served over TLS with the same self-signed control cert. Set to empty to disable.
 HTTP_PORT="${OPENRUNG_HUB_HTTP_PORT:-9444}"
 TOKEN="${OPENRUNG_VOLUNTEER_TOKEN:-}"
@@ -55,7 +56,7 @@ STATIC_IP="$(aws lightsail get-static-ip --static-ip-name "$IPNAME" --region "$R
 
 # Optional bearer token (must match the broker). Included in the env file only
 # when set so a blank line is harmless. Without a token the hub fails closed, so
-# when none is provided we explicitly opt into anonymous volunteers (open,
+# when none is provided we explicitly allow anonymous relay connections (open,
 # unauthenticated hub) instead — set OPENRUNG_VOLUNTEER_TOKEN to require auth.
 TOKEN_ENV=""
 ANON_ENV=""
@@ -86,7 +87,8 @@ systemctl enable --now docker
 
 # Self-signed TLS for the control channel, valid for the static IP. The cert is
 # world-readable so the container's non-root user can read it (the box is
-# single-purpose). Volunteers connect with OPENRUNG_HUB_INSECURE=true.
+# single-purpose). Volunteer-run relays connect with
+# OPENRUNG_HUB_INSECURE=true.
 mkdir -p /etc/openrung/certs
 openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \\
   -keyout /etc/openrung/certs/hub.key \\
@@ -167,6 +169,6 @@ if [ -n "$HTTP_PORT" ]; then
 fi
 echo "It registers tunneled relays with ${BROKER_URL} after boot (~2-3 min)."
 echo
-echo "Point a CGNAT volunteer at it with:"
+echo "Point a CGNAT volunteer-run relay at it with:"
 echo "  OPENRUNG_TUNNEL=true OPENRUNG_HUB_ADDR=${STATIC_IP}:${CONTROL_PORT} OPENRUNG_HUB_INSECURE=true"
 echo "OPENRUNG_HUB name=${NAME} ip=${STATIC_IP} control_port=${CONTROL_PORT}"

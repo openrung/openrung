@@ -11,7 +11,7 @@ func TestIsIPv6Host(t *testing.T) {
 		{name: "ipv6", host: "2001:db8::1", want: true},
 		{name: "bracketed ipv6", host: "[2001:db8::1]", want: true},
 		{name: "ipv4", host: "203.0.113.10", want: false},
-		{name: "hostname", host: "volunteer.example.com", want: false},
+		{name: "hostname", host: "relay.example.com", want: false},
 	}
 
 	for _, tt := range tests {

@@ -170,7 +170,7 @@ func jsonResponse(status int, body string) *http.Response {
 
 // A broker that predates node_class silently drops the field and returns a
 // descriptor without it; a foundation relay must refuse to serve mislabeled
-// rather than silently run as a volunteer.
+// rather than silently run as a volunteer-class relay.
 func TestRegisterRejectsUnattestedFoundationClass(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		return jsonResponse(http.StatusCreated, `{"id":"relay_new","public_host":"relay.example","public_port":443}`), nil

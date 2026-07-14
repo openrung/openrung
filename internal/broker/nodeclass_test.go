@@ -120,7 +120,7 @@ func TestRegisterAcceptsFoundationClassWithFoundationToken(t *testing.T) {
 
 // The foundation token bounds the class a request may claim; it does not force
 // it. A privileged holder can still register a volunteer-class relay, though
-// routine volunteer and hub traffic should use the volunteer token.
+// routine volunteer-class relay and hub traffic should use the volunteer token.
 func TestRegisterFoundationTokenDefaultsToVolunteerClass(t *testing.T) {
 	server := NewServer(NewStore(), Config{
 		SigningSeed:       testSigningSeed(),
@@ -271,7 +271,7 @@ func TestHeartbeatForbiddenForFoundationRelayWithoutFoundationCredential(t *test
 	}
 	desc := decodeDescriptor(t, recorder)
 
-	// Anonymous heartbeat (valid volunteer credential on this open broker)
+	// Anonymous heartbeat (valid volunteer-class credential on this open broker)
 	// must not extend a foundation relay's lease.
 	anonymous := httptest.NewRequest(http.MethodPost, "/api/v1/volunteers/"+desc.ID+"/heartbeat", nil)
 	anonymousRecorder := httptest.NewRecorder()
@@ -301,7 +301,7 @@ func TestStoreHeartbeatGuardsFoundationLease(t *testing.T) {
 	}
 
 	if _, err := store.Heartbeat(desc.ID, relay.NodeClassVolunteer, now.Add(time.Second), time.Minute); !errors.Is(err, ErrNodeClassForbidden) {
-		t.Fatalf("volunteer-credential heartbeat of foundation relay: err = %v, want ErrNodeClassForbidden", err)
+		t.Fatalf("volunteer-class credential heartbeat of foundation relay: err = %v, want ErrNodeClassForbidden", err)
 	}
 	// The refused heartbeat must not have extended the lease.
 	if listed, err := store.List(now.Add(2*time.Minute), 10); err != nil || len(listed) != 0 {
@@ -340,7 +340,7 @@ func TestRegisterCannotOverwriteFoundationEndpointAnonymously(t *testing.T) {
 	}
 	original := decodeDescriptor(t, recorder)
 
-	// Attacker registers the same host:port anonymously (as a volunteer).
+	// Attacker registers the same host:port anonymously as a volunteer-class relay.
 	attacker := validRegisterRequest() // same public_host:public_port
 	attacker.RealityPublicKey = "attacker-key"
 	attackRecorder := postRegister(t, server, attacker, "")
@@ -362,16 +362,16 @@ func TestRegisterCannotOverwriteFoundationEndpointAnonymously(t *testing.T) {
 	_ = original
 }
 
-// An authorized foundation registration replaces both a volunteer that
-// pre-squatted the endpoint and an older foundation descriptor. The in-memory
-// store must retain the same one-row-per-endpoint invariant as postgres.
+// An authorized foundation registration replaces both a volunteer-class relay
+// that pre-squatted the endpoint and an older foundation descriptor. The
+// in-memory store must retain the same one-row-per-endpoint invariant as postgres.
 func TestRegisterFoundationCanRefreshOwnEndpoint(t *testing.T) {
 	store := NewStore()
 	now := time.Now().UTC()
 
 	preSquat, err := store.Register(validRegisterRequest(), now, time.Minute)
 	if err != nil {
-		t.Fatalf("register pre-squatting volunteer: %v", err)
+		t.Fatalf("register pre-squatting volunteer-class relay: %v", err)
 	}
 
 	req := validRegisterRequest()
@@ -381,7 +381,7 @@ func TestRegisterFoundationCanRefreshOwnEndpoint(t *testing.T) {
 		t.Fatalf("first foundation register: %v", err)
 	}
 	if _, err := store.Heartbeat(preSquat.ID, relay.NodeClassVolunteer, now.Add(2*time.Second), time.Minute); !errors.Is(err, ErrRelayNotFound) {
-		t.Fatalf("pre-squatting volunteer ID survived foundation registration: %v", err)
+		t.Fatalf("pre-squatting volunteer-class relay ID survived foundation registration: %v", err)
 	}
 
 	// Re-register at the same endpoint, still foundation-class: allowed.
@@ -403,10 +403,10 @@ func TestRegisterFoundationCanRefreshOwnEndpoint(t *testing.T) {
 		t.Fatalf("expected exactly the refreshed foundation descriptor, got %+v", listed)
 	}
 
-	// A volunteer registration at the same endpoint: refused.
+	// A volunteer-class relay registration at the same endpoint is refused.
 	vol := validRegisterRequest()
 	if _, err := store.Register(vol, now.Add(4*time.Second), time.Minute); !errors.Is(err, ErrNodeClassForbidden) {
-		t.Fatalf("volunteer collision: err = %v, want ErrNodeClassForbidden", err)
+		t.Fatalf("volunteer-class relay collision: err = %v, want ErrNodeClassForbidden", err)
 	}
 }
 
@@ -421,8 +421,8 @@ func TestStoreExpiredFoundationEndpointIsReclaimable(t *testing.T) {
 		t.Fatalf("register foundation relay: %v", err)
 	}
 
-	volunteer := validRegisterRequest()
-	reclaimed, err := store.Register(volunteer, now.Add(2*time.Minute), time.Minute)
+	volunteerClassRelay := validRegisterRequest()
+	reclaimed, err := store.Register(volunteerClassRelay, now.Add(2*time.Minute), time.Minute)
 	if err != nil {
 		t.Fatalf("reclaim expired foundation endpoint: %v", err)
 	}
@@ -437,6 +437,6 @@ func TestStoreExpiredFoundationEndpointIsReclaimable(t *testing.T) {
 		t.Fatalf("list reclaimed endpoint: %v", err)
 	}
 	if len(listed) != 1 || listed[0].ID != reclaimed.ID {
-		t.Fatalf("expected exactly the volunteer replacement, got %+v", listed)
+		t.Fatalf("expected exactly the volunteer-class relay replacement, got %+v", listed)
 	}
 }

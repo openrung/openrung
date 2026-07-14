@@ -8,10 +8,10 @@ import (
 	"io"
 )
 
-// ProtocolVersion is the tunnel control-protocol version. The volunteer sends it
+// ProtocolVersion is the tunnel control-protocol version. The relay sends it
 // in the HELLO frame and the hub rejects mismatches. It stays 1: the punch
 // stream-typing extension is negotiated with additive HELLO/HELLO_ACK bools so a
-// mixed fleet of old and new volunteers/hubs keeps working (bumping the version
+// mixed fleet of old and new relays/hubs keeps working (bumping the version
 // would make either side hard-reject the other and break tunnelling entirely).
 const ProtocolVersion = 1
 
@@ -21,7 +21,7 @@ const maxFrameSize = 16 << 10 // 16 KiB
 
 // Stream-type discriminator. When both ends negotiate stream typing (see
 // HelloFrame/HelloAckFrame StreamTyping), the hub writes one of these bytes as
-// the first byte of every stream it opens, so the volunteer can tell client data
+// the first byte of every stream it opens, so the relay can tell client data
 // (piped to Xray) from punch-control messages. Old peers never negotiate typing
 // and never see the byte, so their raw client-data streams are unchanged.
 const (
@@ -34,8 +34,8 @@ var (
 	errProtocolMismatch = errors.New("unsupported tunnel protocol version")
 )
 
-// HelloFrame is the first frame a volunteer sends after the TLS handshake. It
-// authenticates the volunteer and announces the relay metadata the hub forwards
+// HelloFrame is the first frame a relay sends after the TLS handshake. It
+// authenticates the relay and announces the metadata the hub forwards
 // to the broker. Fields mirror relay.RegisterRequest.
 type HelloFrame struct {
 	ProtocolVersion  int    `json:"protocol_version"`
@@ -49,10 +49,12 @@ type HelloFrame struct {
 	MaxSessions      int    `json:"max_sessions"`
 	MaxMbps          int    `json:"max_mbps"`
 	Label            string `json:"label,omitempty"`
-	VolunteerVersion string `json:"volunteer_version"`
-	// StreamTyping announces that this volunteer understands the stream-type
+	// RelayVersion retains the legacy volunteer_version JSON key for compatibility
+	// with deployed relay runtimes and hubs.
+	RelayVersion string `json:"volunteer_version"`
+	// StreamTyping announces that this relay understands the stream-type
 	// discriminator byte and can handle punch-control streams. Additive: omitted
-	// by old volunteers, which the hub then treats as untyped (data-only).
+	// by old relays, which the hub then treats as untyped (data-only).
 	StreamTyping bool `json:"stream_typing,omitempty"`
 	// PunchCapable requests that the hub advertise this relay as punch-capable to
 	// clients. Only meaningful when StreamTyping is also set.
@@ -60,7 +62,7 @@ type HelloFrame struct {
 }
 
 // HelloAckFrame is the hub's reply to a HelloFrame. On success it carries the
-// public endpoint the hub allocated for this volunteer and the broker relay ID.
+// public endpoint the hub allocated for this relay and the broker relay ID.
 type HelloAckFrame struct {
 	OK         bool   `json:"ok"`
 	Error      string `json:"error,omitempty"`
@@ -68,11 +70,11 @@ type HelloAckFrame struct {
 	PublicPort int    `json:"public_port,omitempty"`
 	RelayID    string `json:"relay_id,omitempty"`
 	// StreamTyping confirms the hub will emit the stream-type discriminator byte
-	// on the streams it opens. The volunteer only reads the byte when this is set,
-	// so an old hub (which never sets it) drives a new volunteer in legacy mode.
+	// on the streams it opens. The relay only reads the byte when this is set,
+	// so an old hub (which never sets it) drives a new relay in legacy mode.
 	StreamTyping bool `json:"stream_typing,omitempty"`
 	// ReflectorAddrs are the hub's UDP reflector endpoints, informational for the
-	// volunteer (the authoritative list is also carried in each PunchDirective).
+	// relay (the authoritative list is also carried in each PunchDirective).
 	ReflectorAddrs []string `json:"reflector_addrs,omitempty"`
 }
 

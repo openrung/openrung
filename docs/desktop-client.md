@@ -1,7 +1,7 @@
 # Desktop CLI Client
 
-The current desktop client is a command-line end-user client. It fetches volunteer
-relay candidates from the broker, selects the first usable direct-exit VLESS
+The current desktop client is a command-line end-user client. It fetches relay
+candidates from the broker, selects the first usable direct-exit VLESS
 Reality Vision relay, generates a sing-box TUN config, and runs sing-box to
 route device traffic through that relay.
 
@@ -12,7 +12,7 @@ can be reused by Linux and Windows clients later.
 ## Requirements
 
 - A running OpenRung broker.
-- At least one registered volunteer relay.
+- At least one registered relay.
 - A local `sing-box` binary. Use sing-box 1.14 or newer so the generated TUN
   config can install native DNS settings for the tunnel.
 - macOS privileges for TUN routing. In practice, run `connect` with `sudo`.
@@ -54,7 +54,7 @@ The generated config uses:
   port 53 DNS requests.
 - DNS servers detoured through the proxy.
 - `route_exclude_address` for literal relay IPs, so the client's own TCP
-  connection to the volunteer stays on the real network interface instead of
+  connection to the relay stays on the real network interface instead of
   being routed back into the TUN.
 - VLESS Reality Vision outbound from the selected relay descriptor.
 - Route final set to the proxy outbound.

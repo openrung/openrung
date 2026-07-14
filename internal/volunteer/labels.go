@@ -9,7 +9,7 @@ import (
 // "happy-hippo". Keep both lists lowercase and within the safe label charset
 // (see relay.NormalizeLabel). The two lists are intentionally large so the
 // adjective-noun namespace is wide and accidental collisions between
-// independently-named volunteer relays stay unlikely.
+// independently named relays stay unlikely.
 var labelAdjectives = []string{
 	"amber", "ample", "arctic", "autumn", "balmy", "bold", "bouncy", "brave",
 	"breezy", "bright", "bubbly", "calm", "candid", "cheery", "chipper", "clever",

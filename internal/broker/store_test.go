@@ -396,7 +396,7 @@ func TestStoreRoundTripsPunchCapable(t *testing.T) {
 
 func validRegisterRequest() relay.RegisterRequest {
 	return relay.RegisterRequest{
-		PublicHost:       "volunteer.example.com",
+		PublicHost:       "relay.example.com",
 		PublicPort:       443,
 		Protocol:         relay.ProtocolVLESSRealityVision,
 		ClientID:         "2c08df10-4ef4-4ab9-95c6-cb1e94cdb2ff",
@@ -407,6 +407,6 @@ func validRegisterRequest() relay.RegisterRequest {
 		ExitMode:         relay.ExitModeDirect,
 		MaxSessions:      8,
 		MaxMbps:          20,
-		VolunteerVersion: "test",
+		RelayVersion:     "test",
 	}
 }

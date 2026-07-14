@@ -246,7 +246,7 @@ func TestPostgresStoreExitHostChangeClearsGeo(t *testing.T) {
 		t.Fatalf("expected geo to survive same-exit re-registration, got %+v", sameExit.GeoLocation)
 	}
 
-	// Same hub endpoint reused by a different volunteer: stale location cleared.
+	// Same hub endpoint reused by a different relay: stale location cleared.
 	req.ExitHost = "198.51.100.99"
 	newExit, err := store.Register(req, now.Add(2*time.Second), time.Minute)
 	if err != nil {
@@ -328,17 +328,17 @@ func TestPostgresStoreRoundTripsNodeClass(t *testing.T) {
 		t.Fatalf("listed node_class not preserved: %+v", listed)
 	}
 
-	// A volunteer-class registration at a DIFFERENT endpoint round-trips as
-	// volunteer. (A volunteer registration at the SAME endpoint is refused by
-	// the foundation guard; see TestPostgresStoreRegisterGuardsFoundationEndpoint.)
+	// A volunteer-class relay registration at a DIFFERENT endpoint round-trips
+	// with node_class=volunteer. (A registration at the SAME endpoint is refused
+	// by the foundation guard; see TestPostgresStoreRegisterGuardsFoundationEndpoint.)
 	vol := validRegisterRequest()
 	vol.PublicHost = "2001:db8::abcd"
 	volDesc, err := store.Register(vol, now.Add(2*time.Second), time.Minute)
 	if err != nil {
-		t.Fatalf("register volunteer relay: %v", err)
+		t.Fatalf("register volunteer-class relay: %v", err)
 	}
 	if volDesc.NodeClass != relay.NodeClassVolunteer {
-		t.Fatalf("volunteer node_class = %q, want %q", volDesc.NodeClass, relay.NodeClassVolunteer)
+		t.Fatalf("volunteer-class node_class = %q, want %q", volDesc.NodeClass, relay.NodeClassVolunteer)
 	}
 }
 
@@ -354,7 +354,7 @@ func TestPostgresStoreHeartbeatGuardsFoundationLease(t *testing.T) {
 	}
 
 	if _, err := store.Heartbeat(desc.ID, relay.NodeClassVolunteer, now.Add(time.Second), time.Minute); !errors.Is(err, ErrNodeClassForbidden) {
-		t.Fatalf("volunteer-credential heartbeat of foundation relay: err = %v, want ErrNodeClassForbidden", err)
+		t.Fatalf("volunteer-class credential heartbeat of foundation relay: err = %v, want ErrNodeClassForbidden", err)
 	}
 	// The refused heartbeat must not have extended the lease: past the
 	// original TTL the relay is gone.
@@ -387,8 +387,8 @@ func TestPostgresStoreRegisterGuardsFoundationEndpoint(t *testing.T) {
 		t.Fatalf("register foundation relay: %v", err)
 	}
 
-	// Anonymous/volunteer registration at the same host:port must be refused,
-	// not overwrite the foundation descriptor.
+	// Anonymous/volunteer-class registration at the same host:port must be
+	// refused, not overwrite the foundation descriptor.
 	attacker := validRegisterRequest() // same public_host:public_port
 	attacker.RealityPublicKey = "attacker-key"
 	if _, err := store.Register(attacker, now.Add(time.Second), time.Minute); !errors.Is(err, ErrNodeClassForbidden) {
@@ -431,14 +431,14 @@ func TestPostgresStoreExpiredFoundationEndpointIsReclaimable(t *testing.T) {
 		t.Fatalf("register foundation relay: %v", err)
 	}
 
-	// A live foundation row still blocks a volunteer takeover.
+	// A live foundation row still blocks a volunteer-class relay takeover.
 	vol := validRegisterRequest()
 	if _, err := store.Register(vol, now.Add(30*time.Second), time.Minute); !errors.Is(err, ErrNodeClassForbidden) {
 		t.Fatalf("live foundation endpoint: err = %v, want ErrNodeClassForbidden", err)
 	}
 
-	// Past the foundation lease (but before any prune), the same volunteer
-	// registration succeeds and reclaims the endpoint as volunteer.
+	// Past the foundation lease (but before any prune), the same volunteer-class
+	// relay registration succeeds and reclaims the endpoint as that class.
 	reclaimed, err := store.Register(vol, now.Add(2*time.Minute), time.Minute)
 	if err != nil {
 		t.Fatalf("reclaim expired foundation endpoint: %v", err)

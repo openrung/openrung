@@ -34,11 +34,11 @@ func run() error {
 		return err
 	}
 
-	// Fail closed: an empty token disables volunteer authentication, so any node
-	// could register as a relay through this hub. Require a token unless the
+	// Fail closed: an empty token disables relay authentication, so any caller
+	// could register a relay through this hub. Require a token unless the
 	// operator explicitly opts into an open hub.
 	if cfg.Token == "" && !envTrue("OPENRUNG_ALLOW_ANONYMOUS_VOLUNTEERS") {
-		return errors.New("OPENRUNG_VOLUNTEER_TOKEN is empty: refusing to start an open hub where any node can register as a relay. Set OPENRUNG_VOLUNTEER_TOKEN, or set OPENRUNG_ALLOW_ANONYMOUS_VOLUNTEERS=true to run open intentionally")
+		return errors.New("OPENRUNG_VOLUNTEER_TOKEN is empty: refusing to start an open hub where any caller can register a relay. Set OPENRUNG_VOLUNTEER_TOKEN, or set OPENRUNG_ALLOW_ANONYMOUS_VOLUNTEERS=true to run open intentionally")
 	}
 
 	alloc, err := tunnel.NewPortAllocator(cfg.PortRangeStart, cfg.PortRangeEnd)
@@ -69,7 +69,7 @@ func run() error {
 		mux := http.NewServeMux()
 
 		// The reachability prober is always available on the HTTP API so
-		// volunteers can auto-detect direct vs tunnel even when punch is off.
+		// relays can auto-detect direct vs tunnel even when punch is off.
 		tunnel.NewReachabilityProber(cfg.Token, slog.Default()).Register(mux)
 
 		if cfg.PunchEnabled() {
@@ -152,12 +152,12 @@ func run() error {
 }
 
 func parseConfig() (relayhub.Config, error) {
-	controlAddr := flag.String("control-addr", envDefault("OPENRUNG_HUB_CONTROL_ADDR", ":9443"), "control listener address volunteers dial")
+	controlAddr := flag.String("control-addr", envDefault("OPENRUNG_HUB_CONTROL_ADDR", ":9443"), "control listener address dialed by volunteer-run relays")
 	publicHost := flag.String("public-host", os.Getenv("OPENRUNG_HUB_PUBLIC_HOST"), "public hostname or IP advertised to clients")
 	publicBindHost := flag.String("public-bind-host", os.Getenv("OPENRUNG_HUB_PUBLIC_BIND_HOST"), "interface the per-tunnel public listeners bind to; empty means all interfaces")
 	portRange := flag.String("port-range", envDefault("OPENRUNG_HUB_PORT_RANGE", "20000-20100"), "public TCP port range as start-end")
 	brokerURL := flag.String("broker", envDefault("OPENRUNG_BROKER_URL", "http://localhost:8080"), "broker base URL")
-	token := flag.String("token", os.Getenv("OPENRUNG_VOLUNTEER_TOKEN"), "shared volunteer/broker bearer token")
+	token := flag.String("token", os.Getenv("OPENRUNG_VOLUNTEER_TOKEN"), "shared volunteer-class relay/broker bearer token")
 	tlsCert := flag.String("tls-cert", os.Getenv("OPENRUNG_HUB_TLS_CERT"), "TLS certificate file for the control channel")
 	tlsKey := flag.String("tls-key", os.Getenv("OPENRUNG_HUB_TLS_KEY"), "TLS key file for the control channel")
 	heartbeat := flag.Duration("heartbeat-interval", envDurationDefault("OPENRUNG_HUB_HEARTBEAT_INTERVAL", 30*time.Second), "broker heartbeat interval for live relays")

@@ -17,15 +17,15 @@ import (
 	"openrung/internal/tunnel"
 )
 
-// detectAttempts is how many times the volunteer retries the probe before
+// detectAttempts is how many times the relay retries the probe before
 // treating the hub HTTP API as unavailable.
 const detectAttempts = 3
 
 // DetectDirectReachable opens a temporary TCP listener on port, asks the hub to
-// dial it back at the volunteer's observed public IP, and reports whether that
+// dial it back at the relay's observed public IP, and reports whether that
 // inbound connection succeeded. The temporary listener answers each accepted
 // connection with the nonce line so the hub can confirm it reached this
-// volunteer. reachable=false with err=nil means "probed, not reachable" (→
+// relay. reachable=false with err=nil means "probed, not reachable" (→
 // tunnel); a non-nil err means the probe itself could not run (hub HTTP API
 // unreachable), which the caller treats as inconclusive.
 func DetectDirectReachable(ctx context.Context, hubHTTPBase, token, listenHost string, port int, httpClient *http.Client) (reachable bool, observedHost string, err error) {

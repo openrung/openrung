@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Provision an OpenRung volunteer relay on Hetzner Cloud.
+# Provision an OpenRung volunteer-run relay on Hetzner Cloud.
 #
 #   deploy/volunteer/hetzner-up.sh [name]
 #
@@ -29,7 +29,7 @@ OS_IMAGE="${OPENRUNG_OS_IMAGE:-ubuntu-24.04}"
 IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-volunteer:main}"  # multi-arch: pulls arm64 on CAX
 # Register against the broker ORIGIN, not the Cloudflare front (broker.openrung.org).
 # That hostname is a Worker front for *client* discovery; its edge serves a Managed
-# Challenge to datacenter IP ranges (incl. Hetzner), which a volunteer's HTTP client
+# Challenge to datacenter IP ranges (incl. Hetzner), which a relay's HTTP client
 # cannot solve (403). The origin is plaintext HTTP and takes registrations directly,
 # exactly like the Lightsail fleet (see lightsail-up.sh).
 BROKER_URL="${OPENRUNG_BROKER_URL:-http://54.238.185.205:8080}"
@@ -37,7 +37,7 @@ SSH_KEY_NAME="${OPENRUNG_SSH_KEY_NAME:-openrung}"
 FIREWALL_NAME="${OPENRUNG_FIREWALL_NAME:-openrung-volunteer}"
 
 if [ "${OPENRUNG_VOLUNTEER_TOKEN+x}" = x ] || [ "${OPENRUNG_FOUNDATION_TOKEN+x}" = x ]; then
-  echo "error: this helper provisions anonymous volunteers only; OPENRUNG_VOLUNTEER_TOKEN / OPENRUNG_FOUNDATION_TOKEN must be unset because Hetzner retains cloud-init user-data. A Foundation relay also needs a TLS broker, which this plaintext-origin helper does not use — install its credential post-boot over an authenticated channel instead." >&2
+  echo "error: this helper provisions anonymous volunteer-class relays only; OPENRUNG_VOLUNTEER_TOKEN / OPENRUNG_FOUNDATION_TOKEN must be unset because Hetzner retains cloud-init user-data. A Foundation relay also needs a TLS broker, which this plaintext-origin helper does not use — install its credential post-boot over an authenticated channel instead." >&2
   exit 2
 fi
 
@@ -77,7 +77,7 @@ hcloud firewall add-rule "$FIREWALL_NAME" --direction in --protocol icmp        
 # public IP is not known until the server exists, so the box self-discovers it
 # from Hetzner's metadata service at boot and bakes it into OPENRUNG_PUBLIC_HOST.
 #
-# Container hardening — identical posture to the Lightsail volunteer helper, and
+# Container hardening — identical posture to the Lightsail relay helper, and
 # the exact posture the production fleet runs (confirmed read-only via
 # `docker inspect` on a live Hetzner relay 2026-07-13: ReadonlyRootfs=true,
 # CapDrop=[ALL], CapAdd=[NET_BIND_SERVICE], while serving 443). The flags on the

@@ -1,7 +1,7 @@
-// Package engine runs a volunteer relay as an embeddable, supervised service:
+// Package engine runs a relay as an embeddable, supervised service:
 // Start/Stop lifecycle, status/identity callbacks, and live traffic counters
 // instead of cmd/volunteer's one-shot signal-driven flow. GUI apps (the
-// desktop volunteer app) bind it to their bridge layer; the orchestration
+// OpenRung Volunteer desktop app) bind it to their bridge layer; the orchestration
 // mirrors cmd/volunteer/main.go run/runTunnelMode.
 package engine
 
@@ -65,7 +65,7 @@ func (id Identity) complete() bool {
 	return id.ClientID != "" && id.RealityPrivateKey != "" && id.RealityPublicKey != "" && id.ShortID != ""
 }
 
-// Config describes one volunteer relay. Zero values take the same defaults as
+// Config describes one relay. Zero values take the same defaults as
 // cmd/volunteer where one exists.
 type Config struct {
 	// BrokerURL is required for direct and auto modes (direct registration).
@@ -109,7 +109,7 @@ type Config struct {
 	// ConfigDir is where the generated xray config (which contains the Reality
 	// private key) is written, 0600. Defaults to os.TempDir().
 	ConfigDir string
-	// Version is reported to the broker/hub as the volunteer version.
+	// Version is reported to the broker/hub as the relay runtime version.
 	Version string
 	// PunchCapable offers NAT hole punching in tunnel mode.
 	PunchCapable bool
@@ -187,7 +187,7 @@ type Status struct {
 	RelayID   string `json:"relayId,omitempty"`
 	Label     string `json:"label,omitempty"`
 	// PublicHost/PublicPort are the endpoint clients see (the hub's in tunnel
-	// mode, this machine's in direct mode).
+	// mode, the relay host's in direct mode).
 	PublicHost string `json:"publicHost,omitempty"`
 	PublicPort int    `json:"publicPort,omitempty"`
 	LastError  string `json:"lastError,omitempty"`
@@ -214,7 +214,7 @@ type Events struct {
 	Log io.Writer
 }
 
-// Engine supervises one volunteer relay. Use New, then Start/Stop. Safe for
+// Engine supervises one relay. Use New, then Start/Stop. Safe for
 // concurrent use.
 type Engine struct {
 	mu     sync.Mutex
@@ -421,7 +421,7 @@ func (e *Engine) run(ctx context.Context, done chan struct{}) {
 var errPublicIPChanged = errors.New("public address changed")
 
 // errReresolve restarts the session because auto mode re-evaluated reachability
-// and now prefers a different transport — e.g. a machine that fell back to the
+// and now prefers a different transport — e.g. a relay host that fell back to the
 // hub (or started while the hub was down) is now confirmed directly reachable,
 // so it should stop tunnelling and serve directly.
 var errReresolve = errors.New("auto mode re-resolved to a different transport")
@@ -437,7 +437,7 @@ var detectPublicIPv6 = volunteer.DefaultPublicIPv6Address
 var autoReprobeInterval = 3 * time.Minute
 
 // autoResolve decides the transport for auto mode. Direct mode is chosen ONLY
-// when a probe positively confirms this machine is reachable from the internet
+// when a probe positively confirms this relay host is reachable from the internet
 // — never speculatively. A probe error means the hub's HTTP API is unreachable,
 // so we cannot verify reachability; guessing "direct" there would advertise a
 // possibly-firewalled address (a public IPv6 does not imply inbound reachability
@@ -462,7 +462,7 @@ func (e *Engine) autoResolve(ctx context.Context, cfg Config) (mode, publicHost 
 // watchForModeChange runs only in auto mode: it periodically re-resolves the
 // reachability decision and signals on ch when the preferred transport differs
 // from current, so the supervisor restarts in the better mode. This is what lets
-// a directly-reachable volunteer recover to direct after a hub outage instead of
+// a directly reachable relay recover to direct after a hub outage instead of
 // tunnelling forever, and switch back when reachability changes.
 func (e *Engine) watchForModeChange(ctx context.Context, cfg Config, current string, ch chan<- struct{}) {
 	ticker := time.NewTicker(autoReprobeInterval)
@@ -594,7 +594,7 @@ func (e *Engine) probeClient(cfg Config) *http.Client {
 	// hub presents the same leaf the tunnel pins. It must apply the SAME trust
 	// policy as the tunnel dial (hubTLSClientConfig) — otherwise the probe fails
 	// certificate validation, auto mode always falls back to tunnel, and a
-	// publicly reachable volunteer never selects direct mode.
+	// publicly reachable relay never selects direct mode.
 	return &http.Client{
 		Timeout:   10 * time.Second,
 		Transport: &http.Transport{TLSClientConfig: hubTLSClientConfig(cfg)},
@@ -705,7 +705,7 @@ func (e *Engine) runDirectSession(ctx context.Context, cfg Config, label string,
 		ExitMode:         relay.ExitModeDirect,
 		MaxSessions:      cfg.MaxSessions,
 		MaxMbps:          cfg.MaxMbps,
-		VolunteerVersion: cfg.Version,
+		RelayVersion:     cfg.Version,
 		Label:            label,
 	}
 	desc, err := registerWithRetry(ctx, broker, req)
@@ -843,7 +843,7 @@ func (e *Engine) runTunnelSession(ctx context.Context, cfg Config, label string,
 			MaxSessions:      cfg.MaxSessions,
 			MaxMbps:          cfg.MaxMbps,
 			Label:            label,
-			VolunteerVersion: cfg.Version,
+			RelayVersion:     cfg.Version,
 			StreamTyping:     true,
 			PunchCapable:     cfg.PunchCapable,
 		},
@@ -881,9 +881,9 @@ func (e *Engine) runTunnelSession(ctx context.Context, cfg Config, label string,
 	go func() { clientDone <- client.Run(sessionCtx) }()
 	e.logf("connecting to relay hub %s", cfg.HubAddr)
 
-	// In auto mode, keep re-checking whether this machine could serve directly
+	// In auto mode, keep re-checking whether this relay host could serve directly
 	// and switch off the hub when it can — so a hub outage or a newly-opened
-	// port doesn't leave a directly-reachable volunteer tunnelling forever.
+	// port doesn't leave a directly reachable relay tunnelling forever.
 	becameDirect := make(chan struct{}, 1)
 	if cfg.Mode == ModeAuto {
 		go e.watchForModeChange(sessionCtx, cfg, ModeTunnel, becameDirect)
@@ -933,7 +933,7 @@ func hubTLSConfig(cfg Config) *tls.Config {
 	return tc
 }
 
-// hubTLSClientConfig is the single source of truth for how the volunteer trusts
+// hubTLSClientConfig is the single source of truth for how the relay trusts
 // the hub's TLS certificate, shared by the tunnel control dial (hubTLSConfig)
 // and the reachability probe's HTTP client (probeClient). When a fingerprint is
 // pinned it verifies the exact leaf (the hub self-signs on a bare IP, so

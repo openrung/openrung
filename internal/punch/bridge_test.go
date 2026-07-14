@@ -86,33 +86,33 @@ func punchPair(t *testing.T, a, b *net.UDPConn, aToken, bToken []byte, deadline 
 
 func TestTransportBridgeEchoOverPunchedSocket(t *testing.T) {
 	echoHost, echoPort := startEcho(t)
-	vsock := mustUDP(t, "127.0.0.1")
-	csock := mustUDP(t, "127.0.0.1")
+	relaySock := mustUDP(t, "127.0.0.1")
+	clientSock := mustUDP(t, "127.0.0.1")
 	token := randomToken(t)
 
-	_, cConfirmed, vErr, cErr := punchPair(t, vsock, csock, token, token, time.Now().Add(2*time.Second))
-	if vErr != nil || cErr != nil {
-		t.Fatalf("punch failed: volunteer=%v client=%v", vErr, cErr)
+	_, clientConfirmed, relayErr, clientErr := punchPair(t, relaySock, clientSock, token, token, time.Now().Add(2*time.Second))
+	if relayErr != nil || clientErr != nil {
+		t.Fatalf("punch failed: relay=%v client=%v", relayErr, clientErr)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Volunteer: QUIC server bridging to the echo (loopback "Xray").
+	// Relay: QUIC server bridging to the echo (loopback "Xray").
 	cert, fingerprint, err := GenerateSessionCert()
 	if err != nil {
 		t.Fatalf("cert: %v", err)
 	}
-	ln, err := ListenQUIC(vsock, cert)
+	ln, err := ListenQUIC(relaySock, cert)
 	if err != nil {
 		t.Fatalf("listen quic: %v", err)
 	}
-	go func() { _ = VolunteerBridge(ctx, ln, token, echoHost, echoPort, discardLogger()) }()
+	go func() { _ = RelayBridge(ctx, ln, token, echoHost, echoPort, discardLogger()) }()
 
 	// Client: QUIC dial + loopback bridge.
 	dialCtx, dialCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer dialCancel()
-	conn, err := DialQUIC(dialCtx, csock, cConfirmed, fingerprint)
+	conn, err := DialQUIC(dialCtx, clientSock, clientConfirmed, fingerprint)
 	if err != nil {
 		t.Fatalf("dial quic: %v", err)
 	}
@@ -135,28 +135,28 @@ func TestTransportBridgeEchoOverPunchedSocket(t *testing.T) {
 
 func TestClientBridgeRejectsUnauthenticatedStream(t *testing.T) {
 	echoHost, echoPort := startEcho(t)
-	vsock := mustUDP(t, "127.0.0.1")
-	csock := mustUDP(t, "127.0.0.1")
+	relaySock := mustUDP(t, "127.0.0.1")
+	clientSock := mustUDP(t, "127.0.0.1")
 	token := randomToken(t)
 
-	_, cConfirmed, vErr, cErr := punchPair(t, vsock, csock, token, token, time.Now().Add(2*time.Second))
-	if vErr != nil || cErr != nil {
-		t.Fatalf("punch failed: volunteer=%v client=%v", vErr, cErr)
+	_, clientConfirmed, relayErr, clientErr := punchPair(t, relaySock, clientSock, token, token, time.Now().Add(2*time.Second))
+	if relayErr != nil || clientErr != nil {
+		t.Fatalf("punch failed: relay=%v client=%v", relayErr, clientErr)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	cert, fingerprint, _ := GenerateSessionCert()
-	ln, err := ListenQUIC(vsock, cert)
+	ln, err := ListenQUIC(relaySock, cert)
 	if err != nil {
 		t.Fatalf("listen quic: %v", err)
 	}
-	// Volunteer verifies the real token; the client presents a WRONG one.
-	go func() { _ = VolunteerBridge(ctx, ln, token, echoHost, echoPort, discardLogger()) }()
+	// Relay verifies the real token; the client presents a WRONG one.
+	go func() { _ = RelayBridge(ctx, ln, token, echoHost, echoPort, discardLogger()) }()
 
 	dialCtx, dialCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer dialCancel()
-	conn, err := DialQUIC(dialCtx, csock, cConfirmed, fingerprint)
+	conn, err := DialQUIC(dialCtx, clientSock, clientConfirmed, fingerprint)
 	if err != nil {
 		t.Fatalf("dial quic: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestClientBridgeRejectsUnauthenticatedStream(t *testing.T) {
 	go func() { _ = wrongBridge.Serve(ctx) }()
 
 	host, port := wrongBridge.Endpoint()
-	// The volunteer should reject the stream after the bad token, so the echo
+	// The relay should reject the stream after the bad token, so the echo
 	// never completes within the window.
 	if err := echoRoundTrip(host, port, []byte("should-not-pass")); err == nil {
 		t.Fatal("expected bad-token stream to be rejected, but echo succeeded")

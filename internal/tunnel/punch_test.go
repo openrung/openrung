@@ -15,7 +15,7 @@ import (
 )
 
 // TestTypedRelayStillEchoes verifies that when stream typing is negotiated the
-// hub prefixes data streams with the discriminator and the volunteer strips it,
+// hub prefixes data streams with the discriminator and the relay strips it,
 // so ordinary relayed traffic is unaffected even with typing on.
 func TestTypedRelayStillEchoes(t *testing.T) {
 	echoHost, echoPort := startEchoServer(t)
@@ -31,7 +31,7 @@ func TestTypedRelayStillEchoes(t *testing.T) {
 		Hello: HelloFrame{
 			Token: "secret", RealityPublicKey: "pk", ShortID: "sid", ServerName: "www.example.com",
 			ClientID: "cid", Flow: relay.FlowVision, ExitMode: relay.ExitModeDirect,
-			MaxSessions: 4, MaxMbps: 10, VolunteerVersion: "test",
+			MaxSessions: 4, MaxMbps: 10, RelayVersion: "test",
 			StreamTyping: true, PunchCapable: true,
 		},
 		TargetHost:   echoHost,
@@ -61,7 +61,7 @@ func TestTypedRelayStillEchoes(t *testing.T) {
 	}
 
 	// The hub has no reflector, so the relay must NOT be advertised punch-capable
-	// even though the volunteer offered it.
+	// even though the relay offered it.
 	_, _, lastReq := registrar.stats()
 	if lastReq.PunchCapable {
 		t.Fatal("relay advertised punch_capable without a hub reflector")
@@ -124,7 +124,7 @@ func TestPunchLimiterPrunesIdleBuckets(t *testing.T) {
 }
 
 // setupPunchHub wires an echo server + reflector + hub + coordinator + a real
-// volunteer Client on loopback and waits for the volunteer to be registered and
+// relay Client on loopback and waits for the relay to be registered and
 // present in the hub registry. It returns the session context (drives the whole
 // setup), the coordinator base URL, and the relay ID.
 func setupPunchHub(t *testing.T, ttl time.Duration) (context.Context, string, string) {
@@ -172,12 +172,12 @@ func setupPunchHub(t *testing.T, ttl time.Duration) (context.Context, string, st
 	t.Cleanup(ts.Close)
 
 	ackCh := make(chan HelloAckFrame, 1)
-	volunteer := &Client{
+	relayClient := &Client{
 		HubAddr: controlLn.Addr().String(),
 		Hello: HelloFrame{
 			RealityPublicKey: "pk", ShortID: "sid", ServerName: "www.example.com",
 			ClientID: "cid", Flow: relay.FlowVision, ExitMode: relay.ExitModeDirect,
-			MaxSessions: 4, MaxMbps: 10, VolunteerVersion: "test",
+			MaxSessions: 4, MaxMbps: 10, RelayVersion: "test",
 			StreamTyping: true, PunchCapable: true,
 		},
 		TargetHost:   echoHost,
@@ -191,12 +191,12 @@ func setupPunchHub(t *testing.T, ttl time.Duration) (context.Context, string, st
 			}
 		},
 	}
-	go func() { _ = volunteer.Run(ctx) }()
+	go func() { _ = relayClient.Run(ctx) }()
 
 	select {
 	case <-ackCh:
 	case <-time.After(3 * time.Second):
-		t.Fatal("volunteer did not register")
+		t.Fatal("relay did not register")
 	}
 	if !eventually(2*time.Second, func() bool { return hub.lookupTunnel("relay_punch") != nil }) {
 		t.Fatal("relay not present in hub registry")
@@ -226,7 +226,7 @@ func establishPunch(t *testing.T, ctx context.Context, hubURL, relayID string) *
 }
 
 // TestHubPunchEndToEnd drives the whole coordination path on loopback: a real
-// volunteer Client tunnels to a hub with a reflector + coordinator, then a
+// relay Client tunnels to a hub with a reflector + coordinator, then a
 // punch.Dialer establishes a direct QUIC path and echoes bytes through it. This
 // exercises control + discovery + punch + QUIC + bridge, though loopback is not
 // real NAT.
@@ -240,7 +240,7 @@ func TestHubPunchEndToEnd(t *testing.T) {
 
 // TestHubPunchSessionOutlivesTTL is the regression test for the lifetime bug: the
 // punch TTL bounds only hole-opening, so a session established under a short TTL
-// must keep working well after the TTL elapses (the volunteer bridge must run for
+// must keep working well after the TTL elapses (the relay bridge must run for
 // the tunnel lifetime, not the punch budget).
 func TestHubPunchSessionOutlivesTTL(t *testing.T) {
 	const ttl = 700 * time.Millisecond
@@ -251,7 +251,7 @@ func TestHubPunchSessionOutlivesTTL(t *testing.T) {
 		t.Fatalf("echo immediately after punch: %v", err)
 	}
 	// Wait well past the punch TTL, then confirm the direct path still carries a
-	// fresh connection (would fail if the volunteer tore down at TTL).
+	// fresh connection (would fail if the relay tore down at TTL).
 	time.Sleep(2 * ttl)
 	if err := dialEchoThroughTunnel(est.BridgePort); err != nil {
 		t.Fatalf("echo after TTL elapsed (session should outlive punch TTL): %v", err)

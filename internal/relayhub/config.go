@@ -1,6 +1,6 @@
 // Package relayhub holds the configuration for the relay hub binary, the
 // publicly reachable component that terminates reverse tunnels from CGNAT
-// volunteers and forwards client traffic to them.
+// volunteer-run relays and forwards client traffic to them.
 package relayhub
 
 import (
@@ -12,7 +12,7 @@ import (
 
 // Config holds the relay hub's runtime configuration.
 type Config struct {
-	// ControlAddr is the address volunteers dial to establish a tunnel.
+	// ControlAddr is the address volunteer-run relays dial to establish a tunnel.
 	ControlAddr string
 	// PublicHost is the hostname/IP advertised to clients for tunneled relays.
 	PublicHost string
@@ -24,8 +24,8 @@ type Config struct {
 	PortRangeEnd   int
 	// BrokerURL is the broker base URL the hub registers relays against.
 	BrokerURL string
-	// Token is the shared bearer token used both to authenticate volunteers and
-	// to authorize the hub's broker calls.
+	// Token is the shared bearer token used both to authenticate volunteer-class
+	// relays and to authorize the hub's broker calls.
 	Token string
 	// TLSCertPath and TLSKeyPath enable TLS on the control channel when both set.
 	TLSCertPath string

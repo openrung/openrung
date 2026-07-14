@@ -22,10 +22,16 @@ func TestFrameRoundTrip(t *testing.T) {
 		MaxSessions:      4,
 		MaxMbps:          10,
 		Label:            "lbl",
-		VolunteerVersion: "dev",
+		RelayVersion:     "dev",
 	}
 	if err := writeFrame(&buf, in); err != nil {
 		t.Fatalf("writeFrame: %v", err)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte(`"volunteer_version":"dev"`)) {
+		t.Fatalf("legacy volunteer_version wire key missing from %q", buf.Bytes())
+	}
+	if bytes.Contains(buf.Bytes(), []byte(`"relay_version"`)) {
+		t.Fatalf("unexpected relay_version wire key in %q", buf.Bytes())
 	}
 	var out HelloFrame
 	if err := readFrame(&buf, &out); err != nil {

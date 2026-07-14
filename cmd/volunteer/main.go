@@ -27,14 +27,14 @@ const version = "dev"
 func main() {
 	var cfg cliConfig
 	flag.StringVar(&cfg.BrokerURL, "broker", "http://localhost:8080", "broker base URL")
-	flag.StringVar(&cfg.RegistrationToken, "registration-token", os.Getenv("OPENRUNG_VOLUNTEER_TOKEN"), "volunteer registration token")
+	flag.StringVar(&cfg.RegistrationToken, "registration-token", os.Getenv("OPENRUNG_VOLUNTEER_TOKEN"), "volunteer-class relay registration token")
 	flag.StringVar(&cfg.Label, "label", os.Getenv("OPENRUNG_LABEL"), "human-readable relay label shown in the broker; a random adjective-noun is generated when empty")
 	flag.StringVar(&cfg.NodeClass, "node-class", os.Getenv("OPENRUNG_NODE_CLASS"), "relay operator class: volunteer (default) or foundation. For a foundation relay prefer -foundation-token, which sets this and forces direct mode / https automatically; a bare -node-class=foundation still needs direct mode, the foundation token as the bearer, and an https broker")
-	flag.StringVar(&cfg.FoundationToken, "foundation-token", os.Getenv("OPENRUNG_FOUNDATION_TOKEN"), "foundation registration token; presenting it runs this relay as a foundation node — it forces foundation class, direct mode, an https broker, and redirect refusal, so no separate -node-class is needed")
+	flag.StringVar(&cfg.FoundationToken, "foundation-token", os.Getenv("OPENRUNG_FOUNDATION_TOKEN"), "foundation registration token; presenting it runs this as a foundation relay — it forces foundation class, direct mode, an https broker, and redirect refusal, so no separate -node-class is needed")
 	flag.StringVar(&cfg.XrayPath, "xray", "xray", "path to xray binary")
 	flag.StringVar(&cfg.ListenHost, "listen-host", "::", "local listen host; with connection logging, :: listens on both IPv6 and IPv4 through the observer")
 	flag.IntVar(&cfg.ListenPort, "listen-port", 443, "local listen port")
-	flag.StringVar(&cfg.PublicHost, "public-host", "", "public hostname or IP clients can reach; defaults to this machine's first global IPv6 address")
+	flag.StringVar(&cfg.PublicHost, "public-host", "", "public hostname or IP clients can reach; defaults to the relay host's first global IPv6 address")
 	flag.IntVar(&cfg.PublicPort, "public-port", 443, "public port clients can reach")
 	flag.StringVar(&cfg.ServerName, "server-name", "www.cloudflare.com", "Reality server name")
 	flag.StringVar(&cfg.RealityDest, "reality-dest", "www.cloudflare.com:443", "Reality dest")
@@ -61,16 +61,16 @@ func main() {
 	cfg.Mode = normalizeMode(cfg.Mode, cfg.TunnelMode, cfg.HubAddr)
 
 	if err := cfg.ApplyDefaults(); err != nil {
-		slog.Error("invalid volunteer config", "error", err)
+		slog.Error("invalid relay config", "error", err)
 		os.Exit(2)
 	}
 	if err := cfg.Validate(); err != nil {
-		slog.Error("invalid volunteer config", "error", err)
+		slog.Error("invalid relay config", "error", err)
 		os.Exit(2)
 	}
 
 	if err := run(cfg); err != nil {
-		slog.Error("volunteer stopped", "error", err)
+		slog.Error("relay stopped", "error", err)
 		os.Exit(1)
 	}
 }
@@ -454,7 +454,7 @@ func run(cfg cliConfig) error {
 
 // runTunnelMode binds Xray to a loopback port and serves client traffic through
 // a reverse tunnel to the relay hub. The hub registers the relay with the broker
-// on the volunteer's behalf, so the volunteer never exposes a public port and
+// on the relay's behalf, so the relay never exposes a public port and
 // never calls the broker directly.
 func runTunnelMode(parent context.Context, cfg cliConfig) error {
 	ctx, cancel := context.WithCancel(parent)
@@ -517,8 +517,8 @@ func runTunnelMode(parent context.Context, cfg cliConfig) error {
 			MaxSessions:      cfg.MaxSessions,
 			MaxMbps:          cfg.MaxMbps,
 			Label:            cfg.Label,
-			VolunteerVersion: version,
-			// A current volunteer always understands the stream-type discriminator;
+			RelayVersion:     version,
+			// A current relay always understands the stream-type discriminator;
 			// PunchCapable additionally asks the hub to advertise a direct path.
 			StreamTyping: true,
 			PunchCapable: cfg.Punch,
@@ -680,7 +680,7 @@ func register(ctx context.Context, cfg cliConfig, prepared preparedRuntime) (rel
 		ExitMode:         relay.ExitModeDirect,
 		MaxSessions:      cfg.MaxSessions,
 		MaxMbps:          cfg.MaxMbps,
-		VolunteerVersion: version,
+		RelayVersion:     version,
 		Label:            cfg.Label,
 		NodeClass:        cfg.NodeClass,
 	}
@@ -690,9 +690,9 @@ func register(ctx context.Context, cfg cliConfig, prepared preparedRuntime) (rel
 	}
 	// A broker that predates node_class drops the field and answers 201 with
 	// no class attested; without this check the relay would silently serve
-	// mislabeled as a volunteer.
+	// mislabeled as a volunteer-class relay.
 	if req.NodeClass == relay.NodeClassFoundation && desc.NodeClass != relay.NodeClassFoundation {
-		return relay.Descriptor{}, fmt.Errorf("broker attested node_class %q instead of %q: the broker likely predates node_class support; upgrade it, or drop -node-class to serve as a volunteer", desc.NodeClass, relay.NodeClassFoundation)
+		return relay.Descriptor{}, fmt.Errorf("broker attested node_class %q instead of %q: the broker likely predates node_class support; upgrade it, or drop -node-class to serve as a volunteer-class relay", desc.NodeClass, relay.NodeClassFoundation)
 	}
 	return desc, nil
 }

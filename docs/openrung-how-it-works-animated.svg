@@ -1,6 +1,6 @@
 <svg width="1200" height="675" viewBox="0 0 1200 675" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
   <title id="title">How OpenRung works</title>
-  <desc id="desc">Animated diagram showing a client asking the OpenRung broker for healthy volunteer relays, then sending encrypted traffic through a volunteer relay to the open internet while the broker stays out of the data path.</desc>
+  <desc id="desc">Animated diagram showing a client asking the OpenRung broker for healthy relays, then sending encrypted traffic through a relay to the open internet while the broker stays out of the data path.</desc>
   <defs>
     <linearGradient id="bgGradient" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#fbfdfb"/>
@@ -35,10 +35,10 @@
     </clipPath>
     <path id="clientToBroker" d="M 258 365 C 318 278 420 227 555 208"/>
     <path id="brokerToClient" d="M 555 224 C 418 252 323 302 260 382"/>
-    <path id="volunteerToBroker" d="M 835 323 C 768 249 692 211 637 207"/>
-    <path id="brokerToVolunteer" d="M 637 225 C 706 240 783 280 842 340"/>
+    <path id="relayToBroker" d="M 835 323 C 768 249 692 211 637 207"/>
+    <path id="brokerToRelay" d="M 637 225 C 706 240 783 280 842 340"/>
     <path id="clientDataPath" d="M 268 438 C 415 535 652 530 823 414"/>
-    <path id="volunteerDataPath" d="M 915 407 C 979 393 1022 350 1054 296"/>
+    <path id="relayDataPath" d="M 915 407 C 979 393 1022 350 1054 296"/>
     <path id="fullDataPath" d="M 268 438 C 415 535 652 530 823 414 C 901 362 982 362 1054 296"/>
     <style>
       svg {
@@ -273,7 +273,7 @@
   <path d="M 93 585 C 256 636 461 642 658 590 C 815 548 967 555 1110 617" fill="none" stroke="#d8e7fb" stroke-width="1.5" stroke-dasharray="5 13" opacity="0.8"/>
 
   <text x="74" y="166" class="subhead">Broker matches relays.</text>
-  <text x="74" y="196" class="subhead">Volunteers carry encrypted traffic.</text>
+  <text x="74" y="196" class="subhead">Relays carry encrypted traffic.</text>
 
   <g transform="translate(73 224)">
     <rect class="zone" x="0" y="0" width="295" height="316" rx="26"/>
@@ -311,13 +311,13 @@
   </circle>
   <circle r="7" fill="#f2b84b" class="control-packet" opacity="0">
     <animateMotion dur="6s" repeatCount="indefinite" begin="0s">
-      <mpath href="#volunteerToBroker"/>
+      <mpath href="#relayToBroker"/>
     </animateMotion>
     <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.12;0.56;1" dur="6s" repeatCount="indefinite"/>
   </circle>
   <circle r="6" fill="#f2b84b" class="control-packet" opacity="0">
     <animateMotion dur="6s" repeatCount="indefinite" begin="2.1s">
-      <mpath href="#brokerToVolunteer"/>
+      <mpath href="#brokerToRelay"/>
     </animateMotion>
     <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.12;0.56;1" dur="6s" repeatCount="indefinite" begin="2.1s"/>
   </circle>
@@ -390,8 +390,8 @@
         <rect x="-12" y="-3" width="28" height="6" rx="2" fill="#1d8a4f"/>
       </g>
     </g>
-    <text x="94" y="184" text-anchor="middle" class="label">Volunteer relay</text>
-    <text x="94" y="205" text-anchor="middle" class="small">everyday people help</text>
+    <text x="94" y="184" text-anchor="middle" class="label">Relay</text>
+    <text x="94" y="205" text-anchor="middle" class="small">Foundation / community</text>
   </g>
 
   <g transform="translate(1005 213)">
@@ -411,7 +411,7 @@
     <g class="step-one">
       <circle cx="0" cy="0" r="15" fill="#f2b84b"/>
       <text x="-4.5" y="5" fill="#1a241d" font-size="14" font-weight="900">1</text>
-      <text x="25" y="5" class="small">Volunteers register and send heartbeats</text>
+      <text x="25" y="5" class="small">Relays register and send heartbeats</text>
     </g>
   </g>
   <g transform="translate(425 574)">
@@ -425,7 +425,7 @@
     <g class="step-three">
       <circle cx="0" cy="0" r="15" fill="#1d8a4f"/>
       <text x="-4.5" y="5" fill="#ffffff" font-size="14" font-weight="900">3</text>
-      <text x="25" y="5" class="small">Encrypted traffic flows through the volunteer</text>
+      <text x="25" y="5" class="small">Encrypted traffic flows through the relay</text>
     </g>
   </g>
 

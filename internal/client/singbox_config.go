@@ -40,10 +40,10 @@ type SingBoxConfigInput struct {
 	// BridgeHost and BridgePort, when set, redirect the VLESS outbound to a local
 	// punch bridge (127.0.0.1:BridgePort) instead of the relay's public endpoint.
 	// The Reality identity fields are unchanged, so the end-to-end target is still
-	// the real volunteer.
+	// the real relay.
 	BridgeHost string
 	BridgePort int
-	// PunchPeerExcludeAddress is the volunteer's reflexive UDP IP on the punched
+	// PunchPeerExcludeAddress is the relay's reflexive UDP IP on the punched
 	// path. It MUST be excluded from the TUN routes or the QUIC datagrams the punch
 	// socket sends would be captured by sing-box's own auto_route/strict_route TUN
 	// and loop back into the tunnel (deadlock). The loopback bridge address needs
@@ -187,7 +187,7 @@ func buildInbound(input SingBoxConfigInput, tunnelIPv4Address, tunnelIPv6Address
 	}
 	// Exclude the real transport peers from the TUN so their traffic is not
 	// captured by auto_route/strict_route. On the direct path that is the relay's
-	// public IP; on the punch path it is additionally the volunteer's reflexive
+	// public IP; on the punch path it is additionally the relay's reflexive
 	// UDP IP the QUIC socket talks to (see Correction #1 in the plan).
 	var excludeAddresses []string
 	for _, host := range []string{input.Relay.PublicHost, input.PunchPeerExcludeAddress} {

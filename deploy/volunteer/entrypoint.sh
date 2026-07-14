@@ -1,6 +1,6 @@
 #!/bin/sh
-# Translate OPENRUNG_* environment variables into volunteer CLI flags, then exec
-# the binary so it receives SIGTERM directly for a clean shutdown.
+# Translate OPENRUNG_* environment variables into relay CLI flags, then exec the
+# legacy-named binary so it receives SIGTERM directly for a clean shutdown.
 set -eu
 
 # Resolve the connection mode the same way the binary's normalizeMode does:

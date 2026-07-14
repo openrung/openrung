@@ -13,12 +13,12 @@ import (
 	"time"
 )
 
-// PathProbe is the hub HTTP endpoint a volunteer calls to test whether it is
+// PathProbe is the hub HTTP endpoint a relay calls to test whether it is
 // reachable from the public internet.
 const PathProbe = "/api/v1/probe"
 
-// ProbeLinePrefix is the line a volunteer's temporary probe listener writes on an
-// accepted connection so the hub can confirm it reached that specific volunteer
+// ProbeLinePrefix is the line a relay's temporary probe listener writes on an
+// accepted connection so the hub can confirm it reached that specific relay
 // (not some other device answering on the same public IP:port).
 const ProbeLinePrefix = "ORPROBE "
 
@@ -27,7 +27,7 @@ const (
 	probeMaxLine     = 128
 )
 
-// ProbeRequest is the volunteer -> hub body for POST PathProbe. The volunteer
+// ProbeRequest is the relay -> hub body for POST PathProbe. The relay
 // only chooses the port and a nonce; the hub always dials the request's own
 // source IP, never a caller-specified host, so this cannot be used for SSRF.
 type ProbeRequest struct {
@@ -36,14 +36,14 @@ type ProbeRequest struct {
 }
 
 // ProbeResponse reports whether the hub could open an inbound TCP connection to
-// the volunteer at its observed public IP and the requested port.
+// the relay at its observed public IP and the requested port.
 type ProbeResponse struct {
 	Reachable    bool   `json:"reachable"`
 	ObservedHost string `json:"observed_host"`
 	Error        string `json:"error,omitempty"`
 }
 
-// ReachabilityProber is the hub-side self-check service. It lets a volunteer
+// ReachabilityProber is the hub-side self-check service. It lets a relay
 // discover whether it can accept inbound connections (so it should register
 // directly) or is behind CGNAT/a firewall (so it should tunnel).
 type ReachabilityProber struct {
@@ -109,7 +109,7 @@ func (p *ReachabilityProber) handle(w http.ResponseWriter, r *http.Request) {
 	writeJSONResponse(w, http.StatusOK, p.dialAndVerify(ip, req.Port, req.Nonce))
 }
 
-// dialAndVerify dials back the volunteer's observed source IP at the requested
+// dialAndVerify dials back the relay's observed source IP at the requested
 // port and confirms it answers with the expected nonce line. It only ever dials
 // ip (the caller's own address), so it is not an SSRF vector.
 func (p *ReachabilityProber) dialAndVerify(ip string, port int, nonce string) ProbeResponse {

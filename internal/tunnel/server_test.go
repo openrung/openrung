@@ -196,7 +196,7 @@ func TestHubClientEndToEnd(t *testing.T) {
 			MaxSessions:      4,
 			MaxMbps:          10,
 			Label:            "lbl",
-			VolunteerVersion: "test",
+			RelayVersion:     "test",
 		},
 		TargetHost:   echoHost,
 		TargetPort:   echoPort,
@@ -242,7 +242,7 @@ func TestHubClientEndToEnd(t *testing.T) {
 		t.Fatalf("register endpoint mismatch: host=%q port=%d", lastReq.PublicHost, lastReq.PublicPort)
 	}
 	if lastReq.ExitHost != "127.0.0.1" {
-		t.Fatalf("exit_host = %q, want the volunteer's source IP 127.0.0.1", lastReq.ExitHost)
+		t.Fatalf("exit_host = %q, want the relay's source IP 127.0.0.1", lastReq.ExitHost)
 	}
 
 	if !eventually(2*time.Second, func() bool {

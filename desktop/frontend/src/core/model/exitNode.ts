@@ -3,14 +3,14 @@
  * Pure TypeScript, shared as-is with the mobile app.
  */
 
-/** One volunteer relay inside an [ExitNodeRegion]: just what the picker UI needs. */
+/** One relay inside an [ExitNodeRegion]: just what the picker UI needs. */
 export interface ExitNodeRelay {
   id: string; // broker relay id — what connect-to-this-relay targets
-  label: string | null; // volunteer-chosen name (e.g. "silly-lemur"); null on older brokers
+  label: string | null; // friendly name (operator-supplied or generated); null on older brokers
 }
 
 /**
- * One located exit spot on the exit-node map. Volunteer relays are grouped by the broker-served
+ * One located exit spot on the exit-node map. Relays are grouped by the broker-served
  * exit location (country + city), so a single marker may stand for several nodes (`nodeCount`,
  * with the individual relays listed in `relays` for the list view's per-relay picker).
  * Coordinates come straight from the broker and are city-level accurate at best — the map must

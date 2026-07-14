@@ -184,7 +184,7 @@ docker run -d --name openrung-relayhub --restart unless-stopped \
 TMPL
 
 # Without a token the hub fails closed, so when none is provided we explicitly
-# opt into anonymous volunteers (open, unauthenticated hub) instead — set
+# allow anonymous relay connections (open, unauthenticated hub) instead — set
 # OPENRUNG_VOLUNTEER_TOKEN to require auth.
 TOKEN_ENV=""
 ANON_ENV=""

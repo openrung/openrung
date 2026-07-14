@@ -89,7 +89,7 @@ recipients of the MPL-2.0 terms and where to obtain the source.
 ### yamux
 
 - **Component:** `github.com/hashicorp/yamux` v0.1.2 (reverse-tunnel transport;
-  statically linked into the volunteer, relayhub, and broker binaries).
+  statically linked into the relay runtime and relayhub binaries).
 - **License:** MPL-2.0.
 - **Source:** https://github.com/hashicorp/yamux/tree/v0.1.2
 

@@ -14,7 +14,7 @@ import (
 	"openrung/internal/relay"
 )
 
-// maxRegisterBodyBytes caps volunteer registration payloads; descriptors are
+// maxRegisterBodyBytes caps relay registration payloads; descriptors are
 // small structs, so anything near the cap is malformed or hostile.
 const maxRegisterBodyBytes = 64 << 10
 
@@ -23,15 +23,15 @@ type Config struct {
 	// FoundationToken is the privileged bearer token that authorizes
 	// registrations claiming node_class "foundation". It must differ from
 	// RegistrationToken (cmd/broker refuses to start otherwise — a shared
-	// value would let every volunteer self-promote) and its holder can still
-	// register volunteer-class relays: the token bounds the maximum class a
-	// request may claim, it does not force one. Routine volunteer and relay-hub
-	// traffic should still use RegistrationToken so this credential stays out
-	// of the hub path.
+	// value would let every volunteer-token holder self-promote) and its holder
+	// can still register volunteer-class relays: the token bounds the maximum
+	// class a request may claim, it does not force one. Routine volunteer-class
+	// relay and relay-hub traffic should still use RegistrationToken so this
+	// credential stays out of the hub path.
 	// Empty disables foundation registration entirely.
-	FoundationToken   string
-	VolunteerLeaseTTL time.Duration
-	TelemetrySink     TelemetrySink
+	FoundationToken string
+	RelayLeaseTTL   time.Duration
+	TelemetrySink   TelemetrySink
 	// TelemetryReader backs the dashboard by aggregating records in Go on
 	// every request (the JSONL sink's path). TelemetryQuerier backs it with
 	// pre-aggregated queries (the Postgres store) and wins when both are set.
@@ -42,7 +42,7 @@ type Config struct {
 	// CF-Connecting-IP / X-Forwarded-For headers the broker will trust for the real client IP.
 	TrustedProxyCIDRs []string
 	// GeoIP resolves the city/country of a relay's public endpoint so clients
-	// can show where volunteer relays are located. Nil disables lookups;
+	// can show where relays are located. Nil disables lookups;
 	// descriptors then carry empty geo fields.
 	GeoIP GeoIPResolver
 	// SigningSeed is the 32-byte Ed25519 seed that signs every relay-list
@@ -53,8 +53,8 @@ type Config struct {
 }
 
 func NewServer(store RelayStore, cfg Config) http.Handler {
-	if cfg.VolunteerLeaseTTL == 0 {
-		cfg.VolunteerLeaseTTL = 3 * time.Minute
+	if cfg.RelayLeaseTTL == 0 {
+		cfg.RelayLeaseTTL = 3 * time.Minute
 	}
 	relaySigner := newSigner(cfg.SigningSeed)
 	clientIP := newClientIPResolver(cfg.TrustedProxyCIDRs)
@@ -62,7 +62,7 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 	relayListLimiter := newIPRateLimiter(relayListRatePerSecond, relayListBurst, rateLimiterMaxTrackedIPs)
 	telemetryLimiter := newIPRateLimiter(telemetryRatePerSecond, telemetryBurst, rateLimiterMaxTrackedIPs)
 	speedTestLimiter := newIPRateLimiter(speedTestRatePerSecond, speedTestBurst, rateLimiterMaxTrackedIPs)
-	volunteerLimiter := newIPRateLimiter(volunteerRatePerSecond, volunteerBurst, rateLimiterMaxTrackedIPs)
+	relayRegistrationLimiter := newIPRateLimiter(relayRegistrationRatePerSecond, relayRegistrationBurst, rateLimiterMaxTrackedIPs)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -75,8 +75,8 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 		// lets the monitor assert the active key without parsing a relay list.
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "signing_key_id": relaySigner.keyID})
 	})
-	mux.HandleFunc("POST /api/v1/volunteers/register", rateLimited(volunteerLimiter, clientIP, 10, registerHandler(store, cfg)))
-	mux.HandleFunc("POST /api/v1/volunteers/", rateLimited(volunteerLimiter, clientIP, 10, heartbeatHandler(store, cfg)))
+	mux.HandleFunc("POST /api/v1/volunteers/register", rateLimited(relayRegistrationLimiter, clientIP, 10, registerHandler(store, cfg)))
+	mux.HandleFunc("POST /api/v1/volunteers/", rateLimited(relayRegistrationLimiter, clientIP, 10, heartbeatHandler(store, cfg)))
 	mux.HandleFunc("GET /api/v1/relays", rateLimited(relayListLimiter, clientIP, 10, listRelaysHandler(store, cfg.TelemetrySink, clientIP, clientSeen, relaySigner)))
 	mux.HandleFunc("GET /api/v1/relays.mirror", rateLimited(relayListLimiter, clientIP, 10, listRelaysMirrorHandler(store, relaySigner)))
 	mux.HandleFunc("POST /api/v1/telemetry/events", rateLimited(telemetryLimiter, clientIP, 10, telemetryHandler(cfg.TelemetrySink, store, clientIP)))
@@ -98,7 +98,7 @@ func registerHandler(store RelayStore, cfg Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		maxClass, ok := credentialNodeClass(r, cfg)
 		if !ok {
-			writeError(w, http.StatusUnauthorized, "missing or invalid volunteer registration token")
+			writeError(w, http.StatusUnauthorized, "missing or invalid relay registration token")
 			return
 		}
 
@@ -124,7 +124,7 @@ func registerHandler(store RelayStore, cfg Config) http.HandlerFunc {
 		req.NodeClass = nodeClass
 		// Fail loudly instead of clamping: a foundation relay that lost its
 		// token should crash-loop where the operator sees it, not silently
-		// serve as a volunteer.
+		// serve as a volunteer-class relay.
 		if req.NodeClass == relay.NodeClassFoundation && maxClass != relay.NodeClassFoundation {
 			writeError(w, http.StatusForbidden, "node_class foundation requires the foundation registration token")
 			return
@@ -135,7 +135,7 @@ func registerHandler(store RelayStore, cfg Config) http.HandlerFunc {
 			return
 		}
 
-		desc, err := store.Register(req, time.Now().UTC(), cfg.VolunteerLeaseTTL)
+		desc, err := store.Register(req, time.Now().UTC(), cfg.RelayLeaseTTL)
 		if errors.Is(err, ErrNodeClassForbidden) {
 			// The endpoint is held by a live foundation relay; a
 			// non-foundation registration may not seize it.
@@ -143,12 +143,12 @@ func registerHandler(store RelayStore, cfg Config) http.HandlerFunc {
 			return
 		}
 		if err != nil {
-			slog.Error("could not register volunteer", "error", err)
+			slog.Error("could not register relay", "error", err)
 			writeError(w, http.StatusServiceUnavailable, "could not register relay")
 			return
 		}
 		resolveRelayGeo(r.Context(), store, cfg.GeoIP, &desc)
-		slog.Info("volunteer registered", "relay_id", desc.ID, "node_class", desc.NodeClass, "public", desc.PublicHost, "port", desc.PublicPort, "city", desc.City, "country", desc.Country, "max_sessions", desc.MaxSessions, "version", desc.VolunteerVersion)
+		slog.Info("relay registered", "relay_id", desc.ID, "node_class", desc.NodeClass, "public", desc.PublicHost, "port", desc.PublicPort, "city", desc.City, "country", desc.Country, "max_sessions", desc.MaxSessions, "version", desc.RelayVersion)
 
 		writeJSON(w, http.StatusCreated, desc)
 	}
@@ -156,21 +156,22 @@ func registerHandler(store RelayStore, cfg Config) http.HandlerFunc {
 
 func heartbeatHandler(store RelayStore, cfg Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Any registration credential may heartbeat a volunteer relay, so
-		// foundation relays can present the foundation token on both calls.
+		// A registration credential may heartbeat a relay at or below its
+		// authorized node class, so foundation relays can present the foundation
+		// token on both calls.
 		maxClass, ok := credentialNodeClass(r, cfg)
 		if !ok {
-			writeError(w, http.StatusUnauthorized, "missing or invalid volunteer registration token")
+			writeError(w, http.StatusUnauthorized, "missing or invalid relay registration token")
 			return
 		}
 
 		id, ok := heartbeatRelayID(r.URL.Path)
 		if !ok {
-			writeError(w, http.StatusNotFound, "unknown volunteer endpoint")
+			writeError(w, http.StatusNotFound, "unknown relay endpoint")
 			return
 		}
 
-		desc, err := store.Heartbeat(id, maxClass, time.Now().UTC(), cfg.VolunteerLeaseTTL)
+		desc, err := store.Heartbeat(id, maxClass, time.Now().UTC(), cfg.RelayLeaseTTL)
 		if errors.Is(err, ErrRelayNotFound) {
 			writeError(w, http.StatusNotFound, "relay not found")
 			return
@@ -180,7 +181,7 @@ func heartbeatHandler(store RelayStore, cfg Config) http.HandlerFunc {
 			return
 		}
 		if err != nil {
-			slog.Error("could not update volunteer heartbeat", "relay_id", id, "error", err)
+			slog.Error("could not update relay heartbeat", "relay_id", id, "error", err)
 			writeError(w, http.StatusServiceUnavailable, "could not update relay heartbeat")
 			return
 		}
@@ -217,7 +218,7 @@ func resolveRelayGeo(ctx context.Context, store RelayStore, resolver GeoIPResolv
 }
 
 // geoLookupHost picks the address whose location clients care about: the
-// volunteer's exit IP when the hub reported one (tunnel transport), otherwise
+// relay's observed exit IP when the hub reported one (tunnel transport), otherwise
 // the advertised public endpoint (direct transport, where they coincide).
 func geoLookupHost(desc *relay.Descriptor) string {
 	if desc.ExitHost != "" {
@@ -362,11 +363,11 @@ func bearerMatches(r *http.Request, token string) bool {
 	return subtle.ConstantTimeCompare([]byte(presented), []byte(expected)) == 1
 }
 
-// credentialNodeClass resolves the volunteer-endpoint credential to the
+// credentialNodeClass resolves the relay-registration credential to the
 // highest node class it may vouch for, or ok=false when the request is not
 // authorized at all. The foundation token is checked first: with anonymous
 // registration enabled (RegistrationToken empty) every request already passes
-// the volunteer check, and the foundation credential must still win.
+// the volunteer-class check, and the foundation credential must still win.
 func credentialNodeClass(r *http.Request, cfg Config) (string, bool) {
 	if bearerMatches(r, cfg.FoundationToken) {
 		return relay.NodeClassFoundation, true

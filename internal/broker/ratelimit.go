@@ -18,12 +18,12 @@ const (
 	telemetryRatePerSecond = 1.0
 	telemetryBurst         = 20
 
-	// Volunteer registration/heartbeat are token-gated in production; this limiter
+	// Relay registration/heartbeat are token-gated in production; this limiter
 	// is a backstop against a flood if the token leaks or the broker is
 	// deliberately run open. Generous: one relay hub re-registers and heartbeats
 	// every relay it fronts (a whole port range) from a single origin IP.
-	volunteerRatePerSecond = 20.0
-	volunteerBurst         = 256
+	relayRegistrationRatePerSecond = 20.0
+	relayRegistrationBurst         = 256
 
 	// A full speed test streams up to 25 MB, so sustained refills are slow and
 	// the real egress bound is the concurrency cap below.
