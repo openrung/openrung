@@ -9,8 +9,8 @@ on:
     branches: [main]
     tags: ['v*']
     paths:
-      - 'cmd/volunteer/**'
-      - 'internal/volunteer/**'
+      - 'cmd/relay/**'
+      - 'internal/relayruntime/**'
       - 'internal/tunnel/**'
       - 'internal/relay/**'
       - 'internal/punch/**'

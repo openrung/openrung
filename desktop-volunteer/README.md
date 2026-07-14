@@ -11,7 +11,7 @@ The UI is a Wails v2 app with a React frontend (`frontend/`), the same stack
 as the sibling desktop client (`desktop/`). `volunteerservice/` is the
 Wails-bound bridge — it owns settings persistence, state events, and log
 capture, and stays free of Wails imports so it is unit-testable.
-Underneath, the embedded relay engine from `internal/volunteer/engine`
+Underneath, the embedded relay engine from `internal/relayruntime/engine`
 registers with the broker and drives a bundled, external
 [Xray-core](https://github.com/XTLS/Xray-core) (`xray`) process for the
 VLESS + REALITY data plane.

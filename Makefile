@@ -15,7 +15,7 @@ broker:
 	OPENRUNG_ALLOW_ANONYMOUS_REGISTRATION=true go run ./cmd/broker -addr :8080
 
 relay:
-	go run ./cmd/volunteer \
+	go run ./cmd/relay \
 		-broker http://localhost:8080 \
 		-public-host 127.0.0.1 \
 		-public-port 443 \

@@ -1,8 +1,8 @@
 // Package engine runs a relay as an embeddable, supervised service:
 // Start/Stop lifecycle, status/identity callbacks, and live traffic counters
-// instead of cmd/volunteer's one-shot signal-driven flow. GUI apps (the
+// instead of the one-shot, signal-driven flow in cmd/relay. GUI apps (the
 // OpenRung Volunteer desktop app) bind it to their bridge layer; the orchestration
-// mirrors cmd/volunteer/main.go run/runTunnelMode.
+// mirrors cmd/relay/main.go run/runTunnelMode.
 package engine
 
 import (
@@ -27,8 +27,8 @@ import (
 	"time"
 
 	"openrung/internal/relay"
+	"openrung/internal/relayruntime"
 	"openrung/internal/tunnel"
-	"openrung/internal/volunteer"
 )
 
 // Phase is the engine's lifecycle state, shaped for direct display in a UI.
@@ -66,7 +66,7 @@ func (id Identity) complete() bool {
 }
 
 // Config describes one relay. Zero values take the same defaults as
-// cmd/volunteer where one exists.
+// cmd/relay where one exists.
 type Config struct {
 	// BrokerURL is required for direct and auto modes (direct registration).
 	BrokerURL string
@@ -372,7 +372,7 @@ func (e *Engine) run(ctx context.Context, done chan struct{}) {
 
 	const backoffMin, backoffMax = 2 * time.Second, time.Minute
 	brokerConfig := e.currentConfig()
-	broker := &volunteer.BrokerClient{
+	broker := &relayruntime.BrokerClient{
 		BaseURL:    brokerConfig.BrokerURL,
 		Token:      brokerConfig.Token,
 		HTTPClient: brokerConfig.HTTPClient,
@@ -435,7 +435,7 @@ var errReresolve = errors.New("auto mode re-resolved to a different transport")
 // detectPublicIPv6 is a package var so tests can stub public-IPv6 detection. It
 // is used for the direct-session public-address checks; auto mode never guesses
 // direct from it (see autoResolve).
-var detectPublicIPv6 = volunteer.DefaultPublicIPv6Address
+var detectPublicIPv6 = relayruntime.DefaultPublicIPv6Address
 
 // autoReprobeInterval is how often auto mode re-evaluates reachability while a
 // session runs, so it converges to the right transport after a change (hub
@@ -454,8 +454,8 @@ var autoReprobeInterval = 3 * time.Minute
 // error and a definitive "not reachable" therefore map to tunnel. Returns
 // ("","") when ctx is cancelled.
 func (e *Engine) autoResolve(ctx context.Context, cfg Config) (mode, publicHost string) {
-	hubHTTP := volunteer.DeriveHubHTTPBase(cfg.HubHTTPURL, cfg.HubAddr, !cfg.HubPlaintext)
-	reachable, observed, err := volunteer.DetectDirectReachable(ctx, hubHTTP, cfg.Token, "::", cfg.ListenPort, e.probeClient(cfg))
+	hubHTTP := relayruntime.DeriveHubHTTPBase(cfg.HubHTTPURL, cfg.HubAddr, !cfg.HubPlaintext)
+	reachable, observed, err := relayruntime.DetectDirectReachable(ctx, hubHTTP, cfg.Token, "::", cfg.ListenPort, e.probeClient(cfg))
 	if ctx.Err() != nil {
 		return "", ""
 	}
@@ -491,7 +491,7 @@ func (e *Engine) watchForModeChange(ctx context.Context, cfg Config, current str
 	}
 }
 
-func (e *Engine) runSession(ctx context.Context, broker *volunteer.BrokerClient) error {
+func (e *Engine) runSession(ctx context.Context, broker *relayruntime.BrokerClient) error {
 	cfg := e.currentConfig()
 
 	e.setStatus(func() {
@@ -501,7 +501,7 @@ func (e *Engine) runSession(ctx context.Context, broker *volunteer.BrokerClient)
 
 	label := cfg.Label
 	if label == "" {
-		label = volunteer.GenerateLabel()
+		label = relayruntime.GenerateLabel()
 	} else {
 		normalized, err := relay.NormalizeLabel(label)
 		if err != nil {
@@ -556,7 +556,7 @@ func (e *Engine) prepareIdentity(cfg Config) (Identity, error) {
 	generated := false
 
 	if id.ClientID == "" {
-		v, err := volunteer.GenerateUUID()
+		v, err := relayruntime.GenerateUUID()
 		if err != nil {
 			return Identity{}, fmt.Errorf("generate client ID: %w", err)
 		}
@@ -564,7 +564,7 @@ func (e *Engine) prepareIdentity(cfg Config) (Identity, error) {
 		generated = true
 	}
 	if id.ShortID == "" {
-		v, err := volunteer.GenerateShortID()
+		v, err := relayruntime.GenerateShortID()
 		if err != nil {
 			return Identity{}, fmt.Errorf("generate short ID: %w", err)
 		}
@@ -572,7 +572,7 @@ func (e *Engine) prepareIdentity(cfg Config) (Identity, error) {
 		generated = true
 	}
 	if id.RealityPrivateKey == "" || id.RealityPublicKey == "" {
-		keyPair, err := volunteer.GenerateRealityKeyPair(cfg.XrayPath)
+		keyPair, err := relayruntime.GenerateRealityKeyPair(cfg.XrayPath)
 		if err != nil {
 			return Identity{}, err
 		}
@@ -610,7 +610,7 @@ func (e *Engine) probeClient(cfg Config) *http.Client {
 // startXray writes the generated config (0600) and launches xray bound to
 // listenHost:listenPort, returning the process handle and its exit channel.
 func (e *Engine) startXray(ctx context.Context, cfg Config, identity Identity, listenHost string, listenPort int) (*exec.Cmd, <-chan error, error) {
-	xrayConfig, err := volunteer.BuildXrayConfig(volunteer.XrayConfigInput{
+	xrayConfig, err := relayruntime.BuildXrayConfig(relayruntime.XrayConfigInput{
 		ListenHost:        listenHost,
 		ListenPort:        listenPort,
 		ClientID:          identity.ClientID,
@@ -634,7 +634,7 @@ func (e *Engine) startXray(ctx context.Context, cfg Config, identity Identity, l
 	}
 
 	cmd := exec.CommandContext(ctx, cfg.XrayPath, "run", "-config", configPath)
-	volunteer.ConfigureBackgroundCommand(cmd)
+	relayruntime.ConfigureBackgroundCommand(cmd)
 	logw := e.events.Log
 	cmd.Stdout = logw
 	cmd.Stderr = logw
@@ -647,7 +647,7 @@ func (e *Engine) startXray(ctx context.Context, cfg Config, identity Identity, l
 	return cmd, waitCh, nil
 }
 
-func (e *Engine) runDirectSession(ctx context.Context, broker *volunteer.BrokerClient, cfg Config, label string, identity Identity, publicHost string) error {
+func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.BrokerClient, cfg Config, label string, identity Identity, publicHost string) error {
 	if publicHost == "" {
 		detected, err := detectPublicIPv6()
 		if err != nil {
@@ -658,7 +658,7 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *volunteer.BrokerC
 
 	// The observer owns the public port and forwards to xray on loopback; it is
 	// also the traffic-counter source.
-	targetHost, targetPort, err := volunteer.ReserveLoopbackTCPPort()
+	targetHost, targetPort, err := relayruntime.ReserveLoopbackTCPPort()
 	if err != nil {
 		return err
 	}
@@ -669,7 +669,7 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *volunteer.BrokerC
 	}
 	defer stopProcess(xrayCmd, xrayErr)
 
-	observer := &volunteer.ConnectionObserver{
+	observer := &relayruntime.ConnectionObserver{
 		ListenHost: "::",
 		ListenPort: cfg.ListenPort,
 		TargetHost: targetHost,
@@ -677,7 +677,7 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *volunteer.BrokerC
 		// Per-connection lines include client IPs; the engine keeps them out of
 		// the UI log and surfaces aggregate counters instead.
 		Output: io.Discard,
-		Events: &volunteer.ConnectionEvents{
+		Events: &relayruntime.ConnectionEvents{
 			Opened: func(uint64, string) {
 				e.active.Add(1)
 				e.total.Add(1)
@@ -768,7 +768,7 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *volunteer.BrokerC
 			}
 		case <-heartbeat.C:
 			if err := broker.Heartbeat(ctx, desc.ID); err != nil {
-				if !volunteer.IsRelayNotFound(err) {
+				if !relayruntime.IsRelayNotFound(err) {
 					e.logf("heartbeat failed: %v", err)
 					continue
 				}
@@ -787,7 +787,7 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *volunteer.BrokerC
 
 // registerWithRetry gives startup registration a few tries with short backoff
 // (honouring 429 Retry-After) before failing the session to the supervisor.
-func registerWithRetry(ctx context.Context, broker *volunteer.BrokerClient, req relay.RegisterRequest) (relay.Descriptor, error) {
+func registerWithRetry(ctx context.Context, broker *relayruntime.BrokerClient, req relay.RegisterRequest) (relay.Descriptor, error) {
 	const attempts = 3
 	backoff := 2 * time.Second
 	var lastErr error
@@ -801,7 +801,7 @@ func registerWithRetry(ctx context.Context, broker *volunteer.BrokerClient, req 
 		}
 		lastErr = err
 		wait := backoff
-		var apiErr *volunteer.APIError
+		var apiErr *relayruntime.APIError
 		if errors.As(err, &apiErr) && apiErr.RetryAfter != "" {
 			if secs, parseErr := strconv.Atoi(apiErr.RetryAfter); parseErr == nil && secs > 0 {
 				wait = time.Duration(secs) * time.Second
@@ -821,7 +821,7 @@ func (e *Engine) runTunnelSession(ctx context.Context, cfg Config, label string,
 	sessionCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	loopHost, loopPort, err := volunteer.ReserveLoopbackTCPPort()
+	loopHost, loopPort, err := relayruntime.ReserveLoopbackTCPPort()
 	if err != nil {
 		return err
 	}
@@ -955,7 +955,7 @@ func hubTLSClientConfig(cfg Config) *tls.Config {
 		tc.VerifyPeerCertificate = pinnedLeafVerifier(pin)
 		return tc
 	}
-	tc.InsecureSkipVerify = cfg.HubInsecure //nolint:gosec // test-only, mirrors cmd/volunteer -hub-insecure
+	tc.InsecureSkipVerify = cfg.HubInsecure //nolint:gosec // test-only, mirrors cmd/relay -hub-insecure
 	return tc
 }
 

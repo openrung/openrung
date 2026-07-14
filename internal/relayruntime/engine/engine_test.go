@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"openrung/internal/relay"
+	"openrung/internal/relayruntime"
 	"openrung/internal/tunnel"
-	"openrung/internal/volunteer"
 )
 
 var testIdentity = Identity{
@@ -140,7 +140,7 @@ func TestDirectSessionRegistersAndRecovers(t *testing.T) {
 	// session's public host through the auto-mode "observed" path instead by
 	// injecting a fast heartbeat and running the exported surface only.
 	eng.cfg.HeartbeatInterval = 50 * time.Millisecond
-	brokerClient := &volunteer.BrokerClient{BaseURL: ts.URL}
+	brokerClient := &relayruntime.BrokerClient{BaseURL: ts.URL}
 	// Bypass IPv6 detection: pretend probing already resolved us.
 	go func() {
 		_ = eng.runDirectSession(context.Background(), brokerClient, eng.cfg, "test-relay", testIdentity, "127.0.0.1")

@@ -15,8 +15,8 @@ import (
 
 	"openrung/desktop-volunteer/persist"
 	"openrung/internal/relay"
-	"openrung/internal/volunteer"
-	"openrung/internal/volunteer/engine"
+	"openrung/internal/relayruntime"
+	"openrung/internal/relayruntime/engine"
 )
 
 // Version is reported to the broker/hub as the volunteer version.
@@ -129,7 +129,7 @@ func (s *Service) Startup(ctx context.Context) {
 
 	s.mu.Lock()
 	if s.settings.Label == "" {
-		s.settings.Label = volunteer.GenerateLabel()
+		s.settings.Label = relayruntime.GenerateLabel()
 		s.persistSettingsLocked()
 	}
 	s.mu.Unlock()
@@ -351,7 +351,7 @@ func (s *Service) SaveSettings(in Settings) (Settings, error) {
 	s.settings.HubAddress = strings.TrimSpace(in.HubAddress)
 	s.settings.ConnectionMode = connMode
 	if s.settings.Label == "" {
-		s.settings.Label = volunteer.GenerateLabel()
+		s.settings.Label = relayruntime.GenerateLabel()
 	}
 	s.persistSettingsLocked()
 	out := s.normalizedSettingsLocked()
@@ -364,7 +364,7 @@ func (s *Service) SaveSettings(in Settings) (Settings, error) {
 // RegenerateLabel replaces the public relay name with a fresh random one.
 func (s *Service) RegenerateLabel() (string, error) {
 	s.mu.Lock()
-	s.settings.Label = volunteer.GenerateLabel()
+	s.settings.Label = relayruntime.GenerateLabel()
 	s.persistSettingsLocked()
 	label := s.settings.Label
 	s.mu.Unlock()

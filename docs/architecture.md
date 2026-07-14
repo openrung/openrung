@@ -37,7 +37,7 @@ The broker does:
 
 ### Relay CLI
 
-The relay CLI (currently `cmd/volunteer`) runs on desktop systems. It starts an
+The relay CLI (`cmd/relay`) runs on desktop systems. It starts an
 Xray-core inbound listener and registers the relay with the broker. It defaults
 to an IPv6 listener and auto-advertises the first global IPv6 address it can
 find unless the operator supplies `-public-host`. With connection logging

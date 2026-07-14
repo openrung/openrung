@@ -53,7 +53,7 @@ COPY . .
 ARG TARGETARCH
 ARG TARGETOS=linux
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -trimpath -ldflags="-s -w" -o /out/volunteer ./cmd/volunteer
+    go build -trimpath -ldflags="-s -w" -o /out/volunteer ./cmd/relay
 
 # --- Stage 3: minimal runtime ---
 FROM alpine:3.21

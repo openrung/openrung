@@ -1,6 +1,6 @@
 //go:build windows
 
-package volunteer
+package relayruntime
 
 import (
 	"os/exec"

@@ -41,8 +41,8 @@ type batch struct {
 }
 
 // newUUID returns a random RFC 4122 v4 UUID. Mirrors the crypto/rand pattern in
-// internal/volunteer/config.go GenerateUUID (replicated to avoid importing the
-// volunteer package into the client layer).
+// internal/relayruntime/config.go GenerateUUID (replicated to avoid importing the
+// relay runtime package into the client layer).
 func newUUID() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {

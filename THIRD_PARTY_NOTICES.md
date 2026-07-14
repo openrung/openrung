@@ -22,7 +22,7 @@ commit each release is built against.
 
 > Maintenance: regenerate the Go sections from tooling so the transitive set
 > stays accurate as dependencies drift:
-> `go-licenses report ./cmd/volunteer ./cmd/relayhub` for the server side;
+> `go-licenses report ./cmd/relay ./cmd/relayhub` for the server side;
 > for the desktop app, the union of
 > `GOOS={darwin,windows,linux} go list -deps -tags desktop,production .`
 > run inside `desktop/`, plus the runtime `dependencies` of

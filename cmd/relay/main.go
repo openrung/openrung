@@ -18,8 +18,8 @@ import (
 	"time"
 
 	"openrung/internal/relay"
+	"openrung/internal/relayruntime"
 	"openrung/internal/tunnel"
-	"openrung/internal/volunteer"
 )
 
 const version = "dev"
@@ -176,7 +176,7 @@ func (c *cliConfig) ApplyDefaults() error {
 		c.Mode = normalizeMode("", c.TunnelMode, c.HubAddr)
 	}
 	if c.Label == "" {
-		c.Label = volunteer.GenerateLabel()
+		c.Label = relayruntime.GenerateLabel()
 	} else {
 		normalized, err := relay.NormalizeLabel(c.Label)
 		if err != nil {
@@ -197,7 +197,7 @@ func (c *cliConfig) ApplyDefaults() error {
 	if c.PublicHost != "" || c.PrintConfigOnly {
 		return nil
 	}
-	publicIPv6, err := volunteer.DefaultPublicIPv6Address()
+	publicIPv6, err := relayruntime.DefaultPublicIPv6Address()
 	if err != nil {
 		return fmt.Errorf("public-host is required when no global IPv6 address can be auto-detected: %w", err)
 	}
@@ -323,7 +323,7 @@ func run(cfg cliConfig) error {
 
 	xrayCfg := cfg
 	if cfg.ConnectionLog && !cfg.SkipXrayRun && !cfg.PrintConfigOnly {
-		targetHost, targetPort, err := volunteer.ReserveLoopbackTCPPort()
+		targetHost, targetPort, err := relayruntime.ReserveLoopbackTCPPort()
 		if err != nil {
 			return err
 		}
@@ -368,7 +368,7 @@ func run(cfg cliConfig) error {
 		slog.Info("started xray", "pid", xrayCmd.Process.Pid)
 
 		if cfg.ConnectionLog {
-			observer := &volunteer.ConnectionObserver{
+			observer := &relayruntime.ConnectionObserver{
 				ListenHost: cfg.ListenHost,
 				ListenPort: cfg.ListenPort,
 				TargetHost: xrayCfg.ListenHost,
@@ -383,7 +383,7 @@ func run(cfg cliConfig) error {
 			slog.Info(
 				"started connection observer",
 				"listen",
-				strings.Join(volunteer.ListenAddressesForHost(cfg.ListenHost, cfg.ListenPort), ","),
+				strings.Join(relayruntime.ListenAddressesForHost(cfg.ListenHost, cfg.ListenPort), ","),
 				"target",
 				fmt.Sprintf("%s:%d", xrayCfg.ListenHost, xrayCfg.ListenPort),
 				"note",
@@ -464,7 +464,7 @@ func runTunnelMode(parent context.Context, cfg cliConfig) error {
 	// Foundation never reaches tunnel mode: requireDirectModeForFoundation
 	// (Validate and run) rejects any non-direct mode before dispatch.
 
-	loopHost, loopPort, err := volunteer.ReserveLoopbackTCPPort()
+	loopHost, loopPort, err := relayruntime.ReserveLoopbackTCPPort()
 	if err != nil {
 		return err
 	}
@@ -585,9 +585,9 @@ func boolEnv(key string) bool {
 	}
 }
 
-func heartbeatOrRegister(ctx context.Context, broker *volunteer.BrokerClient, cfg cliConfig, prepared preparedRuntime, desc relay.Descriptor) (relay.Descriptor, bool, error) {
+func heartbeatOrRegister(ctx context.Context, broker *relayruntime.BrokerClient, cfg cliConfig, prepared preparedRuntime, desc relay.Descriptor) (relay.Descriptor, bool, error) {
 	if err := heartbeat(ctx, broker, desc.ID); err != nil {
-		if !volunteer.IsRelayNotFound(err) {
+		if !relayruntime.IsRelayNotFound(err) {
 			return desc, false, err
 		}
 
@@ -616,7 +616,7 @@ type preparedRuntime struct {
 func prepareRuntime(cfg cliConfig) (preparedRuntime, error) {
 	clientID := cfg.ClientID
 	if clientID == "" {
-		generated, err := volunteer.GenerateUUID()
+		generated, err := relayruntime.GenerateUUID()
 		if err != nil {
 			return preparedRuntime{}, fmt.Errorf("generate client ID: %w", err)
 		}
@@ -625,7 +625,7 @@ func prepareRuntime(cfg cliConfig) (preparedRuntime, error) {
 
 	shortID := cfg.ShortID
 	if shortID == "" {
-		generated, err := volunteer.GenerateShortID()
+		generated, err := relayruntime.GenerateShortID()
 		if err != nil {
 			return preparedRuntime{}, fmt.Errorf("generate short ID: %w", err)
 		}
@@ -635,7 +635,7 @@ func prepareRuntime(cfg cliConfig) (preparedRuntime, error) {
 	privateKey := cfg.RealityPrivateKey
 	publicKey := cfg.RealityPublicKey
 	if privateKey == "" || publicKey == "" {
-		keyPair, err := volunteer.GenerateRealityKeyPair(cfg.XrayPath)
+		keyPair, err := relayruntime.GenerateRealityKeyPair(cfg.XrayPath)
 		if err != nil {
 			return preparedRuntime{}, err
 		}
@@ -643,7 +643,7 @@ func prepareRuntime(cfg cliConfig) (preparedRuntime, error) {
 		publicKey = keyPair.PublicKey
 	}
 
-	xrayConfig, err := volunteer.BuildXrayConfig(volunteer.XrayConfigInput{
+	xrayConfig, err := relayruntime.BuildXrayConfig(relayruntime.XrayConfigInput{
 		ListenHost:        cfg.ListenHost,
 		ListenPort:        cfg.ListenPort,
 		ClientID:          clientID,
@@ -665,7 +665,7 @@ func prepareRuntime(cfg cliConfig) (preparedRuntime, error) {
 	}, nil
 }
 
-func register(ctx context.Context, broker *volunteer.BrokerClient, cfg cliConfig, prepared preparedRuntime) (relay.Descriptor, error) {
+func register(ctx context.Context, broker *relayruntime.BrokerClient, cfg cliConfig, prepared preparedRuntime) (relay.Descriptor, error) {
 	// The foundation token's cleartext-transport guard lives in BrokerClient
 	// (RequireSecureTransport, set by brokerClient() for foundation), so it
 	// covers heartbeat as well as registration and also refuses redirects.
@@ -698,11 +698,11 @@ func register(ctx context.Context, broker *volunteer.BrokerClient, cfg cliConfig
 	return desc, nil
 }
 
-func heartbeat(ctx context.Context, broker *volunteer.BrokerClient, id string) error {
+func heartbeat(ctx context.Context, broker *relayruntime.BrokerClient, id string) error {
 	return broker.Heartbeat(ctx, id)
 }
 
-func (c cliConfig) brokerClient() *volunteer.BrokerClient {
+func (c cliConfig) brokerClient() *relayruntime.BrokerClient {
 	// A foundation token is the bearer and, on its own, requires secure
 	// transport (https + redirect refusal), so the guarantee holds even if the
 	// posture normalization above has not run for this config.
@@ -710,7 +710,7 @@ func (c cliConfig) brokerClient() *volunteer.BrokerClient {
 	if c.FoundationToken != "" {
 		token = c.FoundationToken
 	}
-	return &volunteer.BrokerClient{
+	return &relayruntime.BrokerClient{
 		BaseURL:                c.BrokerURL,
 		Token:                  token,
 		HTTPClient:             c.HTTPClient,
