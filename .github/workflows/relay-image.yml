@@ -1,9 +1,7 @@
 name: relay-image
 
-# Build and publish the relay runtime image to GHCR. During the fleet cutover,
-# publish the same manifest under the legacy openrung-volunteer package name.
-# Remove that second image after every controlled relay uses openrung-relay.
-# Multi-arch (amd64 + arm64) so it runs on x86 and Graviton/ARM VPSes.
+# Build and publish the relay runtime image to GHCR. Multi-arch (amd64 + arm64)
+# so it runs on x86 and Graviton/ARM VPSes.
 
 on:
   push:
@@ -46,9 +44,7 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: |
-            ghcr.io/${{ github.repository_owner }}/openrung-relay
-            ghcr.io/${{ github.repository_owner }}/openrung-volunteer
+          images: ghcr.io/${{ github.repository_owner }}/openrung-relay
           tags: |
             type=ref,event=branch
             type=ref,event=tag
@@ -66,7 +62,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Verify canonical and compatibility tags
+      - name: Verify published tags
         env:
           EXPECTED_DIGEST: ${{ steps.build.outputs.digest }}
           PUBLISHED_TAGS: ${{ steps.meta.outputs.tags }}

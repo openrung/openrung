@@ -75,9 +75,7 @@ apt-get -o DPkg::Lock::Timeout=300 update
 apt-get -o DPkg::Lock::Timeout=300 install -y docker.io
 systemctl enable --now docker
 docker pull ${IMAGE}
-# Remove both names during the artifact migration so a stale host-network relay
-# cannot retain port 443 or keep a duplicate broker registration.
-docker rm -f openrung-relay openrung-volunteer 2>/dev/null || true
+docker rm -f openrung-relay 2>/dev/null || true
 docker run -d --name openrung-relay --restart unless-stopped \\
   --network host --cap-drop ALL --cap-add NET_BIND_SERVICE --read-only --tmpfs /tmp \\
   -e OPENRUNG_BROKER_URL=${BROKER_URL} \\

@@ -111,9 +111,7 @@ systemctl enable --now docker
 # Public IPv4 from the Hetzner metadata service; clients reach the relay here.
 PUBLIC_IP="\$(curl -fsS http://169.254.169.254/hetzner/v1/metadata/public-ipv4)"
 docker pull ${IMAGE}
-# Remove both names during the artifact migration so a stale host-network relay
-# cannot retain port 443 or keep a duplicate broker registration.
-docker rm -f openrung-relay openrung-volunteer 2>/dev/null || true
+docker rm -f openrung-relay 2>/dev/null || true
 docker run -d --name openrung-relay --restart unless-stopped \\
   --network host --cap-drop ALL --cap-add NET_BIND_SERVICE --read-only --tmpfs /tmp \\
   -e OPENRUNG_BROKER_URL=${BROKER_URL} \\
