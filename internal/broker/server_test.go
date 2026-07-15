@@ -76,6 +76,75 @@ func TestCanonicalRelayRoutesRegisterAndHeartbeat(t *testing.T) {
 	}
 }
 
+func TestRelayVersionAPIMigration(t *testing.T) {
+	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed()})
+	requestBody, err := json.Marshal(validRegisterRequest())
+	if err != nil {
+		t.Fatalf("marshal canonical request: %v", err)
+	}
+
+	registerRecorder := httptest.NewRecorder()
+	server.ServeHTTP(registerRecorder, httptest.NewRequest(http.MethodPost, "/api/v1/relays/register", bytes.NewReader(requestBody)))
+	if registerRecorder.Code != http.StatusCreated {
+		t.Fatalf("register canonical request: expected 201, got %d: %s", registerRecorder.Code, registerRecorder.Body.String())
+	}
+	var registered map[string]any
+	if err := json.Unmarshal(registerRecorder.Body.Bytes(), &registered); err != nil {
+		t.Fatalf("decode register response: %v", err)
+	}
+	assertRelayVersionFields(t, registered, "test")
+
+	listRecorder := httptest.NewRecorder()
+	server.ServeHTTP(listRecorder, httptest.NewRequest(http.MethodGet, "/api/v1/relays", nil))
+	if listRecorder.Code != http.StatusOK {
+		t.Fatalf("list relays: expected 200, got %d: %s", listRecorder.Code, listRecorder.Body.String())
+	}
+	var list struct {
+		Relays []map[string]any `json:"relays"`
+	}
+	if err := json.Unmarshal(listRecorder.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(list.Relays) != 1 {
+		t.Fatalf("listed relays = %d, want 1", len(list.Relays))
+	}
+	assertRelayVersionFields(t, list.Relays[0], "test")
+
+	var legacyRequest map[string]any
+	if err := json.Unmarshal(requestBody, &legacyRequest); err != nil {
+		t.Fatalf("decode canonical request: %v", err)
+	}
+	delete(legacyRequest, "relay_version")
+	legacyRequest["volunteer_version"] = "legacy-version"
+	legacyBody, err := json.Marshal(legacyRequest)
+	if err != nil {
+		t.Fatalf("marshal legacy request: %v", err)
+	}
+	legacyRecorder := httptest.NewRecorder()
+	NewServer(NewStore(), Config{SigningSeed: testSigningSeed()}).ServeHTTP(
+		legacyRecorder,
+		httptest.NewRequest(http.MethodPost, "/api/v1/relays/register", bytes.NewReader(legacyBody)),
+	)
+	if legacyRecorder.Code != http.StatusCreated {
+		t.Fatalf("register legacy request: expected 201, got %d: %s", legacyRecorder.Code, legacyRecorder.Body.String())
+	}
+	var legacyRegistered map[string]any
+	if err := json.Unmarshal(legacyRecorder.Body.Bytes(), &legacyRegistered); err != nil {
+		t.Fatalf("decode legacy register response: %v", err)
+	}
+	assertRelayVersionFields(t, legacyRegistered, "legacy-version")
+}
+
+func assertRelayVersionFields(t *testing.T, fields map[string]any, want string) {
+	t.Helper()
+	if fields["relay_version"] != want {
+		t.Fatalf("relay_version = %#v, want %q", fields["relay_version"], want)
+	}
+	if fields["volunteer_version"] != want {
+		t.Fatalf("volunteer_version compatibility alias = %#v, want %q", fields["volunteer_version"], want)
+	}
+}
+
 func TestRegisterRouteRejectsMalformedJSON(t *testing.T) {
 	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed()})
 	recorder := httptest.NewRecorder()

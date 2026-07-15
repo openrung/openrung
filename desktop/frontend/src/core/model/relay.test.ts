@@ -25,7 +25,7 @@ function usableRelay(overrides: Partial<RelayDescriptor> = {}): RelayDescriptor 
     exit_mode: 'direct',
     max_sessions: 8,
     max_mbps: 100,
-    volunteer_version: '1',
+    relay_version: '1',
     registered_at: '2026-07-05T00:00:00Z',
     last_heartbeat_at: '2026-07-06T00:00:00Z',
     expires_at: '2026-07-06T01:00:00Z',

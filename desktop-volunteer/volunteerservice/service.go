@@ -19,7 +19,7 @@ import (
 	"openrung/internal/relayruntime/engine"
 )
 
-// Version is reported to the broker/hub as the volunteer version.
+// Version is reported to the broker/hub as the relay runtime version.
 const Version = "desktop-volunteer/0.1.0"
 
 // DefaultBrokerURL matches the desktop client's primary broker endpoint.
