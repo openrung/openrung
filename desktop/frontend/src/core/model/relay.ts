@@ -1,8 +1,7 @@
 /**
- * PORTED VERBATIM from openrung-mobile-app/src/model/relay.ts (no changes).
- * This module is pure TypeScript with no react-native imports, so it is shared
- * as-is between the mobile app and this desktop client. Keep the two copies in
- * sync until they are extracted into a shared @openrung/core package.
+ * Ported from openrung-mobile-app/src/model/relay.ts. This module is pure
+ * TypeScript with no react-native imports, so keep the shared fields aligned
+ * until they are extracted into a shared @openrung/core package.
  *
  * Relay descriptor model, ported from the production `model/RelayDescriptor.kt` /
  * `model/RelaySelector.kt`. JSON field names are kept snake_case, exactly as the broker sends them.
@@ -28,8 +27,9 @@ export interface RelayDescriptor {
   exit_mode: string;
   max_sessions: number;
   max_mbps: number;
-  // Legacy broker wire name; this reports the software version for every relay class.
-  volunteer_version: string;
+  relay_version: string;
+  // Deprecated v1 response alias for released clients; new code must use relay_version.
+  volunteer_version?: string;
   registered_at: string; // ISO instant
   last_heartbeat_at: string;
   expires_at: string;

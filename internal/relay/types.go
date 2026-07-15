@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -52,10 +53,8 @@ type RegisterRequest struct {
 	ExitMode         string `json:"exit_mode"`
 	MaxSessions      int    `json:"max_sessions"`
 	MaxMbps          int    `json:"max_mbps"`
-	// RelayVersion retains the legacy volunteer_version JSON name for wire
-	// compatibility with deployed brokers, relays, and clients.
-	RelayVersion string `json:"volunteer_version"`
-	Label        string `json:"label,omitempty"`
+	RelayVersion     string `json:"relay_version"`
+	Label            string `json:"label,omitempty"`
 	// NodeClass declares who operates this relay: NodeClassVolunteer (the
 	// default when empty) or NodeClassFoundation. A foundation claim is only
 	// honored when the request presents the broker's foundation token;
@@ -80,6 +79,46 @@ type RegisterRequest struct {
 	// never serves it to clients. Rejected for direct transport, where
 	// PublicHost already is the exit.
 	ExitHost string `json:"exit_host,omitempty"`
+}
+
+// MarshalJSON emits the canonical key plus the deprecated v1 alias so upgraded
+// relays and hubs can still register their version with an older broker during
+// a rolling deployment.
+func (r RegisterRequest) MarshalJSON() ([]byte, error) {
+	type registerRequestAlias RegisterRequest
+	return json.Marshal(struct {
+		registerRequestAlias
+		VolunteerVersion string `json:"volunteer_version"`
+	}{
+		registerRequestAlias: registerRequestAlias(r),
+		VolunteerVersion:     r.RelayVersion,
+	})
+}
+
+// UnmarshalJSON accepts the pre-relay-terminology volunteer_version key so
+// deployed relays can continue registering during the v1 migration. When both
+// keys are present, the canonical relay_version value wins.
+func (r *RegisterRequest) UnmarshalJSON(data []byte) error {
+	type registerRequestAlias RegisterRequest
+	var decoded registerRequestAlias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var versions struct {
+		RelayVersion     *string `json:"relay_version"`
+		VolunteerVersion *string `json:"volunteer_version"`
+	}
+	if err := json.Unmarshal(data, &versions); err != nil {
+		return err
+	}
+	switch {
+	case versions.RelayVersion != nil:
+		decoded.RelayVersion = *versions.RelayVersion
+	case versions.VolunteerVersion != nil:
+		decoded.RelayVersion = *versions.VolunteerVersion
+	}
+	*r = RegisterRequest(decoded)
+	return nil
 }
 
 // GeoLocation is the broker-resolved physical location of the relay's exit:
@@ -112,25 +151,63 @@ type Descriptor struct {
 	// NodeClassVolunteer). Always serialized, and covered by the relay-list
 	// signature like every other descriptor field; clients that predate it
 	// ignore it, clients that read it treat a missing value as the volunteer class.
-	NodeClass        string `json:"node_class"`
-	Protocol         string `json:"protocol"`
-	ClientID         string `json:"client_id"`
-	RealityPublicKey string `json:"reality_public_key"`
-	ShortID          string `json:"short_id"`
-	ServerName       string `json:"server_name"`
-	Flow             string `json:"flow"`
-	ExitMode         string `json:"exit_mode"`
-	MaxSessions      int    `json:"max_sessions"`
-	MaxMbps          int    `json:"max_mbps"`
-	// RelayVersion retains the legacy volunteer_version JSON name for wire
-	// compatibility with deployed brokers, relays, and clients.
-	RelayVersion    string    `json:"volunteer_version"`
-	Transport       string    `json:"transport,omitempty"`
-	PunchCapable    bool      `json:"punch_capable,omitempty"`
-	PunchEndpoint   string    `json:"punch_endpoint,omitempty"`
-	RegisteredAt    time.Time `json:"registered_at"`
-	LastHeartbeatAt time.Time `json:"last_heartbeat_at"`
-	ExpiresAt       time.Time `json:"expires_at"`
+	NodeClass        string    `json:"node_class"`
+	Protocol         string    `json:"protocol"`
+	ClientID         string    `json:"client_id"`
+	RealityPublicKey string    `json:"reality_public_key"`
+	ShortID          string    `json:"short_id"`
+	ServerName       string    `json:"server_name"`
+	Flow             string    `json:"flow"`
+	ExitMode         string    `json:"exit_mode"`
+	MaxSessions      int       `json:"max_sessions"`
+	MaxMbps          int       `json:"max_mbps"`
+	RelayVersion     string    `json:"relay_version"`
+	Transport        string    `json:"transport,omitempty"`
+	PunchCapable     bool      `json:"punch_capable,omitempty"`
+	PunchEndpoint    string    `json:"punch_endpoint,omitempty"`
+	RegisteredAt     time.Time `json:"registered_at"`
+	LastHeartbeatAt  time.Time `json:"last_heartbeat_at"`
+	ExpiresAt        time.Time `json:"expires_at"`
+}
+
+// MarshalJSON keeps volunteer_version as a deprecated v1 response alias while
+// released native clients still require it. New clients should read
+// relay_version; both keys carry the same value and are covered by the relay-list
+// signature.
+func (d Descriptor) MarshalJSON() ([]byte, error) {
+	type descriptorAlias Descriptor
+	return json.Marshal(struct {
+		descriptorAlias
+		VolunteerVersion string `json:"volunteer_version"`
+	}{
+		descriptorAlias:  descriptorAlias(d),
+		VolunteerVersion: d.RelayVersion,
+	})
+}
+
+// UnmarshalJSON lets current clients read both canonical broker responses and
+// older v1 responses. When both keys are present, relay_version wins.
+func (d *Descriptor) UnmarshalJSON(data []byte) error {
+	type descriptorAlias Descriptor
+	var decoded descriptorAlias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var versions struct {
+		RelayVersion     *string `json:"relay_version"`
+		VolunteerVersion *string `json:"volunteer_version"`
+	}
+	if err := json.Unmarshal(data, &versions); err != nil {
+		return err
+	}
+	switch {
+	case versions.RelayVersion != nil:
+		decoded.RelayVersion = *versions.RelayVersion
+	case versions.VolunteerVersion != nil:
+		decoded.RelayVersion = *versions.VolunteerVersion
+	}
+	*d = Descriptor(decoded)
+	return nil
 }
 
 // ListResponse is the signed relay directory. The whole marshaled body is

@@ -38,7 +38,7 @@ function sampleRelay(loc: Located, index: number): RelayDescriptor {
     exit_mode: 'direct',
     max_sessions: 32,
     max_mbps: 100,
-    volunteer_version: '0.0.0-mock',
+    relay_version: '0.0.0-mock',
     registered_at: new Date(Date.now() - 3_600_000).toISOString(),
     last_heartbeat_at: new Date().toISOString(),
     expires_at: new Date(Date.now() + 3_600_000).toISOString(),
