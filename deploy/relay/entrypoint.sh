@@ -8,7 +8,7 @@ set -eu
 # legacy OPENRUNG_TUNNEL boolean, then to auto when a hub is configured, else
 # direct. The resolved value is passed back as -mode so this wrapper and the
 # binary can never disagree about which mode is active.
-norm() { printf '%s' "$1" | tr 'A-Z' 'a-z' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'; }
+norm() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'; }
 mode="$(norm "${OPENRUNG_MODE:-}")"
 if [ -n "${OPENRUNG_FOUNDATION_TOKEN:-}" ]; then
   # A foundation token forces direct mode, mirroring the binary's

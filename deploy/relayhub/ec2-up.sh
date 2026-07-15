@@ -56,7 +56,7 @@ AMI="$(aws ssm get-parameter --region "$REGION" \
   --query 'Parameter.Value' --output text)"
 
 VPC="$(aws ec2 describe-vpcs --region "$REGION" --filters Name=isDefault,Values=true --query 'Vpcs[0].VpcId' --output text)"
-SUBNET="${OPENRUNG_EC2_SUBNET:-$(aws ec2 describe-subnets --region "$REGION" --filters Name=vpc-id,Values=$VPC --query 'Subnets[0].SubnetId' --output text)}"
+SUBNET="${OPENRUNG_EC2_SUBNET:-$(aws ec2 describe-subnets --region "$REGION" --filters Name=vpc-id,Values="$VPC" --query 'Subnets[0].SubnetId' --output text)}"
 
 echo "Provisioning EC2 relay hub '${NAME}' in ${REGION} (${ITYPE}/${ARCH}, ami ${AMI})"
 
@@ -215,7 +215,11 @@ echo "Instance: ${IID}, waiting for running..."
 aws ec2 wait instance-running --instance-ids "$IID" --region "$REGION"
 
 ENI="$(aws ec2 describe-instances --instance-ids "$IID" --region "$REGION" --query 'Reservations[0].Instances[0].NetworkInterfaces[0].NetworkInterfaceId' --output text)"
+# The backticked `true`/`false` in these queries are JMESPath literals, not
+# shell command substitutions.
+# shellcheck disable=SC2016
 PRIMARY_IP="$(aws ec2 describe-instances --instance-ids "$IID" --region "$REGION" --query 'Reservations[0].Instances[0].NetworkInterfaces[0].PrivateIpAddresses[?Primary==`true`].PrivateIpAddress | [0]' --output text)"
+# shellcheck disable=SC2016
 SECONDARY_IP="$(aws ec2 describe-instances --instance-ids "$IID" --region "$REGION" --query 'Reservations[0].Instances[0].NetworkInterfaces[0].PrivateIpAddresses[?Primary==`false`].PrivateIpAddress | [0]' --output text)"
 
 # Associate EIP1 -> primary, EIP2 -> secondary (order matches the env's
