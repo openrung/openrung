@@ -116,9 +116,10 @@ OPENRUNG_IMAGE=ghcr.io/openrung/openrung-relay:sha-abc1234 \
 | `OPENRUNG_FOUNDATION_TOKEN` | — | The token itself. Fallback for CI; prefer the command form so the secret is not sitting in your environment. |
 | `OPENRUNG_IMAGE` | `…/openrung-relay:main` | Image to run. Pin a `sha-…` tag (or an `@sha256:…` digest) for reproducible rolls. |
 | `OPENRUNG_BROKER_URL` | `https://broker-origin.openrung.org` | The broker's **direct TLS origin** (see `deploy/broker/origin-tls.md`), not a CDN front: a front would decrypt the Foundation bearer at every edge POP and collapse per-relay rate limiting onto shared edge IPs. Must be HTTPS; the script fails fast otherwise. |
-| `OPENRUNG_ENV_FILE` | `/etc/openrung/relay.env` | Where credentials live. `convert` writes the canonical path and, once the relay verifies, removes a legacy `volunteer.env` so exactly one copy of the token remains on disk. |
+| `OPENRUNG_ENV_FILE` | `/etc/openrung/relay.env` | Where credentials live. `convert` writes the canonical path — preserving every setting the host already had — and, once the relay verifies, removes a legacy `volunteer.env` so exactly one copy of the token remains on disk. |
 | `OPENRUNG_SSH_KEY` / `OPENRUNG_SSH_USER` | `~/.ssh/id_ed25519_openrung` / `ubuntu` | SSH access to the host. |
 | `OPENRUNG_REGION` | `ap-northeast-1` | Region used to look up Lightsail-published SSH host keys for pinning. |
+| `OPENRUNG_ALLOW_TOFU` | `0` | Every mode refuses to contact a host whose SSH key cannot be verified out-of-band (a tokenless mode that silently accepted a key would launder it into "known" for a later token-carrying run); set to `1` to explicitly accept a first-seen key (non-Lightsail hosts). |
 
 Notes on the design:
 
@@ -127,27 +128,51 @@ Notes on the design:
   a command (run via `bash -c`, never `eval`) and streamed to the host over
   stdin. The script keeps shell tracing (`bash -x`) disabled so the token cannot
   leak into trace output, and the env-file write is atomic (tmp + rename).
-- **SSH host keys are pinned out-of-band when possible.** Before the first
-  connection that will carry the token, the host's SSH keys are fetched over the
-  authenticated Lightsail API (`get-instance-access-details`) and written to
-  `known_hosts`, upgrading first contact from trust-on-first-use to verified.
-  Non-Lightsail hosts fall back to `accept-new` with a warning.
+- **`convert` preserves the host's `OPENRUNG_*` settings, and only manages the
+  broker URL + token.** A pinned identity (`OPENRUNG_CLIENT_ID`, Reality keys,
+  short id), capacity limits, and camouflage are carried into the new env file
+  verbatim — staged on the host itself, so none of it transits the connection —
+  and a re-convert never rotates a pinned identity. (Bootstrap-provisioned
+  relays carry no pinned identity and regenerate one per restart; that is fleet
+  status quo, unchanged by this script.) No `OPENRUNG_LISTEN_HOST` default is
+  injected — the binary's own `::` (dual-stack) default stands. Dropped
+  deliberately: `OPENRUNG_VOLUNTEER_TOKEN` / `OPENRUNG_NODE_CLASS` (the
+  foundation token forces the class; a spare credential is liability) and
+  `OPENRUNG_XRAY_PATH` / `OPENRUNG_CONFIG_OUT` (image internals that must not
+  be pinned on the host).
+- **SSH host keys are verified out-of-band before any contact.** The host's SSH
+  keys are fetched over the authenticated Lightsail API
+  (`get-instance-access-details`) and written to `known_hosts` before first
+  contact. If that is impossible, **every mode refuses to proceed** rather than
+  fall back to trust-on-first-use — set `OPENRUNG_ALLOW_TOFU=1` to accept a
+  first-seen key explicitly. (IPv6/DNS targets are looked up by IPv4 address
+  only; pin those manually or use `OPENRUNG_ALLOW_TOFU=1`.)
 - **Everything read back from a host is allowlist-validated** (container names,
-  env-file paths, identity values) before it is reused in a privileged command
-  or echoed to the terminal, so a compromised relay cannot inject shell or
-  terminal escapes into the operator's session.
+  env-file paths) before it is reused in a privileged command, and everything
+  remote that reaches the terminal — captured output and passed-through stderr
+  alike — is stripped of control characters, so a compromised relay cannot
+  inject shell or terminal escapes into the operator's session.
 - **`update` needs no token**, because it reuses the env file the host already
-  has — but it refuses to run against an env file that lacks
-  `OPENRUNG_FOUNDATION_TOKEN` (presence check only), so it cannot silently
-  "verify" a non-Foundation host.
+  has — but it refuses to run against an env file whose
+  `OPENRUNG_FOUNDATION_TOKEN` is missing, empty, whitespace-only (a trailing
+  `\r` from a CRLF edit counts: docker strips it and the container sees an
+  empty token), or shadowed by an empty duplicate (docker's last occurrence
+  wins). The value itself is never read back.
 - **`update` is sequential and fails fast.** A bad image stops the roll at the
-  first host rather than taking down every relay, and failures print an in-place
-  rollback command (the previous container is kept, stopped, as
-  `openrung-relay-old`).
+  first host rather than taking down every relay. Failures name the exact state
+  the host is in, and the in-place rollback command (the previous container is
+  kept, stopped, as `openrung-relay-old`) is only printed once the old container
+  has actually been swapped out — never on a pull failure, where the live relay
+  is untouched and "rolling back" would destroy it. The swap also refuses to
+  discard an existing `-old` backup while the "live" container is not running
+  (the signature of a previously failed roll), so re-running after a failure
+  cannot delete the last healthy relay.
 - **Verification is self-contained.** A relay that presents the Foundation token
   forces `node_class=foundation` and exits during startup if the broker attests
-  any other class, so a container that is still running and has logged a
-  registration *is* the proof — no broker query needed.
+  any other class, so a container that logged a registration and is running
+  cleanly (`Running` with `RestartCount` 0 — a post-registration crash loop
+  fails verification) *is* the proof — no broker query needed. Transient ssh
+  errors during polling are retried, never misdiagnosed as a dead container.
 - Legacy `openrung-volunteer` container and `volunteer.env` names are detected,
   so hosts predating the rename are handled without manual cleanup.
 
