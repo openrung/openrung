@@ -87,51 +87,6 @@ also set `OPENRUNG_NODE_CLASS` or `OPENRUNG_MODE`:
 traverses. A Foundation-operated relay hub therefore does not make the
 volunteer-run relays tunneled through it Foundation-operated.
 
-#### Automating the post-boot step
-
-[`foundation-up.sh`](foundation-up.sh) automates the two-step dance above. It
-**wraps** `lightsail-up.sh` rather than changing it: the token still reaches the
-host only over SSH, after boot, and never through user-data.
-
-```sh
-# Provision a new Lightsail host and install credentials on it.
-OPENRUNG_FOUNDATION_TOKEN_CMD='pass show openrung/foundation-token' \
-  deploy/relay/foundation-up.sh create
-
-# Promote hosts that are already serving as volunteer-class relays.
-OPENRUNG_FOUNDATION_TOKEN_CMD='pass show openrung/foundation-token' \
-  deploy/relay/foundation-up.sh convert 203.0.113.10 203.0.113.11
-
-# Roll a new image across the fleet. Needs no token: the credentials already on
-# each host are reused as-is.
-OPENRUNG_IMAGE=ghcr.io/openrung/openrung-relay:sha-abc1234 \
-  deploy/relay/foundation-up.sh update 203.0.113.10 203.0.113.11
-```
-
-| Variable | Default | Meaning |
-|----------|---------|---------|
-| `OPENRUNG_FOUNDATION_TOKEN_CMD` | — | Command printing the token (`pass show …`, `aws secretsmanager get-secret-value …`, `op read …`). Preferred. |
-| `OPENRUNG_FOUNDATION_TOKEN` | — | The token itself. Fallback for CI; prefer the command form so the secret is not sitting in your environment. |
-| `OPENRUNG_IMAGE` | `…/openrung-relay:main` | Image to run. Pin a `sha-…` tag for reproducible rolls. |
-| `OPENRUNG_BROKER_URL` | CloudFront front | Must be HTTPS; the script fails fast otherwise. |
-| `OPENRUNG_ENV_FILE` | `/etc/openrung/relay.env` | Where credentials live. An env file already present on the host wins, so a `convert` overwrites in place instead of leaving a second copy of the token on disk. |
-| `OPENRUNG_SSH_KEY` / `OPENRUNG_SSH_USER` | `~/.ssh/id_ed25519_openrung` / `ubuntu` | SSH access to the host. |
-
-Notes on the design:
-
-- **The token is never a command-line argument.** `argv` is world-readable via
-  `/proc` and is retained in shell history, so it is read from the environment or
-  a command and streamed to the host over stdin.
-- **`update` needs no token**, because it reuses whatever env file the host
-  already has. Only `create` and `convert` require one.
-- **`update` is sequential and fails fast.** A bad image stops the roll at the
-  first host rather than taking down every relay.
-- **Verification is self-contained.** A relay whose class the broker does not
-  attest as `foundation` exits during startup, so a container that is still
-  running and has logged a registration *is* the proof — no broker query needed.
-- Legacy `openrung-volunteer` container and `volunteer.env` names are detected,
-  so hosts predating the rename are handled without manual cleanup.
-
 ### Stable relay identity (recommended)
 
 Without an explicit identity, the relay generates a fresh one on every restart.
