@@ -164,9 +164,10 @@ Notes on the design:
   kept, stopped, as `openrung-relay-old`) is only printed once the old container
   has actually been swapped out — never on a pull failure, where the live relay
   is untouched and "rolling back" would destroy it. The swap also refuses to
-  discard an existing `-old` backup while the "live" container is not running
-  (the signature of a previously failed roll), so re-running after a failure
-  cannot delete the last healthy relay.
+  discard an existing `-old` backup unless the current container has itself
+  registered and stayed up — a failed rollout can be running yet never
+  register — so re-running after a failure can never delete the last
+  known-good relay.
 - **Verification is self-contained.** A relay that presents the Foundation token
   forces `node_class=foundation` and exits during startup if the broker attests
   any other class, so a container that logged a registration and is running

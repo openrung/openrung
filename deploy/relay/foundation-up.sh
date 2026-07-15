@@ -54,6 +54,11 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # so the check and the connection cannot diverge on a per-host ssh_config.
 SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$HOME/.ssh/known_hosts" -o ConnectTimeout=10 -o BatchMode=yes -i "$SSH_KEY")
 
+# TOKEN is a generic name the caller may already have exported; a plain
+# assignment would inherit that export attribute and hand the bearer to every
+# child process (ssh, aws, lightsail-up.sh). Unset first so the variable is
+# recreated unexported.
+unset TOKEN
 TOKEN=""   # set once per run by the commands that need it; never leaves this process except over SSH stdin
 
 die()  { echo "error: $*" >&2; exit 1; }
@@ -283,7 +288,8 @@ stage_preserved_env() { # host container
            if test -f ${ENV_FILE}; then cat ${ENV_FILE}; fi; \
          else docker inspect ${container} --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null || true; fi; } \
        | sed -n '/^OPENRUNG_[A-Za-z0-9_]*=/p' | sed -E '${PRESERVE_DROP}' > ${ENV_FILE}.tmp \
-    && grep -q '^OPENRUNG_PUBLIC_HOST=..*' ${ENV_FILE}.tmp\"" \
+    && grep -q '^OPENRUNG_PUBLIC_HOST=..*' ${ENV_FILE}.tmp \
+    || { rm -f ${ENV_FILE}.tmp; exit 1; }\"" \
     || die "${host}: could not stage the relay's existing settings (is OPENRUNG_PUBLIC_HOST set in its env file or container?)"
 }
 
@@ -332,9 +338,10 @@ rollback_hint() {
 # rollback hint is only printed once the swap has actually happened, because
 # before that point "rm -f openrung-relay + rename -old" would destroy the
 # healthy live container. The swap stage also refuses to discard an existing
-# -old backup when the "live" container is not actually running: that state
-# means a previous roll already failed, and deleting the backup before the new
-# image has proven itself would destroy the last healthy relay.
+# -old backup unless the current container has itself verified — registered
+# and stayed up (a failed rollout can be running yet never register): a backup
+# only exists because a previous roll happened, and deleting the last
+# known-good relay for an unproven replacement is never right.
 #
 # Container hardening mirrors lightsail-up.sh exactly: --cap-drop ALL with only
 # NET_BIND_SERVICE re-added (the binary binds 443 through a cap_net_bind_service
@@ -344,16 +351,27 @@ recreate_container() {
   local host="$1" env_file="$2" live="$3"
   ssh_run "$host" "sudo docker pull ${IMAGE} >/dev/null" \
     || die "${host}: image pull failed; the live container was not touched"
+  local rc=0
   ssh_run "$host" "set -e
-    if [ \"\$(sudo docker inspect -f '{{.State.Running}}' '${live}' 2>/dev/null)\" != true ] \
-       && sudo docker inspect ${CONTAINER}-old >/dev/null 2>&1; then
-      echo 'refusing to discard the ${CONTAINER}-old backup: ${live} is not running (previous roll failed?)' >&2
-      exit 42
+    if sudo docker inspect ${CONTAINER}-old >/dev/null 2>&1 || sudo docker inspect ${LEGACY_CONTAINER}-old >/dev/null 2>&1; then
+      if [ \"\$(sudo docker inspect -f '{{.State.Running}} {{.RestartCount}}' '${live}' 2>/dev/null)\" != 'true 0' ] \
+         || ! sudo docker logs '${live}' 2>&1 | grep -q 'registered relay'; then
+        echo 'refusing to discard the existing backup: ${live} has not registered and stayed up (previous roll failed?)' >&2
+        exit 42
+      fi
     fi
     sudo docker rm -f ${CONTAINER}-old ${LEGACY_CONTAINER}-old >/dev/null 2>&1 || true
     sudo docker stop '${live}' >/dev/null
-    sudo docker rename '${live}' ${CONTAINER}-old" \
-    || die "${host}: could not swap out '${live}'. If a stopped '${live}' coexists with a '${CONTAINER}-old' backup, a previous roll failed — restore the backup (docker rename ${CONTAINER}-old ${live}; docker start ${live}) or remove the dead container, then re-run. If '${live}' was stopped but not renamed, restart it with: docker start '${live}'"
+    sudo docker rename '${live}' ${CONTAINER}-old" || rc=$?
+  if [ "$rc" = 42 ]; then
+    # A backup exists and the current container never verified: the backup is
+    # the last known-good relay, so it must not be discarded for an unproven
+    # replacement. Rolling back to it (below) IS the correct recovery here.
+    rollback_hint "$host"
+    die "${host}: refusing to discard the existing backup: '${live}' has not registered and stayed up (previous roll failed?). Roll back to the backup (above) or remove the failed '${live}' container, then re-run"
+  elif [ "$rc" != 0 ]; then
+    die "${host}: could not swap out '${live}'. Inspect with 'docker ps -a': if '${live}' was stopped but not renamed, restart it with: docker start '${live}'"
+  fi
   ssh_run "$host" "sudo docker run -d --name ${CONTAINER} --restart unless-stopped \
       --network host --cap-drop ALL --cap-add NET_BIND_SERVICE --read-only --tmpfs /tmp \
       --env-file ${env_file} \
@@ -406,7 +424,11 @@ convert_host() {
   # Everything already configured on the host is preserved; only the broker URL
   # and the token are (re)written. The identity readback below is display-only.
   stage_preserved_env "$host" "$live"
-  ident="$(ssh_run "$host" "sudo sed -n -e 's/^OPENRUNG_PUBLIC_HOST=/public_host=/p' -e 's/^OPENRUNG_LABEL=/label=/p' ${ENV_FILE}.tmp")"
+  # On readback failure, remove the staged tmp (it holds the preserved Reality
+  # private key and no trap guards it until install_env_file's session).
+  ident="$(ssh_run "$host" "sudo sed -n -e 's/^OPENRUNG_PUBLIC_HOST=/public_host=/p' -e 's/^OPENRUNG_LABEL=/label=/p' ${ENV_FILE}.tmp")" \
+    || { ssh_run "$host" "sudo rm -f ${ENV_FILE}.tmp" >/dev/null 2>&1 || true
+         die "${host}: could not read back the staged identity"; }
   public_host="$(printf '%s\n' "$ident" | sed -n 's/^public_host=//p' | tail -1 | scrub | head -c 100)"
   label="$(printf '%s\n' "$ident" | sed -n 's/^label=//p' | tail -1 | scrub | head -c 100)"
 
