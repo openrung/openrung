@@ -94,13 +94,16 @@ volunteer-run relays tunneled through it Foundation-operated.
 host only over SSH, after boot, and never through user-data.
 
 ```sh
-# Provision a new Lightsail host and install credentials on it.
+# Provision a new Lightsail host and install credentials on it. The host key is
+# pinned from the AWS API automatically, before the token is sent.
 OPENRUNG_FOUNDATION_TOKEN_CMD='pass show openrung/foundation-token' \
   deploy/relay/foundation-up.sh create
 
-# Promote hosts that are already serving as volunteer-class relays.
+# Promote a host already serving as a volunteer-class relay. Pin its key first:
+# an unknown host key is a hard failure, never trust-on-first-use.
+deploy/relay/foundation-up.sh trust eu-north-1 noble-pebble
 OPENRUNG_FOUNDATION_TOKEN_CMD='pass show openrung/foundation-token' \
-  deploy/relay/foundation-up.sh convert 203.0.113.10 203.0.113.11
+  deploy/relay/foundation-up.sh convert 203.0.113.10
 
 # Roll a new image across the fleet. Needs no token: the credentials already on
 # each host are reused as-is.
@@ -114,21 +117,48 @@ OPENRUNG_IMAGE=ghcr.io/openrung/openrung-relay:sha-abc1234 \
 | `OPENRUNG_FOUNDATION_TOKEN` | — | The token itself. Fallback for CI; prefer the command form so the secret is not sitting in your environment. |
 | `OPENRUNG_IMAGE` | `…/openrung-relay:main` | Image to run. Pin a `sha-…` tag for reproducible rolls. |
 | `OPENRUNG_BROKER_URL` | CloudFront front | Must be HTTPS; the script fails fast otherwise. |
+| `OPENRUNG_VERIFY_BROKER_URL` | plaintext origin | Read-only endpoint used to read back the broker's attestation. Carries no credential. |
 | `OPENRUNG_ENV_FILE` | `/etc/openrung/relay.env` | Where credentials live. An env file already present on the host wins, so a `convert` overwrites in place instead of leaving a second copy of the token on disk. |
 | `OPENRUNG_SSH_KEY` / `OPENRUNG_SSH_USER` | `~/.ssh/id_ed25519_openrung` / `ubuntu` | SSH access to the host. |
 
 Notes on the design:
 
+- **The host key must be verified before the token is sent.** This connection
+  carries the fleet-wide Foundation credential, so trust-on-first-use is not good
+  enough: it would hand the token to whichever host key answered first. The script
+  runs `StrictHostKeyChecking=yes` and treats an unknown host as a hard failure.
+  `trust <region> <name>` pins the key using AWS as the out-of-band channel —
+  Lightsail witnesses each instance's host keys from its console output at first
+  boot, so a fingerprint from the authenticated API is trustworthy in a way TOFU
+  is not. `create` does this automatically. A presented key that matches none of
+  the witnessed fingerprints aborts rather than connecting.
 - **The token is never a command-line argument.** `argv` is world-readable via
   `/proc` and is retained in shell history, so it is read from the environment or
   a command and streamed to the host over stdin.
+- **Existing configuration is preserved.** `convert` merges: every setting already
+  on the host is carried over and only `OPENRUNG_BROKER_URL` /
+  `OPENRUNG_FOUNDATION_TOKEN` are replaced. Truncating the file would drop stable
+  identity (`OPENRUNG_CLIENT_ID`, the Reality keys, `OPENRUNG_SHORT_ID`), capacity
+  limits, and camouflage — silently rotating relay credentials and breaking
+  clients that hold a cached descriptor. `OPENRUNG_NODE_CLASS` and
+  `OPENRUNG_VOLUNTEER_TOKEN` are dropped, since the Foundation token forces the
+  class and a stale value there is a startup error. Config implying the hub path
+  (`OPENRUNG_MODE`, `OPENRUNG_TUNNEL`, `OPENRUNG_HUB_ADDR`) aborts the convert
+  rather than being silently stripped: Foundation requires direct mode. The file
+  is written atomically via a temp file and `mv`.
 - **`update` needs no token**, because it reuses whatever env file the host
-  already has. Only `create` and `convert` require one.
+  already has — but it *does* verify one is present. An env file alone proves
+  nothing: without a token the relay legitimately registers as `volunteer` and
+  logs the same line a Foundation relay does, so skipping that check would let a
+  roll certify a volunteer relay as Foundation.
 - **`update` is sequential and fails fast.** A bad image stops the roll at the
   first host rather than taking down every relay.
-- **Verification is self-contained.** A relay whose class the broker does not
-  attest as `foundation` exits during startup, so a container that is still
-  running and has logged a registration *is* the proof — no broker query needed.
+- **Verification uses two independent signals.** The relay's own guard (with a
+  token present it claims Foundation and *exits* if the broker attests otherwise),
+  plus the broker's attestation read back from the signed directory. A mismatch is
+  a hard failure. Because that directory caps at 20 relays, a large fleet can push
+  a relay out of the response; that is reported explicitly as unconfirmed rather
+  than assumed to be success.
 - Legacy `openrung-volunteer` container and `volunteer.env` names are detected,
   so hosts predating the rename are handled without manual cleanup.
 
