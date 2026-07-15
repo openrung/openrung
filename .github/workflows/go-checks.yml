@@ -16,6 +16,17 @@ permissions:
   contents: read
 
 jobs:
+  relay-deploy-script:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Foundation deploy state matrix
+        run: |
+          bash -n deploy/relay/foundation-up.sh
+          bash -n deploy/relay/foundation-up_test.sh
+          bash deploy/relay/foundation-up_test.sh
+
   go:
     runs-on: ubuntu-latest
     steps:

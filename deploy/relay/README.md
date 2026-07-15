@@ -108,6 +108,10 @@ OPENRUNG_FOUNDATION_TOKEN_CMD='pass show openrung/foundation-token' \
 # each host are reused as-is.
 OPENRUNG_IMAGE=ghcr.io/openrung/openrung-relay:sha-abc1234 \
   deploy/relay/foundation-up.sh update 203.0.113.10 203.0.113.11
+
+# Restore the stopped pre-roll container after an interrupted update. This only
+# accepts the exact old-only or old+new state created by this script.
+deploy/relay/foundation-up.sh rollback 203.0.113.10
 ```
 
 | Variable | Default | Meaning |
@@ -116,12 +120,21 @@ OPENRUNG_IMAGE=ghcr.io/openrung/openrung-relay:sha-abc1234 \
 | `OPENRUNG_FOUNDATION_TOKEN` | — | The token itself. Fallback for CI; prefer the command form so the secret is not sitting in your environment. |
 | `OPENRUNG_IMAGE` | `…/openrung-relay:main` | Image to run. Pin a `sha-…` tag (or an `@sha256:…` digest) for reproducible rolls. |
 | `OPENRUNG_BROKER_URL` | `https://broker-origin.openrung.org` | The broker's **direct TLS origin** (see `deploy/broker/origin-tls.md`), not a CDN front: a front would decrypt the Foundation bearer at every edge POP and collapse per-relay rate limiting onto shared edge IPs. Must be HTTPS; the script fails fast otherwise. |
-| `OPENRUNG_ENV_FILE` | `/etc/openrung/relay.env` | Where credentials live. `convert` writes the canonical path — preserving every setting the host already had — and, once the relay verifies, removes a legacy `volunteer.env` so exactly one copy of the token remains on disk. |
+| `OPENRUNG_ENV_FILE` | `/etc/openrung/relay.env` | Canonical credential path. `convert` preserves settings from this file or the canonical running container; it never reads, merges, or removes legacy `volunteer.env`. |
 | `OPENRUNG_SSH_KEY` / `OPENRUNG_SSH_USER` | `~/.ssh/id_ed25519_openrung` / `ubuntu` | SSH access to the host. |
 | `OPENRUNG_REGION` | `ap-northeast-1` | Region used to look up Lightsail-published SSH host keys for pinning. |
 | `OPENRUNG_ALLOW_TOFU` | `0` | Every mode refuses to contact a host whose SSH key cannot be verified out-of-band (a tokenless mode that silently accepted a key would launder it into "known" for a later token-carrying run); set to `1` to explicitly accept a first-seen key (non-Lightsail hosts). |
 
 Notes on the design:
+
+- **The supported state space is deliberately small.** `convert` and `update`
+  accept exactly one running `openrung-relay`, with no `openrung-relay-old`,
+  `openrung-relay-new`, legacy container/env, staged `.tmp`, or unrecognized
+  relay/volunteer-suffixed container (for example, `openrung-relay-old-2026`).
+  Every target is inspected before the first host is changed. Legacy or
+  ambiguous state makes the entire command fail read-only with inspection and
+  manual migration instructions; it is never guessed at or cleaned up
+  automatically.
 
 - **The token is never a command-line argument.** `argv` is world-readable via
   `/proc` and is retained in shell history, so it is read from the environment or
@@ -158,24 +171,34 @@ Notes on the design:
   `\r` from a CRLF edit counts: docker strips it and the container sees an
   empty token), or shadowed by an empty duplicate (docker's last occurrence
   wins). The value itself is never read back.
-- **`update` is sequential and fails fast.** A bad image stops the roll at the
-  first host rather than taking down every relay. Failures name the exact state
-  the host is in, and the in-place rollback command (the previous container is
-  kept, stopped, as `openrung-relay-old`) is only printed once the old container
-  has actually been swapped out — never on a pull failure, where the live relay
-  is untouched and "rolling back" would destroy it. The swap also refuses to
-  discard an existing `-old` backup unless the current container has itself
-  registered and stayed up — a failed rollout can be running yet never
-  register — so re-running after a failure can never delete the last
-  known-good relay.
+- **A candidate never owns the live name before verification.** The current
+  relay is stopped and renamed to `openrung-relay-old`; the replacement runs as
+  `openrung-relay-new`. Only after the candidate registers, remains running, and
+  has `RestartCount` 0 is it renamed to `openrung-relay`. The old container is
+  removed last, returning the host to the single supported steady state.
+- **Interrupted rolls are explicit.** A start failure leaves `-old`; a
+  verification failure leaves `-old` + `-new`. Normal commands refuse both.
+  `rollback` accepts only those exact states, removes an optional uncommitted
+  candidate, and restores the stopped old container through the same pinned SSH
+  configuration. Any live+backup, legacy, running-backup, or staged-temp
+  combination remains manual-only.
 - **Verification is self-contained.** A relay that presents the Foundation token
   forces `node_class=foundation` and exits during startup if the broker attests
   any other class, so a container that logged a registration and is running
   cleanly (`Running` with `RestartCount` 0 — a post-registration crash loop
   fails verification) *is* the proof — no broker query needed. Transient ssh
   errors during polling are retried, never misdiagnosed as a dead container.
-- Legacy `openrung-volunteer` container and `volunteer.env` names are detected,
-  so hosts predating the rename are handled without manual cleanup.
+- Legacy `openrung-volunteer` container and `volunteer.env` names are detected
+  only to refuse mutation and print manual migration instructions.
+
+State policy:
+
+| Entry state | `convert` / `update` | `rollback` |
+|---|---|---|
+| Running `openrung-relay` only | Allowed (`update` also requires canonical env + token) | Refused |
+| Stopped `openrung-relay-old` only | Refused | Restored |
+| Stopped `openrung-relay-old` + `openrung-relay-new` | Refused | Candidate removed, old restored |
+| Any legacy artifact, unrecognized relay/volunteer-suffixed container, `.tmp`, live+backup, or other combination | No mutation; manual instructions | No mutation; manual instructions |
 
 ### Stable relay identity (recommended)
 
