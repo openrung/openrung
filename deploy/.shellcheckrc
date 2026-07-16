@@ -1,0 +1,9 @@
+# ShellCheck directives for every script under deploy/. ShellCheck finds this
+# file by walking up from the checked script's directory, so the same rules
+# apply in CI (.github/workflows/shellcheck.yml), local runs, and editors.
+#
+# SC2029 (info, "this word is expanded on the client side"): the provisioning
+# scripts intentionally expand validated, locally-constructed variables inside
+# ssh command strings — the remote shell is meant to receive the final values.
+# Acknowledged here once rather than per call site.
+disable=SC2029
