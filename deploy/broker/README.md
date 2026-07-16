@@ -26,6 +26,18 @@ curl http://localhost:8080/healthz
 curl http://localhost:8080/api/v1/relays
 ```
 
+### Broker releases and build identity
+
+The broker is versioned independently in `cmd/broker/VERSION`. Release tags use
+`broker-vX.Y.Z` and must match that file; the image workflow publishes the clean
+`X.Y.Z` image tag. Builds from `main` include the source commit in their
+development version. Run `broker --version` to inspect an executable; startup
+logs also include the version and full revision.
+
+Broker versions do not determine relay or client compatibility. Those contracts
+remain in the versioned HTTP API, relay tunnel/punch protocol versions, and
+capability negotiation.
+
 ## Deploy to AWS Lightsail (one command)
 
 `lightsail-up.sh` provisions a broker on a `micro_3_0` instance (1 GB RAM /

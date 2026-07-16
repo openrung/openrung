@@ -228,17 +228,21 @@ Request:
   "exit_mode": "direct",
   "max_sessions": 8,
   "max_mbps": 20,
-  "relay_version": "dev",
+  "relay_version": "relay/0.1.0",
   "transport": "direct",
   "node_class": "volunteer"
 }
 ```
 
-`relay_version` reports the runtime version for both `volunteer`-class and
-`foundation`-class relays. During the v1 migration, registration also accepts
-the old `volunteer_version` name, and descriptor responses include it as a
-deprecated alias for released clients that still require it. New integrations
-must use `relay_version`; the compatibility alias is omitted from the examples.
+`relay_version` identifies the relay runtime artifact, independently of the
+broker, relay hub, and client app versions. Standalone images report values such
+as `relay/0.1.0`; the packaged volunteer app reports values such as
+`desktop-volunteer/0.1.0`. Wire compatibility is negotiated separately through
+the tunnel and punch protocol versions and capability flags. During the v1
+migration, registration also accepts the old `volunteer_version` name, and
+descriptor responses include it as a deprecated alias for released clients that
+still require it. New integrations must use `relay_version`; the compatibility
+alias is omitted from the examples.
 
 `transport` is optional and defaults to `direct`. The relay hub registers CGNAT
 volunteer-run relays with `transport: "tunnel"` and a
@@ -313,7 +317,7 @@ Response:
   "exit_mode": "direct",
   "max_sessions": 8,
   "max_mbps": 20,
-  "relay_version": "dev",
+  "relay_version": "relay/0.1.0",
   "registered_at": "2026-06-09T07:00:00Z",
   "last_heartbeat_at": "2026-06-09T07:00:00Z",
   "expires_at": "2026-06-09T07:03:00Z"
@@ -429,7 +433,7 @@ Response:
       "exit_mode": "direct",
       "max_sessions": 8,
       "max_mbps": 20,
-      "relay_version": "dev",
+      "relay_version": "relay/0.1.0",
       "registered_at": "2026-06-09T07:00:00Z",
       "last_heartbeat_at": "2026-06-09T07:00:00Z",
       "expires_at": "2026-06-09T07:03:00Z"

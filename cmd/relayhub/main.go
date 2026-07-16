@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	_ "embed"
 	"errors"
 	"flag"
 	"fmt"
@@ -21,6 +22,17 @@ import (
 	"openrung/internal/tunnel"
 )
 
+//go:embed VERSION
+var baseVersion string
+
+// version and revision are overridden by release builds using -ldflags.
+var (
+	version  string
+	revision = "unknown"
+)
+
+var errVersionRequested = errors.New("version requested")
+
 func main() {
 	if err := run(); err != nil {
 		slog.Error("relay hub stopped", "error", err)
@@ -30,6 +42,10 @@ func main() {
 
 func run() error {
 	cfg, err := parseConfig()
+	if errors.Is(err, errVersionRequested) {
+		fmt.Println(versionInfo())
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -136,6 +152,8 @@ func run() error {
 	}
 
 	slog.Info("starting relay hub",
+		"version", resolvedVersion(),
+		"revision", resolvedRevision(),
 		"control_addr", cfg.ControlAddr,
 		"public_host", cfg.PublicHost,
 		"port_range", fmt.Sprintf("%d-%d", cfg.PortRangeStart, cfg.PortRangeEnd),
@@ -152,6 +170,7 @@ func run() error {
 }
 
 func parseConfig() (relayhub.Config, error) {
+	showVersion := flag.Bool("version", false, "print relay hub version and exit")
 	controlAddr := flag.String("control-addr", envDefault("OPENRUNG_HUB_CONTROL_ADDR", ":9443"), "control listener address dialed by volunteer-run relays")
 	publicHost := flag.String("public-host", os.Getenv("OPENRUNG_HUB_PUBLIC_HOST"), "public hostname or IP advertised to clients")
 	publicBindHost := flag.String("public-bind-host", os.Getenv("OPENRUNG_HUB_PUBLIC_BIND_HOST"), "interface the per-tunnel public listeners bind to; empty means all interfaces")
@@ -166,6 +185,9 @@ func parseConfig() (relayhub.Config, error) {
 	reflectorAdvertise := flag.String("reflector-advertise", os.Getenv("OPENRUNG_HUB_REFLECTOR_ADVERTISE"), "comma-separated PUBLIC reflector host:port addresses announced to peers, matched to -reflector-addrs; empty advertises the bound addresses")
 	punchTTL := flag.Duration("punch-ttl", envDurationDefault("OPENRUNG_HUB_PUNCH_TTL", 6*time.Second), "punch time budget handed to peers")
 	flag.Parse()
+	if *showVersion {
+		return relayhub.Config{}, errVersionRequested
+	}
 
 	start, end, err := relayhub.ParsePortRange(*portRange)
 	if err != nil {
@@ -193,6 +215,27 @@ func parseConfig() (relayhub.Config, error) {
 		return relayhub.Config{}, err
 	}
 	return cfg, nil
+}
+
+func resolvedVersion() string {
+	if value := strings.TrimSpace(version); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(baseVersion); value != "" {
+		return value
+	}
+	return "dev"
+}
+
+func resolvedRevision() string {
+	if value := strings.TrimSpace(revision); value != "" {
+		return value
+	}
+	return "unknown"
+}
+
+func versionInfo() string {
+	return fmt.Sprintf("relayhub/%s revision=%s", resolvedVersion(), resolvedRevision())
 }
 
 func controlListener(cfg relayhub.Config) (net.Listener, error) {

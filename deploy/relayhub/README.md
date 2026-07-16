@@ -54,6 +54,18 @@ OPENRUNG_HUB_ADDR=hub.example.com:9443
 OPENRUNG_VOLUNTEER_TOKEN=<same token as the hub/broker>
 ```
 
+### Relay-hub releases and build identity
+
+The hub is versioned independently in `cmd/relayhub/VERSION`. Release tags use
+`relayhub-vX.Y.Z` and must match that file; the image workflow publishes the
+clean `X.Y.Z` image tag. Builds from `main` include the source commit in their
+development version. Run `relayhub --version` to inspect an executable; startup
+logs also include the version and full revision.
+
+The hub never replaces a connected relay's `relay_version`. Its own application
+version is operational build identity, while compatibility with relays is
+governed by the tunnel/punch protocol versions and negotiated capability flags.
+
 ## Deploy to AWS Lightsail (1 GB)
 
 `lightsail-up.sh` provisions a hub on a `micro_3_0` instance (1 GB RAM / 2 vCPU / 40 GB /

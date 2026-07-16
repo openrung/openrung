@@ -13,6 +13,9 @@
 #   docker buildx build --platform linux/amd64,linux/arm64 \
 #     -f deploy/relayhub/Dockerfile -t <registry>/openrung-relayhub .
 
+ARG RELAYHUB_VERSION=source
+ARG VCS_REVISION=unknown
+
 # --- Stage 1: build the relayhub binary (cross-compiled, no cgo) ---
 FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
 WORKDIR /src
@@ -24,17 +27,31 @@ RUN go mod download
 COPY . .
 ARG TARGETARCH
 ARG TARGETOS=linux
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -trimpath -ldflags="-s -w" -o /out/relayhub ./cmd/relayhub
+ARG RELAYHUB_VERSION
+ARG VCS_REVISION
+RUN set -eux; \
+    ldflags="-s -w"; \
+    if [ -n "$RELAYHUB_VERSION" ] && [ "$RELAYHUB_VERSION" != "source" ]; then \
+      ldflags="$ldflags -X main.version=$RELAYHUB_VERSION"; \
+    fi; \
+    if [ -n "$VCS_REVISION" ] && [ "$VCS_REVISION" != "unknown" ]; then \
+      ldflags="$ldflags -X main.revision=$VCS_REVISION"; \
+    fi; \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+      go build -trimpath -ldflags="$ldflags" -o /out/relayhub ./cmd/relayhub
 
 # --- Stage 2: minimal runtime ---
 FROM alpine:3.21
+ARG RELAYHUB_VERSION
+ARG VCS_REVISION
 # Image bundles GPL-2.0-only (busybox/apk-tools/baselayout from Alpine),
 # MPL-2.0 (ca-certificates, yamux compiled into the binary), and MIT/BSD
 # components. See /usr/local/share/openrung/THIRD_PARTY_NOTICES.md.
 LABEL org.opencontainers.image.source="https://github.com/openrung/openrung" \
       org.opencontainers.image.licenses="GPL-3.0-or-later AND MPL-2.0 AND GPL-2.0-only AND MIT AND BSD-3-Clause" \
-      org.opencontainers.image.title="openrung-relayhub"
+      org.opencontainers.image.title="openrung-relayhub" \
+      org.opencontainers.image.version="$RELAYHUB_VERSION" \
+      org.opencontainers.image.revision="$VCS_REVISION"
 RUN apk add --no-cache ca-certificates tzdata \
     && addgroup -S openrung \
     && adduser -S -G openrung openrung

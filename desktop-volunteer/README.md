@@ -51,9 +51,11 @@ unmodified and run as a separate process (aggregation, not linking). See
 CI (`.github/workflows/volunteer-desktop-release.yml`) builds all three
 platforms with a pinned Xray-core (v26.3.27, same pin as
 `deploy/relay/Dockerfile`), SHA-256-verified against the release `.dgst`
-on every platform. Push a `volunteer-vX.Y.Z` tag to publish a GitHub release
-with all three artifacts; a manual `workflow_dispatch` run builds artifacts
-only.
+on every platform. [`VERSION`](VERSION) is the single version source for both
+the Go relay runtime (`desktop-volunteer/X.Y.Z` as reported to the broker) and
+the About screen. Push the exactly matching `volunteer-vX.Y.Z` tag to publish
+a GitHub release with all three artifacts; CI rejects a mismatched tag. A
+manual `workflow_dispatch` run builds artifacts only.
 
 ## Volunteering means being an exit
 

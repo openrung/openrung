@@ -21,7 +21,31 @@ env:
   XRAY_VERSION: ${{ github.event.inputs.xray_version || '26.3.27' }}
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate component version and release tag
+        shell: bash
+        run: |
+          version="$(tr -d '\r\n' < desktop-volunteer/VERSION)"
+          if ! printf '%s\n' "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "invalid desktop-volunteer/VERSION \"$version\" (want X.Y.Z)" >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            tag="${GITHUB_REF#refs/tags/}"
+            expected="volunteer-v$version"
+            if [[ "$tag" != "$expected" ]]; then
+              echo "release tag $tag does not match desktop-volunteer/VERSION $version (want $expected)" >&2
+              exit 1
+            fi
+          fi
+          echo "desktop-volunteer/VERSION -> $version"
+
   build:
+    needs: version
     strategy:
       fail-fast: false
       matrix:
