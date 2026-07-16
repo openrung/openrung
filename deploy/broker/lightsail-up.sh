@@ -189,9 +189,6 @@ if [ -n "$SSH_PUBKEY" ]; then
   KEYPAIR_ARG="--key-pair-name $SSH_KEY_NAME"
 fi
 
-# KEYPAIR_ARG deliberately expands unquoted: it is either empty or the two
-# words "--key-pair-name <name>".
-# shellcheck disable=SC2086
 aws lightsail create-instances \
   --instance-names "$NAME" \
   $KEYPAIR_ARG \
