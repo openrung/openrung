@@ -17,8 +17,8 @@ if (-not $singbox -or -not (Test-Path $singbox)) {
 }
 
 $env:PATH = "$env:PATH;$(go env GOPATH)\bin"
-Write-Host "==> wails build $args"
-wails build @args
+& node scripts/versioned-wails-build.mjs @args
+if ($LASTEXITCODE -ne 0) { throw "wails build failed with exit code $LASTEXITCODE" }
 
 $exe = 'build\bin\OpenRung.exe'
 if (-not (Test-Path $exe)) { Write-Error "$exe not found after build"; exit 1 }

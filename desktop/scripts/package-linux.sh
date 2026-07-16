@@ -22,8 +22,7 @@ if [[ -z "${SINGBOX}" || ! -x "${SINGBOX}" ]]; then
 fi
 
 export PATH="${PATH}:$(go env GOPATH)/bin"
-echo "==> wails build ${*:-}"
-wails build "$@"
+node scripts/versioned-wails-build.mjs "$@"
 
 BIN="build/bin/OpenRung"
 [[ -x "${BIN}" ]] || { echo "error: ${BIN} not found after build" >&2; exit 1; }

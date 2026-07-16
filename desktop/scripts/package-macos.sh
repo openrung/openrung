@@ -22,8 +22,7 @@ fi
 
 export PATH="${PATH}:$(go env GOPATH)/bin"
 
-echo "==> wails build ${*:-}"
-wails build "$@"
+node scripts/versioned-wails-build.mjs "$@"
 
 APP="build/bin/OpenRung.app"
 RES="${APP}/Contents/Resources"

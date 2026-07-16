@@ -9,11 +9,15 @@ on:
     branches: [main]
     paths:
       - "desktop/frontend/**"
+      - "desktop/scripts/**"
+      - "desktop/wails.json"
       - "LICENSE"
       - ".github/workflows/desktop-frontend.yml"
   pull_request:
     paths:
       - "desktop/frontend/**"
+      - "desktop/scripts/**"
+      - "desktop/wails.json"
       - "LICENSE"
       - ".github/workflows/desktop-frontend.yml"
 
@@ -37,6 +41,10 @@ jobs:
 
       - name: Test
         run: npm test
+
+      - name: Test build version wiring
+        working-directory: desktop
+        run: node --test scripts/versioned-wails-build.test.mjs
 
       - name: Typecheck and build
         run: npm run build

@@ -36,6 +36,11 @@ jobs:
         with:
           go-version: '1.25.x'
 
+      # For the desktop version injection contract below.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
       - name: Component version sources
         run: |
           for file in cmd/relay/VERSION cmd/relayhub/VERSION cmd/broker/VERSION desktop-volunteer/VERSION; do
@@ -64,6 +69,16 @@ jobs:
           go vet ./vpnservice/...
           go test -race ./vpnservice/... ./config/... ./discovery/... ./proxymode/...
           go build ./vpnservice/... ./config/... ./discovery/... ./proxymode/...
+
+      # The desktop packaging script stamps the build version by setting
+      # openrung/internal/client.appVersion with -X, but the linker silently
+      # ignores -X for a symbol it cannot resolve. Renaming that variable would
+      # otherwise leave every release reporting "dev" with this whole job green.
+      # Belongs here, not in desktop-frontend.yml: it needs Go, and it has to
+      # run when internal/client changes.
+      - name: Desktop version injection contract
+        working-directory: desktop
+        run: node --test scripts/version-injection.test.mjs
 
       - name: desktop-volunteer module (vet + test)
         working-directory: desktop-volunteer
