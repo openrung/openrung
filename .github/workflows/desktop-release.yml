@@ -11,7 +11,11 @@ on:
         description: sing-box version to bundle (no leading v)
         default: "1.14.0-alpha.35"
   push:
-    tags: ["v*"]
+    # v[0-9]*, not v*: the glob's * matches any run of non-/ characters, so a
+    # bare v* also matches volunteer-v0.1.0 and would publish a desktop release
+    # onto the volunteer app's tag. Requiring a digit after the v keeps the
+    # existing v0.1.x convention while matching desktop tags only.
+    tags: ["v[0-9]*"]
 
 env:
   # sing-box release to bundle. Bump as needed; must exist as a GitHub release.

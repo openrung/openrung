@@ -71,10 +71,14 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository_owner }}/openrung-relayhub
+          # sha-* stays a dev-build identity. A release build of a commit main
+          # already built injects a different -X main.version, so it produces
+          # different bits; re-pushing sha-<commit> would repoint a tag the fleet
+          # pins to. Releases are addressed by X.Y.Z or digest instead.
           tags: |
             type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
             type=raw,value=${{ steps.version.outputs.base_version }},enable=${{ steps.version.outputs.is_release == 'true' }}
-            type=sha
+            type=sha,enable=${{ steps.version.outputs.is_release != 'true' }}
           labels: |
             org.opencontainers.image.version=${{ steps.version.outputs.build_version }}
             org.opencontainers.image.revision=${{ github.sha }}
