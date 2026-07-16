@@ -2,7 +2,7 @@
  * Volunteer app config. Trimmed from desktop/frontend/src/core/config.ts: the
  * volunteer app's operational settings (broker URL, ports, capacity) live in
  * the Go service and are edited through the Settings screen, so only the
- * static links and the version string remain here.
+ * static links remain here. The version is injected from ../VERSION by Vite.
  */
 export const AppConfig = {
   /** Project website surfaced on the About screen and in the consent gate. */
@@ -16,4 +16,4 @@ export const AppConfig = {
 } as const;
 
 /** App version shown on the About screen. */
-export const APP_VERSION = '0.1.0';
+export const APP_VERSION = __APP_VERSION__;

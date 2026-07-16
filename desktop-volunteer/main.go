@@ -20,6 +20,11 @@ import (
 var assets embed.FS
 
 func main() {
+	version, err := componentVersion()
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	// WebKitGTK's DMABUF renderer blanks the whole window on some NVIDIA
 	// driver combinations; it must be disabled before the webview process is
 	// created (same workaround as the desktop client).
@@ -31,10 +36,10 @@ func main() {
 	// resolve external tools explicitly.
 	ensureExternalToolPath()
 
-	svc := volunteerservice.New()
+	svc := volunteerservice.New(version)
 	svc.XrayPath, svc.XrayFound = resolveXrayPath()
 
-	err := wails.Run(&options.App{
+	err = wails.Run(&options.App{
 		Title:            "OpenRung Volunteer",
 		Width:            980,
 		Height:           700,

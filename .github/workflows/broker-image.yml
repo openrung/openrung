@@ -6,7 +6,7 @@ name: broker-image
 on:
   push:
     branches: [main]
-    tags: ['v*']
+    tags: ['broker-v*']
     paths:
       - 'cmd/broker/**'
       - 'internal/broker/**'
@@ -30,6 +30,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - id: version
+        name: Resolve broker build version
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_version="$(tr -d '\r\n' < cmd/broker/VERSION)"
+          if ! printf '%s\n' "$base_version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "invalid cmd/broker/VERSION \"$base_version\" (want X.Y.Z)" >&2
+            exit 1
+          fi
+
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            expected_tag="broker-v$base_version"
+            if [ "$GITHUB_REF_NAME" != "$expected_tag" ]; then
+              echo "broker release tag $GITHUB_REF_NAME disagrees with cmd/broker/VERSION ($base_version); expected $expected_tag" >&2
+              exit 1
+            fi
+            build_version="$base_version"
+            is_release=true
+          else
+            build_version="$base_version-dev+sha.${GITHUB_SHA:0:7}"
+            is_release=false
+          fi
+
+          echo "base_version=$base_version" >> "$GITHUB_OUTPUT"
+          echo "build_version=$build_version" >> "$GITHUB_OUTPUT"
+          echo "is_release=$is_release" >> "$GITHUB_OUTPUT"
+
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
@@ -43,10 +71,17 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository_owner }}/openrung-broker
+          # sha-* stays a dev-build identity. A release build of a commit main
+          # already built injects a different -X main.version, so it produces
+          # different bits; re-pushing sha-<commit> would repoint a tag the fleet
+          # pins to. Releases are addressed by X.Y.Z or digest instead.
           tags: |
-            type=ref,event=branch
-            type=ref,event=tag
-            type=sha
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=${{ steps.version.outputs.base_version }},enable=${{ steps.version.outputs.is_release == 'true' }}
+            type=sha,enable=${{ steps.version.outputs.is_release != 'true' }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.version.outputs.build_version }}
+            org.opencontainers.image.revision=${{ github.sha }}
 
       - uses: docker/build-push-action@v6
         with:
@@ -56,5 +91,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BROKER_VERSION=${{ steps.version.outputs.build_version }}
+            VCS_REVISION=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

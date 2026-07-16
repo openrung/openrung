@@ -7,11 +7,13 @@ import (
 	"openrung/desktop-volunteer/persist"
 )
 
+const testComponentVersion = "9.8.7"
+
 // newTestService builds a service with storage rooted in a temp dir and the
 // engine wired, without going through Wails Startup.
 func newTestService(t *testing.T) *Service {
 	t.Helper()
-	s := New()
+	s := New(testComponentVersion)
 	s.store = persist.NewInDir(t.TempDir())
 	s.settings = s.store.LoadSettings()
 	s.buildEngine()
@@ -116,6 +118,9 @@ func TestEngineConfigDerivesModeFromHub(t *testing.T) {
 	}
 	if !cfg.PunchCapable {
 		t.Fatal("punch should be offered")
+	}
+	if cfg.Version != "desktop-volunteer/"+testComponentVersion {
+		t.Fatalf("relay version = %q, want desktop-volunteer/%s", cfg.Version, testComponentVersion)
 	}
 
 	// A user-supplied hub is still auto mode, but the built-in pin must NOT be

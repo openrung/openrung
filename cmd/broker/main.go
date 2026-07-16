@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -15,6 +17,15 @@ import (
 	"openrung/internal/broker"
 )
 
+//go:embed VERSION
+var baseVersion string
+
+// version and revision are overridden by release builds using -ldflags.
+var (
+	version  string
+	revision = "unknown"
+)
+
 func main() {
 	if err := run(); err != nil {
 		slog.Error("broker stopped", "error", err)
@@ -23,6 +34,7 @@ func main() {
 }
 
 func run() error {
+	showVersion := flag.Bool("version", false, "print broker version and exit")
 	addr := flag.String("addr", envDefault("OPENRUNG_ADDR", ":8080"), "HTTP listen address")
 	leaseTTL := flag.Duration("lease-ttl", 3*time.Minute, "relay lease TTL")
 	telemetryFile := flag.String("telemetry-file", envDefault("OPENRUNG_TELEMETRY_FILE", "openrung-telemetry.jsonl"), "append-only client telemetry JSONL file (its directory must be writable)")
@@ -34,6 +46,10 @@ func run() error {
 	relayRanking := flag.String("relay-ranking", envDefault("OPENRUNG_RELAY_RANKING", "global"), "relay ranking mode: global or legacy")
 	geoIPEndpoint := flag.String("geoip-endpoint", envDefault("OPENRUNG_GEOIP_ENDPOINT", broker.DefaultGeoIPEndpoint), "IP geolocation HTTP endpoint for relay city/country lookups (relay host is appended); 'off' disables")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println(versionInfo())
+		return nil
+	}
 
 	rankingMode, err := broker.ParseRankingMode(*relayRanking)
 	if err != nil {
@@ -132,7 +148,7 @@ func run() error {
 		close(shutdownDone)
 	}()
 
-	slog.Info("starting broker", "addr", *addr, "lease_ttl", leaseTTL.String(), "telemetry_store", *telemetryStore, "telemetry_file", *telemetryFile, "relay_store", *relayStore, "relay_ranking", rankingMode, "dashboard_enabled", os.Getenv("OPENRUNG_DASHBOARD_TOKEN") != "", "foundation_registration_enabled", foundationToken != "", "status_interval", statusInterval.String(), "geoip_enabled", geoResolver != nil)
+	slog.Info("starting broker", "version", resolvedVersion(), "revision", resolvedRevision(), "addr", *addr, "lease_ttl", leaseTTL.String(), "telemetry_store", *telemetryStore, "telemetry_file", *telemetryFile, "relay_store", *relayStore, "relay_ranking", rankingMode, "dashboard_enabled", os.Getenv("OPENRUNG_DASHBOARD_TOKEN") != "", "foundation_registration_enabled", foundationToken != "", "status_interval", statusInterval.String(), "geoip_enabled", geoResolver != nil)
 	err = server.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {
 		<-shutdownDone
@@ -142,6 +158,27 @@ func run() error {
 		err = closeErr
 	}
 	return err
+}
+
+func resolvedVersion() string {
+	if value := strings.TrimSpace(version); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(baseVersion); value != "" {
+		return value
+	}
+	return "dev"
+}
+
+func resolvedRevision() string {
+	if value := strings.TrimSpace(revision); value != "" {
+		return value
+	}
+	return "unknown"
+}
+
+func versionInfo() string {
+	return fmt.Sprintf("broker/%s revision=%s", resolvedVersion(), resolvedRevision())
 }
 
 // telemetryStorage is what both telemetry backends provide: the write path,

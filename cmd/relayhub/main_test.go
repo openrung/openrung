@@ -8,6 +8,18 @@ import (
 	"openrung/internal/relayhub"
 )
 
+func TestVersionInfo(t *testing.T) {
+	originalVersion, originalRevision := version, revision
+	version, revision = " 1.2.3 ", " abcdef0 "
+	t.Cleanup(func() {
+		version, revision = originalVersion, originalRevision
+	})
+
+	if got := versionInfo(); got != "relayhub/1.2.3 revision=abcdef0" {
+		t.Fatalf("versionInfo() = %q, want component, version, and revision", got)
+	}
+}
+
 func TestEnvDefault(t *testing.T) {
 	t.Setenv("OPENRUNG_TEST_KEY", "from-env")
 	if got := envDefault("OPENRUNG_TEST_KEY", "fallback"); got != "from-env" {

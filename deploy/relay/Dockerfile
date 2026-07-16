@@ -12,6 +12,8 @@
 #     -f deploy/relay/Dockerfile -t <registry>/openrung-relay .
 
 ARG XRAY_VERSION=v26.3.27
+ARG RELAY_VERSION=source
+ARG VCS_REVISION=unknown
 
 # --- Stage 1: fetch + verify a pinned Xray-core release for the target arch ---
 FROM --platform=$BUILDPLATFORM alpine:3.21 AS xray
@@ -51,17 +53,31 @@ RUN go mod download
 COPY . .
 ARG TARGETARCH
 ARG TARGETOS=linux
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -trimpath -ldflags="-s -w" -o /out/relay ./cmd/relay
+ARG RELAY_VERSION
+ARG VCS_REVISION
+RUN set -eux; \
+    ldflags="-s -w"; \
+    if [ -n "$RELAY_VERSION" ] && [ "$RELAY_VERSION" != "source" ]; then \
+      ldflags="$ldflags -X main.version=$RELAY_VERSION"; \
+    fi; \
+    if [ -n "$VCS_REVISION" ] && [ "$VCS_REVISION" != "unknown" ]; then \
+      ldflags="$ldflags -X main.revision=$VCS_REVISION"; \
+    fi; \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+      go build -trimpath -ldflags="$ldflags" -o /out/relay ./cmd/relay
 
 # --- Stage 3: minimal runtime ---
 FROM alpine:3.21
+ARG RELAY_VERSION
+ARG VCS_REVISION
 # Image bundles GPL-3.0-or-later (none here), MPL-2.0 (Xray-core, ca-certificates),
 # GPL-2.0-only (busybox/apk-tools/baselayout from Alpine), CC-BY-SA-4.0 (geoip.dat),
 # and MIT/BSD components. See /usr/local/share/openrung/THIRD_PARTY_NOTICES.md.
 LABEL org.opencontainers.image.source="https://github.com/openrung/openrung" \
       org.opencontainers.image.licenses="GPL-3.0-or-later AND MPL-2.0 AND GPL-2.0-only AND CC-BY-SA-4.0 AND MIT AND BSD-3-Clause" \
-      org.opencontainers.image.title="openrung-relay"
+      org.opencontainers.image.title="openrung-relay" \
+      org.opencontainers.image.version="$RELAY_VERSION" \
+      org.opencontainers.image.revision="$VCS_REVISION"
 RUN apk add --no-cache ca-certificates tzdata \
     && addgroup -S openrung \
     && adduser -S -G openrung openrung

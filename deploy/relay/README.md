@@ -252,6 +252,27 @@ docker pull ghcr.io/openrung/openrung-relay:main
 
 The cloud provisioning helpers pull this public canonical package by default.
 
+### Relay releases and build identity
+
+The standalone relay has its own semantic version in `cmd/relay/VERSION`; it is
+not tied to a broker, relay-hub, desktop, or mobile release. A release tag must
+be named `relay-vX.Y.Z` and match that file. The image workflow publishes the
+corresponding `X.Y.Z` image tag, while ordinary `main` images report a
+development build containing the source commit (for example,
+`relay/0.1.0-dev+sha.c4b2c65`).
+
+The version and full revision are compiled into the binary and attached to the
+image as OCI metadata. Inspect a binary directly with:
+
+```sh
+relay --version
+```
+
+The relay sends this artifact identity to the broker as `relay_version`.
+Compatibility is controlled separately by the tunnel/punch protocol versions
+and negotiated capability flags, so relay and relay-hub semantic versions do
+not need to match.
+
 ## Networking notes
 
 - **Firewall / security group:** allow inbound **TCP 443** (the relay's public

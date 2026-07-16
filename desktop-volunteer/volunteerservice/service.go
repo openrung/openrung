@@ -19,9 +19,6 @@ import (
 	"openrung/internal/relayruntime/engine"
 )
 
-// Version is reported to the broker/hub as the relay runtime version.
-const Version = "desktop-volunteer/0.1.0"
-
 // DefaultBrokerURL matches the desktop client's primary broker endpoint.
 // Volunteer registration is a write path served by the broker origin behind
 // this hostname; the CDN discovery fronts the client races are read-only and
@@ -95,6 +92,11 @@ type State struct {
 type Service struct {
 	Emitter func(State)
 
+	// relayVersion is reported to the broker/hub. The component version comes
+	// from desktop-volunteer/VERSION and is passed in by package main, keeping
+	// the backend and frontend on one source of truth.
+	relayVersion string
+
 	// XrayPath points at the xray binary (bundled next to the app in packaged
 	// builds). XrayFound reports whether resolution actually located one, so
 	// the UI can warn before the first start attempt fails.
@@ -110,8 +112,11 @@ type Service struct {
 	stopEmit chan struct{}
 }
 
-func New() *Service {
-	return &Service{ring: newRingBuffer(logRingCapacity)}
+func New(componentVersion string) *Service {
+	return &Service{
+		ring:         newRingBuffer(logRingCapacity),
+		relayVersion: "desktop-volunteer/" + strings.TrimSpace(componentVersion),
+	}
 }
 
 // Startup and Shutdown take a context.Context so Wails cannot expose them to
@@ -214,7 +219,7 @@ func (s *Service) engineConfigLocked() engine.Config {
 		HubCertFingerprint: fingerprint,
 		MaxSessions:        settings.MaxSessions,
 		MaxMbps:            settings.MaxMbps,
-		Version:            Version,
+		Version:            s.relayVersion,
 		PunchCapable:       true,
 	}
 }

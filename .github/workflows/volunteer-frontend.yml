@@ -1,0 +1,44 @@
+name: volunteer-frontend
+
+# The volunteer app reads its About-screen version from desktop-volunteer/VERSION
+# at Vite build time. Keep that single-source path under PR checks rather than
+# discovering a broken or mismatched version only when a release tag is pushed.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'desktop-volunteer/VERSION'
+      - 'desktop-volunteer/frontend/**'
+      - '.github/workflows/volunteer-frontend.yml'
+  pull_request:
+    paths:
+      - 'desktop-volunteer/VERSION'
+      - 'desktop-volunteer/frontend/**'
+      - '.github/workflows/volunteer-frontend.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop-volunteer/frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop-volunteer/frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Typecheck and build
+        run: npm run build

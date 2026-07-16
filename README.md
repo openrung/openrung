@@ -221,6 +221,7 @@ docs/                Architecture, API, client, and operations docs + website.
 | --- | --- |
 | [Architecture](docs/architecture.md) | Goals, components, and trust boundaries |
 | [Broker API](docs/api.md) | HTTP API reference (`/api/v1`) |
+| [Component versioning](docs/versioning.md) | Independent release identities and compatibility contracts |
 | [Desktop client](docs/desktop-client.md) | macOS/CLI client and full-device routing |
 | [Security and abuse](docs/security-abuse.md) | Threat model, volunteer risk, and abuse handling |
 | [Relay hub deployment](deploy/relayhub/README.md) | Running a hub: TLS, ports, and cost |

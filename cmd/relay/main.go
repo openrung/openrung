@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	_ "embed"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -22,10 +23,18 @@ import (
 	"openrung/internal/tunnel"
 )
 
-const version = "dev"
+//go:embed VERSION
+var baseVersion string
+
+// version and revision are overridden by release builds using -ldflags.
+var (
+	version  string
+	revision = "unknown"
+)
 
 func main() {
 	var cfg cliConfig
+	showVersion := flag.Bool("version", false, "print relay version and exit")
 	flag.StringVar(&cfg.BrokerURL, "broker", "http://localhost:8080", "broker base URL")
 	flag.StringVar(&cfg.RegistrationToken, "registration-token", os.Getenv("OPENRUNG_VOLUNTEER_TOKEN"), "volunteer-class relay registration token")
 	flag.StringVar(&cfg.Label, "label", os.Getenv("OPENRUNG_LABEL"), "human-readable relay label shown in the broker; a random adjective-noun is generated when empty")
@@ -57,6 +66,10 @@ func main() {
 	flag.BoolVar(&cfg.HubInsecure, "hub-insecure", false, "skip TLS certificate verification when dialing the relay hub (testing only)")
 	flag.BoolVar(&cfg.Punch, "punch", !boolEnv("OPENRUNG_PUNCH_DISABLE"), "offer NAT hole punching so clients can connect directly (tunnel mode; requires a punch-capable hub)")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println(versionInfo())
+		return
+	}
 
 	cfg.Mode = normalizeMode(cfg.Mode, cfg.TunnelMode, cfg.HubAddr)
 
@@ -316,6 +329,9 @@ func run(cfg cliConfig) error {
 	default:
 		cfg.TunnelMode = cfg.Mode == "tunnel"
 	}
+	if !cfg.PrintConfigOnly {
+		slog.Info("starting relay", "version", resolvedVersion(), "revision", resolvedRevision())
+	}
 
 	if cfg.TunnelMode {
 		return runTunnelMode(ctx, cfg)
@@ -518,7 +534,7 @@ func runTunnelMode(parent context.Context, cfg cliConfig) error {
 			MaxSessions:      cfg.MaxSessions,
 			MaxMbps:          cfg.MaxMbps,
 			Label:            cfg.Label,
-			RelayVersion:     version,
+			RelayVersion:     reportedRelayVersion(),
 			// A current relay always understands the stream-type discriminator;
 			// PunchCapable additionally asks the hub to advertise a direct path.
 			StreamTyping: true,
@@ -681,7 +697,7 @@ func register(ctx context.Context, broker *relayruntime.BrokerClient, cfg cliCon
 		ExitMode:         relay.ExitModeDirect,
 		MaxSessions:      cfg.MaxSessions,
 		MaxMbps:          cfg.MaxMbps,
-		RelayVersion:     version,
+		RelayVersion:     reportedRelayVersion(),
 		Label:            cfg.Label,
 		NodeClass:        cfg.NodeClass,
 	}
@@ -696,6 +712,31 @@ func register(ctx context.Context, broker *relayruntime.BrokerClient, cfg cliCon
 		return relay.Descriptor{}, fmt.Errorf("broker attested node_class %q instead of %q: the broker likely predates node_class support; upgrade it, or drop -node-class to serve as a volunteer-class relay", desc.NodeClass, relay.NodeClassFoundation)
 	}
 	return desc, nil
+}
+
+func resolvedVersion() string {
+	if value := strings.TrimSpace(version); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(baseVersion); value != "" {
+		return value
+	}
+	return "dev"
+}
+
+func resolvedRevision() string {
+	if value := strings.TrimSpace(revision); value != "" {
+		return value
+	}
+	return "unknown"
+}
+
+func reportedRelayVersion() string {
+	return "relay/" + resolvedVersion()
+}
+
+func versionInfo() string {
+	return fmt.Sprintf("%s revision=%s", reportedRelayVersion(), resolvedRevision())
 }
 
 func heartbeat(ctx context.Context, broker *relayruntime.BrokerClient, id string) error {

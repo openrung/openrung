@@ -12,6 +12,21 @@ import (
 	"openrung/internal/relay"
 )
 
+func TestVersionInfoAndReportedVersion(t *testing.T) {
+	originalVersion, originalRevision := version, revision
+	version, revision = " 1.2.3 ", " abcdef0 "
+	t.Cleanup(func() {
+		version, revision = originalVersion, originalRevision
+	})
+
+	if got := reportedRelayVersion(); got != "relay/1.2.3" {
+		t.Fatalf("reportedRelayVersion() = %q, want relay/1.2.3", got)
+	}
+	if got := versionInfo(); got != "relay/1.2.3 revision=abcdef0" {
+		t.Fatalf("versionInfo() = %q, want component, version, and revision", got)
+	}
+}
+
 func TestHeartbeatOrRegisterRecoversForgottenRelay(t *testing.T) {
 	var registrations atomic.Int32
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
