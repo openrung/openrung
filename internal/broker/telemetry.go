@@ -119,9 +119,10 @@ type telemetryBatch struct {
 }
 
 type TelemetryRecord struct {
-	ReceivedAt time.Time      `json:"received_at"`
-	SourceIP   string         `json:"source_ip"`
-	Event      TelemetryEvent `json:"event"`
+	ReceivedAt     time.Time      `json:"received_at"`
+	SourceIP       string         `json:"source_ip"`
+	RelayNodeClass string         `json:"relay_node_class,omitempty"`
+	Event          TelemetryEvent `json:"event"`
 }
 
 type TelemetrySink interface {
@@ -523,6 +524,11 @@ func telemetryHandler(sink TelemetrySink, relayMetrics RelayStore, clientIP *cli
 			}
 			records = append(records, TelemetryRecord{ReceivedAt: now, SourceIP: sourceIP, Event: event})
 		}
+		if err := attestTelemetryRelayNodeClasses(r.Context(), relayMetrics, records, now); err != nil {
+			slog.Error("could not attest telemetry relay classes", "records", len(records), "error", err)
+			writeError(w, http.StatusServiceUnavailable, "could not resolve telemetry relay classes")
+			return
+		}
 		if err := sink.WriteTelemetry(r.Context(), records); err != nil {
 			slog.Error("could not store telemetry", "records", len(records), "error", err)
 			writeError(w, http.StatusInternalServerError, "could not store telemetry")
@@ -537,6 +543,40 @@ func telemetryHandler(sink TelemetrySink, relayMetrics RelayStore, clientIP *cli
 		}
 		writeJSON(w, http.StatusAccepted, map[string]int{"accepted": len(records)})
 	}
+}
+
+// attestTelemetryRelayNodeClasses snapshots each referenced relay's active,
+// broker-attested class onto the server-owned telemetry envelope. The client
+// never supplies this field. Retaining it with the event keeps historical
+// dashboard attribution intact after the descriptor's short lease expires.
+func attestTelemetryRelayNodeClasses(ctx context.Context, store RelayStore, records []TelemetryRecord, now time.Time) error {
+	if store == nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	ids := make([]string, 0)
+	for _, record := range records {
+		id := record.Event.RelayID
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	classes, err := store.RelayNodeClasses(ctx, ids, now)
+	if err != nil {
+		return err
+	}
+	for i := range records {
+		records[i].RelayNodeClass = classes[records[i].Event.RelayID]
+	}
+	return nil
 }
 
 func validateTelemetryEvent(event TelemetryEvent, now time.Time) error {

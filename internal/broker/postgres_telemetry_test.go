@@ -19,8 +19,9 @@ func TestPostgresTelemetrySinkPersistsAndReadsBack(t *testing.T) {
 
 	records := []TelemetryRecord{
 		{
-			ReceivedAt: now,
-			SourceIP:   "203.0.113.42",
+			ReceivedAt:     now,
+			SourceIP:       "203.0.113.42",
+			RelayNodeClass: "foundation",
 			Event: TelemetryEvent{
 				SchemaVersion: 1,
 				EventID:       "event-1",
@@ -77,7 +78,7 @@ func TestPostgresTelemetrySinkPersistsAndReadsBack(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected event-1 in read-back, got %+v", loaded)
 	}
-	if !first.ReceivedAt.Equal(now) || first.SourceIP != "203.0.113.42" {
+	if !first.ReceivedAt.Equal(now) || first.SourceIP != "203.0.113.42" || first.RelayNodeClass != "foundation" {
 		t.Fatalf("unexpected read-back envelope: %+v", first)
 	}
 	want := records[0].Event
@@ -155,20 +156,21 @@ func TestPostgresTelemetrySinkReaderIsWindowBounded(t *testing.T) {
 func TestTelemetryInsertStatement(t *testing.T) {
 	got := telemetryInsertStatement(2)
 	want := `INSERT INTO telemetry_events (` + telemetryInsertColumns + `) VALUES ` +
-		`($1,$2,$3,$4,$5,$6,$7,$8,$9),($10,$11,$12,$13,$14,$15,$16,$17,$18)`
+		`($1,$2,$3,$4,$5,$6,$7,$8,$9,$10),($11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`
 	if got != want {
 		t.Fatalf("unexpected insert statement:\n got %s\nwant %s", got, want)
 	}
-	if count := strings.Count(telemetryInsertStatement(postgresTelemetryInsertChunk), "$"); count != postgresTelemetryInsertChunk*9 {
-		t.Fatalf("expected %d placeholders for a full chunk, got %d", postgresTelemetryInsertChunk*9, count)
+	if count := strings.Count(telemetryInsertStatement(postgresTelemetryInsertChunk), "$"); count != postgresTelemetryInsertChunk*10 {
+		t.Fatalf("expected %d placeholders for a full chunk, got %d", postgresTelemetryInsertChunk*10, count)
 	}
 }
 
 func TestTelemetryInsertArgs(t *testing.T) {
 	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
 	record := TelemetryRecord{
-		ReceivedAt: now,
-		SourceIP:   "203.0.113.42",
+		ReceivedAt:     now,
+		SourceIP:       "203.0.113.42",
+		RelayNodeClass: "foundation",
 		Event: TelemetryEvent{
 			SchemaVersion:   1,
 			EventID:         "event-1",
@@ -186,8 +188,8 @@ func TestTelemetryInsertArgs(t *testing.T) {
 		},
 	}
 	args := telemetryInsertArgs(record, now)
-	if len(args) != 9 {
-		t.Fatalf("expected 9 args, got %d", len(args))
+	if len(args) != 10 {
+		t.Fatalf("expected 10 args, got %d", len(args))
 	}
 	if got := args[0].(time.Time); !got.Equal(now) {
 		t.Fatalf("unexpected received_at: %v", got)
@@ -198,8 +200,11 @@ func TestTelemetryInsertArgs(t *testing.T) {
 	if args[7] != "relay-1" {
 		t.Fatalf("unexpected relay_id: %v", args[7])
 	}
+	if args[8] != "foundation" {
+		t.Fatalf("unexpected relay_node_class: %v", args[8])
+	}
 	var payload telemetryEventPayload
-	if err := json.Unmarshal(args[8].([]byte), &payload); err != nil {
+	if err := json.Unmarshal(args[9].([]byte), &payload); err != nil {
 		t.Fatalf("decode payload: %v", err)
 	}
 	if payload.SchemaVersion != 1 || payload.Application != "org.example.app" ||
@@ -211,8 +216,8 @@ func TestTelemetryInsertArgs(t *testing.T) {
 	// Missing envelope options become NULLs, and an unparseable source IP
 	// must not fail the batch.
 	minimal := telemetryInsertArgs(TelemetryRecord{SourceIP: "not-an-ip", Event: TelemetryEvent{OccurredAt: now}}, now)
-	if minimal[1] != nil || minimal[7] != nil {
-		t.Fatalf("expected NULL source_ip and relay_id, got %v and %v", minimal[1], minimal[7])
+	if minimal[1] != nil || minimal[7] != nil || minimal[8] != nil {
+		t.Fatalf("expected NULL source_ip, relay_id, and relay_node_class; got %v, %v, and %v", minimal[1], minimal[7], minimal[8])
 	}
 	if got := minimal[0].(time.Time); !got.Equal(now) {
 		t.Fatalf("expected occurred_at fallback for received_at, got %v", got)

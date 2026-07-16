@@ -41,6 +41,11 @@ type RelayStore interface {
 	Heartbeat(id, maxClass string, now time.Time, ttl time.Duration) (relay.Descriptor, error)
 	UpdateGeo(string, relay.GeoLocation) error
 	List(time.Time, int) ([]relay.Descriptor, error)
+	// RelayNodeClasses resolves active relay IDs to the broker-attested class
+	// stored on their descriptors. Telemetry ingestion uses this bounded lookup
+	// so the class can be retained with historical events after the short relay
+	// lease expires, without trusting a client-supplied class.
+	RelayNodeClasses(context.Context, []string, time.Time) (map[string]string, error)
 	Stats(time.Time) (StoreStats, error)
 	Prune(time.Time) ([]relay.Descriptor, error)
 	RecordRelayTelemetry(context.Context, []TelemetryRecord, time.Time) error
@@ -197,6 +202,20 @@ func (s *Store) List(now time.Time, limit int) ([]relay.Descriptor, error) {
 	}
 
 	return relays, nil
+}
+
+func (s *Store) RelayNodeClasses(_ context.Context, ids []string, now time.Time) (map[string]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	classes := make(map[string]string, len(ids))
+	for _, id := range ids {
+		desc, ok := s.relays[id]
+		if ok && desc.ExpiresAt.After(now) {
+			classes[id] = desc.NodeClass
+		}
+	}
+	return classes, nil
 }
 
 func (s *Store) Stats(now time.Time) (StoreStats, error) {

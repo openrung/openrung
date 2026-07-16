@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"openrung/internal/relay"
 )
 
 // The parity tests feed one synthetic event set through the in-memory
@@ -22,11 +24,18 @@ import (
 // speed tests, and multi-client sessions.
 func parityTelemetryRecords(now time.Time) []TelemetryRecord {
 	sequence := 0
+	relayClasses := map[string]string{
+		"relay-1": relay.NodeClassFoundation,
+		"relay-2": relay.NodeClassVolunteer,
+		"relay-3": relay.NodeClassFoundation,
+		"relay-4": relay.NodeClassFoundation,
+	}
 	record := func(occurredMinutesAgo, receivedMinutesAgo int, event, clientID, sessionID, relayID, sourceIP string, attributes map[string]string, measurements map[string]int64) TelemetryRecord {
 		sequence++
 		return TelemetryRecord{
-			ReceivedAt: now.Add(-time.Duration(receivedMinutesAgo) * time.Minute),
-			SourceIP:   sourceIP,
+			ReceivedAt:     now.Add(-time.Duration(receivedMinutesAgo) * time.Minute),
+			SourceIP:       sourceIP,
+			RelayNodeClass: relayClasses[relayID],
 			Event: TelemetryEvent{
 				SchemaVersion: 1,
 				EventID:       fmt.Sprintf("parity-%03d", sequence),

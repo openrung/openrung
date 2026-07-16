@@ -427,6 +427,7 @@ func buildTelemetryOverview(records []TelemetryRecord, now time.Time, window tim
 	failures := make(map[string]int)
 	failureReasons := make(map[string]int)
 	relays := make(map[string]*relaySummary)
+	relayClasses := make(map[string]string)
 	relayFailureReasons := make(map[string]map[string]int)
 	type speedAccumulator struct {
 		tests      int
@@ -469,6 +470,10 @@ func buildTelemetryOverview(records []TelemetryRecord, now time.Time, window tim
 		}
 		if event.RelayID != "" {
 			session.summary.RelayID = event.RelayID
+			session.summary.RelayNodeClass = record.RelayNodeClass
+			if record.RelayNodeClass != "" {
+				relayClasses[event.RelayID] = record.RelayNodeClass
+			}
 		}
 		// Clients report their OS through one of three mutually exclusive keys:
 		// desktop sends a ready-made operating_system label ("macOS (arm64)"),
@@ -606,6 +611,9 @@ func buildTelemetryOverview(records []TelemetryRecord, now time.Time, window tim
 	activeOS := make(map[string]int)
 	for _, session := range sessions {
 		summary := session.finalize(now)
+		if summary.RelayNodeClass == "" {
+			summary.RelayNodeClass = relayClasses[summary.RelayID]
+		}
 		if session.attempted {
 			overview.Totals.Attempts++
 		}
@@ -668,6 +676,7 @@ func buildTelemetryOverview(records []TelemetryRecord, now time.Time, window tim
 	for relayID, speed := range speeds {
 		overview.SpeedTests = append(overview.SpeedTests, speedTestSummary{RelayID: relayID, Tests: speed.tests, AverageMbps: float64(speed.mbps) / float64(speed.tests) / 1000, AverageTTFBMS: float64(speed.ttfb) / float64(speed.tests)})
 	}
+	applyTelemetryRelayClasses(&overview, relayClasses)
 	sortSpeedTests(overview.SpeedTests)
 	return overview
 }
@@ -684,9 +693,26 @@ func sortSpeedTests(speedTests []speedTestSummary) {
 	sort.Slice(speedTests, func(i, j int) bool { return speedTests[i].AverageMbps > speedTests[j].AverageMbps })
 }
 
+// applyTelemetryRelayClasses decorates relay-keyed overview summaries from the
+// broker-attested class retained with telemetry. Unlike the active-descriptor
+// fallback below, this mapping survives relay expiry for the full telemetry
+// retention window.
+func applyTelemetryRelayClasses(ov *telemetryOverview, classes map[string]string) {
+	for i := range ov.TopRelays {
+		ov.TopRelays[i].NodeClass = classes[ov.TopRelays[i].RelayID]
+	}
+	for i := range ov.ActiveRelays {
+		ov.ActiveRelays[i].NodeClass = classes[ov.ActiveRelays[i].Name]
+	}
+	for i := range ov.SpeedTests {
+		ov.SpeedTests[i].NodeClass = classes[ov.SpeedTests[i].RelayID]
+	}
+}
+
 // applyRelayDisplays decorates every relay-keyed view in the overview with the
-// relay's label and node class. A relay with no label keeps the ID as its name
-// but still carries the class, so each view can colour the name by class.
+// active relay's current label and supplies its class only when legacy
+// telemetry predates the retained class field. A relay with no label keeps the
+// ID as its name; a missing active descriptor must never clear recorded class.
 func applyRelayDisplays(ov *telemetryOverview, displays map[string]relayDisplay) {
 	if len(displays) == 0 {
 		return
@@ -696,7 +722,9 @@ func applyRelayDisplays(ov *telemetryOverview, displays map[string]relayDisplay)
 		if display.Label != "" {
 			ov.TopRelays[i].Label = display.Label
 		}
-		ov.TopRelays[i].NodeClass = display.NodeClass
+		if ov.TopRelays[i].NodeClass == "" {
+			ov.TopRelays[i].NodeClass = display.NodeClass
+		}
 	}
 	// ov.Recent is not part of the overview response; the sessions endpoint
 	// decorates its own page via applySessionRelayDisplays.
@@ -705,14 +733,18 @@ func applyRelayDisplays(ov *telemetryOverview, displays map[string]relayDisplay)
 		if display.Label != "" {
 			ov.ActiveRelays[i].Label = display.Label
 		}
-		ov.ActiveRelays[i].NodeClass = display.NodeClass
+		if ov.ActiveRelays[i].NodeClass == "" {
+			ov.ActiveRelays[i].NodeClass = display.NodeClass
+		}
 	}
 	for i := range ov.SpeedTests {
 		display := displays[ov.SpeedTests[i].RelayID]
 		if display.Label != "" {
 			ov.SpeedTests[i].Label = display.Label
 		}
-		ov.SpeedTests[i].NodeClass = display.NodeClass
+		if ov.SpeedTests[i].NodeClass == "" {
+			ov.SpeedTests[i].NodeClass = display.NodeClass
+		}
 	}
 }
 
@@ -725,7 +757,9 @@ func applySessionRelayDisplays(sessions []sessionSummary, displays map[string]re
 		if display.Label != "" {
 			sessions[i].RelayLabel = display.Label
 		}
-		sessions[i].RelayNodeClass = display.NodeClass
+		if sessions[i].RelayNodeClass == "" {
+			sessions[i].RelayNodeClass = display.NodeClass
+		}
 	}
 }
 

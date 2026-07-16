@@ -633,6 +633,63 @@ func TestApplySessionRelayDisplaysSetsNodeClass(t *testing.T) {
 	}
 }
 
+func TestRecordedRelayClassSurvivesMissingActiveDescriptor(t *testing.T) {
+	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	record := func(eventID, event string, at time.Time, measurements map[string]int64) TelemetryRecord {
+		return TelemetryRecord{
+			ReceivedAt:     at,
+			RelayNodeClass: relay.NodeClassFoundation,
+			Event: TelemetryEvent{
+				SchemaVersion: 1,
+				EventID:       eventID,
+				Event:         event,
+				OccurredAt:    at,
+				ClientID:      "client-1",
+				SessionID:     "session-1",
+				RelayID:       "relay-expired",
+				Measurements:  measurements,
+			},
+		}
+	}
+	ov := buildTelemetryOverview([]TelemetryRecord{
+		record("success", "connection_succeeded", now.Add(-2*time.Minute), nil),
+		record("heartbeat", "session_heartbeat", now.Add(-time.Minute), nil),
+		record("speed", "speed_test_completed", now.Add(-30*time.Second), map[string]int64{"download_mbps_milli": 50_000}),
+	}, now, 24*time.Hour)
+
+	// The active descriptor map no longer contains relay-expired. Including a
+	// different relay makes applyRelayDisplays traverse every row; it must not
+	// clear the class retained with telemetry.
+	applyRelayDisplays(&ov, map[string]relayDisplay{
+		"relay-other": {Label: "other", NodeClass: relay.NodeClassVolunteer},
+	})
+	applySessionRelayDisplays(ov.Recent, map[string]relayDisplay{
+		"relay-other": {Label: "other", NodeClass: relay.NodeClassVolunteer},
+	})
+
+	if len(ov.TopRelays) != 1 || ov.TopRelays[0].NodeClass != relay.NodeClassFoundation {
+		t.Fatalf("top relay lost recorded class: %+v", ov.TopRelays)
+	}
+	if len(ov.ActiveRelays) != 1 || ov.ActiveRelays[0].NodeClass != relay.NodeClassFoundation {
+		t.Fatalf("active relay lost recorded class: %+v", ov.ActiveRelays)
+	}
+	if len(ov.SpeedTests) != 1 || ov.SpeedTests[0].NodeClass != relay.NodeClassFoundation {
+		t.Fatalf("speed test lost recorded class: %+v", ov.SpeedTests)
+	}
+	if len(ov.Recent) != 1 || ov.Recent[0].RelayNodeClass != relay.NodeClassFoundation {
+		t.Fatalf("session lost recorded class: %+v", ov.Recent)
+	}
+}
+
+func TestDashboardRelayClassHasVisibleAccessibleMarker(t *testing.T) {
+	html := string(dashboardHTML)
+	for _, required := range []string{"relay-class-marker", "'FND':'VOL'", `aria-label="${esc(cls)} relay"`} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard is missing relay class marker fragment %q", required)
+		}
+	}
+}
+
 // The resolver must carry both the label and the class straight off the
 // descriptor, including for unlabeled relays.
 func TestRelayDisplayResolverCarriesLabelAndClass(t *testing.T) {
