@@ -418,6 +418,33 @@ func (s *PostgresStore) List(now time.Time, limit int) ([]relay.Descriptor, erro
 	return relays, nil
 }
 
+func (s *PostgresStore) RelayNodeClasses(parent context.Context, ids []string, now time.Time) (map[string]string, error) {
+	classes := make(map[string]string, len(ids))
+	if len(ids) == 0 {
+		return classes, nil
+	}
+
+	ctx, cancel := context.WithTimeout(parent, postgresOperationTimeout)
+	defer cancel()
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, node_class
+		FROM relay_descriptors
+		WHERE id = ANY($1) AND expires_at > $2
+	`, ids, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, nodeClass string
+		if err := rows.Scan(&id, &nodeClass); err != nil {
+			return nil, err
+		}
+		classes[id] = nodeClass
+	}
+	return classes, rows.Err()
+}
+
 func (s *PostgresStore) Stats(now time.Time) (StoreStats, error) {
 	ctx, cancel := postgresOperationContext()
 	defer cancel()

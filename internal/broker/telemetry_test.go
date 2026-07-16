@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"openrung/internal/relay"
 )
 
 type memoryTelemetrySink struct {
@@ -51,6 +53,41 @@ func TestTelemetryHandlerStoresSourceIPAndEvents(t *testing.T) {
 	}
 	if got := sink.records[0].SourceIP; got != "203.0.113.42" {
 		t.Fatalf("expected retained source IP, got %q", got)
+	}
+}
+
+func TestTelemetryHandlerStoresBrokerAttestedRelayNodeClass(t *testing.T) {
+	now := time.Now().UTC()
+	store := NewStore()
+	request := validRegisterRequest()
+	request.NodeClass = relay.NodeClassFoundation
+	desc, err := store.Register(request, now, time.Minute)
+	if err != nil {
+		t.Fatalf("register foundation relay: %v", err)
+	}
+
+	sink := &memoryTelemetrySink{}
+	payload, err := json.Marshal(telemetryBatch{Events: []TelemetryEvent{{
+		SchemaVersion: 1,
+		EventID:       "event-foundation",
+		Event:         "connection_succeeded",
+		OccurredAt:    now,
+		ClientID:      "client-1",
+		SessionID:     "session-1",
+		RelayID:       desc.ID,
+	}}})
+	if err != nil {
+		t.Fatalf("marshal telemetry: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/telemetry/events", bytes.NewReader(payload))
+	recorder := httptest.NewRecorder()
+	telemetryHandler(sink, store, newClientIPResolver(nil)).ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if len(sink.records) != 1 || sink.records[0].RelayNodeClass != relay.NodeClassFoundation {
+		t.Fatalf("stored telemetry class = %+v, want foundation", sink.records)
 	}
 }
 

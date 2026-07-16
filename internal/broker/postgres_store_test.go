@@ -327,6 +327,20 @@ func TestPostgresStoreRoundTripsNodeClass(t *testing.T) {
 	if len(listed) != 1 || listed[0].NodeClass != relay.NodeClassFoundation {
 		t.Fatalf("listed node_class not preserved: %+v", listed)
 	}
+	classes, err := store.RelayNodeClasses(context.Background(), []string{desc.ID, "relay_missing"}, now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("resolve relay node classes: %v", err)
+	}
+	if len(classes) != 1 || classes[desc.ID] != relay.NodeClassFoundation {
+		t.Fatalf("resolved relay node classes = %+v, want only foundation relay", classes)
+	}
+	expiredClasses, err := store.RelayNodeClasses(context.Background(), []string{desc.ID}, now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("resolve expired relay node class: %v", err)
+	}
+	if len(expiredClasses) != 0 {
+		t.Fatalf("expired relay still resolved a node class: %+v", expiredClasses)
+	}
 
 	// A volunteer-class relay registration at a DIFFERENT endpoint round-trips
 	// with node_class=volunteer. (A registration at the SAME endpoint is refused

@@ -171,6 +171,18 @@ ASN, and — when the client reports traffic counters — `bytes_sent` and
 `bytes_received` for the session. The overview also includes top-city and
 top-ISP rankings counted by unique session.
 
+Every view that names a relay colours the name by the relay's broker-attested
+class — bright green for `foundation`, orange for `volunteer` — across the
+top-relay, speed-test, and active-by-relay rankings and the relay column of
+recent sessions. A visible `FND` or `VOL` marker and accessible label repeat the
+class on every coloured name; the full class also appears in its hover tooltip.
+When an accepted event names an active relay, the broker records that relay's
+attested class with the event, so it remains available after the live lease
+expires. The class rides alongside the label as `node_class` (and
+`relay_node_class` on session entries); a relay with no operator label falls
+back to its ID but is still coloured. Rankings that are not relay-keyed (city,
+country, ISP, OS, application) carry no class and render uncoloured.
+
 The session `source_ip` prefers the broker-observed pre-tunnel `client_seen`
 address, then the client's pre-tunnel `client_ip` attribute. The source address
 of later telemetry uploads is used only as a fallback because connected uploads

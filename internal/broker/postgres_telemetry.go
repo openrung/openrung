@@ -67,8 +67,12 @@ CREATE TABLE IF NOT EXISTS telemetry_events (
 	client_id text NOT NULL,
 	session_id text NOT NULL,
 	relay_id text,
+	relay_node_class text,
 	payload jsonb NOT NULL
 ) PARTITION BY RANGE (received_at);
+
+ALTER TABLE telemetry_events
+	ADD COLUMN IF NOT EXISTS relay_node_class text;
 
 CREATE INDEX IF NOT EXISTS telemetry_events_received_at_idx
 	ON telemetry_events (received_at);
@@ -77,7 +81,7 @@ CREATE INDEX IF NOT EXISTS telemetry_events_session_occurred_idx
 	ON telemetry_events (session_id, occurred_at);
 `
 
-const telemetryInsertColumns = `received_at, source_ip, event_id, event, occurred_at, client_id, session_id, relay_id, payload`
+const telemetryInsertColumns = `received_at, source_ip, event_id, event, occurred_at, client_id, session_id, relay_id, relay_node_class, payload`
 
 // telemetryEventPayload is the jsonb remainder of a TelemetryEvent — every
 // field that is not an envelope column on telemetry_events.
@@ -227,7 +231,8 @@ func (s *PostgresTelemetrySink) TelemetryRecords(since time.Time) []TelemetryRec
 	// received_at prunes partitions; the extra hour mirrors
 	// maxTelemetryFutureSkew so no event the occurred_at filter keeps is lost.
 	rows, err := s.pool.Query(ctx, `
-		SELECT received_at, COALESCE(host(source_ip), ''), event_id, event, occurred_at, client_id, session_id, COALESCE(relay_id, ''), payload
+		SELECT received_at, COALESCE(host(source_ip), ''), event_id, event, occurred_at, client_id, session_id,
+			COALESCE(relay_id, ''), COALESCE(relay_node_class, ''), payload
 		FROM telemetry_events
 		WHERE received_at > $1 AND occurred_at >= $2
 		ORDER BY received_at
@@ -266,6 +271,7 @@ func scanTelemetryRecord(row pgx.Row) (TelemetryRecord, error) {
 		&record.Event.ClientID,
 		&record.Event.SessionID,
 		&record.Event.RelayID,
+		&record.RelayNodeClass,
 		&payload,
 	); err != nil {
 		return TelemetryRecord{}, fmt.Errorf("scan telemetry event: %w", err)
@@ -365,7 +371,7 @@ func (s *PostgresTelemetrySink) insertBatch(ctx context.Context, batch []storedT
 
 	for start := 0; start < len(batch); start += postgresTelemetryInsertChunk {
 		chunk := batch[start:min(start+postgresTelemetryInsertChunk, len(batch))]
-		args := make([]any, 0, len(chunk)*9)
+		args := make([]any, 0, len(chunk)*10)
 		for _, stored := range chunk {
 			args = append(args, telemetryInsertArgs(stored.record, now)...)
 		}
@@ -394,11 +400,11 @@ func telemetryInsertStatement(rows int) string {
 			b.WriteByte(',')
 		}
 		b.WriteByte('(')
-		for column := 0; column < 9; column++ {
+		for column := 0; column < 10; column++ {
 			if column > 0 {
 				b.WriteByte(',')
 			}
-			fmt.Fprintf(&b, "$%d", row*9+column+1)
+			fmt.Fprintf(&b, "$%d", row*10+column+1)
 		}
 		b.WriteByte(')')
 	}
@@ -422,6 +428,10 @@ func telemetryInsertArgs(record TelemetryRecord, now time.Time) []any {
 	if event.RelayID != "" {
 		relayID = event.RelayID
 	}
+	var relayNodeClass any
+	if record.RelayNodeClass != "" {
+		relayNodeClass = record.RelayNodeClass
+	}
 	return []any{
 		insertReceivedAt(record, now),
 		telemetrySourceIP(record.SourceIP),
@@ -431,6 +441,7 @@ func telemetryInsertArgs(record TelemetryRecord, now time.Time) []any {
 		event.ClientID,
 		event.SessionID,
 		relayID,
+		relayNodeClass,
 		payload,
 	}
 }

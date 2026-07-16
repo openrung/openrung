@@ -29,13 +29,22 @@ const (
 //go:embed dashboard.html
 var dashboardHTML []byte
 
+// relayDisplay is how the dashboard identifies an active relay: its
+// operator-supplied label (may be empty, in which case views fall back to the
+// relay ID) and its broker-attested node class, which every view uses to colour
+// the relay's name — green for foundation, orange for volunteer.
+type relayDisplay struct {
+	Label     string
+	NodeClass string
+}
+
 type dashboardServer struct {
-	tokenHash   [32]byte
-	querier     TelemetryQuerier
-	relayLabels func() map[string]string
-	now         func() time.Time
-	mu          sync.Mutex
-	sessions    map[string]time.Time
+	tokenHash     [32]byte
+	querier       TelemetryQuerier
+	relayDisplays func() map[string]relayDisplay
+	now           func() time.Time
+	mu            sync.Mutex
+	sessions      map[string]time.Time
 }
 
 func newDashboardServer(token string, querier TelemetryQuerier) *dashboardServer {
@@ -188,8 +197,8 @@ func (d *dashboardServer) overview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not build telemetry overview")
 		return
 	}
-	if d.relayLabels != nil {
-		applyRelayLabels(&ov, d.relayLabels())
+	if d.relayDisplays != nil {
+		applyRelayDisplays(&ov, d.relayDisplays())
 	}
 	writeJSON(w, http.StatusOK, ov)
 }
@@ -231,8 +240,8 @@ func (d *dashboardServer) listSessions(w http.ResponseWriter, r *http.Request) {
 	if offset > total {
 		offset = total
 	}
-	if d.relayLabels != nil {
-		applySessionRelayLabels(page, d.relayLabels())
+	if d.relayDisplays != nil {
+		applySessionRelayDisplays(page, d.relayDisplays())
 	}
 	writeJSON(w, http.StatusOK, sessionsPage{
 		GeneratedAt: now, Window: window.String(),
@@ -307,12 +316,17 @@ type trendPoint struct {
 type countSummary struct {
 	Name  string `json:"name"`
 	Label string `json:"label,omitempty"`
-	Count int    `json:"count"`
+	// NodeClass is set only for relay-keyed rankings (active_by_relay); the
+	// city/country/ISP/OS/application rankings that share this shape leave it
+	// empty so views render them uncoloured.
+	NodeClass string `json:"node_class,omitempty"`
+	Count     int    `json:"count"`
 }
 
 type relaySummary struct {
 	RelayID   string `json:"relay_id"`
 	Label     string `json:"label,omitempty"`
+	NodeClass string `json:"node_class,omitempty"`
 	Successes int    `json:"successes"`
 	Failures  int    `json:"failures"`
 	// TopFailureReason is the modal relay_attempt_failed reason for this relay,
@@ -334,6 +348,7 @@ type sessionSummary struct {
 	ASN             string `json:"asn,omitempty"`
 	RelayID         string `json:"relay_id,omitempty"`
 	RelayLabel      string `json:"relay_label,omitempty"`
+	RelayNodeClass  string `json:"relay_node_class,omitempty"`
 	Status          string `json:"status"`
 	// Failure fields are populated only from connection_failed events; per field
 	// the latest non-empty value wins, like the attribute accumulation above.
@@ -352,6 +367,7 @@ type sessionSummary struct {
 type speedTestSummary struct {
 	RelayID       string  `json:"relay_id"`
 	Label         string  `json:"label,omitempty"`
+	NodeClass     string  `json:"node_class,omitempty"`
 	Tests         int     `json:"tests"`
 	AverageMbps   float64 `json:"average_mbps"`
 	AverageTTFBMS float64 `json:"average_ttfb_ms"`
@@ -411,6 +427,7 @@ func buildTelemetryOverview(records []TelemetryRecord, now time.Time, window tim
 	failures := make(map[string]int)
 	failureReasons := make(map[string]int)
 	relays := make(map[string]*relaySummary)
+	relayClasses := make(map[string]string)
 	relayFailureReasons := make(map[string]map[string]int)
 	type speedAccumulator struct {
 		tests      int
@@ -453,6 +470,10 @@ func buildTelemetryOverview(records []TelemetryRecord, now time.Time, window tim
 		}
 		if event.RelayID != "" {
 			session.summary.RelayID = event.RelayID
+			session.summary.RelayNodeClass = record.RelayNodeClass
+			if record.RelayNodeClass != "" {
+				relayClasses[event.RelayID] = record.RelayNodeClass
+			}
 		}
 		// Clients report their OS through one of three mutually exclusive keys:
 		// desktop sends a ready-made operating_system label ("macOS (arm64)"),
@@ -590,6 +611,9 @@ func buildTelemetryOverview(records []TelemetryRecord, now time.Time, window tim
 	activeOS := make(map[string]int)
 	for _, session := range sessions {
 		summary := session.finalize(now)
+		if summary.RelayNodeClass == "" {
+			summary.RelayNodeClass = relayClasses[summary.RelayID]
+		}
 		if session.attempted {
 			overview.Totals.Attempts++
 		}
@@ -652,6 +676,7 @@ func buildTelemetryOverview(records []TelemetryRecord, now time.Time, window tim
 	for relayID, speed := range speeds {
 		overview.SpeedTests = append(overview.SpeedTests, speedTestSummary{RelayID: relayID, Tests: speed.tests, AverageMbps: float64(speed.mbps) / float64(speed.tests) / 1000, AverageTTFBMS: float64(speed.ttfb) / float64(speed.tests)})
 	}
+	applyTelemetryRelayClasses(&overview, relayClasses)
 	sortSpeedTests(overview.SpeedTests)
 	return overview
 }
@@ -668,36 +693,72 @@ func sortSpeedTests(speedTests []speedTestSummary) {
 	sort.Slice(speedTests, func(i, j int) bool { return speedTests[i].AverageMbps > speedTests[j].AverageMbps })
 }
 
-func applyRelayLabels(ov *telemetryOverview, labels map[string]string) {
-	if len(labels) == 0 {
+// applyTelemetryRelayClasses decorates relay-keyed overview summaries from the
+// broker-attested class retained with telemetry. Unlike the active-descriptor
+// fallback below, this mapping survives relay expiry for the full telemetry
+// retention window.
+func applyTelemetryRelayClasses(ov *telemetryOverview, classes map[string]string) {
+	for i := range ov.TopRelays {
+		ov.TopRelays[i].NodeClass = classes[ov.TopRelays[i].RelayID]
+	}
+	for i := range ov.ActiveRelays {
+		ov.ActiveRelays[i].NodeClass = classes[ov.ActiveRelays[i].Name]
+	}
+	for i := range ov.SpeedTests {
+		ov.SpeedTests[i].NodeClass = classes[ov.SpeedTests[i].RelayID]
+	}
+}
+
+// applyRelayDisplays decorates every relay-keyed view in the overview with the
+// active relay's current label and supplies its class only when legacy
+// telemetry predates the retained class field. A relay with no label keeps the
+// ID as its name; a missing active descriptor must never clear recorded class.
+func applyRelayDisplays(ov *telemetryOverview, displays map[string]relayDisplay) {
+	if len(displays) == 0 {
 		return
 	}
 	for i := range ov.TopRelays {
-		if label := labels[ov.TopRelays[i].RelayID]; label != "" {
-			ov.TopRelays[i].Label = label
+		display := displays[ov.TopRelays[i].RelayID]
+		if display.Label != "" {
+			ov.TopRelays[i].Label = display.Label
+		}
+		if ov.TopRelays[i].NodeClass == "" {
+			ov.TopRelays[i].NodeClass = display.NodeClass
 		}
 	}
 	// ov.Recent is not part of the overview response; the sessions endpoint
-	// labels its own page via applySessionRelayLabels.
+	// decorates its own page via applySessionRelayDisplays.
 	for i := range ov.ActiveRelays {
-		if label := labels[ov.ActiveRelays[i].Name]; label != "" {
-			ov.ActiveRelays[i].Label = label
+		display := displays[ov.ActiveRelays[i].Name]
+		if display.Label != "" {
+			ov.ActiveRelays[i].Label = display.Label
+		}
+		if ov.ActiveRelays[i].NodeClass == "" {
+			ov.ActiveRelays[i].NodeClass = display.NodeClass
 		}
 	}
 	for i := range ov.SpeedTests {
-		if label := labels[ov.SpeedTests[i].RelayID]; label != "" {
-			ov.SpeedTests[i].Label = label
+		display := displays[ov.SpeedTests[i].RelayID]
+		if display.Label != "" {
+			ov.SpeedTests[i].Label = display.Label
+		}
+		if ov.SpeedTests[i].NodeClass == "" {
+			ov.SpeedTests[i].NodeClass = display.NodeClass
 		}
 	}
 }
 
-func applySessionRelayLabels(sessions []sessionSummary, labels map[string]string) {
-	if len(labels) == 0 {
+func applySessionRelayDisplays(sessions []sessionSummary, displays map[string]relayDisplay) {
+	if len(displays) == 0 {
 		return
 	}
 	for i := range sessions {
-		if label := labels[sessions[i].RelayID]; label != "" {
-			sessions[i].RelayLabel = label
+		display := displays[sessions[i].RelayID]
+		if display.Label != "" {
+			sessions[i].RelayLabel = display.Label
+		}
+		if sessions[i].RelayNodeClass == "" {
+			sessions[i].RelayNodeClass = display.NodeClass
 		}
 	}
 }

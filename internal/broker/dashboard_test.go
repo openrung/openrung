@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"openrung/internal/relay"
 )
 
 type dashboardTelemetryStore struct{ records []TelemetryRecord }
@@ -34,7 +36,7 @@ func TestApplyRelayLabelsCoversAllRelayViews(t *testing.T) {
 		ActiveRelays: []countSummary{{Name: "relay_a", Count: 3}, {Name: "relay_x", Count: 1}},
 		SpeedTests:   []speedTestSummary{{RelayID: "relay_a"}},
 	}
-	applyRelayLabels(&ov, map[string]string{"relay_a": "proud-falcon"})
+	applyRelayDisplays(&ov, map[string]relayDisplay{"relay_a": {Label: "proud-falcon", NodeClass: relay.NodeClassFoundation}})
 
 	if ov.TopRelays[0].Label != "proud-falcon" {
 		t.Errorf("top_relays label = %q, want proud-falcon", ov.TopRelays[0].Label)
@@ -369,7 +371,9 @@ func TestDashboardSessionsPagination(t *testing.T) {
 	}
 	dashboard := newDashboardServer("secret", newTelemetryReaderQuerier(store))
 	dashboard.now = func() time.Time { return now }
-	dashboard.relayLabels = func() map[string]string { return map[string]string{"relay-1": "proud-falcon"} }
+	dashboard.relayDisplays = func() map[string]relayDisplay {
+		return map[string]relayDisplay{"relay-1": {Label: "proud-falcon", NodeClass: relay.NodeClassFoundation}}
+	}
 	dashboard.sessions["valid"] = now.Add(time.Hour)
 
 	fetch := func(query string) (*httptest.ResponseRecorder, sessionsPage) {
@@ -570,4 +574,148 @@ func dashboardRecord(at time.Time, eventID, event, clientID, sessionID, relayID 
 		ClientID: clientID, SessionID: sessionID, RelayID: relayID,
 		Attributes: attributes, Measurements: measurements,
 	}}
+}
+
+// Every relay-keyed view must carry the node class so the UI can render
+// "name (class)" beside each relay, including relays with no operator label
+// (whose views fall back to the relay ID for the name).
+func TestApplyRelayDisplaysCoversNodeClassEverywhere(t *testing.T) {
+	ov := telemetryOverview{
+		TopRelays:    []relaySummary{{RelayID: "relay_f"}, {RelayID: "relay_v"}, {RelayID: "relay_none"}},
+		ActiveRelays: []countSummary{{Name: "relay_f", Count: 3}, {Name: "relay_v", Count: 1}},
+		SpeedTests:   []speedTestSummary{{RelayID: "relay_f"}, {RelayID: "relay_v"}},
+		// Non-relay rankings share countSummary and must stay class-free.
+		TopCities: []countSummary{{Name: "Tokyo", Count: 5}},
+		TopISPs:   []countSummary{{Name: "ExampleNet", Count: 2}},
+	}
+	applyRelayDisplays(&ov, map[string]relayDisplay{
+		"relay_f": {Label: "sleepy-falcon", NodeClass: relay.NodeClassFoundation},
+		"relay_v": {Label: "fast-lizard", NodeClass: relay.NodeClassVolunteer},
+		// Unlabeled but attested: the class must still surface.
+		"relay_none": {NodeClass: relay.NodeClassFoundation},
+	})
+
+	if ov.TopRelays[0].NodeClass != relay.NodeClassFoundation || ov.TopRelays[1].NodeClass != relay.NodeClassVolunteer {
+		t.Errorf("top_relays node_class = %q/%q, want foundation/volunteer", ov.TopRelays[0].NodeClass, ov.TopRelays[1].NodeClass)
+	}
+	if ov.ActiveRelays[0].NodeClass != relay.NodeClassFoundation || ov.ActiveRelays[1].NodeClass != relay.NodeClassVolunteer {
+		t.Errorf("active_by_relay node_class = %q/%q, want foundation/volunteer", ov.ActiveRelays[0].NodeClass, ov.ActiveRelays[1].NodeClass)
+	}
+	if ov.SpeedTests[0].NodeClass != relay.NodeClassFoundation || ov.SpeedTests[1].NodeClass != relay.NodeClassVolunteer {
+		t.Errorf("speed_tests node_class = %q/%q, want foundation/volunteer", ov.SpeedTests[0].NodeClass, ov.SpeedTests[1].NodeClass)
+	}
+	// An unlabeled relay keeps the ID as its name but still shows the class.
+	if ov.TopRelays[2].Label != "" || ov.TopRelays[2].NodeClass != relay.NodeClassFoundation {
+		t.Errorf("unlabeled relay: label=%q node_class=%q, want empty/foundation", ov.TopRelays[2].Label, ov.TopRelays[2].NodeClass)
+	}
+	// City/ISP rankings reuse countSummary; they must never gain a class.
+	if ov.TopCities[0].NodeClass != "" || ov.TopISPs[0].NodeClass != "" {
+		t.Errorf("non-relay rankings gained a node_class: cities=%q isps=%q", ov.TopCities[0].NodeClass, ov.TopISPs[0].NodeClass)
+	}
+}
+
+func TestApplySessionRelayDisplaysSetsNodeClass(t *testing.T) {
+	sessions := []sessionSummary{{RelayID: "relay_f"}, {RelayID: "relay_v"}, {RelayID: ""}}
+	applySessionRelayDisplays(sessions, map[string]relayDisplay{
+		"relay_f": {Label: "sleepy-falcon", NodeClass: relay.NodeClassFoundation},
+		"relay_v": {Label: "fast-lizard", NodeClass: relay.NodeClassVolunteer},
+	})
+
+	if sessions[0].RelayLabel != "sleepy-falcon" || sessions[0].RelayNodeClass != relay.NodeClassFoundation {
+		t.Errorf("session 0 = %q/%q, want sleepy-falcon/foundation", sessions[0].RelayLabel, sessions[0].RelayNodeClass)
+	}
+	if sessions[1].RelayNodeClass != relay.NodeClassVolunteer {
+		t.Errorf("session 1 node_class = %q, want volunteer", sessions[1].RelayNodeClass)
+	}
+	// A session with no relay must not render a stray "( )" suffix.
+	if sessions[2].RelayNodeClass != "" {
+		t.Errorf("relayless session gained node_class %q", sessions[2].RelayNodeClass)
+	}
+}
+
+func TestRecordedRelayClassSurvivesMissingActiveDescriptor(t *testing.T) {
+	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	record := func(eventID, event string, at time.Time, measurements map[string]int64) TelemetryRecord {
+		return TelemetryRecord{
+			ReceivedAt:     at,
+			RelayNodeClass: relay.NodeClassFoundation,
+			Event: TelemetryEvent{
+				SchemaVersion: 1,
+				EventID:       eventID,
+				Event:         event,
+				OccurredAt:    at,
+				ClientID:      "client-1",
+				SessionID:     "session-1",
+				RelayID:       "relay-expired",
+				Measurements:  measurements,
+			},
+		}
+	}
+	ov := buildTelemetryOverview([]TelemetryRecord{
+		record("success", "connection_succeeded", now.Add(-2*time.Minute), nil),
+		record("heartbeat", "session_heartbeat", now.Add(-time.Minute), nil),
+		record("speed", "speed_test_completed", now.Add(-30*time.Second), map[string]int64{"download_mbps_milli": 50_000}),
+	}, now, 24*time.Hour)
+
+	// The active descriptor map no longer contains relay-expired. Including a
+	// different relay makes applyRelayDisplays traverse every row; it must not
+	// clear the class retained with telemetry.
+	applyRelayDisplays(&ov, map[string]relayDisplay{
+		"relay-other": {Label: "other", NodeClass: relay.NodeClassVolunteer},
+	})
+	applySessionRelayDisplays(ov.Recent, map[string]relayDisplay{
+		"relay-other": {Label: "other", NodeClass: relay.NodeClassVolunteer},
+	})
+
+	if len(ov.TopRelays) != 1 || ov.TopRelays[0].NodeClass != relay.NodeClassFoundation {
+		t.Fatalf("top relay lost recorded class: %+v", ov.TopRelays)
+	}
+	if len(ov.ActiveRelays) != 1 || ov.ActiveRelays[0].NodeClass != relay.NodeClassFoundation {
+		t.Fatalf("active relay lost recorded class: %+v", ov.ActiveRelays)
+	}
+	if len(ov.SpeedTests) != 1 || ov.SpeedTests[0].NodeClass != relay.NodeClassFoundation {
+		t.Fatalf("speed test lost recorded class: %+v", ov.SpeedTests)
+	}
+	if len(ov.Recent) != 1 || ov.Recent[0].RelayNodeClass != relay.NodeClassFoundation {
+		t.Fatalf("session lost recorded class: %+v", ov.Recent)
+	}
+}
+
+func TestDashboardRelayClassHasVisibleAccessibleMarker(t *testing.T) {
+	html := string(dashboardHTML)
+	for _, required := range []string{"relay-class-marker", "'FND':'VOL'", `aria-label="${esc(cls)} relay"`} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard is missing relay class marker fragment %q", required)
+		}
+	}
+}
+
+// The resolver must carry both the label and the class straight off the
+// descriptor, including for unlabeled relays.
+func TestRelayDisplayResolverCarriesLabelAndClass(t *testing.T) {
+	store := NewStore()
+	now := time.Now().UTC()
+
+	fnd := validRegisterRequest()
+	fnd.Label = "sleepy-falcon"
+	fnd.NodeClass = relay.NodeClassFoundation
+	fndDesc, err := store.Register(fnd, now, time.Minute)
+	if err != nil {
+		t.Fatalf("register foundation relay: %v", err)
+	}
+	vol := validRegisterRequest()
+	vol.PublicHost = "2001:db8::77"
+	vol.Label = ""
+	volDesc, err := store.Register(vol, now, time.Minute)
+	if err != nil {
+		t.Fatalf("register volunteer relay: %v", err)
+	}
+
+	displays := relayDisplayResolver(store)()
+	if got := displays[fndDesc.ID]; got.Label != "sleepy-falcon" || got.NodeClass != relay.NodeClassFoundation {
+		t.Errorf("foundation display = %+v, want sleepy-falcon/foundation", got)
+	}
+	if got := displays[volDesc.ID]; got.Label != "" || got.NodeClass != relay.NodeClassVolunteer {
+		t.Errorf("unlabeled volunteer display = %+v, want empty label/volunteer class", got)
+	}
 }
