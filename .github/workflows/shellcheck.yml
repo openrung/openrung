@@ -48,4 +48,8 @@ jobs:
             exit 1
           fi
           printf '%s\n' "${scripts[@]}"
-          shellcheck "${scripts[@]}"
+          # -x follows `source`d files (paths resolve via source-path=SCRIPTDIR
+          # in deploy/.shellcheckrc), so a script that only uses a variable or
+          # function across the source boundary is analyzed correctly rather
+          # than reported as unused.
+          shellcheck -x "${scripts[@]}"

@@ -7,3 +7,9 @@
 # ssh command strings — the remote shell is meant to receive the final values.
 # Acknowledged here once rather than per call site.
 disable=SC2029
+
+# Resolve `# shellcheck source=` directives relative to the sourcing script's
+# own directory instead of the caller's working directory, so `shellcheck -x`
+# finds the target whether it runs from the repo root (CI) or from deploy/relay
+# (a local `./foundation-up_test.sh` run, an editor).
+source-path=SCRIPTDIR

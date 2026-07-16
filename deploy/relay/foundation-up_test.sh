@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# SC2329 ("function is never invoked") is disabled file-wide: nearly every test
+# here defines mock functions that shadow the real ones and are called only
+# indirectly, from the foundation-up.sh code under test. That is the harness's
+# whole design, so the check fires on every mock and cannot distinguish a
+# correct one from a mock whose name has drifted out of sync with the script.
+# shellcheck disable=SC2329
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,6 +17,7 @@ set +e
 reset_script_functions() {
   # Function mocks are global in bash; re-source between test groups so one
   # failure-injection setup cannot contaminate the next group.
+  # shellcheck source=foundation-up.sh
   source "$SCRIPT"
   set +e
 }
@@ -176,6 +183,10 @@ test_update_unsets_unused_token_sources() {
   }
   prepare_image() { :; }
   roll_host() { :; }
+  # SC2030/SC2031: confining the token to this subshell is the point -- the test
+  # asserts cmd_update unexports it before spawning preflight children, and the
+  # subshell keeps the secret out of the rest of the harness either way.
+  # shellcheck disable=SC2030
   if (set -e; OPENRUNG_FOUNDATION_TOKEN=unused-secret; export OPENRUNG_FOUNDATION_TOKEN; cmd_update 203.0.113.10) >"$OUTPUT" 2>&1; then
     pass
   else
@@ -192,6 +203,7 @@ test_convert_unexports_token_before_preflight() {
       return 1
     fi
   }
+  # shellcheck disable=SC2031
   load_token() { TOKEN="$OPENRUNG_FOUNDATION_TOKEN"; unset OPENRUNG_FOUNDATION_TOKEN; }
   convert_host() { :; }
   if (set -e; OPENRUNG_FOUNDATION_TOKEN=foundation-secret; export OPENRUNG_FOUNDATION_TOKEN; cmd_convert 203.0.113.10) >"$OUTPUT" 2>&1; then
@@ -374,6 +386,10 @@ test_real_transaction_and_rollback_commands() {
   if roll_host 203.0.113.10 "$ENV_FILE" >"$OUTPUT" 2>&1; then rc=0; else rc=$?; fi
   assert_eq 0 "$rc" "real candidate transaction succeeds"
   assert_eq true "$(sim_running "$CONTAINER")" "committed live container is running"
+  # SC2319 on the next four assertions: `$?` after a `[ ... ] && [ ... ]` list
+  # is the status of the list itself -- 0 only when every path test holds --
+  # which is exactly the value being compared. Intentional, not a stray `$?`.
+  # shellcheck disable=SC2319
   assert_eq 0 "$([ ! -e "${SIM_DIR}/${OLD_CONTAINER}" ] && [ ! -e "${SIM_DIR}/${NEW_CONTAINER}" ]; echo $?)" "success removes old and candidate names"
   assert_before "$(<"$SIM_LOG")" "rename ${CONTAINER} ${OLD_CONTAINER}" "run ${NEW_CONTAINER}" "candidate starts after live becomes old"
   assert_before "$(<"$SIM_LOG")" "rename ${NEW_CONTAINER} ${CONTAINER}" "rm ${OLD_CONTAINER}" "backup removal follows promotion"
@@ -381,9 +397,10 @@ test_real_transaction_and_rollback_commands() {
   # A run failure leaves old-only; the real rollback command restores it.
   sim_reset
   sim_put "$CONTAINER" true
-  SIM_FAIL_OP=run
+  SIM_FAIL_OP="run"
   if roll_host 203.0.113.10 "$ENV_FILE" >"$OUTPUT" 2>&1; then rc=0; else rc=$?; fi
   assert_eq 1 "$rc" "candidate start failure propagates"
+  # shellcheck disable=SC2319
   assert_eq 0 "$([ -e "${SIM_DIR}/${OLD_CONTAINER}" ] && [ ! -e "${SIM_DIR}/${CONTAINER}" ]; echo $?)" "run failure leaves stopped old only"
   unset SIM_FAIL_OP
   if rollback_host 203.0.113.10 >"$OUTPUT" 2>&1; then rc=0; else rc=$?; fi
@@ -396,6 +413,7 @@ test_real_transaction_and_rollback_commands() {
   verify_foundation() { return 1; }
   if roll_host 203.0.113.10 "$ENV_FILE" >"$OUTPUT" 2>&1; then rc=0; else rc=$?; fi
   assert_eq 1 "$rc" "verification failure propagates"
+  # shellcheck disable=SC2319
   assert_eq 0 "$([ -e "${SIM_DIR}/${OLD_CONTAINER}" ] && [ -e "${SIM_DIR}/${NEW_CONTAINER}" ] && [ ! -e "${SIM_DIR}/${CONTAINER}" ]; echo $?)" "verification failure leaves exact rollback state"
   if rollback_host 203.0.113.10 >"$OUTPUT" 2>&1; then rc=0; else rc=$?; fi
   assert_eq 0 "$rc" "old+new rollback succeeds"
@@ -405,9 +423,10 @@ test_real_transaction_and_rollback_commands() {
   sim_reset
   sim_put "$OLD_CONTAINER" false
   sim_put "$NEW_CONTAINER" true
-  SIM_FAIL_OP=rm
+  SIM_FAIL_OP="rm"
   if commit_candidate 203.0.113.10 >"$OUTPUT" 2>&1; then rc=0; else rc=$?; fi
   assert_eq 1 "$rc" "backup cleanup failure propagates"
+  # shellcheck disable=SC2319
   assert_eq 0 "$([ -e "${SIM_DIR}/${CONTAINER}" ] && [ -e "${SIM_DIR}/${OLD_CONTAINER}" ] && [ ! -e "${SIM_DIR}/${NEW_CONTAINER}" ]; echo $?)" "cleanup failure leaves visible live plus old"
   unset SIM_FAIL_OP
   : > "$SIM_LOG"
