@@ -89,7 +89,7 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 	}
 	if cfg.DashboardToken != "" && querier != nil {
 		dashboard := newDashboardServer(cfg.DashboardToken, querier)
-		dashboard.relayLabels = relayLabelResolver(store)
+		dashboard.relayDisplays = relayDisplayResolver(store)
 		dashboard.register(mux)
 	}
 
@@ -401,20 +401,20 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, relay.ErrorResponse{Error: message})
 }
 
-// relayLabelResolver returns a function that maps active relay IDs to their
-// operator-supplied labels, for decorating the admin dashboard.
-func relayLabelResolver(store RelayStore) func() map[string]string {
-	return func() map[string]string {
+// relayDisplayResolver returns a function that maps active relay IDs to their
+// operator-supplied label and broker-attested node class, for decorating the
+// admin dashboard. Unlabeled relays are included too: their views fall back to
+// the relay ID for the name but still show the class beside it.
+func relayDisplayResolver(store RelayStore) func() map[string]relayDisplay {
+	return func() map[string]relayDisplay {
 		descriptors, err := store.List(time.Now().UTC(), 0)
 		if err != nil {
 			return nil
 		}
-		labels := make(map[string]string, len(descriptors))
+		displays := make(map[string]relayDisplay, len(descriptors))
 		for _, desc := range descriptors {
-			if desc.Label != "" {
-				labels[desc.ID] = desc.Label
-			}
+			displays[desc.ID] = relayDisplay{Label: desc.Label, NodeClass: desc.NodeClass}
 		}
-		return labels
+		return displays
 	}
 }

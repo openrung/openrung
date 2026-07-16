@@ -171,6 +171,14 @@ ASN, and — when the client reports traffic counters — `bytes_sent` and
 `bytes_received` for the session. The overview also includes top-city and
 top-ISP rankings counted by unique session.
 
+Every view that names a relay renders its broker-attested class after the name,
+as `sleepy-falcon (foundation)` or `fast-lizard (volunteer)`: the top-relay,
+speed-test, and active-by-relay rankings, plus the relay column of recent
+sessions. The class rides alongside the label as `node_class` (and
+`relay_node_class` on session entries); a relay with no operator label falls
+back to its ID but still shows the class. Rankings that are not relay-keyed
+(city, country, ISP, OS, application) carry no class.
+
 The session `source_ip` prefers the broker-observed pre-tunnel `client_seen`
 address, then the client's pre-tunnel `client_ip` attribute. The source address
 of later telemetry uploads is used only as a fallback because connected uploads
