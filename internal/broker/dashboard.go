@@ -31,8 +31,8 @@ var dashboardHTML []byte
 
 // relayDisplay is how the dashboard identifies an active relay: its
 // operator-supplied label (may be empty, in which case views fall back to the
-// relay ID) and its broker-attested node class, which every view renders
-// alongside the name.
+// relay ID) and its broker-attested node class, which every view uses to colour
+// the relay's name — green for foundation, orange for volunteer.
 type relayDisplay struct {
 	Label     string
 	NodeClass string
@@ -318,7 +318,7 @@ type countSummary struct {
 	Label string `json:"label,omitempty"`
 	// NodeClass is set only for relay-keyed rankings (active_by_relay); the
 	// city/country/ISP/OS/application rankings that share this shape leave it
-	// empty so views render them without a class suffix.
+	// empty so views render them uncoloured.
 	NodeClass string `json:"node_class,omitempty"`
 	Count     int    `json:"count"`
 }
@@ -686,7 +686,7 @@ func sortSpeedTests(speedTests []speedTestSummary) {
 
 // applyRelayDisplays decorates every relay-keyed view in the overview with the
 // relay's label and node class. A relay with no label keeps the ID as its name
-// but still carries the class, so each view can render "name (class)".
+// but still carries the class, so each view can colour the name by class.
 func applyRelayDisplays(ov *telemetryOverview, displays map[string]relayDisplay) {
 	if len(displays) == 0 {
 		return
