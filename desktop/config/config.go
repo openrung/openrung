@@ -56,6 +56,22 @@ const (
 	// reachability identically.
 	RelayTCPTimeout = 5 * time.Second
 
+	// Relay ranking: before the ladder runs, the client probes TCP connect
+	// latency to the head of the candidate list and reorders it by latency
+	// bucket (see vpnservice/ranker.go). Must stay in sync with the mobile
+	// RelayRanker constants so all three clients rank identically.
+	//
+	// RelayRankMaxProbes caps how many relays are probed; the rest keep broker
+	// order behind the probed head. RelayRankProbeTimeout is deliberately far
+	// shorter than RelayTCPTimeout: this probe only ranks, so it may give up
+	// early where the ladder's own 5s reachability gate would still succeed.
+	// RelayRankBucketMS is the width, in milliseconds, of the latency bucket
+	// within which broker order (and with it the broker's load balancing) still
+	// decides.
+	RelayRankMaxProbes    = 8
+	RelayRankProbeTimeout = 1500 * time.Millisecond
+	RelayRankBucketMS     = int64(30)
+
 	// Internet probe: a connect is reported CONNECTED only after an end-to-end
 	// HTTP probe through the tunnel succeeds. Sweeps of InternetProbeURLs are
 	// retried every InternetProbeRetryDelay until InternetProbeOverallTimeout,

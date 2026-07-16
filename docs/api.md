@@ -384,9 +384,18 @@ GET /api/v1/relays?limit=5
 
 The order of `relays` is the broker's candidate ranking. In global ranking mode,
 the broker uses recent active sessions, connection successes/failures, observed
-client latency, and speed-test telemetry. IPv6 is only a final tie-breaker after
-score and heartbeat recency. Clients should filter unusable descriptors without
-reordering the broker-ranked list.
+client latency, and speed-test telemetry. The latency it scores is aggregated
+across all clients, so it cannot describe any one client's path. IPv6 is only a
+final tie-breaker after score and heartbeat recency. `limit` truncates *after*
+ranking, so membership of the returned set — unlike the order within it — is
+decided entirely by the broker.
+
+Clients should filter unusable descriptors without reordering the broker-ranked
+list. A client may reorder on a signal the broker cannot observe — notably the
+connecting client's own network path — provided broker order is preserved among
+candidates that measure comparably (for example, within one latency bucket), so
+the broker's load-balancing term still decides between them. Ranking must
+reorder, never exclude: a client must not drop a relay on a local measurement.
 
 The PostgreSQL relay-state schema also keeps JSONB escape hatches for fields
 that are still experimental: `relay_descriptors.attributes`,

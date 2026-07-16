@@ -88,7 +88,8 @@ type connection struct {
 	// is still trying candidates or after a teardown. Only the runConnect
 	// goroutine assigns and tears it down; mu guards the pointer for readers.
 	active *candidateResult
-	// candidates is the last fetched usable+filtered list, in broker order. A
+	// candidates is the last fetched usable+filtered list in ladder order —
+	// client-latency ranked, with a recovery's failed relay demoted last. A
 	// recovery re-ladder replaces it.
 	candidates    []relay.Descriptor
 	activeRelayID string
@@ -115,6 +116,13 @@ type candidateResult struct {
 	startMS    int64
 	probeMS    int64
 	attempt    int64 // 1-based index in the ladder that produced it
+	// brokerIndex is where this relay sat in the broker's order before client
+	// ranking reordered the ladder; -1 until ladderOrder.annotate stamps it, so
+	// an unannotated result never claims it was the broker's first choice.
+	brokerIndex int64
+	// rankProbeMS is the ranker's measured TCP latency, nil when this relay was
+	// not probed or its probe failed.
+	rankProbeMS *int64
 }
 
 // teardown releases a candidate's resources in the pinned order: cancel the
@@ -466,18 +474,21 @@ func (s *Service) connectFlow(ctx context.Context, conn *connection, brokerURL, 
 	if err != nil {
 		return stage, err
 	}
+	order := s.rankLadder(ctx, cands, targetRelayID)
+	ladder := order.candidates()
 	s.mu.Lock()
-	conn.candidates = cands
+	conn.candidates = ladder
 	conn.brokerURL = fetch.BrokerURL
 	s.mu.Unlock()
 
-	res, err := s.runLadder(ctx, conn, cands, port)
+	res, err := s.runLadder(ctx, conn, ladder, port)
 	if err != nil {
 		if ctx.Err() != nil {
 			return "", nil
 		}
 		return "relay_connect", err
 	}
+	order.annotate(res)
 	// The OS proxy is pointed at the tunnel only once a candidate is proven, so
 	// a fully failing ladder never blackholes the user's traffic — it falls
 	// back to the normal network instead (contract: availability over leak).
@@ -541,10 +552,12 @@ func (s *Service) candidatesFor(resp relay.ListResponse, targetCountry, targetRe
 	return cands, "", nil
 }
 
-// runLadder walks the candidates in broker order, fully tearing down each
-// failed candidate before trying the next — sequential by construction, since
-// the shared loopback port cannot be rebound until the previous sing-box is
-// reaped. Mirrors the mobile connectFirstAvailable.
+// runLadder walks the candidates in the order it is given — ladder order, which
+// rankLadder decides (see ranker.go); broker order only survives where ranking
+// does not apply. Each failed candidate is fully torn down before the next is
+// tried: sequential by construction, since the shared loopback port cannot be
+// rebound until the previous sing-box is reaped. Mirrors the mobile
+// connectFirstAvailable.
 func (s *Service) runLadder(ctx context.Context, conn *connection, cands []relay.Descriptor, port int) (*candidateResult, error) {
 	var lastErr error
 	for i, cand := range cands {
@@ -581,7 +594,7 @@ func (s *Service) attemptCandidate(ctx context.Context, conn *connection, cand r
 	}
 
 	candCtx, cancel := context.WithCancel(ctx)
-	res := &candidateResult{relay: cand, ctx: candCtx, cancel: cancel, proxyPort: port, tcpMS: tcpMS, attempt: int64(attempt)}
+	res := &candidateResult{relay: cand, ctx: candCtx, cancel: cancel, proxyPort: port, tcpMS: tcpMS, attempt: int64(attempt), brokerIndex: -1}
 
 	// Try a direct NAT-punched path first; on any failure fall back to the
 	// relay hub endpoint so the outcome is never worse than not punching.
@@ -639,13 +652,23 @@ func (s *Service) attemptCandidate(ctx context.Context, conn *connection, cand r
 // initial connection_succeeded or a recovery relay_failover so the broker's
 // relay ranking credits the relay that actually carried the connection.
 func connectMeasurements(res *candidateResult, brokerFetchMS int64) map[string]int64 {
-	return map[string]int64{
+	m := map[string]int64{
 		"broker_fetch_ms":   brokerFetchMS,
 		"relay_tcp_ms":      res.tcpMS,
 		"tunnel_start_ms":   res.startMS,
 		"internet_probe_ms": res.probeMS,
 		"relay_attempts":    res.attempt,
+		// Rank observability: where the winning relay sat in broker order before
+		// ranking, and what the ranker measured for it — the pair that shows
+		// whether client-side ranking actually beats broker order on
+		// tunnel_start_ms. relay_probe_ms is absent, never zero, when the relay
+		// was not probed: 0ms is a legitimate measurement.
+		"relay_broker_index": res.brokerIndex,
 	}
+	if res.rankProbeMS != nil {
+		m["relay_probe_ms"] = *res.rankProbeMS
+	}
+	return m
 }
 
 // promote adopts a winning candidate as the live tunnel: it marks CONNECTED with
