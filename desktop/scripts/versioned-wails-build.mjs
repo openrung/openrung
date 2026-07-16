@@ -1,6 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const configPath = fileURLToPath(new URL('../wails.json', import.meta.url));
@@ -76,7 +75,23 @@ function main() {
   process.exitCode = result.status ?? 1;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+// Realpath both sides: Node resolves symlinks for the ESM entry point but not
+// for argv[1], so through a symlinked checkout this would silently skip main()
+// and exit 0 — leaving the packaging scripts to ship whatever stale binary was
+// already in build/bin.
+function isEntryPoint() {
+  const entry = process.argv[1];
+  if (!entry) {
+    return false;
+  }
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(entry)).href;
+  } catch {
+    return false;
+  }
+}
+
+if (isEntryPoint()) {
   try {
     main();
   } catch (error) {

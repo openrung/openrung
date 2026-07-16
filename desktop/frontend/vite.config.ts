@@ -1,24 +1,12 @@
-import { readFileSync } from 'node:fs';
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
+// Shared with the packaging scripts, so the frontend and the Go binary cannot
+// disagree about what counts as a valid version or where it comes from. Reads
+// and validates desktop/wails.json, throwing if info.productVersion is missing
+// or not a strict X.Y.Z.
+import { readProductVersion } from '../scripts/versioned-wails-build.mjs';
 
-interface WailsConfig {
-  info?: {
-    productVersion?: unknown;
-  };
-}
-
-const wailsConfig = JSON.parse(
-  readFileSync(new URL('../wails.json', import.meta.url), 'utf8'),
-) as WailsConfig;
-const appVersion = wailsConfig.info?.productVersion;
-
-if (
-  typeof appVersion !== 'string' ||
-  !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(appVersion)
-) {
-  throw new Error('desktop/wails.json info.productVersion must be a semantic X.Y.Z version');
-}
+const appVersion: string = readProductVersion();
 
 export default defineConfig({
   plugins: [react()],
