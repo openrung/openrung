@@ -9,14 +9,20 @@ implies that two components must be deployed together.
 | Relay hub | `cmd/relayhub/VERSION` | `relayhub-vX.Y.Z` | `relayhub/X.Y.Z` |
 | Broker | `cmd/broker/VERSION` | `broker-vX.Y.Z` | `broker/X.Y.Z` |
 | Volunteer desktop | `desktop-volunteer/VERSION` | `volunteer-vX.Y.Z` | `desktop-volunteer/X.Y.Z` |
-| Desktop client | `desktop/frontend/src/core/config.ts` | `vX.Y.Z` | — |
+| Desktop client | `desktop/wails.json` → `info.productVersion` | `vX.Y.Z` | `X.Y.Z` in the About UI, native metadata, and broker telemetry |
 
-The desktop client is not on a `VERSION` file yet: its About-screen version is
-a literal in `config.ts` and is never reported to the broker. It keeps the
-unprefixed `vX.Y.Z` tag it released under, so its workflow matches `v[0-9]*`
-rather than `v*` — a bare `v*` also matches `volunteer-v0.1.0` and would
-publish a desktop release onto the volunteer app's tag. A new component tag
-must therefore not begin with `v` followed by a digit.
+The desktop client uses Wails' `info.productVersion` as its single version
+source. The frontend build and Go linker flags consume that value so the About
+screen, native package metadata, HTTP headers, and broker telemetry all report
+the same identity. The desktop release workflow validates it as strict `X.Y.Z`
+before starting the platform build matrix. For a tag build, the tag must be
+exactly `vX.Y.Z` for that configured version.
+
+The desktop client keeps the unprefixed `vX.Y.Z` tag namespace it originally
+released under, so its workflow matches `v[0-9]*` rather than `v*` — a bare
+`v*` also matches `volunteer-v0.1.0` and would publish a desktop release onto
+the volunteer app's tag. A new component tag must therefore not begin with `v`
+followed by a digit.
 
 Server image workflows reject release tags that do not exactly match their
 component's `VERSION` file. Release builds publish the `X.Y.Z` image tag.
@@ -39,6 +45,15 @@ To release a server component:
    `relay-v0.1.0`.
 4. Deploy the exact semantic image tag or digest. Keep `main` for development
    and explicitly managed rolling deployments.
+
+To release the desktop client:
+
+1. Set `desktop/wails.json` → `info.productVersion` to the next strict semantic
+   version, such as `0.1.3`, and merge the change after CI passes.
+2. Tag that exact commit with `vX.Y.Z`, such as `v0.1.3`.
+3. The desktop release workflow validates that the tag is exactly `v` plus the
+   configured product version before building. A mismatch stops the release
+   before any platform jobs start.
 
 Application versions identify builds for operations and rollback. They do not
 replace compatibility contracts:

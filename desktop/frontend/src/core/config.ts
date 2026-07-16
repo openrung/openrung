@@ -20,4 +20,4 @@ export const AppConfig = {
 } as const;
 
 /** App version shown on the About screen. */
-export const APP_VERSION = '0.1.0';
+export const APP_VERSION = __APP_VERSION__;

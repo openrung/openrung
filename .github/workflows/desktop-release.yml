@@ -22,7 +22,40 @@ env:
   SING_BOX_VERSION: ${{ github.event.inputs.singbox_version || '1.14.0-alpha.35' }}
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      product_version: ${{ steps.version.outputs.product_version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: version
+        name: Validate desktop version and release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! product_version="$(jq -er '.info.productVersion | select(type == "string")' desktop/wails.json)"; then
+            echo "desktop/wails.json info.productVersion must be a string" >&2
+            exit 1
+          fi
+          if ! printf '%s\n' "$product_version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "invalid desktop/wails.json info.productVersion \"$product_version\" (want X.Y.Z)" >&2
+            exit 1
+          fi
+
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            expected_tag="v$product_version"
+            if [ "$GITHUB_REF_NAME" != "$expected_tag" ]; then
+              echo "desktop release tag $GITHUB_REF_NAME disagrees with desktop/wails.json info.productVersion ($product_version); expected $expected_tag" >&2
+              exit 1
+            fi
+          fi
+
+          echo "product_version=$product_version" >> "$GITHUB_OUTPUT"
+          echo "desktop/wails.json info.productVersion -> $product_version"
+
   build:
+    needs: version
     strategy:
       fail-fast: false
       matrix:
@@ -99,10 +132,11 @@ jobs:
           if-no-files-found: error
 
   # Publish a GitHub Release with all three binaries attached. Runs only for
-  # `v*` tag pushes (not manual dispatch, which stays artifact-only for testing).
-  # Requires all three build jobs to succeed — we don't ship a partial release.
+  # desktop `vX.Y.Z` tag pushes (not manual dispatch, which stays artifact-only
+  # for testing). Requires version validation and all three build jobs to
+  # succeed — we don't ship a partial release.
   release:
-    needs: build
+    needs: [version, build]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -117,7 +151,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: OpenRung Desktop ${{ github.ref_name }}
+          name: OpenRung Desktop v${{ needs.version.outputs.product_version }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
