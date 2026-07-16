@@ -127,7 +127,13 @@ func (s *Service) reladder(ctx context.Context, conn *connection, port int, targ
 	if err != nil {
 		return nil, 0, stage, err
 	}
-	cands = demoteRelay(cands, failedRelayID)
+	// Rank first, then demote: the relay that just died is demoted for having
+	// lost its tunnel, not for being slow, so ranking must not lift it back to
+	// the front. Demoting last keeps both invariants — the ladder is in client
+	// latency order, and the failed relay is still retried last. (Desktop-only:
+	// Android re-ranks by recursing into connect(), which has no demotion.)
+	order := s.rankLadder(ctx, cands, targetRelayID)
+	cands = demoteRelay(order.candidates(), failedRelayID)
 	s.mu.Lock()
 	conn.candidates = cands
 	conn.brokerURL = fetch.BrokerURL
@@ -137,6 +143,7 @@ func (s *Service) reladder(ctx context.Context, conn *connection, port int, targ
 	if err != nil {
 		return nil, 0, "relay_connect", err
 	}
+	order.annotate(res)
 	return res, fetchMS, "", nil
 }
 

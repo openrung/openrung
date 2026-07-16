@@ -64,9 +64,11 @@ func flushOnShutdown(mgr *clienttelemetry.Manager) {
 }
 
 // usableRelays filters the broker response to usable candidates, preserving
-// broker order — the ordering IS the broker's ranking signal, so clients filter
-// without re-sorting (docs/api.md). Freshness is judged against broker server
-// time, like the CLI and mobile clients.
+// broker order — the ordering carries the broker's ranking, so filtering must
+// not disturb it (docs/api.md). Reordering it is a separate, deliberate step the
+// ranker owns, on a signal the broker cannot see (see ranker.go); filtering
+// itself stays order-preserving. Freshness is judged against broker server time,
+// like the CLI and mobile clients.
 func usableRelays(resp relay.ListResponse) []relay.Descriptor {
 	now := resp.ServerTime
 	if now.IsZero() {

@@ -140,6 +140,57 @@ func logLines(s *Service) string {
 	return strings.Join(s.GetState().LogLines, "\n")
 }
 
+func TestLadderRankingSinksUnreachableRelay(t *testing.T) {
+	// The ranker probes before the ladder runs, so a relay that does not answer
+	// is tried last rather than costing the first rung its full reachability
+	// timeout. It is demoted, never dropped — and the winner's telemetry reports
+	// where it sat in broker order, so the reorder is auditable.
+	sink := newTelemetrySink(t)
+	fixtures := []relay.Descriptor{
+		relayAt("a", "JP", "Tokyo", "Japan", "127.0.0.10"),
+		relayAt("b", "SG", "", "Singapore", "127.0.0.11"),
+		relayAt("c", "DE", "Berlin", "Germany", "127.0.0.12"),
+	}
+	s, _ := newLadderService(t, func() []relay.Descriptor { return fixtures })
+	s.dialRelay = func(ctx context.Context, host string, port int) (int64, error) {
+		if host == "127.0.0.10" {
+			return 0, errors.New("relay 127.0.0.10:443 is not reachable: dial tcp: i/o timeout")
+		}
+		return 7, nil
+	}
+
+	if err := s.Connect(sink.srv.URL, "", ""); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if state := waitForStatus(t, s, StatusConnected); state.RelayLabel == nil || *state.RelayLabel != "Singapore" {
+		t.Fatalf("relayLabel = %v, want the first reachable relay", state.RelayLabel)
+	}
+	if err := s.Disconnect(); err != nil {
+		t.Fatalf("disconnect: %v", err)
+	}
+	waitForStatus(t, s, StatusDisconnected)
+	waitIdle(t, s)
+
+	// a sank below the reachable relays, so the ladder never spent a rung on it.
+	if attempts := sink.named("relay_attempt_failed"); len(attempts) != 0 {
+		t.Fatalf("relay_attempt_failed = %+v, want none: the unreachable relay was ranked last", attempts)
+	}
+	succeeded := sink.named("connection_succeeded")
+	if len(succeeded) != 1 || succeeded[0].RelayID != "b" {
+		t.Fatalf("connection_succeeded = %+v, want relay b", succeeded)
+	}
+	meas := succeeded[0].Measurements
+	if meas["relay_attempts"] != 1 {
+		t.Fatalf("relay_attempts = %d, want 1: the winner was the ladder's first rung", meas["relay_attempts"])
+	}
+	if meas["relay_broker_index"] != 1 {
+		t.Fatalf("relay_broker_index = %d, want 1: b was the broker's second choice", meas["relay_broker_index"])
+	}
+	if got, ok := meas["relay_probe_ms"]; !ok || got != 7 {
+		t.Fatalf("relay_probe_ms = %d (present=%t), want 7", got, ok)
+	}
+}
+
 func TestLadderFailsOverToNextCandidate(t *testing.T) {
 	sink := newTelemetrySink(t)
 	fixtures := []relay.Descriptor{
@@ -151,8 +202,16 @@ func TestLadderFailsOverToNextCandidate(t *testing.T) {
 
 	// Relay a is unreachable; relay b starts but never passes the internet
 	// probe; relay c wins.
+	//
+	// The rank probe and the ladder's reachability gate share this seam, so a's
+	// first dial is the ranker's. Answer that one and fail the ladder's dial
+	// behind it: every relay then measures the same latency bucket, so ranking
+	// leaves broker order alone and the ladder still walks a's failed rung —
+	// which is what this test is about. A relay already unreachable when the
+	// ranker probes it is covered by TestLadderRankingSinksUnreachableRelay.
+	var aDials int32
 	s.dialRelay = func(ctx context.Context, host string, port int) (int64, error) {
-		if host == "127.0.0.10" {
+		if host == "127.0.0.10" && atomic.AddInt32(&aDials, 1) > 1 {
 			return 0, errors.New("relay 127.0.0.10:443 is not reachable: dial tcp: i/o timeout")
 		}
 		return 7, nil
@@ -320,6 +379,86 @@ func TestDisconnectMidLadderIsNotAFailure(t *testing.T) {
 	}
 	if ended := sink.named("connection_ended"); len(ended) != 1 || ended[0].Attributes["reason"] != "disconnect" {
 		t.Fatalf("connection_ended = %+v", ended)
+	}
+}
+
+func TestRecoveryRanksBeforeDemotingTheFailedRelay(t *testing.T) {
+	// A recovery ranks the fresh list and demotes the dead relay afterwards, so
+	// being fast cannot win back the place the demotion just took away. Relay a
+	// is both the client's fastest relay and the one whose tunnel died: if the
+	// demotion ran first and ranking second, the ranker would lift a straight
+	// back to the head and the ladder would retry the relay that just crashed —
+	// the loop the demotion exists to break.
+	sink := newTelemetrySink(t)
+	fixtures := []relay.Descriptor{
+		relayAt("a", "JP", "Tokyo", "Japan", "127.0.0.10"),
+		relayAt("b", "SG", "", "Singapore", "127.0.0.11"),
+	}
+	s, _ := newLadderService(t, func() []relay.Descriptor { return fixtures })
+	// Two buckets apart, so ranking genuinely reorders rather than falling back
+	// to broker order.
+	s.dialRelay = func(ctx context.Context, host string, port int) (int64, error) {
+		if host == "127.0.0.10" {
+			return 5, nil
+		}
+		return 80, nil
+	}
+
+	crash := make(chan error, 1)
+	var runs int32
+	s.runTunnel = func(ctx context.Context, configPath string) error {
+		if atomic.AddInt32(&runs, 1) == 1 {
+			select {
+			case err := <-crash:
+				return err
+			case <-ctx.Done():
+				return nil
+			}
+		}
+		<-ctx.Done()
+		return nil
+	}
+
+	if err := s.Connect(sink.srv.URL, "", ""); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if state := waitForStatus(t, s, StatusConnected); state.RelayLabel == nil || *state.RelayLabel != "Tokyo, Japan" {
+		t.Fatalf("initial relayLabel = %v, want the fastest relay", state.RelayLabel)
+	}
+
+	crash <- errors.New("sing-box exited: exit status 1")
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		st := s.GetState()
+		if st.Status == StatusConnected && st.RelayLabel != nil && *st.RelayLabel == "Singapore" {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	state := s.GetState()
+	if state.Status != StatusConnected || state.RelayLabel == nil || *state.RelayLabel != "Singapore" {
+		t.Fatalf("failover landed on %+v, want relay b: the demoted relay must stay demoted however fast it measures", state)
+	}
+
+	if err := s.Disconnect(); err != nil {
+		t.Fatalf("disconnect: %v", err)
+	}
+	waitForStatus(t, s, StatusDisconnected)
+	waitIdle(t, s)
+
+	// The failover reports the winner's rank view too, so a recovery is as
+	// auditable as an initial connect.
+	failovers := sink.named("relay_failover")
+	if len(failovers) != 1 || failovers[0].RelayID != "b" {
+		t.Fatalf("relay_failover = %+v, want one for relay b", failovers)
+	}
+	meas := failovers[0].Measurements
+	if meas["relay_broker_index"] != 1 {
+		t.Fatalf("relay_broker_index = %d, want 1", meas["relay_broker_index"])
+	}
+	if got, ok := meas["relay_probe_ms"]; !ok || got != 80 {
+		t.Fatalf("relay_probe_ms = %d (present=%t), want 80", got, ok)
 	}
 }
 
