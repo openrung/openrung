@@ -33,6 +33,9 @@
     <clipPath id="phoneClip">
       <rect x="0" y="0" width="78" height="132" rx="20"/>
     </clipPath>
+    <clipPath id="zoneClip">
+      <rect x="0" y="0" width="295" height="316" rx="26"/>
+    </clipPath>
     <path id="clientToBroker" d="M 258 365 C 318 278 420 227 555 208"/>
     <path id="brokerToClient" d="M 555 224 C 418 252 323 302 260 382"/>
     <path id="relayToBroker" d="M 835 323 C 768 249 692 211 637 207"/>
@@ -171,11 +174,6 @@
         animation-delay: 1.6s;
       }
 
-      .heartbeat {
-        animation: heartbeat 2.4s ease-in-out infinite;
-        transform-origin: center;
-      }
-
       .step-one {
         animation: glowStep 6s ease-in-out infinite;
       }
@@ -193,11 +191,6 @@
       .lock-shine {
         opacity: 0.1;
         animation: lockShine 3.4s ease-in-out infinite;
-      }
-
-      .ladder-mark {
-        animation: ladderFloat 4.2s ease-in-out infinite;
-        transform-origin: center;
       }
 
       .fade-note {
@@ -221,14 +214,6 @@
         100% { opacity: 0; r: 82; }
       }
 
-      @keyframes heartbeat {
-        0%, 100% { transform: scale(1); }
-        16% { transform: scale(1.08); }
-        28% { transform: scale(1); }
-        42% { transform: scale(1.07); }
-        58% { transform: scale(1); }
-      }
-
       @keyframes glowStep {
         0%, 100% { opacity: 0.68; }
         18%, 48% { opacity: 1; }
@@ -240,11 +225,6 @@
         64% { opacity: 0.65; transform: translateX(14px); }
       }
 
-      @keyframes ladderFloat {
-        0%, 100% { transform: translateY(0); }
-        50% { transform: translateY(-5px); }
-      }
-
       @keyframes fadeNote {
         0%, 14%, 100% { opacity: 0.45; }
         35%, 74% { opacity: 1; }
@@ -254,12 +234,10 @@
         .control-line,
         .data-line,
         .ring,
-        .heartbeat,
         .step-one,
         .step-two,
         .step-three,
         .lock-shine,
-        .ladder-mark,
         .fade-note {
           animation: none !important;
         }
@@ -278,10 +256,36 @@
   <g transform="translate(73 224)">
     <rect class="zone" x="0" y="0" width="295" height="316" rx="26"/>
     <text x="28" y="34" class="zone-label">Restricted network</text>
-    <g opacity="0.58">
-      <path d="M36 72h145M36 102h119M36 132h161" stroke="#b9c9c0" stroke-width="10" stroke-linecap="round"/>
-      <path d="M218 56l-112 147M251 62L139 209" stroke="#c5d6cd" stroke-width="7" stroke-linecap="round"/>
-      <path d="M133 86l69 54M106 122l69 54M82 156l69 54" stroke="#c5d6cd" stroke-width="5" stroke-linecap="round"/>
+    <g clip-path="url(#zoneClip)" opacity="0.75">
+      <path d="M14 236 C 58 218 96 218 128 232" stroke="#d3e2d9" stroke-width="4" stroke-linecap="round" stroke-dasharray="0.5 9" fill="none"/>
+      <path d="M196 248 C 234 232 264 234 288 246" stroke="#d3e2d9" stroke-width="4" stroke-linecap="round" stroke-dasharray="0.5 9" fill="none"/>
+      <g transform="translate(-10 162) rotate(-35.2)">
+        <rect width="112" height="20" fill="#c9d9d0"/>
+        <rect width="112" height="3.5" fill="#b1c5b9"/>
+        <path d="M4 -6.5h7v6.5h-7zm15 0h7v6.5h-7zm15 0h7v6.5h-7zm15 0h7v6.5h-7zm15 0h7v6.5h-7zm15 0h7v6.5h-7zm15 0h7v6.5h-7z" fill="#b1c5b9"/>
+      </g>
+      <g transform="translate(76 101.6) rotate(11.3)">
+        <rect width="136" height="20" fill="#c9d9d0"/>
+        <rect width="136" height="3.5" fill="#b1c5b9"/>
+        <path d="M34 -6.5h7v6.5h-7zm15 0h7v6.5h-7zm15 0h7v6.5h-7zm15 0h7v6.5h-7zm15 0h7v6.5h-7zm15 0h7v6.5h-7zm15 0h7v6.5h-7z" fill="#b1c5b9"/>
+      </g>
+      <g transform="translate(200 126.5) rotate(-17.2)">
+        <rect width="112" height="20" fill="#c9d9d0"/>
+        <rect width="112" height="3.5" fill="#b1c5b9"/>
+        <path d="M28 -6.5h7v6.5h-7zm15 0h7v6.5h-7zm15 0h7v6.5h-7zm15 0h7v6.5h-7zm15 0h7v6.5h-7zm15 0h7v6.5h-7z" fill="#b1c5b9"/>
+      </g>
+      <g>
+        <rect x="70" y="84" width="36" height="48" rx="3" fill="#bccfc3"/>
+        <rect x="76" y="70" width="24" height="14" rx="2" fill="#b1c5b9"/>
+        <path d="M76 64h5v6h-5zm9.5 0h5v6h-5zm9.5 0h5v6h-5z" fill="#b1c5b9"/>
+        <path d="M83 132v-12a5 5 0 0 1 10 0v12z" fill="#9db4a7"/>
+      </g>
+      <g>
+        <rect x="193" y="106" width="30" height="50" rx="3" fill="#bccfc3"/>
+        <rect x="198" y="92" width="20" height="14" rx="2" fill="#b1c5b9"/>
+        <path d="M198 86h4.5v6h-4.5zm7.75 0h4.5v6h-4.5zm7.75 0h4.5v6h-4.5z" fill="#b1c5b9"/>
+        <path d="M203 156v-11a5 5 0 0 1 10 0v11z" fill="#9db4a7"/>
+      </g>
     </g>
   </g>
 
@@ -334,9 +338,8 @@
     <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.08;0.82;1" dur="6s" repeatCount="indefinite" begin="3.55s"/>
   </circle>
 
-  <g transform="translate(141 315)" filter="url(#softShadow)">
-    <rect class="card" width="162" height="210" rx="28"/>
-    <g transform="translate(42 36)">
+  <g transform="translate(141 315)">
+    <g transform="translate(42 36)" filter="url(#softShadow)">
       <rect width="78" height="132" rx="20" fill="#173527"/>
       <g clip-path="url(#phoneClip)">
         <rect width="78" height="132" fill="#244a38"/>
@@ -352,46 +355,34 @@
 
   <g transform="translate(500 138)" filter="url(#softShadow)">
     <rect class="card" width="205" height="152" rx="26"/>
-    <circle cx="102" cy="62" r="39" fill="#10251a"/>
-    <circle cx="102" cy="62" r="29" fill="#173b2a"/>
-    <path d="M102 31v12M102 82v12M71 62h12M121 62h12" stroke="#9fd7b6" stroke-width="3" stroke-linecap="round"/>
-    <path d="M94 71l22 -30 -8 36 -23 7z" fill="#35d07f"/>
-    <circle cx="102" cy="62" r="5" fill="#ffffff"/>
+    <g transform="translate(64 26)">
+      <rect x="0" y="0" width="76" height="20" rx="5" fill="#10251a"/>
+      <rect x="0" y="24" width="76" height="20" rx="5" fill="#10251a"/>
+      <rect x="0" y="48" width="76" height="20" rx="5" fill="#10251a"/>
+      <circle cx="13" cy="10" r="3.4" fill="#35d07f"/>
+      <circle cx="13" cy="34" r="3.4" fill="#35d07f"/>
+      <circle cx="13" cy="58" r="3.4" fill="#35d07f"/>
+      <path d="M28 10h34M28 34h34M28 58h34" stroke="#3c8f63" stroke-width="4" stroke-linecap="round"/>
+    </g>
     <text x="102" y="120" text-anchor="middle" class="label">Broker</text>
     <text x="102" y="141" text-anchor="middle" class="small">matchmaking only</text>
   </g>
 
-  <g transform="translate(504 312)">
-    <rect width="198" height="54" rx="27" fill="#0f2b1d" opacity="0.95"/>
-    <circle cx="30" cy="27" r="13" fill="#35d07f"/>
-    <path d="M24 27h12M30 21v12" stroke="#0f2b1d" stroke-width="2.6" stroke-linecap="round"/>
-    <text x="52" y="24" class="tiny inverse">Broker does not</text>
-    <text x="52" y="40" class="tiny inverse">carry browsing data</text>
-  </g>
+  <text x="602" y="320" text-anchor="middle" class="tiny">Broker does not carry browsing data</text>
 
   <g transform="translate(766 288)" filter="url(#softShadow)">
     <circle cx="94" cy="94" r="46" fill="#dff7ea"/>
     <circle cx="94" cy="94" r="46" class="ring"/>
     <circle cx="94" cy="94" r="46" class="ring delay"/>
-    <rect class="card" x="0" y="52" width="188" height="159" rx="28"/>
+    <rect class="card" x="0" y="52" width="188" height="170" rx="28"/>
     <g transform="translate(50 29)">
       <rect x="5" y="42" width="88" height="58" rx="11" fill="#193729"/>
       <rect x="14" y="51" width="70" height="40" rx="6" fill="#2a7151"/>
       <rect x="0" y="99" width="98" height="13" rx="6" fill="#11251a"/>
-      <circle cx="48" cy="31" r="25" fill="#f4c56d" class="heartbeat"/>
-      <path d="M41 34c-8-7-2-18 7-11 9-7 15 4 7 11l-7 7z" fill="#ffffff"/>
     </g>
-    <g transform="translate(131 65) rotate(18)">
-      <g class="ladder-mark">
-        <rect x="-12" y="-36" width="7" height="24" rx="2" fill="#1d8a4f"/>
-        <rect x="9" y="-36" width="7" height="24" rx="2" fill="#1d8a4f"/>
-        <rect x="-12" y="-31" width="28" height="6" rx="2" fill="#1d8a4f"/>
-        <rect x="-12" y="-17" width="28" height="6" rx="2" fill="#1d8a4f"/>
-        <rect x="-12" y="-3" width="28" height="6" rx="2" fill="#1d8a4f"/>
-      </g>
-    </g>
-    <text x="94" y="184" text-anchor="middle" class="label">Relay</text>
-    <text x="94" y="205" text-anchor="middle" class="small">Foundation / community</text>
+    <text x="94" y="180" text-anchor="middle" class="label">Relay</text>
+    <text x="94" y="198" text-anchor="middle" class="tiny">OpenRung operated relays</text>
+    <text x="94" y="214" text-anchor="middle" class="tiny">and community volunteers</text>
   </g>
 
   <g transform="translate(1005 213)">
@@ -429,8 +420,8 @@
     </g>
   </g>
 
-  <g transform="translate(515 452)" class="fade-note">
-    <rect width="194" height="47" rx="23.5" fill="#ffffff" stroke="#cbded4"/>
+  <g transform="translate(488 452)" class="fade-note">
+    <rect width="248" height="47" rx="23.5" fill="#ffffff" stroke="#cbded4"/>
     <g transform="translate(22 13)">
       <rect x="0" y="8" width="18" height="14" rx="4" fill="#1d8a4f"/>
       <path d="M5 8V5c0-5 8-5 8 0v3" fill="none" stroke="#1d8a4f" stroke-width="3" stroke-linecap="round"/>
