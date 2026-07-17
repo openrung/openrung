@@ -25,7 +25,3 @@ func (r *ringBuffer) snapshot() []string {
 	copy(out, r.lines)
 	return out
 }
-
-func (r *ringBuffer) reset() {
-	r.lines = nil
-}

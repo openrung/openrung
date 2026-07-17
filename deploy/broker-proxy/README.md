@@ -11,13 +11,13 @@ China client ──HTTPS──► Cloudflare edge ──Worker──HTTP:8080─
 - The broker is a stateless JSON control-plane API; the Worker forwards bytes and never serves
   cached data on the freshness path (relay candidates are short-lived). The one exception is
   stale-on-error for relay discovery — see below.
-- This Cloudflare front is currently the **only** discovery endpoint the apps ship: every client's
-  `DEFAULT_BROKER_URLS` / `defaultBrokerURLs` contains just this one HTTPS URL. There is **no raw-IP
-  fallback** — the relay list is unsigned, so the clients refuse any non-HTTPS broker URL
-  (`EnforceSecureBrokerURL`); a bare-IP/plaintext entry would let an on-path censor inject a
-  malicious relay set. A blocked edge therefore fails discovery **closed** (offline). That single
-  point of failure is what the front-diversity work (multiple HTTPS fronts across independent
-  CDNs/domains) and relay-list signing are meant to remove.
+- This Cloudflare front is one of **two independent HTTPS fronts** the apps ship: every client's
+  `DEFAULT_BROKER_URLS` / `defaultBrokerURLs` races this URL against an AWS CloudFront
+  distribution on a different provider and DNS zone, so a blocked or dead edge here no longer
+  fails discovery closed. The relay list is **Ed25519-signed** end-to-end, detaching its
+  authenticity from the transport. There is still **no raw-IP fallback**: discovery runs before
+  the tunnel and carries the client-identity headers, so the clients refuse any non-HTTPS broker
+  URL (`EnforceSecureBrokerURL`).
 
 ## Origin must be a hostname, not an IP (important)
 
@@ -30,8 +30,9 @@ edge. If you ever change the origin IP, update that DNS record (not the Worker).
 
 ## Stale-on-error (`GET /api/v1/relays`)
 
-An origin blip must not take relay discovery down — this front is the only discovery path the
-apps ship. For `GET /api/v1/relays` (exact path) only, the Worker:
+An origin blip must not take relay discovery down — both deployed fronts proxy the same single
+origin, so origin trouble hits them together. For `GET /api/v1/relays` (exact path) only, the
+Worker:
 
 - proxies to the origin with a **10 s timeout**;
 - on a **200**, returns the origin response to the client unchanged and stores a complete copy —
@@ -110,8 +111,9 @@ Logs: `wrangler tail openrung-broker-proxy`.
   is open — low stakes for `client_seen` analytics; close it off with Authenticated Origin Pulls or a
   shared-secret header if that ever matters.
 - **SNI blocking.** A determined censor can SNI-block `broker.openrung.org` specifically (classic
-  domain fronting is dead). Because this is currently the only front and there is no raw-IP fallback
-  (see above), an SNI block takes discovery fully offline. Mitigations, in order of leverage:
-  additional HTTPS fronts on other CDNs/domains (so one SNI rule no longer suffices), Encrypted
-  Client Hello (ECH) to hide the SNI, and — to unlock non-TLS / out-of-band channels — signing the
-  relay list so a fetched directory is trustworthy regardless of the channel that carried it.
+  domain fronting is dead). Two of the planned mitigations have shipped: the independent
+  CloudFront second front means a single SNI rule no longer takes discovery offline, and the
+  relay list is now Ed25519-signed, so a fetched directory is trustworthy regardless of the
+  channel that carried it — which unlocks future non-TLS / out-of-band channels (signed static
+  mirrors, a pinned direct-IP fallback). Encrypted Client Hello (ECH) to hide the SNI remains
+  open.

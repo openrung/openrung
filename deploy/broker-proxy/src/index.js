@@ -6,13 +6,13 @@
 // CDN-fronted discovery endpoint whose blocking incurs Cloudflare-edge collateral damage,
 // instead of a single null-routable plaintext IP.
 //
-// This front is currently the ONLY discovery endpoint the apps ship: clients are HTTPS-only
-// (EnforceSecureBrokerURL) and carry no raw-IP fallback, so a blocked or dead front fails
-// discovery CLOSED. The real fixes are front diversity (an independent second front, not
-// same-zone) and relay-list signing — see README.md. What this Worker adds in the meantime is
-// stale-on-error for GET /api/v1/relays: an origin blip (timeout, network error, 5xx) is
-// answered with this colo's last healthy relay list (≤ 900 s old — the 15-minute stale window
-// fixed by the relay-list signing spec — marked X-OpenRung-Stale: 1) instead of an error.
+// This front is one of two independent discovery endpoints the apps ship — the other is an AWS
+// CloudFront distribution on a different provider and DNS zone — and the relay list is
+// Ed25519-signed, so a blocked or dead edge here no longer fails discovery closed. Clients are
+// still HTTPS-only (EnforceSecureBrokerURL) with no raw-IP fallback — see README.md. What this
+// Worker adds is stale-on-error for GET /api/v1/relays: an origin blip (timeout, network error,
+// 5xx) is answered with this colo's last healthy relay list (≤ 900 s old — the 15-minute stale
+// window fixed by the relay-list signing spec — marked X-OpenRung-Stale: 1) instead of an error.
 //
 // The freshness path is unchanged: healthy responses are never served from cache — relay
 // candidates are short-lived (≈3 min lease) — and every other endpoint is a plain passthrough.

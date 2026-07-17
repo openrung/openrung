@@ -1,7 +1,7 @@
 package volunteerservice
 
 // ringBuffer holds the most recent log lines, newest last, capped at capacity —
-// matching the NativeVpnState.logLines contract (cap 80, newest last). It is not
+// matching the State.logLines contract (logRingCapacity, newest last). It is not
 // safe for concurrent use; the Service holds its mutex around every access.
 type ringBuffer struct {
 	lines    []string
@@ -24,8 +24,4 @@ func (r *ringBuffer) snapshot() []string {
 	out := make([]string, len(r.lines))
 	copy(out, r.lines)
 	return out
-}
-
-func (r *ringBuffer) reset() {
-	r.lines = nil
 }
