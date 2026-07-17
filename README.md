@@ -212,7 +212,7 @@ punchcore/           Shared NAT hole-punch protocol core (nested Go module
                      github.com/openrung/openrung/punchcore) consumed by the
                      servers, the desktop client, and the mobile app's binding.
 deploy/              Broker proxy, relay hub, and relay deployment assets.
-docs/                Architecture, API, client, and operations docs + website.
+docs/                Architecture, API, client, and operations docs.
 ```
 
 ## Documentation
