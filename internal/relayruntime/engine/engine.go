@@ -61,10 +61,6 @@ type Identity struct {
 	ShortID           string `json:"shortId"`
 }
 
-func (id Identity) complete() bool {
-	return id.ClientID != "" && id.RealityPrivateKey != "" && id.RealityPublicKey != "" && id.ShortID != ""
-}
-
 // Config describes one relay. Zero values take the same defaults as
 // cmd/relay where one exists.
 type Config struct {

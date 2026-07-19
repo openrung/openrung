@@ -13,7 +13,12 @@
 # ...but the third-party notices must ship inside the image (license compliance).
 !THIRD_PARTY_NOTICES.md
 docs
-scripts
+
+# The desktop apps are separate Go modules the server images never build;
+# keep them (and any locally installed frontend deps) out of the context.
+desktop
+desktop-volunteer
+**/node_modules
 
 # Build outputs / caches.
 bin

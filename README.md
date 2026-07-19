@@ -15,7 +15,7 @@ relays in unrestricted regions.
 [![Website](https://img.shields.io/badge/website-openrung.org-1d8a4f)](https://openrung.org)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](go.mod)
-[![Platforms](https://img.shields.io/badge/platforms-iOS%20%C2%B7%20Android%20%C2%B7%20macOS%20%C2%B7%20Linux-4a5568)](#quick-start)
+[![Platforms](https://img.shields.io/badge/platforms-iOS%20%C2%B7%20Android%20%C2%B7%20macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-4a5568)](#quick-start)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-1d8a4f)](CONTRIBUTING.md)
 
 [Website](https://openrung.org) · [Architecture](docs/architecture.md) · [Broker API](docs/api.md) · [Report an issue](https://github.com/openrung/openrung/issues)
@@ -211,6 +211,9 @@ internal/relayruntime/  Relay runtime, Xray config, and broker client helpers.
 punchcore/           Shared NAT hole-punch protocol core (nested Go module
                      github.com/openrung/openrung/punchcore) consumed by the
                      servers, the desktop client, and the mobile app's binding.
+desktop/             Desktop GUI client (Wails v2 + React; own Go module).
+desktop-volunteer/   One-click volunteer relay GUI (Wails v2 + React; own
+                     Go module).
 deploy/              Broker proxy, relay hub, and relay deployment assets.
 docs/                Architecture, API, client, and operations docs.
 ```
