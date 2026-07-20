@@ -76,12 +76,22 @@ apt-get -o DPkg::Lock::Timeout=300 install -y docker.io
 systemctl enable --now docker
 docker pull ${IMAGE}
 docker rm -f openrung-relay 2>/dev/null || true
+# Minted once per instance: the broker derives the relay ID from this seed
+# (spec openrung-relay-identity-v1), so the relay keeps one identity across
+# container restarts instead of fragmenting its dashboard/ranking history.
+# The seed IS the relay's Ed25519 private key, so disable xtrace first — this
+# block runs under 'set -eux' and the trace lands in the persisted
+# /var/log/openrung-init.log (and Lightsail retains it), exactly the exposure
+# lines 14-18 refuse for the registration tokens.
+set +x
+IDENTITY_SEED="\$(head -c 32 /dev/urandom | base64)"
 docker run -d --name openrung-relay --restart unless-stopped \\
   --network host --cap-drop ALL --cap-add NET_BIND_SERVICE --read-only --tmpfs /tmp \\
   -e OPENRUNG_BROKER_URL=${BROKER_URL} \\
   -e OPENRUNG_PUBLIC_HOST=${STATIC_IP} \\
   -e OPENRUNG_LISTEN_HOST=0.0.0.0 \\
   -e OPENRUNG_LABEL=${NAME} \\
+  -e OPENRUNG_IDENTITY_SEED="\$IDENTITY_SEED" \\
   ${IMAGE}
 EOF
 

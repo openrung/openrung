@@ -1,0 +1,26 @@
+{
+  "spec": "openrung-relay-identity-v1",
+  "comment": "Golden wire vectors for the relay stable-identity proof. The seed is 32 bytes of 0x42 (the same test-seed convention as openrung-relay-list-signing-v1 §2.3). Ed25519 signatures are deterministic, so the proof is a stable golden value. Any implementation change that breaks these vectors is a wire-format break for deployed relays and hubs.",
+  "identity_seed_base64": "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=",
+  "identity_public_key_base64": "IVL40Zt5HSRFMkLhXy6rbLfP+ntqXtMAl5YOBpiB2xI=",
+  "derived_relay_id": "relay_0883de4588ee3af0f925ec7e3ce18aa7",
+  "direct_registration": {
+    "request": {
+      "public_host": "203.0.113.7",
+      "public_port": 443,
+      "protocol": "vless-reality-vision",
+      "client_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "reality_public_key": "hSN7wJowfoOdmnbRDW9BC9BXGCyPTM6PqFOQqUFvvXo",
+      "short_id": "0123abcd",
+      "server_name": "www.cloudflare.com",
+      "flow": "xtls-rprx-vision",
+      "exit_mode": "direct",
+      "max_sessions": 8,
+      "max_mbps": 20,
+      "label": "witty-otter"
+    },
+    "identity_expires_at": "2026-07-21T12:00:00Z",
+    "statement": "openrung-relay-identity-v1\n2026-07-21T12:00:00Z\ndirect\n203.0.113.7\n443\n3fa85f64-5717-4562-b3fc-2c963f66afa6\nhSN7wJowfoOdmnbRDW9BC9BXGCyPTM6PqFOQqUFvvXo\n0123abcd\nwww.cloudflare.com\nxtls-rprx-vision\ndirect\n8\n20\nwitty-otter\nvolunteer",
+    "identity_proof_base64": "9RVjlzxdNwlSn/ajekgF8Eikrycx7E2ydq8pRFgKyO/W03w+as55SOnGwWfsvH0xpdKqw9rbTmzf8cS4D8dIAg=="
+  }
+}

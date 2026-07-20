@@ -19,11 +19,22 @@ import (
 // restart. The caller should re-register rather than keep heartbeating.
 var ErrRelayNotFound = errors.New("relay not found")
 
+// ErrIdentityProofExpired is returned (wrapped) by Register when the broker
+// rejects a stored identity proof whose relay-chosen expiry has passed. Only
+// the relay can sign a fresh one, so the hub recycles the tunnel session
+// instead of retrying the doomed request.
+var ErrIdentityProofExpired = errors.New(relayIdentityProofExpiredMessage)
+
+// relayIdentityProofExpiredMessage mirrors relay.ErrIdentityProofExpired's
+// exact text, which the broker serves verbatim in its error body.
+const relayIdentityProofExpiredMessage = "relay identity proof expired"
+
 const maxBrokerErrorBodyBytes = 64 << 10
 
 // RelayRegistration is the result of registering a tunneled relay with the broker.
 type RelayRegistration struct {
 	RelayID    string
+	LeaseToken string
 	PublicHost string
 	PublicPort int
 	ExpiresAt  time.Time
@@ -33,7 +44,7 @@ type RelayRegistration struct {
 // is an interface so the hub can be tested without a live broker.
 type Registrar interface {
 	Register(ctx context.Context, req relay.RegisterRequest) (RelayRegistration, error)
-	Heartbeat(ctx context.Context, relayID string) error
+	Heartbeat(ctx context.Context, relayID, leaseToken string) error
 }
 
 // brokerRegistrar registers relays over the broker's canonical HTTP API using
@@ -63,21 +74,23 @@ func NewBrokerRegistrar(brokerURL, token string, client *http.Client) Registrar 
 }
 
 func (b *brokerRegistrar) Register(ctx context.Context, req relay.RegisterRequest) (RelayRegistration, error) {
-	var desc relay.Descriptor
-	if err := b.postJSON(ctx, "/api/v1/relays/register", req, &desc); err != nil {
+	var response relay.RegisterResponse
+	if err := b.postJSON(ctx, "/api/v1/relays/register", req, &response); err != nil {
 		return RelayRegistration{}, err
 	}
+	desc := response.Descriptor
 	return RelayRegistration{
 		RelayID:    desc.ID,
+		LeaseToken: desc.LeaseToken,
 		PublicHost: desc.PublicHost,
 		PublicPort: desc.PublicPort,
 		ExpiresAt:  desc.ExpiresAt,
 	}, nil
 }
 
-func (b *brokerRegistrar) Heartbeat(ctx context.Context, relayID string) error {
+func (b *brokerRegistrar) Heartbeat(ctx context.Context, relayID, leaseToken string) error {
 	var resp relay.HeartbeatResponse
-	return b.postJSON(ctx, "/api/v1/relays/"+relayID+"/heartbeat", map[string]bool{"ok": true}, &resp)
+	return b.postJSON(ctx, "/api/v1/relays/"+relayID+"/heartbeat", relay.HeartbeatRequest{OK: true, LeaseToken: leaseToken}, &resp)
 }
 
 // brokerHTTPError is a non-2xx broker response.
@@ -120,6 +133,9 @@ func (b *brokerRegistrar) postJSON(ctx context.Context, path string, body, out a
 		}
 		if resp.StatusCode == http.StatusNotFound && apiErr.Error == "relay not found" {
 			return fmt.Errorf("broker %s: %w", path, ErrRelayNotFound)
+		}
+		if resp.StatusCode == http.StatusUnauthorized && strings.HasPrefix(apiErr.Error, relayIdentityProofExpiredMessage) {
+			return fmt.Errorf("broker %s: %w", path, ErrIdentityProofExpired)
 		}
 		return &brokerHTTPError{
 			path:    path,

@@ -37,18 +37,18 @@ type BrokerClient struct {
 
 // Register announces the relay and returns the broker-minted descriptor.
 func (b *BrokerClient) Register(ctx context.Context, req relay.RegisterRequest) (relay.Descriptor, error) {
-	var desc relay.Descriptor
-	if err := b.postJSON(ctx, relayRegisterPath, req, &desc); err != nil {
+	var registration relay.RegisterResponse
+	if err := b.postJSON(ctx, relayRegisterPath, req, &registration); err != nil {
 		return relay.Descriptor{}, err
 	}
-	return desc, nil
+	return registration.Descriptor, nil
 }
 
 // Heartbeat renews the relay's lease. A pruned relay yields an APIError with
 // status 404 that IsRelayNotFound recognizes.
-func (b *BrokerClient) Heartbeat(ctx context.Context, id string) error {
+func (b *BrokerClient) Heartbeat(ctx context.Context, id, leaseToken string) error {
 	var resp relay.HeartbeatResponse
-	return b.postJSON(ctx, relayHeartbeatPathBase+id+"/heartbeat", map[string]bool{"ok": true}, &resp)
+	return b.postJSON(ctx, relayHeartbeatPathBase+id+"/heartbeat", relay.HeartbeatRequest{OK: true, LeaseToken: leaseToken}, &resp)
 }
 
 func (b *BrokerClient) postJSON(ctx context.Context, path string, body any, out any) error {

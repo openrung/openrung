@@ -32,3 +32,6 @@ openrung-telemetry.jsonl
 # Claude Code local worktrees (may contain absolute paths / local branch content)
 .claude/agents/
 .claude/worktrees/
+/relay
+/broker
+/openrung-*

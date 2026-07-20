@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -98,6 +99,9 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 
 func registerHandler(store RelayStore, cfg Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Stable registrations return a bearer-like lease token. Keep it out of
+		// browser, intermediary, and edge caches on success and every error path.
+		w.Header().Set("Cache-Control", "no-store")
 		maxClass, ok := credentialNodeClass(r, cfg)
 		if !ok {
 			writeError(w, http.StatusUnauthorized, "missing or invalid relay registration token")
@@ -138,6 +142,16 @@ func registerHandler(store RelayStore, cfg Config) http.HandlerFunc {
 		}
 
 		desc, err := store.Register(req, time.Now().UTC(), cfg.RelayLeaseTTL)
+		// A malformed or stale identity proof fails the registration loudly
+		// instead of silently falling back to a random relay ID — a relay that
+		// believes it has a stable identity should crash-loop where its
+		// operator can see it, mirroring the foundation-token posture above.
+		// The exact expired message is a contract: the relay hub matches it to
+		// recycle a tunnel session whose stored proof has aged out.
+		if errors.Is(err, relay.ErrIdentityProofExpired) || errors.Is(err, relay.ErrIdentityProofInvalid) || errors.Is(err, relay.ErrIdentityIncomplete) {
+			writeError(w, http.StatusUnauthorized, err.Error())
+			return
+		}
 		if errors.Is(err, ErrNodeClassForbidden) {
 			// The endpoint is held by a live foundation relay; a
 			// non-foundation registration may not seize it.
@@ -152,7 +166,7 @@ func registerHandler(store RelayStore, cfg Config) http.HandlerFunc {
 		resolveRelayGeo(r.Context(), store, cfg.GeoIP, &desc)
 		slog.Info("relay registered", "relay_id", desc.ID, "node_class", desc.NodeClass, "public", desc.PublicHost, "port", desc.PublicPort, "city", desc.City, "country", desc.Country, "max_sessions", desc.MaxSessions, "version", desc.RelayVersion)
 
-		writeJSON(w, http.StatusCreated, desc)
+		writeJSON(w, http.StatusCreated, relay.RegisterResponse{Descriptor: desc})
 	}
 }
 
@@ -172,8 +186,14 @@ func heartbeatHandler(store RelayStore, cfg Config) http.HandlerFunc {
 			writeError(w, http.StatusNotFound, "unknown relay endpoint")
 			return
 		}
+		var heartbeat relay.HeartbeatRequest
+		r.Body = http.MaxBytesReader(w, r.Body, maxRegisterBodyBytes)
+		if err := json.NewDecoder(r.Body).Decode(&heartbeat); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "invalid JSON request")
+			return
+		}
 
-		desc, err := store.Heartbeat(id, maxClass, time.Now().UTC(), cfg.RelayLeaseTTL)
+		desc, err := store.Heartbeat(id, heartbeat.LeaseToken, maxClass, time.Now().UTC(), cfg.RelayLeaseTTL)
 		if errors.Is(err, ErrRelayNotFound) {
 			writeError(w, http.StatusNotFound, "relay not found")
 			return
@@ -211,7 +231,12 @@ func resolveRelayGeo(ctx context.Context, store RelayStore, resolver GeoIPResolv
 		slog.Warn("could not resolve relay location", "relay_id", desc.ID, "host", host, "error", err)
 		return
 	}
-	if err := store.UpdateGeo(desc.ID, geo); err != nil {
+	if err := store.UpdateGeo(desc.ID, desc.LeaseToken, geo); err != nil {
+		if errors.Is(err, ErrRelayNotFound) {
+			// A newer stable-ID registration replaced this descriptor while the
+			// lookup was in flight. Its own handler will resolve the current exit.
+			return
+		}
 		slog.Warn("could not store relay location", "relay_id", desc.ID, "error", err)
 		return
 	}

@@ -1,9 +1,64 @@
 package relayruntime
 
 import (
+	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
+	"slices"
 	"testing"
 )
+
+func TestNewXrayCommandExcludesIdentitySeedFromEnvironment(t *testing.T) {
+	t.Setenv(IdentitySeedEnvironmentVariable, "long-lived-secret")
+	t.Setenv("OPENRUNG_TEST_CHILD_ENV", "preserved")
+
+	cmd := NewXrayCommand(context.Background(), "xray", "run")
+	if slices.Contains(cmd.Env, IdentitySeedEnvironmentVariable+"=long-lived-secret") {
+		t.Fatal("Xray command inherited OPENRUNG_IDENTITY_SEED")
+	}
+	if !slices.Contains(cmd.Env, "OPENRUNG_TEST_CHILD_ENV=preserved") {
+		t.Fatal("Xray command dropped unrelated environment variables")
+	}
+
+	// Windows treats environment names case-insensitively. Exercise the filter
+	// directly so a differently-cased spelling cannot survive into a child.
+	filtered := environmentWithoutIdentitySeed([]string{
+		"OpenRung_Identity_Seed=also-secret",
+		"OPENRUNG_TEST_CHILD_ENV=preserved",
+	})
+	if len(filtered) != 1 || filtered[0] != "OPENRUNG_TEST_CHILD_ENV=preserved" {
+		t.Fatalf("case-insensitive identity seed filtering = %q", filtered)
+	}
+}
+
+func TestGenerateRealityKeyPairExcludesIdentitySeedFromEnvironment(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake Xray executable requires a POSIX shell")
+	}
+
+	fakeXray := filepath.Join(t.TempDir(), "xray")
+	script := `#!/bin/sh
+if [ -n "${OPENRUNG_IDENTITY_SEED:-}" ]; then
+  echo "identity seed leaked to xray" >&2
+  exit 97
+fi
+printf 'Private key: private_key\nPublic key: public-key\n'
+`
+	if err := os.WriteFile(fakeXray, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake Xray: %v", err)
+	}
+	t.Setenv(IdentitySeedEnvironmentVariable, "long-lived-secret")
+
+	keys, err := GenerateRealityKeyPair(fakeXray)
+	if err != nil {
+		t.Fatalf("generate Reality key pair: %v", err)
+	}
+	if keys.PrivateKey != "private_key" || keys.PublicKey != "public-key" {
+		t.Fatalf("unexpected keys: %+v", keys)
+	}
+}
 
 func TestBuildXrayConfig(t *testing.T) {
 	cfg, err := BuildXrayConfig(XrayConfigInput{

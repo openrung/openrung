@@ -78,3 +78,57 @@ func TestDescriptorRelayVersionJSONMigration(t *testing.T) {
 		})
 	}
 }
+
+func TestRegistrationLeaseTokenIsPrivateToRegisterResponse(t *testing.T) {
+	desc := Descriptor{
+		ID:           "relay_stable",
+		RelayVersion: "1.2.3",
+		LeaseToken:   "lease_secret",
+	}
+
+	descriptorJSON, err := json.Marshal(desc)
+	if err != nil {
+		t.Fatalf("marshal descriptor: %v", err)
+	}
+	var publicFields map[string]any
+	if err := json.Unmarshal(descriptorJSON, &publicFields); err != nil {
+		t.Fatalf("decode descriptor: %v", err)
+	}
+	if _, ok := publicFields["lease_token"]; ok {
+		t.Fatalf("public descriptor leaked lease_token: %s", descriptorJSON)
+	}
+
+	registrationJSON, err := json.Marshal(RegisterResponse{Descriptor: desc})
+	if err != nil {
+		t.Fatalf("marshal registration response: %v", err)
+	}
+	var privateFields map[string]any
+	if err := json.Unmarshal(registrationJSON, &privateFields); err != nil {
+		t.Fatalf("decode registration response fields: %v", err)
+	}
+	if privateFields["lease_token"] != desc.LeaseToken {
+		t.Fatalf("registration lease_token = %#v, want %q", privateFields["lease_token"], desc.LeaseToken)
+	}
+
+	var decoded RegisterResponse
+	if err := json.Unmarshal(registrationJSON, &decoded); err != nil {
+		t.Fatalf("unmarshal registration response: %v", err)
+	}
+	if decoded.Descriptor.LeaseToken != desc.LeaseToken || decoded.Descriptor.RelayVersion != desc.RelayVersion {
+		t.Fatalf("registration round trip = %+v, want lease and version preserved", decoded.Descriptor)
+	}
+}
+
+func TestLegacyRegisterResponseOmitsEmptyLeaseToken(t *testing.T) {
+	payload, err := json.Marshal(RegisterResponse{Descriptor: Descriptor{ID: "relay_legacy"}})
+	if err != nil {
+		t.Fatalf("marshal legacy registration response: %v", err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		t.Fatalf("decode legacy registration response: %v", err)
+	}
+	if _, ok := fields["lease_token"]; ok {
+		t.Fatalf("legacy response changed wire shape with empty lease_token: %s", payload)
+	}
+}

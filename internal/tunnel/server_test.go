@@ -19,11 +19,13 @@ func discardLogger() *slog.Logger {
 }
 
 type fakeRegistrar struct {
-	mu            sync.Mutex
-	registerCount int
-	heartbeats    int
-	lastReq       relay.RegisterRequest
-	relayID       string
+	mu                      sync.Mutex
+	registerCount           int
+	heartbeats              int
+	lastHeartbeatRelayID    string
+	lastHeartbeatLeaseToken string
+	lastReq                 relay.RegisterRequest
+	relayID                 string
 	// relayIDs, when non-empty, are consumed one per Register call before
 	// falling back to relayID.
 	relayIDs []string
@@ -49,12 +51,14 @@ func (f *fakeRegistrar) Register(_ context.Context, req relay.RegisterRequest) (
 	if id == "" {
 		id = "relay_test"
 	}
-	return RelayRegistration{RelayID: id, PublicHost: req.PublicHost, PublicPort: req.PublicPort, ExpiresAt: time.Now().Add(time.Minute)}, nil
+	return RelayRegistration{RelayID: id, LeaseToken: fmt.Sprintf("lease_%d", f.registerCount), PublicHost: req.PublicHost, PublicPort: req.PublicPort, ExpiresAt: time.Now().Add(time.Minute)}, nil
 }
 
-func (f *fakeRegistrar) Heartbeat(ctx context.Context, _ string) error {
+func (f *fakeRegistrar) Heartbeat(ctx context.Context, relayID, leaseToken string) error {
 	f.mu.Lock()
 	f.heartbeats++
+	f.lastHeartbeatRelayID = relayID
+	f.lastHeartbeatLeaseToken = leaseToken
 	err := f.failHeartbeatOnce
 	if err == nil {
 		f.mu.Unlock()
@@ -80,6 +84,12 @@ func (f *fakeRegistrar) stats() (registers, heartbeats int, lastReq relay.Regist
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.registerCount, f.heartbeats, f.lastReq
+}
+
+func (f *fakeRegistrar) lastHeartbeat() (relayID, leaseToken string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastHeartbeatRelayID, f.lastHeartbeatLeaseToken
 }
 
 func startEchoServer(t *testing.T) (string, int) {
@@ -251,6 +261,9 @@ func TestHubClientEndToEnd(t *testing.T) {
 	}) {
 		t.Fatal("expected at least one heartbeat while connected")
 	}
+	if relayID, leaseToken := registrar.lastHeartbeat(); relayID != "relay_abc" || leaseToken != "lease_1" {
+		t.Fatalf("heartbeat registration = (%q, %q), want (relay_abc, lease_1)", relayID, leaseToken)
+	}
 
 	// Teardown: cancel the client; the hub should free the allocated port.
 	clientCancel()
@@ -347,6 +360,9 @@ func TestHubReregistersWhenBrokerForgetsRelay(t *testing.T) {
 		return hb > hbBefore
 	}) {
 		t.Fatal("heartbeats stopped after re-registration")
+	}
+	if relayID, leaseToken := registrar.lastHeartbeat(); relayID != "relay_new" || leaseToken != "lease_2" {
+		t.Fatalf("heartbeat after re-registration = (%q, %q), want (relay_new, lease_2)", relayID, leaseToken)
 	}
 	registers, _, _ := registrar.stats()
 	if registers != 2 {

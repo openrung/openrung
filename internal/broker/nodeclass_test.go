@@ -389,7 +389,7 @@ func TestStoreHeartbeatGuardsFoundationLease(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 
-	if _, err := store.Heartbeat(desc.ID, relay.NodeClassVolunteer, now.Add(time.Second), time.Minute); !errors.Is(err, ErrNodeClassForbidden) {
+	if _, err := store.Heartbeat(desc.ID, desc.LeaseToken, relay.NodeClassVolunteer, now.Add(time.Second), time.Minute); !errors.Is(err, ErrNodeClassForbidden) {
 		t.Fatalf("volunteer-class credential heartbeat of foundation relay: err = %v, want ErrNodeClassForbidden", err)
 	}
 	// The refused heartbeat must not have extended the lease.
@@ -401,11 +401,11 @@ func TestStoreHeartbeatGuardsFoundationLease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("re-register: %v", err)
 	}
-	if _, err := store.Heartbeat(desc.ID, relay.NodeClassFoundation, now.Add(time.Second), time.Minute); err != nil {
+	if _, err := store.Heartbeat(desc.ID, desc.LeaseToken, relay.NodeClassFoundation, now.Add(time.Second), time.Minute); err != nil {
 		t.Fatalf("foundation-credential heartbeat: %v", err)
 	}
 
-	if _, err := store.Heartbeat("relay_missing", relay.NodeClassFoundation, now, time.Minute); !errors.Is(err, ErrRelayNotFound) {
+	if _, err := store.Heartbeat("relay_missing", "", relay.NodeClassFoundation, now, time.Minute); !errors.Is(err, ErrRelayNotFound) {
 		t.Fatalf("missing relay: err = %v, want ErrRelayNotFound", err)
 	}
 }
@@ -469,7 +469,7 @@ func TestRegisterFoundationCanRefreshOwnEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first foundation register: %v", err)
 	}
-	if _, err := store.Heartbeat(preSquat.ID, relay.NodeClassVolunteer, now.Add(2*time.Second), time.Minute); !errors.Is(err, ErrRelayNotFound) {
+	if _, err := store.Heartbeat(preSquat.ID, preSquat.LeaseToken, relay.NodeClassVolunteer, now.Add(2*time.Second), time.Minute); !errors.Is(err, ErrRelayNotFound) {
 		t.Fatalf("pre-squatting volunteer-class relay ID survived foundation registration: %v", err)
 	}
 
@@ -481,7 +481,7 @@ func TestRegisterFoundationCanRefreshOwnEndpoint(t *testing.T) {
 	if refreshed.ID == firstFoundation.ID {
 		t.Fatal("expected foundation refresh to receive a new relay ID")
 	}
-	if _, err := store.Heartbeat(firstFoundation.ID, relay.NodeClassFoundation, now.Add(3*time.Second), time.Minute); !errors.Is(err, ErrRelayNotFound) {
+	if _, err := store.Heartbeat(firstFoundation.ID, firstFoundation.LeaseToken, relay.NodeClassFoundation, now.Add(3*time.Second), time.Minute); !errors.Is(err, ErrRelayNotFound) {
 		t.Fatalf("old foundation ID survived refresh: %v", err)
 	}
 	listed, err := store.List(now.Add(3*time.Second), 10)
@@ -518,7 +518,7 @@ func TestStoreExpiredFoundationEndpointIsReclaimable(t *testing.T) {
 	if reclaimed.NodeClass != relay.NodeClassVolunteer {
 		t.Fatalf("reclaimed node_class = %q, want %q", reclaimed.NodeClass, relay.NodeClassVolunteer)
 	}
-	if _, err := store.Heartbeat(expired.ID, relay.NodeClassFoundation, now.Add(2*time.Minute), time.Minute); !errors.Is(err, ErrRelayNotFound) {
+	if _, err := store.Heartbeat(expired.ID, expired.LeaseToken, relay.NodeClassFoundation, now.Add(2*time.Minute), time.Minute); !errors.Is(err, ErrRelayNotFound) {
 		t.Fatalf("expired foundation ID survived endpoint reclaim: %v", err)
 	}
 	listed, err := store.List(now.Add(2*time.Minute), 10)

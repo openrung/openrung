@@ -19,22 +19,44 @@ func (row heartbeatMissRow) Scan(dest ...any) error {
 func TestHeartbeatMissError(t *testing.T) {
 	lookupErr := errors.New("lookup failed")
 	tests := []struct {
-		name string
-		row  heartbeatMissRow
-		want error
+		name     string
+		row      heartbeatMissRow
+		maxClass string
+		want     error
 	}{
 		{
 			name: "foundation row exists",
 			row: func(dest ...any) error {
 				*dest[0].(*bool) = true
+				*dest[1].(*bool) = true
 				return nil
 			},
 			want: ErrNodeClassForbidden,
 		},
 		{
+			name: "authorized foundation registration mismatch",
+			row: func(dest ...any) error {
+				*dest[0].(*bool) = true
+				*dest[1].(*bool) = true
+				return nil
+			},
+			maxClass: relay.NodeClassFoundation,
+			want:     ErrRelayNotFound,
+		},
+		{
+			name: "volunteer registration mismatch",
+			row: func(dest ...any) error {
+				*dest[0].(*bool) = true
+				*dest[1].(*bool) = false
+				return nil
+			},
+			want: ErrRelayNotFound,
+		},
+		{
 			name: "relay is missing",
 			row: func(dest ...any) error {
 				*dest[0].(*bool) = false
+				*dest[1].(*bool) = false
 				return nil
 			},
 			want: ErrRelayNotFound,
@@ -47,7 +69,7 @@ func TestHeartbeatMissError(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if err := heartbeatMissError(test.row); !errors.Is(err, test.want) {
+			if err := heartbeatMissError(test.row, test.maxClass); !errors.Is(err, test.want) {
 				t.Fatalf("heartbeat miss error = %v, want %v", err, test.want)
 			}
 		})
@@ -71,7 +93,7 @@ func TestPostgresStoreSharesRelayStateAcrossInstances(t *testing.T) {
 		t.Fatalf("second store did not see registered relay: %+v", listed)
 	}
 
-	updated, err := storeB.Heartbeat(desc.ID, relay.NodeClassVolunteer, now.Add(30*time.Second), time.Minute)
+	updated, err := storeB.Heartbeat(desc.ID, desc.LeaseToken, relay.NodeClassVolunteer, now.Add(30*time.Second), time.Minute)
 	if err != nil {
 		t.Fatalf("heartbeat from second store: %v", err)
 	}
@@ -143,7 +165,7 @@ func TestPostgresStoreDuplicateEndpointReplacesOldDescriptor(t *testing.T) {
 	if first.ID == second.ID {
 		t.Fatal("expected replacement to receive a new relay ID")
 	}
-	if _, err := store.Heartbeat(first.ID, relay.NodeClassVolunteer, now.Add(2*time.Second), time.Minute); !errors.Is(err, ErrRelayNotFound) {
+	if _, err := store.Heartbeat(first.ID, first.LeaseToken, relay.NodeClassVolunteer, now.Add(2*time.Second), time.Minute); !errors.Is(err, ErrRelayNotFound) {
 		t.Fatalf("expected old relay ID to be forgotten, got %v", err)
 	}
 	listed, err := store.List(now.Add(2*time.Second), 10)
@@ -193,7 +215,7 @@ func TestPostgresStoreGeoSurvivesReRegistration(t *testing.T) {
 		t.Fatalf("register relay: %v", err)
 	}
 	geo := relay.GeoLocation{City: "Tokyo", Country: "Japan", CountryCode: "JP"}
-	if err := store.UpdateGeo(desc.ID, geo); err != nil {
+	if err := store.UpdateGeo(desc.ID, desc.LeaseToken, geo); err != nil {
 		t.Fatalf("update geo: %v", err)
 	}
 	listed, err := store.List(now.Add(time.Second), 10)
@@ -213,7 +235,7 @@ func TestPostgresStoreGeoSurvivesReRegistration(t *testing.T) {
 		t.Fatalf("expected re-registered relay to keep geo, got %+v", replacement.GeoLocation)
 	}
 
-	if err := store.UpdateGeo("relay_missing", geo); !errors.Is(err, ErrRelayNotFound) {
+	if err := store.UpdateGeo("relay_missing", "", geo); !errors.Is(err, ErrRelayNotFound) {
 		t.Fatalf("expected ErrRelayNotFound for unknown relay, got %v", err)
 	}
 }
@@ -233,7 +255,7 @@ func TestPostgresStoreExitHostChangeClearsGeo(t *testing.T) {
 		t.Fatalf("expected stored exit host, got %q", desc.ExitHost)
 	}
 	geo := relay.GeoLocation{City: "Tehran", Country: "Iran", CountryCode: "IR"}
-	if err := store.UpdateGeo(desc.ID, geo); err != nil {
+	if err := store.UpdateGeo(desc.ID, desc.LeaseToken, geo); err != nil {
 		t.Fatalf("update geo: %v", err)
 	}
 
@@ -367,7 +389,7 @@ func TestPostgresStoreHeartbeatGuardsFoundationLease(t *testing.T) {
 		t.Fatalf("register foundation relay: %v", err)
 	}
 
-	if _, err := store.Heartbeat(desc.ID, relay.NodeClassVolunteer, now.Add(time.Second), time.Minute); !errors.Is(err, ErrNodeClassForbidden) {
+	if _, err := store.Heartbeat(desc.ID, desc.LeaseToken, relay.NodeClassVolunteer, now.Add(time.Second), time.Minute); !errors.Is(err, ErrNodeClassForbidden) {
 		t.Fatalf("volunteer-class credential heartbeat of foundation relay: err = %v, want ErrNodeClassForbidden", err)
 	}
 	// The refused heartbeat must not have extended the lease: past the
@@ -376,7 +398,7 @@ func TestPostgresStoreHeartbeatGuardsFoundationLease(t *testing.T) {
 		t.Fatalf("foundation relay lease was extended by refused heartbeat: %+v %v", listed, err)
 	}
 
-	updated, err := store.Heartbeat(desc.ID, relay.NodeClassFoundation, now.Add(30*time.Second), time.Minute)
+	updated, err := store.Heartbeat(desc.ID, desc.LeaseToken, relay.NodeClassFoundation, now.Add(30*time.Second), time.Minute)
 	if err != nil {
 		t.Fatalf("foundation-credential heartbeat: %v", err)
 	}
@@ -384,7 +406,7 @@ func TestPostgresStoreHeartbeatGuardsFoundationLease(t *testing.T) {
 		t.Fatalf("heartbeat descriptor node_class = %q, want %q", updated.NodeClass, relay.NodeClassFoundation)
 	}
 
-	if _, err := store.Heartbeat("relay_missing", relay.NodeClassFoundation, now, time.Minute); !errors.Is(err, ErrRelayNotFound) {
+	if _, err := store.Heartbeat("relay_missing", "", relay.NodeClassFoundation, now, time.Minute); !errors.Is(err, ErrRelayNotFound) {
 		t.Fatalf("missing relay: err = %v, want ErrRelayNotFound", err)
 	}
 }

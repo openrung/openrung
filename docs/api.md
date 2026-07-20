@@ -317,11 +317,85 @@ and never exposes it through any public endpoint, so the relay host's observed
 exit IP stays private. `exit_host` is rejected for direct transport, where
 `public_host` already is the exit.
 
+### Stable relay identity (spec `openrung-relay-identity-v1`)
+
+By default the broker mints a fresh random `relay_id` on every registration,
+so a relay's ID churns whenever it restarts or the broker forgets its lease —
+fragmenting dashboard history and ranking state across orphaned IDs. A relay
+may instead prove possession of a long-lived Ed25519 identity key by adding
+three fields to the registration:
+
+```json
+{
+  "identity_public_key": "<base64 raw 32-byte Ed25519 public key>",
+  "identity_proof": "<base64 Ed25519 signature>",
+  "identity_expires_at": "2026-07-21T12:00:00Z"
+}
+```
+
+The broker then derives the relay ID from the key — `relay_` + lowercase hex
+of the first 16 bytes of SHA-256 over `"openrung-relay-identity-v1:id:"` plus
+the raw key — so the same key always yields the same ID, with no broker-side
+state. The proof signs a canonical newline-joined statement binding: the spec
+tag, `identity_expires_at`, `transport`, the VLESS/Reality parameters
+(`client_id`, `reality_public_key`, `short_id`, `server_name`, `flow`,
+`exit_mode`), `max_sessions`, `max_mbps`, `label`, `node_class`, and — for
+direct transport only — `public_host`/`public_port`. It deliberately does not
+bind fields the relay cannot know or that the hub sets: the tunnel endpoint,
+`punch_capable`/`punch_endpoint`, `exit_host`, and `relay_version`.
+
+What this buys, and its limits: a captured proof cannot be re-signed with a
+different identity key (the ID is the key), used after `identity_expires_at`,
+dated more than 48 hours out, or — for a direct relay — pointed at a different
+endpoint. A captured **tunnel** proof, however, can within its lifetime
+re-register the same relay ID at an attacker-chosen endpoint, because the
+tunnel statement binds no endpoint (the relay signs before the hub assigns
+one). It cannot serve traffic, since the bound `reality_public_key`'s private
+half never leaves the real relay, so the result is denial rather than
+interception.
+
+That denial cannot be perpetuated by the real relay's heartbeats. Every
+successful identity-bearing registration mints a fresh, unlisted
+`lease_token`, and a heartbeat for that stable ID must present the token for
+the current registration. A replay (or stale tunnel session) rotates the
+token; the live relay or hub's next heartbeat is rejected as not found, which
+drives it to re-register its genuine request and restore the endpoint. While
+the genuine relay or hub remains connected, one replay therefore buys at most
+a transient overwrite; sustaining the denial requires repeated registration
+replays until the proof expires. Passive capture requires observable
+registration traffic (the plaintext volunteer broker origin); the TLS front
+and origin-TLS close that path.
+
+An already-authorized stale hub session is a separate case: TLS does not remove
+credentials the hub legitimately holds. The hub checks local registry
+ownership before re-registering and retires a stale session once a newer one
+owns the ID. A narrow overlap with publication of the new session can still
+briefly overwrite its endpoint, but the new session's next token-scoped
+heartbeat restores it. The hub also recycles a tunnel session for a fresh
+HELLO when the broker answers `401` `relay identity proof expired`.
+
+All three fields travel together; a malformed, tampered, or expired proof
+fails the registration with `401` — never a silent fall back to a random ID.
+Requests without the fields keep the legacy random-ID behavior and do not
+require a lease token on heartbeat. The identity public key and lease token
+are never served through any public relay-list endpoint.
+
+The identity grants nothing beyond ID continuity: node class is still attested
+per registration by the token, the foundation endpoint guard applies
+unchanged, and a valid proof for a different key confers no authority over an
+endpoint. When an identity re-registers from a new endpoint, its previous row
+is atomically abandoned (one row per identity). The shipped relay pins the key
+with `-identity-seed` / `OPENRUNG_IDENTITY_SEED` (base64 32-byte seed, minted
+per instance by the deploy scripts), the desktop volunteer app persists it in
+`identity.json`, and an unpinned relay generates one per process — which still
+keeps the ID stable across broker outages within the process lifetime.
+
 Response:
 
 ```json
 {
   "id": "relay_...",
+  "lease_token": "lease_<opaque random token>",
   "public_host": "2001:db8::1",
   "public_port": 443,
   "city": "Tokyo",
@@ -359,6 +433,11 @@ resolves.
 ```http
 POST /api/v1/relays/{id}/heartbeat
 Authorization: Bearer <registration-token>
+
+{
+  "ok": true,
+  "lease_token": "lease_<token from registration>"
+}
 ```
 
 Response:
@@ -379,6 +458,13 @@ keeping an orphaned foundation label alive (e.g. after an endpoint takeover
 through a pre-`node_class` broker binary) or interfering with a foundation
 relay: a refused heartbeat changes nothing, and an unattended foundation row
 expires from the origin store within one lease TTL.
+
+An identity-bearing registration also requires its current `lease_token` on
+heartbeat. The broker rotates this opaque token on every successful
+registration and returns `404 relay not found` for a missing or superseded
+token, causing the relay or hub to re-register. Legacy random-ID registrations
+may omit it for rolling compatibility. The token is registration-private and
+must not be logged or copied into relay-list data.
 
 The one-TTL bound applies to the live origin row, not to copies already signed.
 An ordinary API snapshot has a 30-minute `not_after` window. On an origin

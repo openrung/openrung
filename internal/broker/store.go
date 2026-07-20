@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"sync"
@@ -38,8 +39,8 @@ type RelayStore interface {
 	// e.g. an endpoint takeover through a rolled-back broker binary whose
 	// upsert predates node_class — expires within one TTL instead of being
 	// kept alive indefinitely by whoever now heartbeats the ID.
-	Heartbeat(id, maxClass string, now time.Time, ttl time.Duration) (relay.Descriptor, error)
-	UpdateGeo(string, relay.GeoLocation) error
+	Heartbeat(id, leaseToken, maxClass string, now time.Time, ttl time.Duration) (relay.Descriptor, error)
+	UpdateGeo(id, leaseToken string, geo relay.GeoLocation) error
 	List(time.Time, int) ([]relay.Descriptor, error)
 	// RelayNodeClasses resolves active relay IDs to the broker-attested class
 	// stored on their descriptors. Telemetry ingestion uses this bounded lookup
@@ -80,34 +81,54 @@ func NewStoreWithRanking(rankingMode RankingMode) *Store {
 }
 
 func (s *Store) Register(req relay.RegisterRequest, now time.Time, ttl time.Duration) (relay.Descriptor, error) {
-	id, err := newRelayID()
+	// Verification lives in the store, not the handler, so no future caller
+	// can register an identity-bearing request without the possession proof —
+	// the derived ID is only ever handed to a registrant holding the private
+	// key. Legacy requests (no identity fields) return a nil key and keep the
+	// random mint below.
+	identityKey, err := relay.VerifyIdentity(req, now)
 	if err != nil {
 		return relay.Descriptor{}, err
 	}
+	var id string
+	if identityKey != nil {
+		id = relay.DeriveRelayID(identityKey)
+	} else if id, err = newRelayID(); err != nil {
+		return relay.Descriptor{}, err
+	}
+	var leaseToken string
+	if identityKey != nil {
+		leaseToken, err = newRelayLeaseToken()
+		if err != nil {
+			return relay.Descriptor{}, err
+		}
+	}
 
 	desc := relay.Descriptor{
-		ID:               id,
-		Label:            req.Label,
-		NodeClass:        normalizeNodeClass(req.NodeClass),
-		PublicHost:       req.PublicHost,
-		PublicPort:       req.PublicPort,
-		ExitHost:         req.ExitHost,
-		Protocol:         req.Protocol,
-		ClientID:         req.ClientID,
-		RealityPublicKey: req.RealityPublicKey,
-		ShortID:          req.ShortID,
-		ServerName:       req.ServerName,
-		Flow:             req.Flow,
-		ExitMode:         req.ExitMode,
-		MaxSessions:      req.MaxSessions,
-		MaxMbps:          req.MaxMbps,
-		RelayVersion:     req.RelayVersion,
-		Transport:        normalizeTransport(req.Transport),
-		PunchCapable:     req.PunchCapable,
-		PunchEndpoint:    req.PunchEndpoint,
-		RegisteredAt:     now,
-		LastHeartbeatAt:  now,
-		ExpiresAt:        now.Add(ttl),
+		ID:                id,
+		IdentityPublicKey: req.IdentityPublicKey,
+		LeaseToken:        leaseToken,
+		Label:             req.Label,
+		NodeClass:         normalizeNodeClass(req.NodeClass),
+		PublicHost:        req.PublicHost,
+		PublicPort:        req.PublicPort,
+		ExitHost:          req.ExitHost,
+		Protocol:          req.Protocol,
+		ClientID:          req.ClientID,
+		RealityPublicKey:  req.RealityPublicKey,
+		ShortID:           req.ShortID,
+		ServerName:        req.ServerName,
+		Flow:              req.Flow,
+		ExitMode:          req.ExitMode,
+		MaxSessions:       req.MaxSessions,
+		MaxMbps:           req.MaxMbps,
+		RelayVersion:      req.RelayVersion,
+		Transport:         normalizeTransport(req.Transport),
+		PunchCapable:      req.PunchCapable,
+		PunchEndpoint:     req.PunchEndpoint,
+		RegisteredAt:      now,
+		LastHeartbeatAt:   now,
+		ExpiresAt:         now.Add(ttl),
 	}
 
 	s.mu.Lock()
@@ -147,12 +168,16 @@ func (s *Store) Register(req relay.RegisterRequest, now time.Time, ttl time.Dura
 	for _, replacedID := range replacedIDs {
 		delete(s.relays, replacedID)
 	}
+	// A stable identity re-registering from a new endpoint abandons its old
+	// row; the map insert replaces it by key. (Tunnel relays legitimately hit
+	// this on most reconnects, because the hub round-robins their public port,
+	// so it is normal traffic and not logged.)
 	s.relays[id] = desc
 
 	return desc, nil
 }
 
-func (s *Store) Heartbeat(id, maxClass string, now time.Time, ttl time.Duration) (relay.Descriptor, error) {
+func (s *Store) Heartbeat(id, leaseToken, maxClass string, now time.Time, ttl time.Duration) (relay.Descriptor, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -163,6 +188,14 @@ func (s *Store) Heartbeat(id, maxClass string, now time.Time, ttl time.Duration)
 	if desc.NodeClass == relay.NodeClassFoundation && maxClass != relay.NodeClassFoundation {
 		return relay.Descriptor{}, ErrNodeClassForbidden
 	}
+	// A stable relay ID names an identity, not one registration. Require the
+	// unlisted token minted for this exact incarnation so a stale session (or a
+	// one-time replay that moved the endpoint) cannot renew whichever endpoint
+	// currently occupies the ID. Empty stored tokens are migrated/pre-token
+	// stable rows and deliberately fail closed, forcing a fresh registration.
+	if desc.IdentityPublicKey != "" && (desc.LeaseToken == "" || subtle.ConstantTimeCompare([]byte(desc.LeaseToken), []byte(leaseToken)) != 1) {
+		return relay.Descriptor{}, ErrRelayNotFound
+	}
 
 	desc.LastHeartbeatAt = now
 	desc.ExpiresAt = now.Add(ttl)
@@ -171,12 +204,19 @@ func (s *Store) Heartbeat(id, maxClass string, now time.Time, ttl time.Duration)
 	return desc, nil
 }
 
-func (s *Store) UpdateGeo(id string, geo relay.GeoLocation) error {
+func (s *Store) UpdateGeo(id, leaseToken string, geo relay.GeoLocation) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	desc, ok := s.relays[id]
 	if !ok {
+		return ErrRelayNotFound
+	}
+	// GeoIP resolution happens after registration/heartbeat and may finish
+	// after another registration has reused this stable ID. Scope the delayed
+	// write to the registration that requested it so stale endpoint geography
+	// cannot contaminate the replacement descriptor.
+	if desc.IdentityPublicKey != "" && (desc.LeaseToken == "" || subtle.ConstantTimeCompare([]byte(desc.LeaseToken), []byte(leaseToken)) != 1) {
 		return ErrRelayNotFound
 	}
 	desc.GeoLocation = geo
@@ -420,4 +460,12 @@ func newRelayID() (string, error) {
 		return "", err
 	}
 	return "relay_" + hex.EncodeToString(b[:]), nil
+}
+
+func newRelayLeaseToken() (string, error) {
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return "lease_" + hex.EncodeToString(b[:]), nil
 }
