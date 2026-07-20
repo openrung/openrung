@@ -160,8 +160,9 @@ const telemetryAppConnectionEvent = "application_connection"
 
 // maxTelemetryAppRollupEntries bounds the distinct (hour, application) pairs a
 // rollup holds in memory so a flood of fabricated package names cannot grow
-// broker memory without bound. Real fleets sit far below it: the retention
-// window holds 168 hours, and devices carry a few hundred packages at most.
+// broker memory without bound. When the cap is full, a count from a newer hour
+// evicts the oldest complete hour bucket; this preserves the most recent data
+// instead of starving every new hour until an old bucket reaches retention.
 const maxTelemetryAppRollupEntries = 10000
 
 // telemetryAppRollupHour is the bucket an application_connection event counts
@@ -177,12 +178,15 @@ func telemetryAppRollupHour(record TelemetryRecord, now time.Time) time.Time {
 // telemetryAppRollup accumulates hourly application-connection counts. None of
 // its methods lock — the owning sink's lock guards all access.
 type telemetryAppRollup struct {
-	hours   map[time.Time]map[string]int64
-	entries int
+	hours          map[time.Time]map[string]int64
+	entries        int
+	evictedEntries int64
 }
 
-// add counts one bucket increment, reporting false when the entry cap forced
-// it to drop a new (hour, application) pair. Existing pairs always increment.
+// add counts one bucket increment. Existing pairs always increment. At the
+// entry cap, a newer hour evicts the oldest complete bucket to make room; add
+// reports false only when the cap is saturated entirely by the incoming hour
+// or newer hours, as can happen during a fabricated-package flood.
 func (r *telemetryAppRollup) add(hour time.Time, application string, count int64) bool {
 	if application == "" || count <= 0 {
 		return true
@@ -190,18 +194,48 @@ func (r *telemetryAppRollup) add(hour time.Time, application string, count int64
 	if r.hours == nil {
 		r.hours = make(map[time.Time]map[string]int64)
 	}
+	if apps := r.hours[hour]; apps != nil {
+		if _, ok := apps[application]; ok {
+			apps[application] += count
+			return true
+		}
+	}
+	for r.entries >= maxTelemetryAppRollupEntries {
+		if !r.evictOldestHourBefore(hour) {
+			return false
+		}
+	}
 	apps := r.hours[hour]
 	if apps == nil {
 		apps = make(map[string]int64)
 		r.hours[hour] = apps
 	}
-	if _, ok := apps[application]; !ok {
-		if r.entries >= maxTelemetryAppRollupEntries {
-			return false
-		}
-		r.entries++
-	}
+	r.entries++
 	apps[application] += count
+	return true
+}
+
+// evictOldestHourBefore removes the oldest complete bucket strictly before
+// hour. Keeping eviction hour-granular makes the rollup's degraded behavior
+// predictable under cardinality pressure and guarantees current data wins over
+// older data without ever exceeding the global memory bound.
+func (r *telemetryAppRollup) evictOldestHourBefore(hour time.Time) bool {
+	var oldest time.Time
+	found := false
+	for candidate := range r.hours {
+		if !candidate.Before(hour) || (found && !candidate.Before(oldest)) {
+			continue
+		}
+		oldest = candidate
+		found = true
+	}
+	if !found {
+		return false
+	}
+	evicted := len(r.hours[oldest])
+	r.entries -= evicted
+	r.evictedEntries += int64(evicted)
+	delete(r.hours, oldest)
 	return true
 }
 
@@ -342,12 +376,18 @@ func newJSONLTelemetrySinkWithLimits(path string, now func() time.Time, flushInt
 		path: path, file: file, now: now, stop: make(chan struct{}), done: make(chan struct{}),
 		telemetryRetained: telemetryRetained{memoryLimit: memoryLimit}, fileLimit: fileLimit,
 	}
-	if err := sink.loadRecent(); err != nil {
+	needsPrivacyCompaction, err := sink.loadRecent()
+	if err != nil {
 		_ = file.Close()
 		return nil, err
 	}
 	sink.writer = bufio.NewWriter(file)
-	if err := sink.maybeCompactLocked(); err != nil {
+	if needsPrivacyCompaction {
+		err = sink.compactLocked()
+	} else {
+		err = sink.maybeCompactLocked()
+	}
+	if err != nil {
 		_ = sink.file.Close()
 		return nil, fmt.Errorf("compact telemetry file: %w", err)
 	}
@@ -355,35 +395,36 @@ func newJSONLTelemetrySinkWithLimits(path string, now func() time.Time, flushInt
 	return sink, nil
 }
 
-func (s *JSONLTelemetrySink) loadRecent() error {
+func (s *JSONLTelemetrySink) loadRecent() (bool, error) {
 	info, err := s.file.Stat()
 	if err != nil {
-		return fmt.Errorf("stat telemetry file: %w", err)
+		return false, fmt.Errorf("stat telemetry file: %w", err)
 	}
 	s.fileBytes = info.Size()
 
 	if _, err := s.file.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("seek telemetry file: %w", err)
+		return false, fmt.Errorf("seek telemetry file: %w", err)
 	}
 	cutoff := s.now().UTC().Add(-telemetryRetention)
 	scanner := bufio.NewScanner(s.file)
 	scanner.Buffer(make([]byte, 64<<10), maxTelemetryBodyBytes*2)
 	line := 0
+	needsPrivacyCompaction := false
 	for scanner.Scan() {
 		line++
 		var record TelemetryRecord
 		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
-			return fmt.Errorf("decode telemetry record on line %d: %w", line, err)
-		}
-		if retentionTime(record).Before(cutoff) {
-			continue
+			return false, fmt.Errorf("decode telemetry record on line %d: %w", line, err)
 		}
 		// Legacy files may hold raw application_connection rows from before the
-		// rollup existed. Skip them entirely — compaction then sheds them from
-		// the file. They are not folded into the rollup either: whether the file
-		// still holds a row depends on compaction timing, so counting them here
-		// would make restart counts nondeterministic.
+		// rollup existed. Skip every such row, including one already outside
+		// retention, and force a startup compaction so its browsing metadata is
+		// physically removed even when the file is below the normal size limit.
 		if record.Event.Event == telemetryAppConnectionEvent {
+			needsPrivacyCompaction = true
+			continue
+		}
+		if retentionTime(record).Before(cutoff) {
 			continue
 		}
 		size := int64(len(scanner.Bytes()) + 1)
@@ -400,11 +441,11 @@ func (s *JSONLTelemetrySink) loadRecent() error {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("read telemetry file: %w", err)
+		return false, fmt.Errorf("read telemetry file: %w", err)
 	}
 	s.dropOldestOverBudget()
 	_, err = s.file.Seek(0, io.SeekEnd)
-	return err
+	return needsPrivacyCompaction, err
 }
 
 // retentionTime is the timestamp retention decisions key off: the
@@ -446,12 +487,20 @@ func (s *JSONLTelemetrySink) WriteTelemetry(_ context.Context, records []Telemet
 	}
 
 	now := s.now().UTC()
+	cutoff := now.Add(-telemetryRetention)
+	// Free expired app buckets before accepting this batch so stale entries can
+	// never make the cap reject the first count after a quiet period.
+	s.appRollup.prune(cutoff)
+	droppedAppCounts := 0
+	evictedAppCountsBefore := s.appRollup.evictedEntries
 	for _, record := range records {
 		if record.Event.Event == telemetryAppConnectionEvent {
 			// Rolled up, never persisted — see telemetryAppConnectionEvent. The
 			// in-memory rollup is this sink's only copy, so top-apps counts
 			// restart empty; the Postgres store persists its rollup instead.
-			s.appRollup.add(telemetryAppRollupHour(record, now), record.Event.Application, 1)
+			if !s.appRollup.add(telemetryAppRollupHour(record, now), record.Event.Application, 1) {
+				droppedAppCounts++
+			}
 			continue
 		}
 		line, err := json.Marshal(record)
@@ -467,13 +516,21 @@ func (s *JSONLTelemetrySink) WriteTelemetry(_ context.Context, records []Telemet
 		s.append(record, size)
 		s.fileBytes += size
 	}
-	cutoff := now.Add(-telemetryRetention)
 	s.prune(cutoff)
+	// Programmatic callers can supply records with an old ReceivedAt even though
+	// the HTTP handler always stamps the current time. Remove any such bucket
+	// added by this batch as well as pruning before it for capacity.
 	s.appRollup.prune(cutoff)
 	s.dropOldestOverBudget()
 	if err := s.maybeCompactLocked(); err != nil {
 		s.writeErr = fmt.Errorf("compact telemetry file: %w", err)
 		return s.writeErr
+	}
+	if droppedAppCounts > 0 {
+		slog.Warn("dropped application-connection counts over rollup entry cap", "dropped", droppedAppCounts, "store", "jsonl")
+	}
+	if evicted := s.appRollup.evictedEntries - evictedAppCountsBefore; evicted > 0 {
+		slog.Warn("evicted oldest application-connection rollup entries to preserve current counts", "evicted", evicted, "store", "jsonl")
 	}
 	return nil
 }
@@ -554,7 +611,7 @@ func (s *JSONLTelemetrySink) compactLocked() error {
 	if err := s.flushLocked(false); err != nil {
 		return err
 	}
-	dir, base := filepath.Split(s.path)
+	dir, base := filepath.Dir(s.path), filepath.Base(s.path)
 	temp, err := os.CreateTemp(dir, base+".compact-*")
 	if err != nil {
 		return fmt.Errorf("create compaction file: %w", err)

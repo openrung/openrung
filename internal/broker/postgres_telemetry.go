@@ -214,6 +214,7 @@ func (s *PostgresTelemetrySink) WriteTelemetry(ctx context.Context, records []Te
 		s.mu.Unlock()
 		return errors.New("telemetry storage is closed")
 	}
+	evictedBefore := s.pendingAppCounts.evictedEntries
 	for _, record := range records {
 		if record.Event.Event == telemetryAppConnectionEvent {
 			// Rolled up, never inserted as a row — see telemetryAppConnectionEvent.
@@ -227,9 +228,13 @@ func (s *PostgresTelemetrySink) WriteTelemetry(ctx context.Context, records []Te
 		s.pendingBytes += size
 	}
 	shouldFlush := len(s.pending) >= postgresTelemetryFlushThreshold
+	evicted := s.pendingAppCounts.evictedEntries - evictedBefore
 	s.mu.Unlock()
 	if dropped > 0 {
 		slog.Warn("dropped application-connection counts over rollup entry cap", "dropped", dropped)
+	}
+	if evicted > 0 {
+		slog.Warn("evicted oldest application-connection rollup entries to preserve current counts", "evicted", evicted, "store", "postgres-buffer")
 	}
 
 	// The insert itself is asynchronous (buffered like the JSONL sink's
@@ -381,6 +386,7 @@ func (s *PostgresTelemetrySink) flush() error {
 		if err := s.upsertAppCounts(ctx, counts); err != nil {
 			s.mu.Lock()
 			dropped := 0
+			evictedBefore := s.pendingAppCounts.evictedEntries
 			for hour, apps := range counts.hours {
 				for application, count := range apps {
 					if !s.pendingAppCounts.add(hour, application, count) {
@@ -388,9 +394,13 @@ func (s *PostgresTelemetrySink) flush() error {
 					}
 				}
 			}
+			evicted := s.pendingAppCounts.evictedEntries - evictedBefore
 			s.mu.Unlock()
 			if dropped > 0 {
 				slog.Warn("dropped application-connection counts over rollup entry cap", "dropped", dropped)
+			}
+			if evicted > 0 {
+				slog.Warn("evicted oldest application-connection rollup entries while restoring a failed flush", "evicted", evicted, "store", "postgres-buffer")
 			}
 			errs = append(errs, err)
 		}

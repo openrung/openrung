@@ -736,6 +736,57 @@ func TestTelemetryAppRollupBucketsPrunesAndCaps(t *testing.T) {
 	}
 }
 
+func TestTelemetryAppRollupEvictsOldestHourForCurrentCounts(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+	const appsPerHour = 100
+	hours := maxTelemetryAppRollupEntries / appsPerHour
+	var rollup telemetryAppRollup
+	for hoursAgo := hours; hoursAgo > 0; hoursAgo-- {
+		hour := now.Add(-time.Duration(hoursAgo) * time.Hour)
+		for app := 0; app < appsPerHour; app++ {
+			if !rollup.add(hour, fmt.Sprintf("app-%03d", app), 1) {
+				t.Fatalf("unexpected cap refusal with %d hours ago and app %d", hoursAgo, app)
+			}
+		}
+	}
+	oldest := now.Add(-time.Duration(hours) * time.Hour)
+	for app := 0; app < appsPerHour; app++ {
+		if !rollup.add(now, fmt.Sprintf("current-app-%03d", app), 1) {
+			t.Fatalf("current-hour count %d must evict the oldest hour instead of being dropped", app)
+		}
+	}
+	if _, ok := rollup.hours[oldest]; ok {
+		t.Fatal("expected the oldest complete hour to be evicted")
+	}
+	if got, want := rollup.entries, maxTelemetryAppRollupEntries; got != want {
+		t.Fatalf("unexpected entry count after eviction: got %d, want %d", got, want)
+	}
+	if got, want := rollup.evictedEntries, int64(appsPerHour); got != want {
+		t.Fatalf("unexpected reported eviction count: got %d, want %d", got, want)
+	}
+	if counts := rollup.countsIn(now, telemetryRetention); counts["current-app-000"] != 1 || counts["current-app-099"] != 1 {
+		t.Fatalf("current-hour count was not retained: %+v", counts)
+	}
+}
+
+func TestJSONLTelemetrySinkPrunesOldAppCountFromCurrentBatch(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 30, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "telemetry.jsonl")
+	sink, err := newJSONLTelemetrySink(path, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sink.Close()
+	if err := sink.WriteTelemetry(context.Background(), []TelemetryRecord{
+		appConnectionRecordAt(now.Add(-telemetryRetention-time.Hour), "expired-app", "com.expired.example"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if counts := sink.AppConnectionCounts(now, telemetryRetention); len(counts) != 0 {
+		t.Fatalf("expired app count from current batch must not survive retention pruning: %+v", counts)
+	}
+}
+
 func TestJSONLTelemetrySinkRollsUpApplicationConnections(t *testing.T) {
 	now := time.Date(2026, 6, 21, 12, 30, 0, 0, time.UTC)
 	path := filepath.Join(t.TempDir(), "telemetry.jsonl")
@@ -781,6 +832,7 @@ func TestJSONLTelemetrySinkSkipsLegacyApplicationConnectionRows(t *testing.T) {
 	}
 	encoder := json.NewEncoder(file)
 	for _, record := range []TelemetryRecord{
+		appConnectionRecordAt(now.Add(-telemetryRetention-time.Hour), "legacy-expired-app", "com.expired.example"),
 		appConnectionRecordAt(now.Add(-time.Hour), "legacy-app", "com.instagram.android"),
 		telemetryRecordAt(now.Add(-time.Minute), "kept-1"),
 	} {
@@ -800,11 +852,21 @@ func TestJSONLTelemetrySinkSkipsLegacyApplicationConnectionRows(t *testing.T) {
 	if got := sink.TelemetryRecords(now.Add(-telemetryRetention)); len(got) != 1 || got[0].Event.EventID != "kept-1" {
 		t.Fatalf("legacy application_connection rows must be skipped at load: %+v", got)
 	}
-	// Legacy rows are not folded into the rollup either — whether the file
-	// still holds one depends on compaction timing, so counting them would
-	// make restart counts nondeterministic.
+	// Legacy rows are not folded into the rollup either: pre-rollup files may
+	// already have been compacted, so reconstructing only the rows that happen
+	// to remain would make restart counts incomplete and nondeterministic.
 	if counts := sink.AppConnectionCounts(now, telemetryRetention); len(counts) != 0 {
 		t.Fatalf("legacy rows must not seed the rollup: %+v", counts)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), telemetryAppConnectionEvent) || strings.Contains(string(data), "198.51.100.9") {
+		t.Fatalf("legacy application_connection payloads must be scrubbed during startup: %s", data)
+	}
+	if !strings.Contains(string(data), "kept-1") {
+		t.Fatalf("startup privacy compaction dropped the retained record: %s", data)
 	}
 }
 
