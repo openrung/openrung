@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -80,34 +82,46 @@ func NewStoreWithRanking(rankingMode RankingMode) *Store {
 }
 
 func (s *Store) Register(req relay.RegisterRequest, now time.Time, ttl time.Duration) (relay.Descriptor, error) {
-	id, err := newRelayID()
+	// Verification lives in the store, not the handler, so no future caller
+	// can register an identity-bearing request without the possession proof —
+	// the derived ID is only ever handed to a registrant holding the private
+	// key. Legacy requests (no identity fields) return a nil key and keep the
+	// random mint below.
+	identityKey, err := relay.VerifyIdentity(req, now)
 	if err != nil {
+		return relay.Descriptor{}, err
+	}
+	var id string
+	if identityKey != nil {
+		id = relay.DeriveRelayID(identityKey)
+	} else if id, err = newRelayID(); err != nil {
 		return relay.Descriptor{}, err
 	}
 
 	desc := relay.Descriptor{
-		ID:               id,
-		Label:            req.Label,
-		NodeClass:        normalizeNodeClass(req.NodeClass),
-		PublicHost:       req.PublicHost,
-		PublicPort:       req.PublicPort,
-		ExitHost:         req.ExitHost,
-		Protocol:         req.Protocol,
-		ClientID:         req.ClientID,
-		RealityPublicKey: req.RealityPublicKey,
-		ShortID:          req.ShortID,
-		ServerName:       req.ServerName,
-		Flow:             req.Flow,
-		ExitMode:         req.ExitMode,
-		MaxSessions:      req.MaxSessions,
-		MaxMbps:          req.MaxMbps,
-		RelayVersion:     req.RelayVersion,
-		Transport:        normalizeTransport(req.Transport),
-		PunchCapable:     req.PunchCapable,
-		PunchEndpoint:    req.PunchEndpoint,
-		RegisteredAt:     now,
-		LastHeartbeatAt:  now,
-		ExpiresAt:        now.Add(ttl),
+		ID:                id,
+		IdentityPublicKey: req.IdentityPublicKey,
+		Label:             req.Label,
+		NodeClass:         normalizeNodeClass(req.NodeClass),
+		PublicHost:        req.PublicHost,
+		PublicPort:        req.PublicPort,
+		ExitHost:          req.ExitHost,
+		Protocol:          req.Protocol,
+		ClientID:          req.ClientID,
+		RealityPublicKey:  req.RealityPublicKey,
+		ShortID:           req.ShortID,
+		ServerName:        req.ServerName,
+		Flow:              req.Flow,
+		ExitMode:          req.ExitMode,
+		MaxSessions:       req.MaxSessions,
+		MaxMbps:           req.MaxMbps,
+		RelayVersion:      req.RelayVersion,
+		Transport:         normalizeTransport(req.Transport),
+		PunchCapable:      req.PunchCapable,
+		PunchEndpoint:     req.PunchEndpoint,
+		RegisteredAt:      now,
+		LastHeartbeatAt:   now,
+		ExpiresAt:         now.Add(ttl),
 	}
 
 	s.mu.Lock()
@@ -146,6 +160,17 @@ func (s *Store) Register(req relay.RegisterRequest, now time.Time, ttl time.Dura
 	}
 	for _, replacedID := range replacedIDs {
 		delete(s.relays, replacedID)
+	}
+	// A stable identity re-registering from a new endpoint abandons its old
+	// row — the map insert below replaces it by key, but log the move: two
+	// deployments sharing one identity seed (a copy-paste error) would show up
+	// here as endpoint flip-flopping.
+	if existing, ok := s.relays[id]; ok &&
+		(existing.PublicHost != desc.PublicHost || existing.PublicPort != desc.PublicPort) {
+		slog.Warn("relay identity moved endpoint",
+			"relay_id", id,
+			"old", fmt.Sprintf("%s:%d", existing.PublicHost, existing.PublicPort),
+			"new", fmt.Sprintf("%s:%d", desc.PublicHost, desc.PublicPort))
 	}
 	s.relays[id] = desc
 

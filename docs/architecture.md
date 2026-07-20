@@ -291,6 +291,12 @@ The broker should treat relay registrations as untrusted input:
 - Require authentication for relay operators outside local development.
 - Validate ports, hostnames, protocol fields, and advertised capabilities.
 - Expire inactive relays aggressively.
+- Relay identity continuity (spec `openrung-relay-identity-v1`, see the API
+  doc) is proven, never asserted: the relay ID is derived from an Ed25519 key
+  the registrant demonstrates possession of, so identity-bound history (labels,
+  ranking, dashboard attribution) cannot be claimed from the public relay list.
+  The identity carries no authority beyond ID continuity — classes and
+  endpoint protections are enforced exactly as for anonymous registrations.
 
 The current scaffold advertises one generated VLESS client ID per relay process.
 That is acceptable for early private testing, but public versions should issue

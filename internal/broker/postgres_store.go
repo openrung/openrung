@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -41,7 +42,8 @@ const descriptorColumns = `
 	latitude,
 	longitude,
 	exit_host,
-	node_class
+	node_class,
+	identity_public_key
 `
 
 const postgresOperationTimeout = 5 * time.Second
@@ -76,6 +78,7 @@ CREATE TABLE IF NOT EXISTS relay_descriptors (
 	longitude double precision NOT NULL DEFAULT 0,
 	exit_host text NOT NULL DEFAULT '',
 	node_class text NOT NULL DEFAULT 'volunteer',
+	identity_public_key text NOT NULL DEFAULT '',
 	attributes jsonb NOT NULL DEFAULT '{}'::jsonb,
 	UNIQUE (public_host, public_port)
 );
@@ -115,6 +118,9 @@ ALTER TABLE relay_descriptors
 
 ALTER TABLE relay_descriptors
 	ADD COLUMN IF NOT EXISTS node_class text NOT NULL DEFAULT 'volunteer';
+
+ALTER TABLE relay_descriptors
+	ADD COLUMN IF NOT EXISTS identity_public_key text NOT NULL DEFAULT '';
 
 CREATE INDEX IF NOT EXISTS relay_descriptors_active_idx
 	ON relay_descriptors (expires_at DESC, last_heartbeat_at DESC);
@@ -187,33 +193,45 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 	ctx, cancel := postgresOperationContext()
 	defer cancel()
 
-	id, err := newRelayID()
+	// Verification lives in the store, not the handler, so no future caller
+	// can register an identity-bearing request without the possession proof —
+	// the derived ID is only ever handed to a registrant holding the private
+	// key. Legacy requests (no identity fields) return a nil key and keep the
+	// random mint below.
+	identityKey, err := relay.VerifyIdentity(req, now)
 	if err != nil {
 		return relay.Descriptor{}, err
 	}
+	var id string
+	if identityKey != nil {
+		id = relay.DeriveRelayID(identityKey)
+	} else if id, err = newRelayID(); err != nil {
+		return relay.Descriptor{}, err
+	}
 	desc := relay.Descriptor{
-		ID:               id,
-		Label:            req.Label,
-		NodeClass:        normalizeNodeClass(req.NodeClass),
-		PublicHost:       req.PublicHost,
-		PublicPort:       req.PublicPort,
-		ExitHost:         req.ExitHost,
-		Protocol:         req.Protocol,
-		ClientID:         req.ClientID,
-		RealityPublicKey: req.RealityPublicKey,
-		ShortID:          req.ShortID,
-		ServerName:       req.ServerName,
-		Flow:             req.Flow,
-		ExitMode:         req.ExitMode,
-		MaxSessions:      req.MaxSessions,
-		MaxMbps:          req.MaxMbps,
-		RelayVersion:     req.RelayVersion,
-		Transport:        normalizeTransport(req.Transport),
-		PunchCapable:     req.PunchCapable,
-		PunchEndpoint:    req.PunchEndpoint,
-		RegisteredAt:     now,
-		LastHeartbeatAt:  now,
-		ExpiresAt:        now.Add(ttl),
+		ID:                id,
+		IdentityPublicKey: req.IdentityPublicKey,
+		Label:             req.Label,
+		NodeClass:         normalizeNodeClass(req.NodeClass),
+		PublicHost:        req.PublicHost,
+		PublicPort:        req.PublicPort,
+		ExitHost:          req.ExitHost,
+		Protocol:          req.Protocol,
+		ClientID:          req.ClientID,
+		RealityPublicKey:  req.RealityPublicKey,
+		ShortID:           req.ShortID,
+		ServerName:        req.ServerName,
+		Flow:              req.Flow,
+		ExitMode:          req.ExitMode,
+		MaxSessions:       req.MaxSessions,
+		MaxMbps:           req.MaxMbps,
+		RelayVersion:      req.RelayVersion,
+		Transport:         normalizeTransport(req.Transport),
+		PunchCapable:      req.PunchCapable,
+		PunchEndpoint:     req.PunchEndpoint,
+		RegisteredAt:      now,
+		LastHeartbeatAt:   now,
+		ExpiresAt:         now.Add(ttl),
 	}
 
 	// Geo columns are deliberately absent from the INSERT: a re-registration
@@ -235,7 +253,37 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 	// reclaimable, matching the in-memory Store's ExpiresAt.After(now) guard.
 	// A suppressed update returns no row (pgx.ErrNoRows), which we map to
 	// ErrNodeClassForbidden.
-	desc, err = scanDescriptor(s.pool.QueryRow(ctx, `
+	//
+	// Identity registrations run inside a transaction so a relay moving to a
+	// new endpoint atomically abandons its old row: the id is the PRIMARY KEY,
+	// so without the DELETE the insert at the new endpoint would collide with
+	// the relay's own previous row. The DELETE can only ever remove rows owned
+	// by this identity (the id is derived from the key the registrant just
+	// proved possession of), and a rollback — e.g. the foundation-endpoint
+	// guard suppressing the upsert — preserves the old row untouched.
+	querier := pgxQuerier(s.pool)
+	if identityKey != nil {
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return relay.Descriptor{}, fmt.Errorf("begin relay registration: %w", err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		moved, err := tx.Exec(ctx, `
+			DELETE FROM relay_descriptors
+			WHERE id = $1 AND (public_host <> $2 OR public_port <> $3)`,
+			id, desc.PublicHost, desc.PublicPort)
+		if err != nil {
+			return relay.Descriptor{}, fmt.Errorf("evict moved relay identity: %w", err)
+		}
+		if moved.RowsAffected() > 0 {
+			// Two deployments sharing one identity seed (a copy-paste error)
+			// would show up here as endpoint flip-flopping.
+			slog.Warn("relay identity moved endpoint", "relay_id", id,
+				"new", fmt.Sprintf("%s:%d", desc.PublicHost, desc.PublicPort))
+		}
+		querier = tx
+	}
+	desc, err = scanDescriptor(querier.QueryRow(ctx, `
 		INSERT INTO relay_descriptors (
 			id,
 			public_host,
@@ -259,9 +307,10 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 			punch_capable,
 			punch_endpoint,
 			exit_host,
-			node_class
+			node_class,
+			identity_public_key
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24
 		)
 		ON CONFLICT (public_host, public_port) DO UPDATE SET
 			id = EXCLUDED.id,
@@ -289,9 +338,10 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 			latitude = CASE WHEN relay_descriptors.exit_host = EXCLUDED.exit_host THEN relay_descriptors.latitude ELSE 0 END,
 			longitude = CASE WHEN relay_descriptors.exit_host = EXCLUDED.exit_host THEN relay_descriptors.longitude ELSE 0 END,
 			exit_host = EXCLUDED.exit_host,
-			node_class = EXCLUDED.node_class
-		WHERE relay_descriptors.node_class <> $24
-			OR EXCLUDED.node_class = $24
+			node_class = EXCLUDED.node_class,
+			identity_public_key = EXCLUDED.identity_public_key
+		WHERE relay_descriptors.node_class <> $25
+			OR EXCLUDED.node_class = $25
 			OR relay_descriptors.expires_at <= EXCLUDED.registered_at
 		RETURNING `+descriptorColumns,
 		desc.ID,
@@ -317,6 +367,7 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 		desc.PunchEndpoint,
 		desc.ExitHost,
 		desc.NodeClass,
+		desc.IdentityPublicKey,
 		relay.NodeClassFoundation,
 	))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -325,7 +376,22 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 		// (non-foundation) registration may not take it over.
 		return relay.Descriptor{}, ErrNodeClassForbidden
 	}
-	return desc, err
+	if err != nil {
+		return relay.Descriptor{}, err
+	}
+	if tx, ok := querier.(pgx.Tx); ok {
+		if err := tx.Commit(ctx); err != nil {
+			return relay.Descriptor{}, fmt.Errorf("commit relay registration: %w", err)
+		}
+	}
+	return desc, nil
+}
+
+// pgxQuerier is the intersection of pgxpool.Pool and pgx.Tx that Register
+// needs, so the identity path can run its statements inside a transaction
+// while the legacy path keeps hitting the pool directly.
+type pgxQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
 func (s *PostgresStore) Heartbeat(id, maxClass string, now time.Time, ttl time.Duration) (relay.Descriptor, error) {
@@ -775,6 +841,7 @@ func scanDescriptor(row pgx.Row) (relay.Descriptor, error) {
 		&desc.Longitude,
 		&desc.ExitHost,
 		&desc.NodeClass,
+		&desc.IdentityPublicKey,
 	)
 	return desc, err
 }

@@ -138,6 +138,16 @@ func registerHandler(store RelayStore, cfg Config) http.HandlerFunc {
 		}
 
 		desc, err := store.Register(req, time.Now().UTC(), cfg.RelayLeaseTTL)
+		// A malformed or stale identity proof fails the registration loudly
+		// instead of silently falling back to a random relay ID — a relay that
+		// believes it has a stable identity should crash-loop where its
+		// operator can see it, mirroring the foundation-token posture above.
+		// The exact expired message is a contract: the relay hub matches it to
+		// recycle a tunnel session whose stored proof has aged out.
+		if errors.Is(err, relay.ErrIdentityProofExpired) || errors.Is(err, relay.ErrIdentityProofInvalid) || errors.Is(err, relay.ErrIdentityIncomplete) {
+			writeError(w, http.StatusUnauthorized, err.Error())
+			return
+		}
 		if errors.Is(err, ErrNodeClassForbidden) {
 			// The endpoint is held by a live foundation relay; a
 			// non-foundation registration may not seize it.

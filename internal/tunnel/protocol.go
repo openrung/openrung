@@ -1,11 +1,15 @@
 package tunnel
 
 import (
+	"crypto/ed25519"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"time"
+
+	"openrung/internal/relay"
 )
 
 // ProtocolVersion is the tunnel control-protocol version. The relay sends it
@@ -59,6 +63,37 @@ type HelloFrame struct {
 	// PunchCapable requests that the hub advertise this relay as punch-capable to
 	// clients. Only meaningful when StreamTyping is also set.
 	PunchCapable bool `json:"punch_capable,omitempty"`
+	// IdentityPublicKey/IdentityProof/IdentityExpiresAt carry the relay's
+	// optional stable-identity proof (spec openrung-relay-identity-v1). The hub
+	// forwards them verbatim to the broker, which derives the relay ID from the
+	// proven key. The tunnel statement binds no endpoint — the relay cannot
+	// know the hub-assigned one — so the proof stays valid for the hub's
+	// verbatim re-registrations until IdentityExpiresAt; a fresh HELLO on each
+	// reconnect renews it. Additive: absent fields keep the legacy random ID.
+	IdentityPublicKey string `json:"identity_public_key,omitempty"`
+	IdentityProof     string `json:"identity_proof,omitempty"`
+	IdentityExpiresAt string `json:"identity_expires_at,omitempty"`
+}
+
+// SignHello fills hello's identity fields with a proof over the tunnel-shaped
+// registration statement: the exact field set the hub will submit on this
+// relay's behalf, with the endpoint slots empty (the hub assigns them) and
+// volunteer node class (the hub never claims a class). Must be called after
+// every other HelloFrame field is final.
+func SignHello(priv ed25519.PrivateKey, hello *HelloFrame, expiresAt time.Time) {
+	req := relay.RegisterRequest{
+		Transport:        relay.TransportTunnel,
+		ClientID:         hello.ClientID,
+		RealityPublicKey: hello.RealityPublicKey,
+		ShortID:          hello.ShortID,
+		ServerName:       hello.ServerName,
+		Flow:             hello.Flow,
+		ExitMode:         hello.ExitMode,
+		MaxSessions:      hello.MaxSessions,
+		MaxMbps:          hello.MaxMbps,
+		Label:            hello.Label,
+	}
+	hello.IdentityPublicKey, hello.IdentityProof, hello.IdentityExpiresAt = relay.SignIdentity(priv, req, expiresAt)
 }
 
 // HelloAckFrame is the hub's reply to a HelloFrame. On success it carries the

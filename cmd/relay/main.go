@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	cryptorand "crypto/rand"
 	"crypto/tls"
 	_ "embed"
 	"flag"
@@ -51,6 +53,7 @@ func main() {
 	flag.StringVar(&cfg.RealityPrivateKey, "reality-private-key", "", "Reality private key; generated with xray x25519 when empty")
 	flag.StringVar(&cfg.RealityPublicKey, "reality-public-key", "", "Reality public key; generated with xray x25519 when empty")
 	flag.StringVar(&cfg.ShortID, "short-id", "", "Reality short ID; generated when empty")
+	flag.StringVar(&cfg.IdentitySeed, "identity-seed", "", "base64 32-byte Ed25519 seed for the relay's stable identity (spec openrung-relay-identity-v1); the broker derives the relay ID from it, so a pinned seed keeps the same ID across restarts. Generated per process when empty")
 	flag.IntVar(&cfg.MaxSessions, "max-sessions", 8, "advertised max client sessions")
 	flag.IntVar(&cfg.MaxMbps, "max-mbps", 20, "advertised max Mbps")
 	flag.DurationVar(&cfg.HeartbeatInterval, "heartbeat-interval", 30*time.Second, "broker heartbeat interval")
@@ -105,6 +108,7 @@ type cliConfig struct {
 	RealityPrivateKey string
 	RealityPublicKey  string
 	ShortID           string
+	IdentitySeed      string
 	MaxSessions       int
 	MaxMbps           int
 	HeartbeatInterval time.Duration
@@ -520,25 +524,33 @@ func runTunnelMode(parent context.Context, cfg cliConfig) error {
 		slog.Info("started xray", "pid", xrayCmd.Process.Pid, "listen", net.JoinHostPort(loopHost, strconv.Itoa(loopPort)))
 	}
 
+	hello := tunnel.HelloFrame{
+		Token:            cfg.RegistrationToken,
+		RealityPublicKey: prepared.RealityPublicKey,
+		ShortID:          prepared.ShortID,
+		ServerName:       cfg.ServerName,
+		ClientID:         prepared.ClientID,
+		Flow:             relay.FlowVision,
+		ExitMode:         relay.ExitModeDirect,
+		MaxSessions:      cfg.MaxSessions,
+		MaxMbps:          cfg.MaxMbps,
+		Label:            cfg.Label,
+		RelayVersion:     reportedRelayVersion(),
+		// A current relay always understands the stream-type discriminator;
+		// PunchCapable additionally asks the hub to advertise a direct path.
+		StreamTyping: true,
+		PunchCapable: cfg.Punch,
+	}
 	client := &tunnel.Client{
 		HubAddr:   cfg.HubAddr,
 		TLSConfig: hubTLSConfig(cfg),
-		Hello: tunnel.HelloFrame{
-			Token:            cfg.RegistrationToken,
-			RealityPublicKey: prepared.RealityPublicKey,
-			ShortID:          prepared.ShortID,
-			ServerName:       cfg.ServerName,
-			ClientID:         prepared.ClientID,
-			Flow:             relay.FlowVision,
-			ExitMode:         relay.ExitModeDirect,
-			MaxSessions:      cfg.MaxSessions,
-			MaxMbps:          cfg.MaxMbps,
-			Label:            cfg.Label,
-			RelayVersion:     reportedRelayVersion(),
-			// A current relay always understands the stream-type discriminator;
-			// PunchCapable additionally asks the hub to advertise a direct path.
-			StreamTyping: true,
-			PunchCapable: cfg.Punch,
+		Hello:     hello,
+		// Each reconnect signs a fresh identity proof, so the hub always holds
+		// one with the full tunnel TTL ahead of it.
+		RefreshHello: func() tunnel.HelloFrame {
+			signed := hello
+			tunnel.SignHello(prepared.IdentityKey, &signed, time.Now().Add(relay.IdentityProofTTLTunnel))
+			return signed
 		},
 		TargetHost: loopHost,
 		TargetPort: loopPort,
@@ -626,6 +638,7 @@ type preparedRuntime struct {
 	ClientID         string
 	RealityPublicKey string
 	ShortID          string
+	IdentityKey      ed25519.PrivateKey
 	XrayConfig       []byte
 }
 
@@ -659,6 +672,26 @@ func prepareRuntime(cfg cliConfig) (preparedRuntime, error) {
 		publicKey = keyPair.PublicKey
 	}
 
+	// The identity key outlives individual registrations: within this process
+	// every register call — including a re-register after the broker forgot
+	// the lease — signs with the same key and keeps the same relay ID. Pin the
+	// seed (-identity-seed / OPENRUNG_IDENTITY_SEED) to also keep it across
+	// restarts.
+	var identityKey ed25519.PrivateKey
+	if cfg.IdentitySeed != "" {
+		parsed, err := relay.ParseIdentitySeed(cfg.IdentitySeed)
+		if err != nil {
+			return preparedRuntime{}, fmt.Errorf("parse identity seed: %w", err)
+		}
+		identityKey = parsed
+	} else {
+		_, generated, err := ed25519.GenerateKey(cryptorand.Reader)
+		if err != nil {
+			return preparedRuntime{}, fmt.Errorf("generate identity key: %w", err)
+		}
+		identityKey = generated
+	}
+
 	xrayConfig, err := relayruntime.BuildXrayConfig(relayruntime.XrayConfigInput{
 		ListenHost:        cfg.ListenHost,
 		ListenPort:        cfg.ListenPort,
@@ -677,6 +710,7 @@ func prepareRuntime(cfg cliConfig) (preparedRuntime, error) {
 		ClientID:         clientID,
 		RealityPublicKey: publicKey,
 		ShortID:          shortID,
+		IdentityKey:      identityKey,
 		XrayConfig:       xrayConfig,
 	}, nil
 }
@@ -701,6 +735,9 @@ func register(ctx context.Context, broker *relayruntime.BrokerClient, cfg cliCon
 		Label:            cfg.Label,
 		NodeClass:        cfg.NodeClass,
 	}
+	// Signed after every other field is final: the statement binds them.
+	req.IdentityPublicKey, req.IdentityProof, req.IdentityExpiresAt =
+		relay.SignIdentity(prepared.IdentityKey, req, time.Now().Add(relay.IdentityProofTTLDirect))
 	desc, err := broker.Register(ctx, req)
 	if err != nil {
 		return relay.Descriptor{}, err

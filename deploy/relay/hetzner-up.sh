@@ -112,12 +112,17 @@ systemctl enable --now docker
 PUBLIC_IP="\$(curl -fsS http://169.254.169.254/hetzner/v1/metadata/public-ipv4)"
 docker pull ${IMAGE}
 docker rm -f openrung-relay 2>/dev/null || true
+# Minted once per instance: the broker derives the relay ID from this seed
+# (spec openrung-relay-identity-v1), so the relay keeps one identity across
+# container restarts instead of fragmenting its dashboard/ranking history.
+IDENTITY_SEED="\$(head -c 32 /dev/urandom | base64)"
 docker run -d --name openrung-relay --restart unless-stopped \\
   --network host --cap-drop ALL --cap-add NET_BIND_SERVICE --read-only --tmpfs /tmp \\
   -e OPENRUNG_BROKER_URL=${BROKER_URL} \\
   -e OPENRUNG_PUBLIC_HOST="\$PUBLIC_IP" \\
   -e OPENRUNG_LISTEN_HOST=0.0.0.0 \\
   -e OPENRUNG_LABEL=${NAME} \\
+  -e OPENRUNG_IDENTITY_SEED="\$IDENTITY_SEED" \\
   ${IMAGE}
 EOF
 

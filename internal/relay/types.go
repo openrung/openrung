@@ -79,6 +79,14 @@ type RegisterRequest struct {
 	// never serves it to clients. Rejected for direct transport, where
 	// PublicHost already is the exit.
 	ExitHost string `json:"exit_host,omitempty"`
+	// IdentityPublicKey/IdentityProof/IdentityExpiresAt carry the optional
+	// stable-identity proof (spec openrung-relay-identity-v1, see identity.go).
+	// All three travel together; a registration without them keeps the legacy
+	// random relay ID. Old brokers ignore these unknown fields, so a new relay
+	// registers fine (with a random ID) during a rolling deploy.
+	IdentityPublicKey string `json:"identity_public_key,omitempty"`
+	IdentityProof     string `json:"identity_proof,omitempty"`
+	IdentityExpiresAt string `json:"identity_expires_at,omitempty"`
 }
 
 // MarshalJSON emits the canonical key plus the deprecated v1 alias so upgraded
@@ -147,6 +155,11 @@ type Descriptor struct {
 	// a CGNAT relay's observed exit IP through the public API would defeat the
 	// privacy the hub provides.
 	ExitHost string `json:"-"`
+	// IdentityPublicKey is the base64 Ed25519 key a stable-identity relay
+	// proved possession of at registration (empty for legacy registrations).
+	// Stored for operations and future per-relay auth; not serialized — the
+	// relay ID it derives is the public handle, and the list stays lean.
+	IdentityPublicKey string `json:"-"`
 	// NodeClass is the broker-attested operator class (NodeClassFoundation or
 	// NodeClassVolunteer). Always serialized, and covered by the relay-list
 	// signature like every other descriptor field; clients that predate it

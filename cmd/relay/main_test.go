@@ -12,6 +12,17 @@ import (
 	"openrung/internal/relay"
 )
 
+// testPreparedRuntime supplies the identity key prepareRuntime would have
+// generated; tests construct preparedRuntime directly and bypass it.
+func testPreparedRuntime(t *testing.T) preparedRuntime {
+	t.Helper()
+	identityKey, err := relay.ParseIdentitySeed("QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=")
+	if err != nil {
+		t.Fatalf("parse identity seed: %v", err)
+	}
+	return preparedRuntime{IdentityKey: identityKey}
+}
+
 func TestVersionInfoAndReportedVersion(t *testing.T) {
 	originalVersion, originalRevision := version, revision
 	version, revision = " 1.2.3 ", " abcdef0 "
@@ -43,7 +54,7 @@ func TestHeartbeatOrRegisterRecoversForgottenRelay(t *testing.T) {
 
 	cfg := cliConfig{BrokerURL: "http://broker.test", PublicHost: "relay.example", PublicPort: 443, HTTPClient: client}
 	broker := cfg.brokerClient()
-	desc, reRegistered, err := heartbeatOrRegister(context.Background(), broker, cfg, preparedRuntime{}, relay.Descriptor{ID: "relay_old"})
+	desc, reRegistered, err := heartbeatOrRegister(context.Background(), broker, cfg, testPreparedRuntime(t), relay.Descriptor{ID: "relay_old"})
 	if err != nil {
 		t.Fatalf("heartbeatOrRegister() error = %v", err)
 	}
@@ -70,7 +81,7 @@ func TestHeartbeatOrRegisterDoesNotRegisterOnOtherErrors(t *testing.T) {
 	cfg := cliConfig{BrokerURL: "http://broker.test", HTTPClient: client}
 	broker := cfg.brokerClient()
 	original := relay.Descriptor{ID: "relay_old"}
-	desc, reRegistered, err := heartbeatOrRegister(context.Background(), broker, cfg, preparedRuntime{}, original)
+	desc, reRegistered, err := heartbeatOrRegister(context.Background(), broker, cfg, testPreparedRuntime(t), original)
 	if err == nil {
 		t.Fatal("heartbeatOrRegister() error = nil, want an error")
 	}
@@ -194,7 +205,7 @@ func TestRegisterRejectsUnattestedFoundationClass(t *testing.T) {
 	})}
 
 	cfg := cliConfig{BrokerURL: "http://broker.test", PublicHost: "relay.example", PublicPort: 443, HTTPClient: client, NodeClass: relay.NodeClassFoundation}
-	if _, err := register(context.Background(), cfg.brokerClient(), cfg, preparedRuntime{}); err == nil {
+	if _, err := register(context.Background(), cfg.brokerClient(), cfg, testPreparedRuntime(t)); err == nil {
 		t.Fatal("register() error = nil, want an unattested-node-class error")
 	}
 }
@@ -205,7 +216,7 @@ func TestRegisterAcceptsAttestedFoundationClass(t *testing.T) {
 	})}
 
 	cfg := cliConfig{BrokerURL: "https://broker.test", PublicHost: "relay.example", PublicPort: 443, HTTPClient: client, NodeClass: relay.NodeClassFoundation}
-	desc, err := register(context.Background(), cfg.brokerClient(), cfg, preparedRuntime{})
+	desc, err := register(context.Background(), cfg.brokerClient(), cfg, testPreparedRuntime(t))
 	if err != nil {
 		t.Fatalf("register() error = %v", err)
 	}
@@ -224,7 +235,7 @@ func TestRegisterRefusesFoundationOverPlaintext(t *testing.T) {
 		return jsonResponse(http.StatusCreated, `{"id":"relay_new","node_class":"foundation"}`), nil
 	})}
 	cfg := cliConfig{BrokerURL: "http://broker.test", PublicHost: "relay.example", PublicPort: 443, HTTPClient: client, NodeClass: relay.NodeClassFoundation}
-	if _, err := register(context.Background(), cfg.brokerClient(), cfg, preparedRuntime{}); err == nil {
+	if _, err := register(context.Background(), cfg.brokerClient(), cfg, testPreparedRuntime(t)); err == nil {
 		t.Fatal("register() error = nil, want a cleartext-broker error")
 	}
 	if sent.Load() != 0 {
@@ -283,7 +294,7 @@ func TestFoundationTokenRegistersAsFoundationWithoutNodeClass(t *testing.T) {
 	if cfg.Mode != "direct" {
 		t.Fatalf("mode = %q, want direct (forced by the token)", cfg.Mode)
 	}
-	desc, err := register(context.Background(), cfg.brokerClient(), cfg, preparedRuntime{})
+	desc, err := register(context.Background(), cfg.brokerClient(), cfg, testPreparedRuntime(t))
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -349,7 +360,7 @@ func TestFoundationTokenRefusesPlaintextBroker(t *testing.T) {
 	if err := cfg.ApplyDefaults(); err != nil {
 		t.Fatalf("ApplyDefaults: %v", err)
 	}
-	if _, err := register(context.Background(), cfg.brokerClient(), cfg, preparedRuntime{}); err == nil {
+	if _, err := register(context.Background(), cfg.brokerClient(), cfg, testPreparedRuntime(t)); err == nil {
 		t.Fatal("register() error = nil, want a cleartext-broker refusal")
 	}
 	if sent.Load() != 0 {

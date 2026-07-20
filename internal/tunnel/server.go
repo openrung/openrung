@@ -204,6 +204,12 @@ func (h *Hub) registerRequest(hello HelloFrame, port int, exitHost string) relay
 		Transport:        relay.TransportTunnel,
 		PunchCapable:     punchOn,
 		PunchEndpoint:    punchEndpoint,
+		// Forwarded verbatim: the identity statement binds only relay-known
+		// fields (the hub-assigned endpoint and punch settings are outside it),
+		// so the broker can verify the relay's proof without hub involvement.
+		IdentityPublicKey: hello.IdentityPublicKey,
+		IdentityProof:     hello.IdentityProof,
+		IdentityExpiresAt: hello.IdentityExpiresAt,
 	}
 }
 
@@ -447,6 +453,14 @@ func (t *tunnel) reregister(ctx context.Context) {
 	registration, err := t.hub.Registrar.Register(regCtx, t.registerReq)
 	cancel()
 	if err != nil {
+		// A stored identity proof past its expiry can never re-register — only
+		// the relay holds the signing key. Recycle the session: the relay
+		// reconnects with a freshly signed HELLO and registration recovers.
+		if errors.Is(err, ErrIdentityProofExpired) {
+			t.logger.Warn("relay identity proof expired; recycling tunnel session for a fresh handshake")
+			_ = t.session.Close()
+			return
+		}
 		t.logger.Warn("relay re-registration failed", "error", err)
 		return
 	}

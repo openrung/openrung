@@ -19,6 +19,16 @@ import (
 // restart. The caller should re-register rather than keep heartbeating.
 var ErrRelayNotFound = errors.New("relay not found")
 
+// ErrIdentityProofExpired is returned (wrapped) by Register when the broker
+// rejects a stored identity proof whose relay-chosen expiry has passed. Only
+// the relay can sign a fresh one, so the hub recycles the tunnel session
+// instead of retrying the doomed request.
+var ErrIdentityProofExpired = errors.New(relayIdentityProofExpiredMessage)
+
+// relayIdentityProofExpiredMessage mirrors relay.ErrIdentityProofExpired's
+// exact text, which the broker serves verbatim in its error body.
+const relayIdentityProofExpiredMessage = "relay identity proof expired"
+
 const maxBrokerErrorBodyBytes = 64 << 10
 
 // RelayRegistration is the result of registering a tunneled relay with the broker.
@@ -120,6 +130,9 @@ func (b *brokerRegistrar) postJSON(ctx context.Context, path string, body, out a
 		}
 		if resp.StatusCode == http.StatusNotFound && apiErr.Error == "relay not found" {
 			return fmt.Errorf("broker %s: %w", path, ErrRelayNotFound)
+		}
+		if resp.StatusCode == http.StatusUnauthorized && strings.HasPrefix(apiErr.Error, relayIdentityProofExpiredMessage) {
+			return fmt.Errorf("broker %s: %w", path, ErrIdentityProofExpired)
 		}
 		return &brokerHTTPError{
 			path:    path,

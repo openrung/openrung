@@ -30,6 +30,12 @@ type Client struct {
 	TLSConfig *tls.Config
 	// Hello is the handshake the relay announces (token + relay metadata).
 	Hello HelloFrame
+	// RefreshHello, when set, replaces Hello for each connection attempt. A
+	// stable-identity relay uses it to sign a fresh identity proof per
+	// reconnect, so a long-lived proof aging out never wedges the tunnel: the
+	// hub recycles the session when the broker rejects an expired proof, and
+	// the next attempt arrives freshly signed.
+	RefreshHello func() HelloFrame
 	// TargetHost and TargetPort point at the local Xray listener that streams
 	// are piped to.
 	TargetHost string
@@ -138,6 +144,9 @@ func (c *Client) runOnce(ctx context.Context) (time.Duration, error) {
 	defer conn.Close()
 
 	hello := c.Hello
+	if c.RefreshHello != nil {
+		hello = c.RefreshHello()
+	}
 	hello.ProtocolVersion = ProtocolVersion
 
 	_ = conn.SetDeadline(time.Now().Add(c.handshakeTimeout()))

@@ -24,6 +24,9 @@ var testIdentity = Identity{
 	RealityPrivateKey: "yBaw3qcPC-EBiVzTF-3EbLpDF-eZ0lZ2pkc6y7NkoE4",
 	RealityPublicKey:  "1S86-yqTP6d76nEWXXWlNAci9c9uFhYaSOFAIUYIljI",
 	ShortID:           "0123456789abcdef",
+	// Tests that call run*Session directly bypass prepareIdentity, which is
+	// what fills this in for real callers.
+	IdentitySeed: "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=",
 }
 
 func freePort(t *testing.T) int {
@@ -283,4 +286,53 @@ func startTestHub(t *testing.T) (*tunnel.Hub, string) {
 	go func() { _ = hub.Serve(ctx) }()
 	t.Cleanup(cancel)
 	return hub, controlLn.Addr().String()
+}
+
+// TestPrepareIdentityBackfillsSeed pins the migration path for identity.json
+// files written before IdentitySeed existed: the engine generates a seed,
+// reports it through OnIdentity for persistence, and keeps every existing
+// field untouched.
+func TestPrepareIdentityBackfillsSeed(t *testing.T) {
+	legacy := testIdentity
+	legacy.IdentitySeed = ""
+	var persisted []Identity
+	eng := New(Config{
+		BrokerURL: "http://127.0.0.1:1",
+		Mode:      ModeDirect,
+		Identity:  legacy,
+	}, Events{OnIdentity: func(id Identity) { persisted = append(persisted, id) }})
+
+	got, err := eng.prepareIdentity(eng.cfg)
+	if err != nil {
+		t.Fatalf("prepareIdentity: %v", err)
+	}
+	if got.IdentitySeed == "" {
+		t.Fatal("expected a generated identity seed")
+	}
+	if _, err := got.identityKey(); err != nil {
+		t.Fatalf("generated seed does not parse: %v", err)
+	}
+	if got.ClientID != legacy.ClientID || got.RealityPublicKey != legacy.RealityPublicKey || got.ShortID != legacy.ShortID {
+		t.Fatalf("existing identity fields changed: %+v", got)
+	}
+	if len(persisted) != 1 || persisted[0].IdentitySeed != got.IdentitySeed {
+		t.Fatalf("expected the backfilled identity to be reported for persistence, got %+v", persisted)
+	}
+
+	// A fully populated identity is reported nowhere and stays byte-identical.
+	persisted = nil
+	again, err := eng.prepareIdentity(eng.cfg)
+	if err != nil {
+		t.Fatalf("prepareIdentity (second): %v", err)
+	}
+	if again != got || len(persisted) != 0 {
+		t.Fatalf("stable identity must be a no-op: %+v (persisted %d)", again, len(persisted))
+	}
+
+	// A corrupt persisted seed refuses loudly instead of churning identity.
+	corrupt := eng.cfg
+	corrupt.Identity.IdentitySeed = "!!!not-base64!!!"
+	if _, err := eng.prepareIdentity(corrupt); err == nil {
+		t.Fatal("expected an error for a corrupt persisted seed")
+	}
 }

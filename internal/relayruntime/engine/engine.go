@@ -7,6 +7,8 @@ package engine
 
 import (
 	"context"
+	"crypto/ed25519"
+	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
@@ -59,6 +61,17 @@ type Identity struct {
 	RealityPrivateKey string `json:"realityPrivateKey"`
 	RealityPublicKey  string `json:"realityPublicKey"`
 	ShortID           string `json:"shortId"`
+	// IdentitySeed is the base64 Ed25519 seed behind the relay's stable
+	// identity (spec openrung-relay-identity-v1): the broker derives the relay
+	// ID from the proven public key, so persisting the seed keeps the same
+	// relay ID across restarts. Identity files written before this field exist
+	// gain a generated seed on next start.
+	IdentitySeed string `json:"identitySeed,omitempty"`
+}
+
+// identityKey parses the Ed25519 signing key out of the persisted seed.
+func (id Identity) identityKey() (ed25519.PrivateKey, error) {
+	return relay.ParseIdentitySeed(id.IdentitySeed)
 }
 
 // Config describes one relay. Zero values take the same defaults as
@@ -576,6 +589,18 @@ func (e *Engine) prepareIdentity(cfg Config) (Identity, error) {
 		id.RealityPublicKey = keyPair.PublicKey
 		generated = true
 	}
+	if id.IdentitySeed == "" {
+		_, priv, err := ed25519.GenerateKey(cryptorand.Reader)
+		if err != nil {
+			return Identity{}, fmt.Errorf("generate identity key: %w", err)
+		}
+		id.IdentitySeed = relay.EncodeIdentitySeed(priv)
+		generated = true
+	} else if _, err := id.identityKey(); err != nil {
+		// A corrupt persisted seed would otherwise fail every registration;
+		// refuse loudly so the operator (or the desktop app) can reset it.
+		return Identity{}, fmt.Errorf("invalid persisted identity seed: %w", err)
+	}
 
 	if generated {
 		e.mu.Lock()
@@ -694,6 +719,10 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 
 	e.setStatus(func() { e.phase = PhaseRegistering })
 
+	identityKey, err := identity.identityKey()
+	if err != nil {
+		return err
+	}
 	req := relay.RegisterRequest{
 		PublicHost:       publicHost,
 		PublicPort:       cfg.ListenPort,
@@ -709,7 +738,16 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 		RelayVersion:     cfg.Version,
 		Label:            label,
 	}
-	desc, err := registerWithRetry(ctx, broker, req)
+	// Every register call — initial and after an expired lease — signs a fresh
+	// proof over the final request fields, so the proof never ages out within
+	// a session.
+	signedReq := func() relay.RegisterRequest {
+		signed := req
+		signed.IdentityPublicKey, signed.IdentityProof, signed.IdentityExpiresAt =
+			relay.SignIdentity(identityKey, signed, time.Now().Add(relay.IdentityProofTTLDirect))
+		return signed
+	}
+	desc, err := registerWithRetry(ctx, broker, signedReq())
 	if err != nil {
 		return err
 	}
@@ -768,7 +806,7 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 					e.logf("heartbeat failed: %v", err)
 					continue
 				}
-				updated, regErr := broker.Register(ctx, req)
+				updated, regErr := broker.Register(ctx, signedReq())
 				if regErr != nil {
 					e.logf("re-register after expired lease failed: %v", regErr)
 					continue
@@ -830,23 +868,35 @@ func (e *Engine) runTunnelSession(ctx context.Context, cfg Config, label string,
 
 	e.setStatus(func() { e.phase = PhaseRegistering })
 
+	identityKey, err := identity.identityKey()
+	if err != nil {
+		return err
+	}
+	hello := tunnel.HelloFrame{
+		Token:            cfg.Token,
+		RealityPublicKey: identity.RealityPublicKey,
+		ShortID:          identity.ShortID,
+		ServerName:       cfg.ServerName,
+		ClientID:         identity.ClientID,
+		Flow:             relay.FlowVision,
+		ExitMode:         relay.ExitModeDirect,
+		MaxSessions:      cfg.MaxSessions,
+		MaxMbps:          cfg.MaxMbps,
+		Label:            label,
+		RelayVersion:     cfg.Version,
+		StreamTyping:     true,
+		PunchCapable:     cfg.PunchCapable,
+	}
 	client := &tunnel.Client{
 		HubAddr:   cfg.HubAddr,
 		TLSConfig: hubTLSConfig(cfg),
-		Hello: tunnel.HelloFrame{
-			Token:            cfg.Token,
-			RealityPublicKey: identity.RealityPublicKey,
-			ShortID:          identity.ShortID,
-			ServerName:       cfg.ServerName,
-			ClientID:         identity.ClientID,
-			Flow:             relay.FlowVision,
-			ExitMode:         relay.ExitModeDirect,
-			MaxSessions:      cfg.MaxSessions,
-			MaxMbps:          cfg.MaxMbps,
-			Label:            label,
-			RelayVersion:     cfg.Version,
-			StreamTyping:     true,
-			PunchCapable:     cfg.PunchCapable,
+		Hello:     hello,
+		// Each reconnect signs a fresh identity proof, so the hub always holds
+		// one with the full tunnel TTL ahead of it.
+		RefreshHello: func() tunnel.HelloFrame {
+			signed := hello
+			tunnel.SignHello(identityKey, &signed, time.Now().Add(relay.IdentityProofTTLTunnel))
+			return signed
 		},
 		TargetHost: loopHost,
 		TargetPort: loopPort,

@@ -317,6 +317,50 @@ and never exposes it through any public endpoint, so the relay host's observed
 exit IP stays private. `exit_host` is rejected for direct transport, where
 `public_host` already is the exit.
 
+### Stable relay identity (spec `openrung-relay-identity-v1`)
+
+By default the broker mints a fresh random `relay_id` on every registration,
+so a relay's ID churns whenever it restarts or the broker forgets its lease —
+fragmenting dashboard history and ranking state across orphaned IDs. A relay
+may instead prove possession of a long-lived Ed25519 identity key by adding
+three fields to the registration:
+
+```json
+{
+  "identity_public_key": "<base64 raw 32-byte Ed25519 public key>",
+  "identity_proof": "<base64 Ed25519 signature>",
+  "identity_expires_at": "2026-07-21T12:00:00Z"
+}
+```
+
+The broker then derives the relay ID from the key — `relay_` + lowercase hex
+of the first 16 bytes of SHA-256 over `"openrung-relay-identity-v1:id:"` plus
+the raw key — so the same key always yields the same ID, with no broker-side
+state. The proof signs a canonical newline-joined statement binding the
+identity-relevant registration fields (endpoint for direct transport, always
+the transport itself, the VLESS/Reality parameters, capacities, label, node
+class) plus the relay-chosen `identity_expires_at`, so a captured proof cannot
+be replayed with altered content, across transports, after expiry, or more
+than 48 hours out. Tunnel-transport statements bind an empty endpoint — the
+hub assigns it after the relay signs — which is also why the proof carries an
+expiry rather than a nonce: the hub re-registers the stored request verbatim
+when the broker forgets the lease, and recycles the tunnel session for a fresh
+HELLO when the broker answers `401` `relay identity proof expired`. All three
+fields travel together; a malformed, tampered, or expired proof fails the
+registration with `401` — never a silent fall back to a random ID. Requests
+without the fields keep the legacy random-ID behavior, and the identity public
+key is never served through any public endpoint.
+
+The identity grants nothing beyond ID continuity: node class is still attested
+per registration by the token, the foundation endpoint guard applies
+unchanged, and a valid proof for a different key confers no authority over an
+endpoint. When an identity re-registers from a new endpoint, its previous row
+is atomically abandoned (one row per identity). The shipped relay pins the key
+with `-identity-seed` / `OPENRUNG_IDENTITY_SEED` (base64 32-byte seed, minted
+per instance by the deploy scripts), the desktop volunteer app persists it in
+`identity.json`, and an unpinned relay generates one per process — which still
+keeps the ID stable across broker outages within the process lifetime.
+
 Response:
 
 ```json
