@@ -149,6 +149,91 @@ type storedTelemetryRecord struct {
 	bytes  int64
 }
 
+// application_connection events are one row per tunnelled flow (with a
+// per-package fan-out on Android) — at production volume they were ~95% of all
+// telemetry rows while feeding exactly one dashboard panel, and their payload
+// pairs the client's IP with every destination it visited. No sink stores them
+// as records: every sink folds them into an hourly per-application count and
+// discards the rest of the event, so the destination/client-IP browsing log
+// never reaches disk. The dashboard's top-apps panel reads these rollups.
+const telemetryAppConnectionEvent = "application_connection"
+
+// maxTelemetryAppRollupEntries bounds the distinct (hour, application) pairs a
+// rollup holds in memory so a flood of fabricated package names cannot grow
+// broker memory without bound. Real fleets sit far below it: the retention
+// window holds 168 hours, and devices carry a few hundred packages at most.
+const maxTelemetryAppRollupEntries = 10000
+
+// telemetryAppRollupHour is the bucket an application_connection event counts
+// into: the server-assigned receipt hour (falling back like retentionTime, so
+// a bucket can never be client-controlled).
+func telemetryAppRollupHour(record TelemetryRecord, now time.Time) time.Time {
+	if at := retentionTime(record); !at.IsZero() {
+		return at.UTC().Truncate(time.Hour)
+	}
+	return now.UTC().Truncate(time.Hour)
+}
+
+// telemetryAppRollup accumulates hourly application-connection counts. None of
+// its methods lock — the owning sink's lock guards all access.
+type telemetryAppRollup struct {
+	hours   map[time.Time]map[string]int64
+	entries int
+}
+
+// add counts one bucket increment, reporting false when the entry cap forced
+// it to drop a new (hour, application) pair. Existing pairs always increment.
+func (r *telemetryAppRollup) add(hour time.Time, application string, count int64) bool {
+	if application == "" || count <= 0 {
+		return true
+	}
+	if r.hours == nil {
+		r.hours = make(map[time.Time]map[string]int64)
+	}
+	apps := r.hours[hour]
+	if apps == nil {
+		apps = make(map[string]int64)
+		r.hours[hour] = apps
+	}
+	if _, ok := apps[application]; !ok {
+		if r.entries >= maxTelemetryAppRollupEntries {
+			return false
+		}
+		r.entries++
+	}
+	apps[application] += count
+	return true
+}
+
+// prune drops whole hour buckets that have aged out of the retention window,
+// mirroring the Postgres store's DELETE on its counts table.
+func (r *telemetryAppRollup) prune(cutoff time.Time) {
+	cutoffHour := cutoff.UTC().Truncate(time.Hour)
+	for hour, apps := range r.hours {
+		if hour.Before(cutoffHour) {
+			r.entries -= len(apps)
+			delete(r.hours, hour)
+		}
+	}
+}
+
+// countsIn sums the buckets the dashboard window touches: every hour from the
+// truncated window start through now. The window edge is hour-granular by
+// design — the SQL path filters its counts table the same way.
+func (r *telemetryAppRollup) countsIn(now time.Time, window time.Duration) map[string]int {
+	startHour := now.Add(-window).UTC().Truncate(time.Hour)
+	counts := make(map[string]int)
+	for hour, apps := range r.hours {
+		if hour.Before(startHour) || hour.After(now) {
+			continue
+		}
+		for application, count := range apps {
+			counts[application] += int(count)
+		}
+	}
+	return counts
+}
+
 // telemetryRetained is the bounded in-memory record set that serves the
 // dashboard's TelemetryReader queries; it is shared by every sink that keeps
 // dashboard reads in memory. None of its methods lock — the owning sink's
@@ -213,6 +298,7 @@ type JSONLTelemetrySink struct {
 	file   *os.File
 	writer *bufio.Writer
 	telemetryRetained
+	appRollup telemetryAppRollup
 	fileBytes int64
 	fileLimit int64
 	now       func() time.Time
@@ -292,6 +378,14 @@ func (s *JSONLTelemetrySink) loadRecent() error {
 		if retentionTime(record).Before(cutoff) {
 			continue
 		}
+		// Legacy files may hold raw application_connection rows from before the
+		// rollup existed. Skip them entirely — compaction then sheds them from
+		// the file. They are not folded into the rollup either: whether the file
+		// still holds a row depends on compaction timing, so counting them here
+		// would make restart counts nondeterministic.
+		if record.Event.Event == telemetryAppConnectionEvent {
+			continue
+		}
 		size := int64(len(scanner.Bytes()) + 1)
 		s.append(record, size)
 		// Keep memory bounded during the scan, but trim only after overshooting the
@@ -351,7 +445,15 @@ func (s *JSONLTelemetrySink) WriteTelemetry(_ context.Context, records []Telemet
 		return s.writeErr
 	}
 
+	now := s.now().UTC()
 	for _, record := range records {
+		if record.Event.Event == telemetryAppConnectionEvent {
+			// Rolled up, never persisted — see telemetryAppConnectionEvent. The
+			// in-memory rollup is this sink's only copy, so top-apps counts
+			// restart empty; the Postgres store persists its rollup instead.
+			s.appRollup.add(telemetryAppRollupHour(record, now), record.Event.Application, 1)
+			continue
+		}
 		line, err := json.Marshal(record)
 		if err != nil {
 			return fmt.Errorf("encode telemetry record: %w", err)
@@ -365,7 +467,9 @@ func (s *JSONLTelemetrySink) WriteTelemetry(_ context.Context, records []Telemet
 		s.append(record, size)
 		s.fileBytes += size
 	}
-	s.prune(s.now().UTC().Add(-telemetryRetention))
+	cutoff := now.Add(-telemetryRetention)
+	s.prune(cutoff)
+	s.appRollup.prune(cutoff)
 	s.dropOldestOverBudget()
 	if err := s.maybeCompactLocked(); err != nil {
 		s.writeErr = fmt.Errorf("compact telemetry file: %w", err)
@@ -433,6 +537,14 @@ func (s *JSONLTelemetrySink) TelemetryRecords(since time.Time) []TelemetryRecord
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.recordsSince(since)
+}
+
+// AppConnectionCounts serves the dashboard's top-apps panel from the in-memory
+// hourly rollup (see telemetryAppConnectionEvent).
+func (s *JSONLTelemetrySink) AppConnectionCounts(now time.Time, window time.Duration) map[string]int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.appRollup.countsIn(now, window)
 }
 
 // compactLocked rewrites the JSONL file to contain only the records still

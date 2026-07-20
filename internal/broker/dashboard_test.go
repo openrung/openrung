@@ -13,11 +13,27 @@ import (
 	"openrung/internal/relay"
 )
 
-type dashboardTelemetryStore struct{ records []TelemetryRecord }
+type dashboardTelemetryStore struct {
+	records   []TelemetryRecord
+	appRollup telemetryAppRollup
+}
 
+// WriteTelemetry mirrors the real sinks: application_connection events fold
+// into the hourly rollup instead of being stored, so parity tests that feed
+// both backends the same batch exercise identical top-apps semantics.
 func (s *dashboardTelemetryStore) WriteTelemetry(_ context.Context, records []TelemetryRecord) error {
-	s.records = append(s.records, records...)
+	for _, record := range records {
+		if record.Event.Event == telemetryAppConnectionEvent {
+			s.appRollup.add(telemetryAppRollupHour(record, time.Now().UTC()), record.Event.Application, 1)
+			continue
+		}
+		s.records = append(s.records, record)
+	}
 	return nil
+}
+
+func (s *dashboardTelemetryStore) AppConnectionCounts(now time.Time, window time.Duration) map[string]int {
+	return s.appRollup.countsIn(now, window)
 }
 
 func (s *dashboardTelemetryStore) TelemetryRecords(since time.Time) []TelemetryRecord {
@@ -174,14 +190,16 @@ func TestBuildTelemetryOverview(t *testing.T) {
 		dashboardRecord(now.Add(-30*time.Minute), "attempt-1", "connection_attempted", "client-1", "session-1", "", clientOneAttributes, nil),
 		dashboardRecord(now.Add(-29*time.Minute), "success-1", "connection_succeeded", "client-1", "session-1", "relay-1", clientOneAttributes, nil),
 		dashboardRecord(now.Add(-15*time.Minute), "failover-1", "relay_failover", "client-1", "session-1", "relay-2", clientOneAttributes, map[string]int64{"relay_tcp_ms": 25}),
-		dashboardRecord(now.Add(-20*time.Minute), "app-1", "application_connection", "client-1", "session-1", "relay-1", clientOneAttributes, nil),
+		// A legacy stored application_connection record under its own client and
+		// session: it must be skipped entirely (not stored anymore, and skipped
+		// when read back from old files), so neither total below counts it.
+		dashboardRecord(now.Add(-20*time.Minute), "app-1", "application_connection", "client-legacy", "session-legacy", "relay-1", clientOneAttributes, nil),
 		dashboardRecord(now.Add(-time.Minute), "heartbeat-1", "session_heartbeat", "client-1", "session-1", "relay-1", clientOneAttributes, map[string]int64{"connected_duration_ms": 60_000, "session_duration_ms": 1_740_000}),
 		dashboardRecord(now.Add(-10*time.Minute), "attempt-2", "connection_attempted", "client-2", "session-2", "", map[string]string{"android_api": "35", "country": "CA", "city": "Toronto", "organization": "Fallback Network", "asn": "AS64500"}, nil),
 		dashboardRecord(now.Add(-9*time.Minute), "failure-2", "connection_failed", "client-2", "session-2", "", map[string]string{"failure_stage": "broker_fetch", "country": "CA", "city": "Toronto", "organization": "Fallback Network", "asn": "AS64500"}, nil),
 		dashboardRecord(now.Add(-5*time.Minute), "speed-1", "speed_test_completed", "client-1", "session-1", "relay-1", nil, map[string]int64{"download_mbps_milli": 42500, "time_to_first_byte_ms": 100}),
 	}
-	records[2].Event.Application = "com.example.app"
-	overview := buildTelemetryOverview(records, now, time.Hour)
+	overview := buildTelemetryOverview(records, map[string]int{"com.example.app": 1}, now, time.Hour)
 	if overview.Totals.Clients != 2 || overview.Totals.Sessions != 2 || overview.Totals.Attempts != 2 || overview.Totals.Successes != 1 || overview.Totals.Failures != 1 {
 		t.Fatalf("unexpected totals: %+v", overview.Totals)
 	}
@@ -285,7 +303,7 @@ func TestBuildTelemetryOverviewDerivesiOSDeviceInfo(t *testing.T) {
 	records := []TelemetryRecord{
 		dashboardRecord(now.Add(-time.Minute), "attempt", "connection_attempted", "client-ios", "session-ios", "", attrs, nil),
 	}
-	overview := buildTelemetryOverview(records, now, time.Hour)
+	overview := buildTelemetryOverview(records, nil, now, time.Hour)
 	if len(overview.Recent) != 1 {
 		t.Fatalf("expected one session, got %d", len(overview.Recent))
 	}
@@ -305,7 +323,7 @@ func TestBuildTelemetryOverviewExpiresAndTerminatesHeartbeatSessions(t *testing.
 	terminalHeartbeat := dashboardRecord(now.Add(-time.Minute), "terminal-heartbeat", "session_heartbeat", "client-3", "session-terminal", "relay-1", nil, nil)
 	terminal := dashboardRecord(now.Add(-30*time.Second), "terminal", "connection_ended", "client-3", "session-terminal", "relay-1", nil, nil)
 
-	overview := buildTelemetryOverview([]TelemetryRecord{expired, active, terminalHeartbeat, terminal}, now, time.Hour)
+	overview := buildTelemetryOverview([]TelemetryRecord{expired, active, terminalHeartbeat, terminal}, nil, now, time.Hour)
 	if overview.Totals.ActiveSessions != 1 || overview.Totals.ActiveClients != 1 {
 		t.Fatalf("expected only one active session: %+v", overview.Totals)
 	}
@@ -322,7 +340,7 @@ func TestBuildTelemetryOverviewHandlesMissingMetadataAndASNFallback(t *testing.T
 		dashboardRecord(now.Add(-time.Minute), "missing", "connection_attempted", "client-1", "session-missing", "", nil, nil),
 		dashboardRecord(now.Add(-time.Minute), "asn", "connection_attempted", "client-2", "session-asn", "", map[string]string{"asn": "AS64501"}, nil),
 	}
-	overview := buildTelemetryOverview(records, now, time.Hour)
+	overview := buildTelemetryOverview(records, nil, now, time.Hour)
 	if len(overview.TopCities) != 0 || len(overview.TopISPs) != 1 || overview.TopISPs[0].Name != "AS64501" {
 		t.Fatalf("unexpected missing metadata aggregation: cities=%+v isps=%+v", overview.TopCities, overview.TopISPs)
 	}
@@ -342,7 +360,7 @@ func TestBuildTelemetryOverviewTracksSessionBytes(t *testing.T) {
 		dashboardRecord(now.Add(-time.Minute), "ended", "connection_ended", "client-1", "session-1", "relay-1", nil, map[string]int64{"bytes_sent": 2_500, "bytes_received": 9_500}),
 		dashboardRecord(now.Add(-time.Minute), "no-bytes", "session_heartbeat", "client-2", "session-2", "relay-1", nil, nil),
 	}
-	overview := buildTelemetryOverview(records, now, time.Hour)
+	overview := buildTelemetryOverview(records, nil, now, time.Hour)
 	byID := make(map[string]sessionSummary)
 	for _, session := range overview.Recent {
 		byID[session.SessionID] = session
@@ -428,7 +446,7 @@ func TestBuildTelemetryOverviewPrefersClientIPOverRelayTransportIP(t *testing.T)
 	upload := dashboardRecord(now, "connected", "connection_succeeded", "client-1", "session-1", "relay-1", map[string]string{"client_ip": "198.51.100.20"}, nil)
 	upload.SourceIP = "203.0.113.50"
 
-	overview := buildTelemetryOverview([]TelemetryRecord{clientSeen, upload}, now, time.Hour)
+	overview := buildTelemetryOverview([]TelemetryRecord{clientSeen, upload}, nil, now, time.Hour)
 	if got := overview.Recent[0].SourceIP; got != "198.51.100.20" {
 		t.Fatalf("expected pre-tunnel client IP, got %q", got)
 	}
@@ -441,7 +459,7 @@ func TestBuildTelemetryOverviewSourceIPFallbacks(t *testing.T) {
 	transport := dashboardRecord(now, "transport", "connection_succeeded", "client-2", "session-transport", "relay-1", nil, nil)
 	transport.SourceIP = "198.51.100.22"
 
-	overview := buildTelemetryOverview([]TelemetryRecord{reported, transport}, now, time.Hour)
+	overview := buildTelemetryOverview([]TelemetryRecord{reported, transport}, nil, now, time.Hour)
 	got := make(map[string]string)
 	for _, session := range overview.Recent {
 		got[session.SessionID] = session.SourceIP
@@ -459,7 +477,7 @@ func TestBuildTelemetryOverviewSurfacesFailureDiagnostics(t *testing.T) {
 			"failure_stage": "handshake", "failure_reason": "timeout", "failure_detail": "dial tcp 10.0.0.1:443: i/o timeout",
 		}, nil),
 	}
-	overview := buildTelemetryOverview(records, now, time.Hour)
+	overview := buildTelemetryOverview(records, nil, now, time.Hour)
 	session := recentByID(overview.Recent)["session-1"]
 	if session.FailureStage != "handshake" || session.FailureReason != "timeout" || session.FailureDetail != "dial tcp 10.0.0.1:443: i/o timeout" {
 		t.Fatalf("unexpected failure fields: %+v", session)
@@ -479,7 +497,7 @@ func TestBuildTelemetryOverviewFailureReasonFallsBackToErrorType(t *testing.T) {
 			"failure_stage": "broker_fetch", "error_type": "connection_refused",
 		}, nil),
 	}
-	overview := buildTelemetryOverview(records, now, time.Hour)
+	overview := buildTelemetryOverview(records, nil, now, time.Hour)
 	session := recentByID(overview.Recent)["session-1"]
 	if session.FailureStage != "broker_fetch" || session.FailureReason != "connection_refused" {
 		t.Fatalf("expected error_type fallback, got %+v", session)
@@ -497,7 +515,7 @@ func TestBuildTelemetryOverviewFailureWithoutAttributes(t *testing.T) {
 	records := []TelemetryRecord{
 		dashboardRecord(now.Add(-time.Minute), "failed", "connection_failed", "client-1", "session-1", "", nil, nil),
 	}
-	overview := buildTelemetryOverview(records, now, time.Hour)
+	overview := buildTelemetryOverview(records, nil, now, time.Hour)
 	session := recentByID(overview.Recent)["session-1"]
 	if session.FailureStage != "" || session.FailureReason != "" || session.FailureDetail != "" {
 		t.Fatalf("failure fields should stay empty, got %+v", session)
@@ -526,7 +544,7 @@ func TestBuildTelemetryOverviewRelayTopFailureReason(t *testing.T) {
 		// relay-clean only succeeded, so it has no failure reason to report.
 		dashboardRecord(now.Add(-time.Minute), "ok", "connection_succeeded", "client-6", "session-6", "relay-clean", nil, nil),
 	}
-	overview := buildTelemetryOverview(records, now, time.Hour)
+	overview := buildTelemetryOverview(records, nil, now, time.Hour)
 	byRelay := make(map[string]relaySummary)
 	for _, relay := range overview.TopRelays {
 		byRelay[relay.RelayID] = relay
@@ -655,7 +673,7 @@ func TestRecordedRelayClassSurvivesMissingActiveDescriptor(t *testing.T) {
 		record("success", "connection_succeeded", now.Add(-2*time.Minute), nil),
 		record("heartbeat", "session_heartbeat", now.Add(-time.Minute), nil),
 		record("speed", "speed_test_completed", now.Add(-30*time.Second), map[string]int64{"download_mbps_milli": 50_000}),
-	}, now, 24*time.Hour)
+	}, nil, now, 24*time.Hour)
 
 	// The active descriptor map no longer contains relay-expired. Including a
 	// different relay makes applyRelayDisplays traverse every row; it must not

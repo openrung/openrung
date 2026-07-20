@@ -411,9 +411,13 @@ func cleanupPostgresTelemetry(t *testing.T, sink *PostgresTelemetrySink) {
 	if _, err := sink.pool.Exec(context.Background(), `TRUNCATE telemetry_events`); err != nil {
 		t.Fatalf("cleanup telemetry events: %v", err)
 	}
+	if _, err := sink.pool.Exec(context.Background(), `TRUNCATE telemetry_app_counts`); err != nil {
+		t.Fatalf("cleanup telemetry app counts: %v", err)
+	}
 	sink.mu.Lock()
 	sink.pending = nil
 	sink.pendingBytes = 0
+	sink.pendingAppCounts = telemetryAppRollup{}
 	sink.mu.Unlock()
 }
 
@@ -469,4 +473,73 @@ func telemetryPartitionExists(t *testing.T, sink *PostgresTelemetrySink, day str
 		t.Fatalf("check partition: %v", err)
 	}
 	return exists != nil
+}
+
+func TestPostgresTelemetrySinkRollsUpApplicationConnections(t *testing.T) {
+	now := time.Date(2026, 6, 24, 12, 30, 0, 0, time.UTC)
+	sink := newTestPostgresTelemetrySink(t, now)
+	ctx := context.Background()
+
+	records := []TelemetryRecord{
+		telemetryRecordAt(now.Add(-time.Minute), "kept-1"),
+		appConnectionRecordAt(now.Add(-2*time.Minute), "app-1", "com.instagram.android"),
+		appConnectionRecordAt(now.Add(-3*time.Minute), "app-2", "com.instagram.android"),
+		appConnectionRecordAt(now.Add(-70*time.Minute), "app-3", "org.telegram.messenger"),
+	}
+	if err := sink.WriteTelemetry(ctx, records); err != nil {
+		t.Fatalf("write telemetry: %v", err)
+	}
+	if err := sink.flush(); err != nil {
+		t.Fatalf("flush telemetry: %v", err)
+	}
+
+	var eventRows int
+	if err := sink.pool.QueryRow(ctx, `SELECT COUNT(*) FROM telemetry_events`).Scan(&eventRows); err != nil {
+		t.Fatalf("count telemetry events: %v", err)
+	}
+	if eventRows != 1 {
+		t.Fatalf("application_connection events must not be inserted as rows, got %d rows", eventRows)
+	}
+
+	// A second batch in the same hour must increment via the upsert's conflict
+	// arm, not insert a second (hour, application) row.
+	if err := sink.WriteTelemetry(ctx, []TelemetryRecord{
+		appConnectionRecordAt(now.Add(-time.Minute), "app-4", "com.instagram.android"),
+	}); err != nil {
+		t.Fatalf("write second batch: %v", err)
+	}
+	if err := sink.flush(); err != nil {
+		t.Fatalf("flush second batch: %v", err)
+	}
+
+	overview, err := sink.TelemetryOverview(now, time.Hour)
+	if err != nil {
+		t.Fatalf("overview: %v", err)
+	}
+	// The telegram event was received 70 minutes ago — before the window
+	// opened, but inside the truncated start hour, so the hour-granular window
+	// edge keeps it (matching telemetryAppRollup.countsIn).
+	if len(overview.TopApps) != 2 || overview.TopApps[0].Name != "com.instagram.android" || overview.TopApps[0].Count != 3 || overview.TopApps[1].Count != 1 {
+		t.Fatalf("unexpected top apps: %+v", overview.TopApps)
+	}
+	// The app-only events created no session rows.
+	if overview.Totals.Sessions != 1 || overview.Totals.Clients != 1 {
+		t.Fatalf("application_connection must not create sessions: %+v", overview.Totals)
+	}
+
+	// Retention: counts age out with the same cutoff as partitions.
+	if _, err := sink.pool.Exec(ctx, `INSERT INTO telemetry_app_counts (hour, application, connections) VALUES ($1, 'com.aged.app', 7)`,
+		now.Add(-telemetryRetention-2*time.Hour).Truncate(time.Hour)); err != nil {
+		t.Fatalf("insert aged count: %v", err)
+	}
+	if _, err := sink.PruneTelemetry(now); err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	var agedRows int
+	if err := sink.pool.QueryRow(ctx, `SELECT COUNT(*) FROM telemetry_app_counts WHERE application = 'com.aged.app'`).Scan(&agedRows); err != nil {
+		t.Fatalf("count aged rows: %v", err)
+	}
+	if agedRows != 0 {
+		t.Fatalf("expected aged app counts to be pruned, %d rows remain", agedRows)
+	}
 }

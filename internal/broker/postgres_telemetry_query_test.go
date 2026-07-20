@@ -148,6 +148,21 @@ func parityTelemetryRecords(now time.Time) []TelemetryRecord {
 			map[string]string{"error_type": "beta"}, nil),
 		record(33, 33, "relay_attempt_failed", "client-relayfail", "session-relayfail", "relay-4", "192.0.2.71",
 			map[string]string{"error_type": "gamma"}, nil),
+
+		// application_connection events: stored by neither backend — both fold
+		// them into the hourly top-apps rollup keyed by receipt hour and drop
+		// the record. session-apponly/client-apponly exist only here, so they
+		// must appear in no total or panel besides top_applications. With
+		// now=12:30, the two events received 3–4 minutes ago bucket to 12:00
+		// and the one received 70 minutes ago buckets to 11:00 — inside the 1h
+		// window's truncated start hour even though it was received before the
+		// window opened, pinning the hour-granular window edge in both paths.
+		record(3, 3, "application_connection", "client-apponly", "session-apponly", "relay-1", "203.0.113.10",
+			map[string]string{"_app": "com.instagram.android", "country": "IR", "client_ip": "203.0.113.77"}, nil),
+		record(4, 4, "application_connection", "client-apponly", "session-apponly", "relay-1", "203.0.113.10",
+			map[string]string{"_app": "com.instagram.android"}, nil),
+		record(70, 70, "application_connection", "client-apponly", "session-apponly", "", "192.0.2.50",
+			map[string]string{"_app": "org.telegram.messenger"}, nil),
 	}
 }
 
@@ -174,7 +189,11 @@ func TestPostgresTelemetryQuerierMatchesInMemoryOverview(t *testing.T) {
 	if err := sink.WriteTelemetry(context.Background(), records); err != nil {
 		t.Fatalf("write telemetry: %v", err)
 	}
-	memory := newTelemetryReaderQuerier(&dashboardTelemetryStore{records: records})
+	memoryStore := &dashboardTelemetryStore{}
+	if err := memoryStore.WriteTelemetry(context.Background(), records); err != nil {
+		t.Fatalf("write telemetry to in-memory store: %v", err)
+	}
+	memory := newTelemetryReaderQuerier(memoryStore)
 
 	for _, window := range []time.Duration{time.Hour, 24 * time.Hour, telemetryRetention} {
 		want, err := memory.TelemetryOverview(now, window)
@@ -196,7 +215,11 @@ func TestPostgresTelemetryQuerierMatchesInMemorySessions(t *testing.T) {
 	if err := sink.WriteTelemetry(context.Background(), records); err != nil {
 		t.Fatalf("write telemetry: %v", err)
 	}
-	memory := newTelemetryReaderQuerier(&dashboardTelemetryStore{records: records})
+	memoryStore := &dashboardTelemetryStore{}
+	if err := memoryStore.WriteTelemetry(context.Background(), records); err != nil {
+		t.Fatalf("write telemetry to in-memory store: %v", err)
+	}
+	memory := newTelemetryReaderQuerier(memoryStore)
 
 	window := 24 * time.Hour
 	for _, page := range []struct{ offset, limit int }{

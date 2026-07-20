@@ -419,11 +419,14 @@ func (a *sessionAccumulator) finalize(now time.Time) sessionSummary {
 	return summary
 }
 
-func buildTelemetryOverview(records []TelemetryRecord, now time.Time, window time.Duration) telemetryOverview {
+// buildTelemetryOverview aggregates stored records; appCounts is the hourly
+// application-connection rollup slice for the window (top-apps comes only from
+// there — application_connection events are never stored as records, and any
+// legacy stored ones are skipped to match the SQL path's filter).
+func buildTelemetryOverview(records []TelemetryRecord, appCounts map[string]int, now time.Time, window time.Duration) telemetryOverview {
 	start := now.Add(-window)
 	clients := make(map[string]struct{})
 	sessions := make(map[string]*sessionAccumulator)
-	apps := make(map[string]int)
 	failures := make(map[string]int)
 	failureReasons := make(map[string]int)
 	relays := make(map[string]*relaySummary)
@@ -442,6 +445,9 @@ func buildTelemetryOverview(records []TelemetryRecord, now time.Time, window tim
 	for _, record := range records {
 		event := record.Event
 		if event.OccurredAt.Before(start) || event.OccurredAt.After(now) {
+			continue
+		}
+		if event.Event == telemetryAppConnectionEvent {
 			continue
 		}
 		clients[event.ClientID] = struct{}{}
@@ -508,9 +514,6 @@ func buildTelemetryOverview(records []TelemetryRecord, now time.Time, window tim
 		}
 		if isp := event.Attributes["isp"]; isp != "" {
 			session.isp = isp
-		}
-		if event.Application != "" {
-			apps[event.Application]++
 		}
 		// bytes_sent / bytes_received are cumulative per session (heartbeats carry
 		// the running totals, connection_ended the final ones), so the largest
@@ -662,7 +665,7 @@ func buildTelemetryOverview(records []TelemetryRecord, now time.Time, window tim
 	if len(overview.TopRelays) > 10 {
 		overview.TopRelays = overview.TopRelays[:10]
 	}
-	overview.TopApps = sortedCounts(apps, 10)
+	overview.TopApps = sortedCounts(appCounts, 10)
 	overview.TopCountries = sortedCounts(countryCounts, 10)
 	overview.TopCities = sortedCounts(cityCounts, 10)
 	overview.TopISPs = sortedCounts(ispCounts, 10)

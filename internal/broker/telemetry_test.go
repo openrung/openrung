@@ -681,3 +681,155 @@ func TestTelemetryRetainedBudgetPruneAndSince(t *testing.T) {
 		t.Fatalf("unexpected recordsSince result: %+v", since)
 	}
 }
+
+func appConnectionRecordAt(receivedAt time.Time, eventID, application string) TelemetryRecord {
+	record := telemetryRecordAt(receivedAt, eventID)
+	record.Event.Event = telemetryAppConnectionEvent
+	record.Event.Application = application
+	record.Event.DestinationIP = "198.51.100.9"
+	record.Event.DestinationPort = 443
+	return record
+}
+
+func TestTelemetryAppRollupBucketsPrunesAndCaps(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 30, 0, 0, time.UTC)
+	var rollup telemetryAppRollup
+
+	rollup.add(now.Truncate(time.Hour), "app-a", 1)
+	rollup.add(now.Truncate(time.Hour), "app-a", 2)
+	rollup.add(now.Add(-70*time.Minute).Truncate(time.Hour), "app-b", 1)
+	rollup.add(now.Add(-30*time.Hour).Truncate(time.Hour), "app-old", 5)
+	rollup.add(now.Truncate(time.Hour), "", 9) // empty package names never count
+
+	// The 1h window's start (11:30) truncates to the 11:00 bucket, so app-b —
+	// received before the window opened — still counts: the edge is
+	// hour-granular by design, matching the SQL rollup filter.
+	counts := rollup.countsIn(now, time.Hour)
+	if counts["app-a"] != 3 || counts["app-b"] != 1 || len(counts) != 2 {
+		t.Fatalf("unexpected 1h counts: %+v", counts)
+	}
+	counts = rollup.countsIn(now, 48*time.Hour)
+	if counts["app-old"] != 5 || len(counts) != 3 {
+		t.Fatalf("unexpected 48h counts: %+v", counts)
+	}
+
+	rollup.prune(now.Add(-24 * time.Hour))
+	if counts = rollup.countsIn(now, 48*time.Hour); counts["app-old"] != 0 || len(counts) != 2 {
+		t.Fatalf("expected pruned rollup to drop app-old: %+v", counts)
+	}
+	if rollup.entries != 2 {
+		t.Fatalf("expected 2 entries after prune, got %d", rollup.entries)
+	}
+
+	var capped telemetryAppRollup
+	hour := now.Truncate(time.Hour)
+	for i := 0; i < maxTelemetryAppRollupEntries; i++ {
+		if !capped.add(hour, fmt.Sprintf("app-%05d", i), 1) {
+			t.Fatalf("unexpected cap refusal at entry %d", i)
+		}
+	}
+	if capped.add(hour, "app-overflow", 1) {
+		t.Fatal("expected the entry cap to refuse a new application")
+	}
+	if !capped.add(hour, "app-00000", 1) {
+		t.Fatal("existing applications must keep counting at the cap")
+	}
+}
+
+func TestJSONLTelemetrySinkRollsUpApplicationConnections(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 30, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "telemetry.jsonl")
+	sink, err := newJSONLTelemetrySink(path, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	records := []TelemetryRecord{
+		telemetryRecordAt(now.Add(-time.Minute), "kept-1"),
+		appConnectionRecordAt(now.Add(-2*time.Minute), "app-1", "com.instagram.android"),
+		appConnectionRecordAt(now.Add(-3*time.Minute), "app-2", "com.instagram.android"),
+		appConnectionRecordAt(now.Add(-70*time.Minute), "app-3", "org.telegram.messenger"),
+	}
+	if err := sink.WriteTelemetry(context.Background(), records); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := sink.TelemetryRecords(now.Add(-telemetryRetention)); len(got) != 1 || got[0].Event.EventID != "kept-1" {
+		t.Fatalf("application_connection records must not be retained: %+v", got)
+	}
+	counts := sink.AppConnectionCounts(now, time.Hour)
+	if counts["com.instagram.android"] != 2 || counts["org.telegram.messenger"] != 1 {
+		t.Fatalf("unexpected rollup counts: %+v", counts)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), telemetryAppConnectionEvent) || strings.Contains(string(data), "198.51.100.9") {
+		t.Fatalf("application_connection payloads must never reach disk: %s", data)
+	}
+}
+
+func TestJSONLTelemetrySinkSkipsLegacyApplicationConnectionRows(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 30, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "telemetry.jsonl")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoder := json.NewEncoder(file)
+	for _, record := range []TelemetryRecord{
+		appConnectionRecordAt(now.Add(-time.Hour), "legacy-app", "com.instagram.android"),
+		telemetryRecordAt(now.Add(-time.Minute), "kept-1"),
+	} {
+		if err := encoder.Encode(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	sink, err := newJSONLTelemetrySink(path, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sink.Close()
+	if got := sink.TelemetryRecords(now.Add(-telemetryRetention)); len(got) != 1 || got[0].Event.EventID != "kept-1" {
+		t.Fatalf("legacy application_connection rows must be skipped at load: %+v", got)
+	}
+	// Legacy rows are not folded into the rollup either — whether the file
+	// still holds one depends on compaction timing, so counting them would
+	// make restart counts nondeterministic.
+	if counts := sink.AppConnectionCounts(now, telemetryRetention); len(counts) != 0 {
+		t.Fatalf("legacy rows must not seed the rollup: %+v", counts)
+	}
+}
+
+func TestTelemetryReaderQuerierServesTopAppsFromRollup(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 30, 0, 0, time.UTC)
+	store := &dashboardTelemetryStore{}
+	err := store.WriteTelemetry(context.Background(), []TelemetryRecord{
+		telemetryRecordAt(now.Add(-time.Minute), "session-event"),
+		appConnectionRecordAt(now.Add(-2*time.Minute), "app-1", "com.instagram.android"),
+		appConnectionRecordAt(now.Add(-3*time.Minute), "app-2", "com.instagram.android"),
+		appConnectionRecordAt(now.Add(-4*time.Minute), "app-3", "org.telegram.messenger"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	overview, err := newTelemetryReaderQuerier(store).TelemetryOverview(now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(overview.TopApps) != 2 || overview.TopApps[0].Name != "com.instagram.android" || overview.TopApps[0].Count != 2 {
+		t.Fatalf("unexpected top apps: %+v", overview.TopApps)
+	}
+	// The app-connection events created no sessions or clients: only the
+	// stored record's session counts.
+	if overview.Totals.Sessions != 1 || overview.Totals.Clients != 1 {
+		t.Fatalf("application_connection must not create sessions: %+v", overview.Totals)
+	}
+}
