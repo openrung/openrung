@@ -37,16 +37,21 @@ const (
 	IdentitySpecV1 = "openrung-relay-identity-v1"
 
 	// MaxIdentityProofWindow bounds how far in the future a proof's expiry may
-	// lie. It caps replay of a captured proof; the check is expiry-only so a
-	// relay with a slow clock still produces a valid (merely shorter-lived)
-	// proof.
+	// lie, capping replay of a captured proof. It must exceed both TTLs below
+	// (a fast relay clock can date a proof up to its TTL ahead) with headroom.
 	MaxIdentityProofWindow = 48 * time.Hour
 
-	// IdentityProofTTLDirect is generous only for clock skew: direct-mode
-	// registrations sign a fresh proof per call. IdentityProofTTLTunnel is
-	// long-lived by design — the hub replays the HELLO's proof verbatim on
-	// broker loss, and a fresh proof arrives with each tunnel reconnect.
-	IdentityProofTTLDirect = time.Hour
+	// The proof TTLs are the replay window for a captured registration, but a
+	// replayed proof is low-value: it can only re-register the same identity —
+	// a direct proof binds the endpoint (so it merely re-asserts the relay's
+	// own registration), and a replayed tunnel proof cannot serve traffic
+	// because the bound Reality public key's private half stays on the real
+	// relay. So the TTLs are sized for clock tolerance, not minimized: a relay
+	// whose clock is off by less than the TTL still registers. Direct signs a
+	// fresh proof per call and tunnel re-signs on every reconnect (with
+	// session recycling when the broker reports one expired), so a short-lived
+	// proof is never a liability in practice.
+	IdentityProofTTLDirect = 24 * time.Hour
 	IdentityProofTTLTunnel = 24 * time.Hour
 )
 

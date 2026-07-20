@@ -5,8 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -162,16 +160,9 @@ func (s *Store) Register(req relay.RegisterRequest, now time.Time, ttl time.Dura
 		delete(s.relays, replacedID)
 	}
 	// A stable identity re-registering from a new endpoint abandons its old
-	// row — the map insert below replaces it by key, but log the move: two
-	// deployments sharing one identity seed (a copy-paste error) would show up
-	// here as endpoint flip-flopping.
-	if existing, ok := s.relays[id]; ok &&
-		(existing.PublicHost != desc.PublicHost || existing.PublicPort != desc.PublicPort) {
-		slog.Warn("relay identity moved endpoint",
-			"relay_id", id,
-			"old", fmt.Sprintf("%s:%d", existing.PublicHost, existing.PublicPort),
-			"new", fmt.Sprintf("%s:%d", desc.PublicHost, desc.PublicPort))
-	}
+	// row; the map insert replaces it by key. (Tunnel relays legitimately hit
+	// this on most reconnects, because the hub round-robins their public port,
+	// so it is normal traffic and not logged.)
 	s.relays[id] = desc
 
 	return desc, nil

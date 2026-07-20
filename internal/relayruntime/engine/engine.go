@@ -589,17 +589,21 @@ func (e *Engine) prepareIdentity(cfg Config) (Identity, error) {
 		id.RealityPublicKey = keyPair.PublicKey
 		generated = true
 	}
-	if id.IdentitySeed == "" {
-		_, priv, err := ed25519.GenerateKey(cryptorand.Reader)
-		if err != nil {
-			return Identity{}, fmt.Errorf("generate identity key: %w", err)
+	if _, err := id.identityKey(); err != nil {
+		// Missing OR corrupt: regenerate rather than fail. A GUI volunteer has
+		// no way to hand-reset a mangled identity.json, and losing ID
+		// continuity (a fresh relay ID) is a far better outcome than an app
+		// that refuses to start. The regenerated seed is reported through
+		// OnIdentity below and persisted, healing the file.
+		if id.IdentitySeed != "" {
+			e.logf("persisted identity seed was unreadable; generating a new relay identity")
+		}
+		_, priv, genErr := ed25519.GenerateKey(cryptorand.Reader)
+		if genErr != nil {
+			return Identity{}, fmt.Errorf("generate identity key: %w", genErr)
 		}
 		id.IdentitySeed = relay.EncodeIdentitySeed(priv)
 		generated = true
-	} else if _, err := id.identityKey(); err != nil {
-		// A corrupt persisted seed would otherwise fail every registration;
-		// refuse loudly so the operator (or the desktop app) can reset it.
-		return Identity{}, fmt.Errorf("invalid persisted identity seed: %w", err)
 	}
 
 	if generated {

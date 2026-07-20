@@ -44,6 +44,25 @@ func (h *Hub) addTunnel(relayID string, t *tunnel) {
 	h.registry[relayID] = t
 }
 
+// claimTunnel installs t under relayID only if the slot is free or already t,
+// returning false when another live tunnel owns it. A stable relay identity
+// makes a reconnect reuse the same relay ID, so a stale session re-registering
+// after the broker forgot the lease must not overwrite the newer session that
+// already took the slot. Distinct from addTunnel, which is the unconditional
+// first install at connect time (the connecting session always owns its ID).
+func (h *Hub) claimTunnel(relayID string, t *tunnel) bool {
+	h.registryMu.Lock()
+	defer h.registryMu.Unlock()
+	if current, ok := h.registry[relayID]; ok && current != t {
+		return false
+	}
+	if h.registry == nil {
+		h.registry = make(map[string]*tunnel)
+	}
+	h.registry[relayID] = t
+	return true
+}
+
 // removeTunnel deletes the entry only if it is still this tunnel, so a fast
 // reconnect that already installed a new tunnel under a new relay ID is never
 // evicted by the old tunnel's teardown.

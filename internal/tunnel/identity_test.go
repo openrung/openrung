@@ -86,3 +86,46 @@ func TestRegistrarMapsIdentityProofExpired(t *testing.T) {
 		t.Fatalf("expected ErrIdentityProofExpired, got %v", err)
 	}
 }
+
+// TestClaimTunnelRejectsStaleSessionOnSharedID pins the fix for shared stable
+// IDs: when a fast reconnect (session B) already holds the relay ID, the stale
+// session A re-registering the SAME ID must not clobber B in the punch
+// registry — claimTunnel refuses, and A is expected to retire.
+func TestClaimTunnelRejectsStaleSessionOnSharedID(t *testing.T) {
+	hub := &Hub{}
+	a := &tunnel{}
+	b := &tunnel{}
+	const id = "relay_stable"
+
+	// A connects first and installs itself.
+	hub.addTunnel(id, a)
+	if hub.lookupTunnel(id) != a {
+		t.Fatal("A should own the slot after connect")
+	}
+
+	// B reconnects with the same derived ID and takes the slot (newest wins).
+	hub.addTunnel(id, b)
+	if hub.lookupTunnel(id) != b {
+		t.Fatal("B should own the slot after its connect")
+	}
+
+	// A, now stale, re-registers the same ID after the broker forgot the lease.
+	// It must lose the claim rather than overwrite B.
+	if hub.claimTunnel(id, a) {
+		t.Fatal("stale session A must not reclaim an ID owned by live session B")
+	}
+	if hub.lookupTunnel(id) != b {
+		t.Fatal("claimTunnel by A corrupted B's registry entry")
+	}
+
+	// A's eventual teardown is a no-op (compare-and-delete by pointer).
+	hub.removeTunnel(id, a)
+	if hub.lookupTunnel(id) != b {
+		t.Fatal("A's teardown evicted B")
+	}
+
+	// B may still refresh its own claim (the normal reregister path).
+	if !hub.claimTunnel(id, b) {
+		t.Fatal("the owning session must be able to reclaim its own ID")
+	}
+}

@@ -336,20 +336,35 @@ three fields to the registration:
 The broker then derives the relay ID from the key — `relay_` + lowercase hex
 of the first 16 bytes of SHA-256 over `"openrung-relay-identity-v1:id:"` plus
 the raw key — so the same key always yields the same ID, with no broker-side
-state. The proof signs a canonical newline-joined statement binding the
-identity-relevant registration fields (endpoint for direct transport, always
-the transport itself, the VLESS/Reality parameters, capacities, label, node
-class) plus the relay-chosen `identity_expires_at`, so a captured proof cannot
-be replayed with altered content, across transports, after expiry, or more
-than 48 hours out. Tunnel-transport statements bind an empty endpoint — the
-hub assigns it after the relay signs — which is also why the proof carries an
-expiry rather than a nonce: the hub re-registers the stored request verbatim
-when the broker forgets the lease, and recycles the tunnel session for a fresh
-HELLO when the broker answers `401` `relay identity proof expired`. All three
-fields travel together; a malformed, tampered, or expired proof fails the
-registration with `401` — never a silent fall back to a random ID. Requests
-without the fields keep the legacy random-ID behavior, and the identity public
-key is never served through any public endpoint.
+state. The proof signs a canonical newline-joined statement binding: the spec
+tag, `identity_expires_at`, `transport`, the VLESS/Reality parameters
+(`client_id`, `reality_public_key`, `short_id`, `server_name`, `flow`,
+`exit_mode`), `max_sessions`, `max_mbps`, `label`, `node_class`, and — for
+direct transport only — `public_host`/`public_port`. It deliberately does not
+bind fields the relay cannot know or that the hub sets: the tunnel endpoint,
+`punch_capable`/`punch_endpoint`, `exit_host`, and `relay_version`.
+
+What this buys, and its limits: a captured proof cannot be re-signed with a
+different identity key (the ID is the key), used after `identity_expires_at`,
+dated more than 48 hours out, or — for a direct relay — pointed at a different
+endpoint. A captured **tunnel** proof, however, can within its lifetime
+re-register the same relay ID at an attacker-chosen endpoint, because the
+tunnel statement binds no endpoint (the relay signs before the hub assigns
+one). That is bounded: it cannot serve traffic, since the bound
+`reality_public_key`'s private half never leaves the real relay, so it can at
+most point the ID at a dead endpoint until the real relay's next
+re-registration restores it — a transient denial, not interception, and only
+against relays whose registration traffic an attacker can observe (the
+plaintext volunteer broker origin; the TLS front and origin-TLS close this).
+Binding is deferred rather than nonce-based because the hub re-registers the
+stored request verbatim when the broker forgets the lease, and recycles the
+tunnel session for a fresh HELLO when the broker answers `401` `relay identity
+proof expired`.
+
+All three fields travel together; a malformed, tampered, or expired proof
+fails the registration with `401` — never a silent fall back to a random ID.
+Requests without the fields keep the legacy random-ID behavior, and the
+identity public key is never served through any public endpoint.
 
 The identity grants nothing beyond ID continuity: node class is still attested
 per registration by the token, the foundation endpoint guard applies

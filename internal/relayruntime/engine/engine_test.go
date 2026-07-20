@@ -329,10 +329,23 @@ func TestPrepareIdentityBackfillsSeed(t *testing.T) {
 		t.Fatalf("stable identity must be a no-op: %+v (persisted %d)", again, len(persisted))
 	}
 
-	// A corrupt persisted seed refuses loudly instead of churning identity.
+	// A corrupt persisted seed regenerates (a GUI volunteer cannot hand-reset
+	// identity.json) and reports the fresh identity for persistence, rather
+	// than bricking the app.
+	persisted = nil
 	corrupt := eng.cfg
 	corrupt.Identity.IdentitySeed = "!!!not-base64!!!"
-	if _, err := eng.prepareIdentity(corrupt); err == nil {
-		t.Fatal("expected an error for a corrupt persisted seed")
+	healed, err := eng.prepareIdentity(corrupt)
+	if err != nil {
+		t.Fatalf("corrupt seed must regenerate, not fail: %v", err)
+	}
+	if healed.IdentitySeed == "" || healed.IdentitySeed == "!!!not-base64!!!" {
+		t.Fatalf("corrupt seed was not replaced: %q", healed.IdentitySeed)
+	}
+	if _, err := healed.identityKey(); err != nil {
+		t.Fatalf("regenerated seed does not parse: %v", err)
+	}
+	if len(persisted) != 1 || persisted[0].IdentitySeed != healed.IdentitySeed {
+		t.Fatalf("healed identity must be reported for persistence, got %+v", persisted)
 	}
 }

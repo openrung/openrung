@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -268,18 +267,16 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 			return relay.Descriptor{}, fmt.Errorf("begin relay registration: %w", err)
 		}
 		defer func() { _ = tx.Rollback(ctx) }()
-		moved, err := tx.Exec(ctx, `
+		// A stable identity re-registering from a new endpoint abandons its old
+		// row. Tunnel relays hit this on most reconnects (the hub round-robins
+		// their public port), and the upsert below can still be refused and
+		// rolled back by the foundation-endpoint guard, so this is deliberately
+		// silent — logging here would be both noisy and, on a rollback, false.
+		if _, err := tx.Exec(ctx, `
 			DELETE FROM relay_descriptors
 			WHERE id = $1 AND (public_host <> $2 OR public_port <> $3)`,
-			id, desc.PublicHost, desc.PublicPort)
-		if err != nil {
+			id, desc.PublicHost, desc.PublicPort); err != nil {
 			return relay.Descriptor{}, fmt.Errorf("evict moved relay identity: %w", err)
-		}
-		if moved.RowsAffected() > 0 {
-			// Two deployments sharing one identity seed (a copy-paste error)
-			// would show up here as endpoint flip-flopping.
-			slog.Warn("relay identity moved endpoint", "relay_id", id,
-				"new", fmt.Sprintf("%s:%d", desc.PublicHost, desc.PublicPort))
 		}
 		querier = tx
 	}

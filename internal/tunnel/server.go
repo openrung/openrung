@@ -466,8 +466,22 @@ func (t *tunnel) reregister(ctx context.Context) {
 	}
 	oldID := t.currentRelayID()
 	t.setRelayID(registration.RelayID)
-	t.hub.removeTunnel(oldID, t)
-	t.hub.addTunnel(registration.RelayID, t)
+	if oldID != registration.RelayID {
+		// Legacy random-ID path: release the old key outright.
+		t.hub.removeTunnel(oldID, t)
+	}
+	// With a stable identity, a fast reconnect (session B) registers the SAME
+	// relay ID and is already installed in the registry. This stale session A
+	// re-registering must not clobber B: claim the slot only if it is free or
+	// still ours. Losing means B took over — retire A so its dead port stops
+	// being advertised and the punch registry keeps pointing at the live
+	// session.
+	if !t.hub.claimTunnel(registration.RelayID, t) {
+		t.logger.Info("relay identity already served by a newer session; retiring stale tunnel",
+			"relay_id", registration.RelayID)
+		_ = t.session.Close()
+		return
+	}
 	t.logger.Info("relay re-registered after broker forgot it",
 		"old_relay_id", oldID, "new_relay_id", registration.RelayID)
 }
