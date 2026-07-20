@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/hashicorp/yamux"
 
 	"openrung/internal/relay"
 )
@@ -127,5 +130,47 @@ func TestClaimTunnelRejectsStaleSessionOnSharedID(t *testing.T) {
 	// B may still refresh its own claim (the normal reregister path).
 	if !hub.claimTunnel(id, b) {
 		t.Fatal("the owning session must be able to reclaim its own ID")
+	}
+}
+
+func TestLostRegistrationRetiresStaleHubSessionWithoutReregistering(t *testing.T) {
+	registrar := &fakeRegistrar{relayID: "relay_stable"}
+	hub := &Hub{Registrar: registrar}
+	serverConn, clientConn := net.Pipe()
+	serverSession, err := yamux.Server(serverConn, yamuxConfig())
+	if err != nil {
+		t.Fatalf("create stale yamux session: %v", err)
+	}
+	clientSession, err := yamux.Client(clientConn, yamuxConfig())
+	if err != nil {
+		t.Fatalf("create peer yamux session: %v", err)
+	}
+	t.Cleanup(func() { _ = clientSession.Close() })
+
+	const id = "relay_stable"
+	stale := &tunnel{
+		hub:        hub,
+		session:    serverSession,
+		relayID:    id,
+		leaseToken: "lease_old",
+		logger:     discardLogger(),
+	}
+	newer := &tunnel{}
+	hub.addTunnel(id, newer)
+
+	// The broker's 404/token-mismatch path reaches this method. Because B
+	// already owns the stable ID in the local registry, A must close before it
+	// can replay its stored proof and move the broker endpoint back to A.
+	stale.handleRegistrationLost(context.Background(), id)
+	if registers, _, _ := registrar.stats(); registers != 0 {
+		t.Fatalf("stale session performed %d registrations, want 0", registers)
+	}
+	select {
+	case <-serverSession.CloseChan():
+	case <-time.After(time.Second):
+		t.Fatal("stale session was not closed")
+	}
+	if hub.lookupTunnel(id) != newer {
+		t.Fatal("retiring stale session displaced the newer registry owner")
 	}
 }

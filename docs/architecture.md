@@ -99,7 +99,10 @@ volunteer-run relays online:
   changes.
 - Descriptor liveness is tied to the tunnel: the hub heartbeats while the tunnel
   is healthy and stops when it drops, so the relay expires via the broker's normal
-  lease TTL.
+  lease TTL. Stable-identity registrations also receive a per-registration lease
+  token. The hub presents it on each heartbeat, so a stale session or replay that
+  replaces the descriptor cannot be kept alive by the current tunnel; its next
+  heartbeat fails and drives a genuine re-registration.
 
 The hub is a **data-plane** component, deliberately distinct from the control-plane
 broker — the broker stays out of the data path (see Goals). The hub only copies

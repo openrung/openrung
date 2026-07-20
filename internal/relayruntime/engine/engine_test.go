@@ -259,7 +259,7 @@ func (h *hubRegistrar) Register(_ context.Context, req relay.RegisterRequest) (t
 	}, nil
 }
 
-func (h *hubRegistrar) Heartbeat(context.Context, string) error { return nil }
+func (h *hubRegistrar) Heartbeat(context.Context, string, string) error { return nil }
 
 func startTestHub(t *testing.T) (*tunnel.Hub, string) {
 	t.Helper()

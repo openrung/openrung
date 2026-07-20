@@ -167,6 +167,7 @@ func (h *Hub) handleControl(ctx context.Context, conn net.Conn) {
 		publicListener: publicListener,
 		port:           port,
 		relayID:        registration.RelayID,
+		leaseToken:     registration.LeaseToken,
 		registerReq:    regReq,
 		streamTyping:   streamTyping,
 		logger:         logger.With("relay_id", registration.RelayID, "public_port", port, "remote", remote),
@@ -280,10 +281,11 @@ type tunnel struct {
 	// heartbeat loop can re-register verbatim if the broker forgets the relay.
 	registerReq relay.RegisterRequest
 
-	// relayID is the broker-assigned ID; it changes on re-registration, so it
-	// is guarded for the teardown path that reads it after the heartbeat loop.
-	relayIDMu sync.Mutex
-	relayID   string
+	// relayID and leaseToken identify one broker registration. They rotate
+	// together on re-registration and are guarded for heartbeat/teardown reads.
+	relayIDMu  sync.Mutex
+	relayID    string
+	leaseToken string
 }
 
 func (t *tunnel) currentRelayID() string {
@@ -292,10 +294,17 @@ func (t *tunnel) currentRelayID() string {
 	return t.relayID
 }
 
-func (t *tunnel) setRelayID(id string) {
+func (t *tunnel) currentRegistration() (string, string) {
+	t.relayIDMu.Lock()
+	defer t.relayIDMu.Unlock()
+	return t.relayID, t.leaseToken
+}
+
+func (t *tunnel) setRegistration(id, leaseToken string) {
 	t.relayIDMu.Lock()
 	defer t.relayIDMu.Unlock()
 	t.relayID = id
+	t.leaseToken = leaseToken
 }
 
 func (t *tunnel) run(parent context.Context) {
@@ -427,8 +436,9 @@ func (t *tunnel) heartbeatLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			relayID, leaseToken := t.currentRegistration()
 			hbCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			err := t.hub.Registrar.Heartbeat(hbCtx, t.currentRelayID())
+			err := t.hub.Registrar.Heartbeat(hbCtx, relayID, leaseToken)
 			cancel()
 			if err == nil {
 				continue
@@ -437,9 +447,22 @@ func (t *tunnel) heartbeatLoop(ctx context.Context) {
 				t.logger.Warn("relay heartbeat failed", "error", err)
 				continue
 			}
-			t.reregister(ctx)
+			// A newer tunnel session with the same stable relay ID has replaced
+			// this registration. Retire locally before re-registering: replaying
+			// this stale session's stored proof would move the broker endpoint
+			// back to its dead public listener for another heartbeat interval.
+			t.handleRegistrationLost(ctx, relayID)
 		}
 	}
+}
+
+func (t *tunnel) handleRegistrationLost(ctx context.Context, relayID string) {
+	if !t.hub.claimTunnel(relayID, t) {
+		t.logger.Info("relay registration belongs to a newer tunnel; retiring stale tunnel", "relay_id", relayID)
+		_ = t.session.Close()
+		return
+	}
+	t.reregister(ctx)
 }
 
 // reregister refreshes the broker registration after the broker forgot the
@@ -465,7 +488,7 @@ func (t *tunnel) reregister(ctx context.Context) {
 		return
 	}
 	oldID := t.currentRelayID()
-	t.setRelayID(registration.RelayID)
+	t.setRegistration(registration.RelayID, registration.LeaseToken)
 	if oldID != registration.RelayID {
 		// Legacy random-ID path: release the old key outright.
 		t.hub.removeTunnel(oldID, t)

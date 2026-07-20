@@ -104,12 +104,12 @@ if [ -n "${OPENRUNG_CLIENT_ID:-}" ]; then set -- "$@" -client-id "${OPENRUNG_CLI
 if [ -n "${OPENRUNG_REALITY_PRIVATE_KEY:-}" ]; then set -- "$@" -reality-private-key "${OPENRUNG_REALITY_PRIVATE_KEY}"; fi
 if [ -n "${OPENRUNG_REALITY_PUBLIC_KEY:-}" ]; then set -- "$@" -reality-public-key "${OPENRUNG_REALITY_PUBLIC_KEY}"; fi
 if [ -n "${OPENRUNG_SHORT_ID:-}" ]; then set -- "$@" -short-id "${OPENRUNG_SHORT_ID}"; fi
-if [ -n "${OPENRUNG_IDENTITY_SEED:-}" ]; then set -- "$@" -identity-seed "${OPENRUNG_IDENTITY_SEED}"; fi
 if [ -n "${OPENRUNG_MAX_SESSIONS:-}" ]; then set -- "$@" -max-sessions "${OPENRUNG_MAX_SESSIONS}"; fi
 if [ -n "${OPENRUNG_MAX_MBPS:-}" ]; then set -- "$@" -max-mbps "${OPENRUNG_MAX_MBPS}"; fi
 
 # The registration tokens (OPENRUNG_VOLUNTEER_TOKEN, OPENRUNG_FOUNDATION_TOKEN),
-# label (OPENRUNG_LABEL), and node class (OPENRUNG_NODE_CLASS) are read natively
-# from the environment by the binary, so they need no flag mapping.
+# stable identity seed (OPENRUNG_IDENTITY_SEED), label (OPENRUNG_LABEL), and node
+# class (OPENRUNG_NODE_CLASS) are read natively from the environment by the
+# binary. Keep secrets out of argv by not mapping them to flags here.
 
 exec "$@"

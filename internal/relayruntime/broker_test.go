@@ -45,19 +45,20 @@ func TestBrokerClientUsesCanonicalRoutes(t *testing.T) {
 			if !reflect.DeepEqual(req, testBrokerRegisterRequest()) {
 				t.Errorf("register request = %+v, want %+v", req, testBrokerRegisterRequest())
 			}
-			writeBrokerJSON(w, http.StatusCreated, relay.Descriptor{
+			writeBrokerJSON(w, http.StatusCreated, relay.RegisterResponse{Descriptor: relay.Descriptor{
 				ID:         "relay_canonical",
 				PublicHost: "203.0.113.10",
 				PublicPort: 443,
 				ExpiresAt:  expiresAt,
-			})
+				LeaseToken: "lease_canonical",
+			}})
 		case relayHeartbeatPathBase + "relay_canonical/heartbeat":
-			var body map[string]bool
+			var body relay.HeartbeatRequest
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Errorf("decode heartbeat request: %v", err)
 			}
-			if !body["ok"] {
-				t.Errorf("heartbeat body = %v, want ok=true", body)
+			if !body.OK || body.LeaseToken != "lease_canonical" {
+				t.Errorf("heartbeat body = %+v, want ok=true and propagated lease", body)
 			}
 			writeBrokerJSON(w, http.StatusOK, relay.HeartbeatResponse{OK: true, ExpiresAt: expiresAt})
 		default:
@@ -76,11 +77,12 @@ func TestBrokerClientUsesCanonicalRoutes(t *testing.T) {
 		PublicHost: "203.0.113.10",
 		PublicPort: 443,
 		ExpiresAt:  expiresAt,
+		LeaseToken: "lease_canonical",
 	}
 	if !reflect.DeepEqual(desc, want) {
 		t.Fatalf("Register() = %+v, want %+v", desc, want)
 	}
-	if err := client.Heartbeat(context.Background(), desc.ID); err != nil {
+	if err := client.Heartbeat(context.Background(), desc.ID, desc.LeaseToken); err != nil {
 		t.Fatalf("Heartbeat() error = %v", err)
 	}
 
@@ -120,7 +122,7 @@ func TestBrokerClientRelayNotFoundUsesCanonicalRoute(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	client := &BrokerClient{BaseURL: server.URL, HTTPClient: server.Client()}
-	err := client.Heartbeat(context.Background(), "relay_missing")
+	err := client.Heartbeat(context.Background(), "relay_missing", "")
 	if !IsRelayNotFound(err) {
 		t.Fatalf("Heartbeat() error = %v, want relay-not-found API error", err)
 	}
@@ -380,7 +382,7 @@ func TestBrokerClientSecureTransportAllowsLoopbackHTTP(t *testing.T) {
 	if desc.ID != "relay_foundation" {
 		t.Fatalf("Register() ID = %q, want relay_foundation", desc.ID)
 	}
-	if err := client.Heartbeat(context.Background(), desc.ID); err != nil {
+	if err := client.Heartbeat(context.Background(), desc.ID, desc.LeaseToken); err != nil {
 		t.Fatalf("Heartbeat() over loopback HTTP: %v", err)
 	}
 }
@@ -400,7 +402,7 @@ func TestBrokerClientSecureTransportRejectsRedirectsBeforeCredentialLeak(t *test
 		{
 			name: "heartbeat",
 			do: func(client *BrokerClient) error {
-				return client.Heartbeat(context.Background(), "relay_foundation")
+				return client.Heartbeat(context.Background(), "relay_foundation", "")
 			},
 		},
 	}
@@ -449,7 +451,7 @@ func TestBrokerClientSecureTransportRejectsRemotePlaintextBeforeSending(t *testi
 		RequireSecureTransport: true,
 	}
 
-	if err := client.Heartbeat(context.Background(), "relay_foundation"); err == nil {
+	if err := client.Heartbeat(context.Background(), "relay_foundation", ""); err == nil {
 		t.Fatal("Heartbeat() error = nil, want plaintext rejection")
 	}
 	if requests.Load() != 0 {

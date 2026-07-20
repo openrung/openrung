@@ -63,16 +63,89 @@ func TestCanonicalRelayRoutesRegisterAndHeartbeat(t *testing.T) {
 	if registerRecorder.Code != http.StatusCreated {
 		t.Fatalf("register: expected 201, got %d: %s", registerRecorder.Code, registerRecorder.Body.String())
 	}
+	if got := registerRecorder.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("register Cache-Control = %q, want no-store", got)
+	}
 
 	var desc relay.Descriptor
 	if err := json.Unmarshal(registerRecorder.Body.Bytes(), &desc); err != nil {
 		t.Fatalf("decode descriptor: %v", err)
+	}
+	var registerFields map[string]any
+	if err := json.Unmarshal(registerRecorder.Body.Bytes(), &registerFields); err != nil {
+		t.Fatalf("decode registration fields: %v", err)
+	}
+	if _, ok := registerFields["lease_token"]; ok {
+		t.Fatalf("legacy identityless registration unexpectedly returned lease_token: %s", registerRecorder.Body.String())
 	}
 	heartbeatRecorder := httptest.NewRecorder()
 	heartbeatPath := "/api/v1/relays/" + desc.ID + "/heartbeat"
 	server.ServeHTTP(heartbeatRecorder, httptest.NewRequest(http.MethodPost, heartbeatPath, nil))
 	if heartbeatRecorder.Code != http.StatusOK {
 		t.Fatalf("heartbeat: expected 200, got %d: %s", heartbeatRecorder.Code, heartbeatRecorder.Body.String())
+	}
+}
+
+func TestStableRegistrationLeaseTokenRequiredAndNotListed(t *testing.T) {
+	now := time.Now().UTC()
+	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed(), RelayLeaseTTL: time.Minute})
+	req := signedIdentityRequest(t, identityStoreSeedA, func(r *relay.RegisterRequest) {
+		r.Transport = relay.TransportTunnel
+	}, now)
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal register request: %v", err)
+	}
+
+	registerRecorder := httptest.NewRecorder()
+	server.ServeHTTP(registerRecorder, httptest.NewRequest(http.MethodPost, "/api/v1/relays/register", bytes.NewReader(body)))
+	if registerRecorder.Code != http.StatusCreated {
+		t.Fatalf("register: expected 201, got %d: %s", registerRecorder.Code, registerRecorder.Body.String())
+	}
+	if got := registerRecorder.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("stable register Cache-Control = %q, want no-store", got)
+	}
+	var registration relay.RegisterResponse
+	if err := json.Unmarshal(registerRecorder.Body.Bytes(), &registration); err != nil {
+		t.Fatalf("decode registration: %v", err)
+	}
+	desc := registration.Descriptor
+	if desc.LeaseToken == "" {
+		t.Fatal("stable registration response omitted lease_token")
+	}
+
+	heartbeatPath := "/api/v1/relays/" + desc.ID + "/heartbeat"
+	missingRecorder := httptest.NewRecorder()
+	server.ServeHTTP(missingRecorder, httptest.NewRequest(http.MethodPost, heartbeatPath, nil))
+	if missingRecorder.Code != http.StatusNotFound {
+		t.Fatalf("missing-token heartbeat: expected 404, got %d: %s", missingRecorder.Code, missingRecorder.Body.String())
+	}
+	heartbeatBody, err := json.Marshal(relay.HeartbeatRequest{OK: true, LeaseToken: desc.LeaseToken})
+	if err != nil {
+		t.Fatalf("marshal heartbeat: %v", err)
+	}
+	validRecorder := httptest.NewRecorder()
+	server.ServeHTTP(validRecorder, httptest.NewRequest(http.MethodPost, heartbeatPath, bytes.NewReader(heartbeatBody)))
+	if validRecorder.Code != http.StatusOK {
+		t.Fatalf("valid heartbeat: expected 200, got %d: %s", validRecorder.Code, validRecorder.Body.String())
+	}
+
+	listRecorder := httptest.NewRecorder()
+	server.ServeHTTP(listRecorder, httptest.NewRequest(http.MethodGet, "/api/v1/relays", nil))
+	if listRecorder.Code != http.StatusOK {
+		t.Fatalf("list relays: expected 200, got %d: %s", listRecorder.Code, listRecorder.Body.String())
+	}
+	var listed struct {
+		Relays []map[string]any `json:"relays"`
+	}
+	if err := json.Unmarshal(listRecorder.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode relay list: %v", err)
+	}
+	if len(listed.Relays) != 1 {
+		t.Fatalf("listed relays = %d, want 1", len(listed.Relays))
+	}
+	if _, ok := listed.Relays[0]["lease_token"]; ok {
+		t.Fatalf("public relay list leaked lease_token: %s", listRecorder.Body.String())
 	}
 }
 

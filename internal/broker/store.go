@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"sync"
@@ -38,8 +39,8 @@ type RelayStore interface {
 	// e.g. an endpoint takeover through a rolled-back broker binary whose
 	// upsert predates node_class — expires within one TTL instead of being
 	// kept alive indefinitely by whoever now heartbeats the ID.
-	Heartbeat(id, maxClass string, now time.Time, ttl time.Duration) (relay.Descriptor, error)
-	UpdateGeo(string, relay.GeoLocation) error
+	Heartbeat(id, leaseToken, maxClass string, now time.Time, ttl time.Duration) (relay.Descriptor, error)
+	UpdateGeo(id, leaseToken string, geo relay.GeoLocation) error
 	List(time.Time, int) ([]relay.Descriptor, error)
 	// RelayNodeClasses resolves active relay IDs to the broker-attested class
 	// stored on their descriptors. Telemetry ingestion uses this bounded lookup
@@ -95,10 +96,18 @@ func (s *Store) Register(req relay.RegisterRequest, now time.Time, ttl time.Dura
 	} else if id, err = newRelayID(); err != nil {
 		return relay.Descriptor{}, err
 	}
+	var leaseToken string
+	if identityKey != nil {
+		leaseToken, err = newRelayLeaseToken()
+		if err != nil {
+			return relay.Descriptor{}, err
+		}
+	}
 
 	desc := relay.Descriptor{
 		ID:                id,
 		IdentityPublicKey: req.IdentityPublicKey,
+		LeaseToken:        leaseToken,
 		Label:             req.Label,
 		NodeClass:         normalizeNodeClass(req.NodeClass),
 		PublicHost:        req.PublicHost,
@@ -168,7 +177,7 @@ func (s *Store) Register(req relay.RegisterRequest, now time.Time, ttl time.Dura
 	return desc, nil
 }
 
-func (s *Store) Heartbeat(id, maxClass string, now time.Time, ttl time.Duration) (relay.Descriptor, error) {
+func (s *Store) Heartbeat(id, leaseToken, maxClass string, now time.Time, ttl time.Duration) (relay.Descriptor, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -179,6 +188,14 @@ func (s *Store) Heartbeat(id, maxClass string, now time.Time, ttl time.Duration)
 	if desc.NodeClass == relay.NodeClassFoundation && maxClass != relay.NodeClassFoundation {
 		return relay.Descriptor{}, ErrNodeClassForbidden
 	}
+	// A stable relay ID names an identity, not one registration. Require the
+	// unlisted token minted for this exact incarnation so a stale session (or a
+	// one-time replay that moved the endpoint) cannot renew whichever endpoint
+	// currently occupies the ID. Empty stored tokens are migrated/pre-token
+	// stable rows and deliberately fail closed, forcing a fresh registration.
+	if desc.IdentityPublicKey != "" && (desc.LeaseToken == "" || subtle.ConstantTimeCompare([]byte(desc.LeaseToken), []byte(leaseToken)) != 1) {
+		return relay.Descriptor{}, ErrRelayNotFound
+	}
 
 	desc.LastHeartbeatAt = now
 	desc.ExpiresAt = now.Add(ttl)
@@ -187,12 +204,19 @@ func (s *Store) Heartbeat(id, maxClass string, now time.Time, ttl time.Duration)
 	return desc, nil
 }
 
-func (s *Store) UpdateGeo(id string, geo relay.GeoLocation) error {
+func (s *Store) UpdateGeo(id, leaseToken string, geo relay.GeoLocation) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	desc, ok := s.relays[id]
 	if !ok {
+		return ErrRelayNotFound
+	}
+	// GeoIP resolution happens after registration/heartbeat and may finish
+	// after another registration has reused this stable ID. Scope the delayed
+	// write to the registration that requested it so stale endpoint geography
+	// cannot contaminate the replacement descriptor.
+	if desc.IdentityPublicKey != "" && (desc.LeaseToken == "" || subtle.ConstantTimeCompare([]byte(desc.LeaseToken), []byte(leaseToken)) != 1) {
 		return ErrRelayNotFound
 	}
 	desc.GeoLocation = geo
@@ -436,4 +460,12 @@ func newRelayID() (string, error) {
 		return "", err
 	}
 	return "relay_" + hex.EncodeToString(b[:]), nil
+}
+
+func newRelayLeaseToken() (string, error) {
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return "lease_" + hex.EncodeToString(b[:]), nil
 }

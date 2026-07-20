@@ -81,7 +81,7 @@ func TestHeartbeatExtendsRelayLease(t *testing.T) {
 	}
 
 	heartbeatAt := now.Add(30 * time.Second)
-	updated, err := store.Heartbeat(desc.ID, relay.NodeClassVolunteer, heartbeatAt, time.Minute)
+	updated, err := store.Heartbeat(desc.ID, desc.LeaseToken, relay.NodeClassVolunteer, heartbeatAt, time.Minute)
 	if err != nil {
 		t.Fatalf("heartbeat relay: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestStoreDuplicateEndpointReplacesOldDescriptor(t *testing.T) {
 	if first.ID == second.ID {
 		t.Fatal("expected replacement to receive a new relay ID")
 	}
-	if _, err := store.Heartbeat(first.ID, relay.NodeClassVolunteer, now.Add(2*time.Second), time.Minute); !errors.Is(err, ErrRelayNotFound) {
+	if _, err := store.Heartbeat(first.ID, first.LeaseToken, relay.NodeClassVolunteer, now.Add(2*time.Second), time.Minute); !errors.Is(err, ErrRelayNotFound) {
 		t.Fatalf("expected old relay ID to be forgotten, got %v", err)
 	}
 	listed, err := store.List(now.Add(2*time.Second), 10)
@@ -133,7 +133,7 @@ func TestStoreUpdateGeo(t *testing.T) {
 	}
 
 	geo := relay.GeoLocation{City: "Tokyo", Country: "Japan", CountryCode: "JP"}
-	if err := store.UpdateGeo(desc.ID, geo); err != nil {
+	if err := store.UpdateGeo(desc.ID, desc.LeaseToken, geo); err != nil {
 		t.Fatalf("update geo: %v", err)
 	}
 	listed, err := store.List(now.Add(time.Second), 10)
@@ -144,7 +144,7 @@ func TestStoreUpdateGeo(t *testing.T) {
 		t.Fatalf("expected listed relay to carry geo, got %+v", listed)
 	}
 
-	if err := store.UpdateGeo("relay_missing", geo); !errors.Is(err, ErrRelayNotFound) {
+	if err := store.UpdateGeo("relay_missing", "", geo); !errors.Is(err, ErrRelayNotFound) {
 		t.Fatalf("expected ErrRelayNotFound for unknown relay, got %v", err)
 	}
 }

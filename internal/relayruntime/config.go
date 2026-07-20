@@ -2,15 +2,22 @@ package relayruntime
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
 )
+
+// IdentitySeedEnvironmentVariable carries the relay's long-lived Ed25519
+// identity seed. Xray never needs it, so every Xray subprocess is launched
+// with this variable removed from its environment.
+const IdentitySeedEnvironmentVariable = "OPENRUNG_IDENTITY_SEED"
 
 type XrayConfigInput struct {
 	ListenHost        string
@@ -124,13 +131,33 @@ func GenerateRealityKeyPair(xrayPath string) (RealityKeyPair, error) {
 	if xrayPath == "" {
 		xrayPath = "xray"
 	}
-	cmd := exec.Command(xrayPath, "x25519")
+	cmd := NewXrayCommand(context.Background(), xrayPath, "x25519")
 	ConfigureBackgroundCommand(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return RealityKeyPair{}, fmt.Errorf("run %s x25519: %w: %s", xrayPath, err, strings.TrimSpace(string(out)))
 	}
 	return ParseRealityKeyPair(out)
+}
+
+// NewXrayCommand constructs an Xray subprocess without passing the relay's
+// stable-identity seed to it. This shared boundary covers both one-shot key
+// generation and the long-running relay process.
+func NewXrayCommand(ctx context.Context, path string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, path, args...)
+	cmd.Env = environmentWithoutIdentitySeed(os.Environ())
+	return cmd
+}
+
+func environmentWithoutIdentitySeed(environ []string) []string {
+	filtered := make([]string, 0, len(environ))
+	for _, entry := range environ {
+		name, _, _ := strings.Cut(entry, "=")
+		if !strings.EqualFold(name, IdentitySeedEnvironmentVariable) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
 }
 
 func ParseRealityKeyPair(out []byte) (RealityKeyPair, error) {

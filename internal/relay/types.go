@@ -160,6 +160,12 @@ type Descriptor struct {
 	// Stored for operations and future per-relay auth; not serialized — the
 	// relay ID it derives is the public handle, and the list stays lean.
 	IdentityPublicKey string `json:"-"`
+	// LeaseToken identifies one concrete registration of this relay ID. Stable
+	// identities deliberately reuse their public ID across reconnects, so the
+	// ID alone cannot authorize a heartbeat: an older session would otherwise
+	// keep a newer session's endpoint alive. The token is returned only by the
+	// registration endpoint and is never included in public relay lists.
+	LeaseToken string `json:"-"`
 	// NodeClass is the broker-attested operator class (NodeClassFoundation or
 	// NodeClassVolunteer). Always serialized, and covered by the relay-list
 	// signature like every other descriptor field; clients that predate it
@@ -181,6 +187,51 @@ type Descriptor struct {
 	RegisteredAt     time.Time `json:"registered_at"`
 	LastHeartbeatAt  time.Time `json:"last_heartbeat_at"`
 	ExpiresAt        time.Time `json:"expires_at"`
+}
+
+// RegisterResponse is the private response to a successful registration. It
+// has the same wire shape as Descriptor plus lease_token; keeping the token out
+// of Descriptor's JSON representation prevents it from leaking through signed
+// public relay-list responses.
+type RegisterResponse struct {
+	Descriptor Descriptor
+}
+
+func (r RegisterResponse) MarshalJSON() ([]byte, error) {
+	type descriptorAlias Descriptor
+	return json.Marshal(struct {
+		descriptorAlias
+		VolunteerVersion string `json:"volunteer_version"`
+		LeaseToken       string `json:"lease_token,omitempty"`
+	}{
+		descriptorAlias:  descriptorAlias(r.Descriptor),
+		VolunteerVersion: r.Descriptor.RelayVersion,
+		LeaseToken:       r.Descriptor.LeaseToken,
+	})
+}
+
+func (r *RegisterResponse) UnmarshalJSON(data []byte) error {
+	var desc Descriptor
+	if err := json.Unmarshal(data, &desc); err != nil {
+		return err
+	}
+	var private struct {
+		LeaseToken string `json:"lease_token"`
+	}
+	if err := json.Unmarshal(data, &private); err != nil {
+		return err
+	}
+	desc.LeaseToken = private.LeaseToken
+	r.Descriptor = desc
+	return nil
+}
+
+// HeartbeatRequest renews exactly the registration that received LeaseToken.
+// Old identityless relays may omit it during a rolling upgrade; stable-
+// identity registrations require it because their relay ID is reusable.
+type HeartbeatRequest struct {
+	OK         bool   `json:"ok,omitempty"`
+	LeaseToken string `json:"lease_token,omitempty"`
 }
 
 // MarshalJSON keeps volunteer_version as a deprecated v1 response alias while

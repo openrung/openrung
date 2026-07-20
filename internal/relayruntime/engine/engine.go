@@ -658,7 +658,7 @@ func (e *Engine) startXray(ctx context.Context, cfg Config, identity Identity, l
 		return nil, make(chan error), nil
 	}
 
-	cmd := exec.CommandContext(ctx, cfg.XrayPath, "run", "-config", configPath)
+	cmd := relayruntime.NewXrayCommand(ctx, cfg.XrayPath, "run", "-config", configPath)
 	relayruntime.ConfigureBackgroundCommand(cmd)
 	logw := e.events.Log
 	cmd.Stdout = logw
@@ -805,7 +805,7 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 				return errPublicIPChanged
 			}
 		case <-heartbeat.C:
-			if err := broker.Heartbeat(ctx, desc.ID); err != nil {
+			if err := broker.Heartbeat(ctx, desc.ID, desc.LeaseToken); err != nil {
 				if !relayruntime.IsRelayNotFound(err) {
 					e.logf("heartbeat failed: %v", err)
 					continue

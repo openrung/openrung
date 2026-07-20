@@ -48,19 +48,20 @@ func TestBrokerRegistrarUsesCanonicalRoutes(t *testing.T) {
 			if !reflect.DeepEqual(req, testRegisterRequest()) {
 				t.Errorf("register request = %+v, want %+v", req, testRegisterRequest())
 			}
-			writeRegistrarJSON(w, http.StatusOK, relay.Descriptor{
+			writeRegistrarJSON(w, http.StatusOK, relay.RegisterResponse{Descriptor: relay.Descriptor{
 				ID:         "relay_canonical",
 				PublicHost: "203.0.113.10",
 				PublicPort: 443,
 				ExpiresAt:  expiresAt,
-			})
+				LeaseToken: "lease_canonical",
+			}})
 		case "/api/v1/relays/relay_canonical/heartbeat":
-			var body map[string]bool
+			var body relay.HeartbeatRequest
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Errorf("decode heartbeat request: %v", err)
 			}
-			if !body["ok"] {
-				t.Errorf("heartbeat body = %v, want ok=true", body)
+			if !body.OK || body.LeaseToken != "lease_canonical" {
+				t.Errorf("heartbeat body = %+v, want ok=true and propagated lease", body)
 			}
 			writeRegistrarJSON(w, http.StatusOK, relay.HeartbeatResponse{OK: true, ExpiresAt: expiresAt})
 		default:
@@ -76,6 +77,7 @@ func TestBrokerRegistrarUsesCanonicalRoutes(t *testing.T) {
 	}
 	want := RelayRegistration{
 		RelayID:    "relay_canonical",
+		LeaseToken: "lease_canonical",
 		PublicHost: "203.0.113.10",
 		PublicPort: 443,
 		ExpiresAt:  expiresAt,
@@ -83,7 +85,7 @@ func TestBrokerRegistrarUsesCanonicalRoutes(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Register() = %+v, want %+v", got, want)
 	}
-	if err := registrar.Heartbeat(context.Background(), got.RelayID); err != nil {
+	if err := registrar.Heartbeat(context.Background(), got.RelayID, got.LeaseToken); err != nil {
 		t.Fatalf("Heartbeat() error = %v", err)
 	}
 
@@ -123,7 +125,7 @@ func TestBrokerRegistrarMapsRelayNotFound(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	registrar := NewBrokerRegistrar(server.URL, "", server.Client())
-	err := registrar.Heartbeat(context.Background(), "relay_missing")
+	err := registrar.Heartbeat(context.Background(), "relay_missing", "")
 	if !errors.Is(err, ErrRelayNotFound) {
 		t.Fatalf("Heartbeat() error = %v, want ErrRelayNotFound", err)
 	}

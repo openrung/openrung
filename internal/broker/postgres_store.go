@@ -42,7 +42,8 @@ const descriptorColumns = `
 	longitude,
 	exit_host,
 	node_class,
-	identity_public_key
+	identity_public_key,
+	lease_token
 `
 
 const postgresOperationTimeout = 5 * time.Second
@@ -78,6 +79,7 @@ CREATE TABLE IF NOT EXISTS relay_descriptors (
 	exit_host text NOT NULL DEFAULT '',
 	node_class text NOT NULL DEFAULT 'volunteer',
 	identity_public_key text NOT NULL DEFAULT '',
+	lease_token text NOT NULL DEFAULT '',
 	attributes jsonb NOT NULL DEFAULT '{}'::jsonb,
 	UNIQUE (public_host, public_port)
 );
@@ -120,6 +122,9 @@ ALTER TABLE relay_descriptors
 
 ALTER TABLE relay_descriptors
 	ADD COLUMN IF NOT EXISTS identity_public_key text NOT NULL DEFAULT '';
+
+ALTER TABLE relay_descriptors
+	ADD COLUMN IF NOT EXISTS lease_token text NOT NULL DEFAULT '';
 
 CREATE INDEX IF NOT EXISTS relay_descriptors_active_idx
 	ON relay_descriptors (expires_at DESC, last_heartbeat_at DESC);
@@ -207,9 +212,17 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 	} else if id, err = newRelayID(); err != nil {
 		return relay.Descriptor{}, err
 	}
+	var leaseToken string
+	if identityKey != nil {
+		leaseToken, err = newRelayLeaseToken()
+		if err != nil {
+			return relay.Descriptor{}, err
+		}
+	}
 	desc := relay.Descriptor{
 		ID:                id,
 		IdentityPublicKey: req.IdentityPublicKey,
+		LeaseToken:        leaseToken,
 		Label:             req.Label,
 		NodeClass:         normalizeNodeClass(req.NodeClass),
 		PublicHost:        req.PublicHost,
@@ -305,9 +318,10 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 			punch_endpoint,
 			exit_host,
 			node_class,
-			identity_public_key
+			identity_public_key,
+			lease_token
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25
 		)
 		ON CONFLICT (public_host, public_port) DO UPDATE SET
 			id = EXCLUDED.id,
@@ -336,9 +350,10 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 			longitude = CASE WHEN relay_descriptors.exit_host = EXCLUDED.exit_host THEN relay_descriptors.longitude ELSE 0 END,
 			exit_host = EXCLUDED.exit_host,
 			node_class = EXCLUDED.node_class,
-			identity_public_key = EXCLUDED.identity_public_key
-		WHERE relay_descriptors.node_class <> $25
-			OR EXCLUDED.node_class = $25
+			identity_public_key = EXCLUDED.identity_public_key,
+			lease_token = EXCLUDED.lease_token
+		WHERE relay_descriptors.node_class <> $26
+			OR EXCLUDED.node_class = $26
 			OR relay_descriptors.expires_at <= EXCLUDED.registered_at
 		RETURNING `+descriptorColumns,
 		desc.ID,
@@ -365,6 +380,7 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 		desc.ExitHost,
 		desc.NodeClass,
 		desc.IdentityPublicKey,
+		desc.LeaseToken,
 		relay.NodeClassFoundation,
 	))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -391,7 +407,7 @@ type pgxQuerier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-func (s *PostgresStore) Heartbeat(id, maxClass string, now time.Time, ttl time.Duration) (relay.Descriptor, error) {
+func (s *PostgresStore) Heartbeat(id, leaseToken, maxClass string, now time.Time, ttl time.Duration) (relay.Descriptor, error) {
 	ctx, cancel := postgresOperationContext()
 	defer cancel()
 
@@ -399,10 +415,13 @@ func (s *PostgresStore) Heartbeat(id, maxClass string, now time.Time, ttl time.D
 	// heartbeat never extends the lease, not even transiently.
 	desc, err := scanDescriptor(s.pool.QueryRow(ctx, `
 		UPDATE relay_descriptors
-		SET last_heartbeat_at = $2, expires_at = $3
-		WHERE id = $1 AND (node_class <> $4 OR $5)
+		SET last_heartbeat_at = $3, expires_at = $4
+		WHERE id = $1
+			AND (identity_public_key = '' OR (lease_token <> '' AND lease_token = $2))
+			AND (node_class <> $5 OR $6)
 		RETURNING `+descriptorColumns,
 		id,
+		leaseToken,
 		now,
 		now.Add(ttl),
 		relay.NodeClassFoundation,
@@ -413,32 +432,37 @@ func (s *PostgresStore) Heartbeat(id, maxClass string, now time.Time, ttl time.D
 		// foundation row. Distinguish so the handler can answer 403 vs 404
 		// (the 404 drives client re-registration and must stay accurate).
 		return relay.Descriptor{}, heartbeatMissError(
-			s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM relay_descriptors WHERE id = $1)`, id),
+			s.pool.QueryRow(ctx, `
+				SELECT EXISTS (SELECT 1 FROM relay_descriptors WHERE id = $1),
+					EXISTS (SELECT 1 FROM relay_descriptors WHERE id = $1 AND node_class = $2)`,
+				id, relay.NodeClassFoundation),
+			maxClass,
 		)
 	}
 	return desc, err
 }
 
-func heartbeatMissError(row pgx.Row) error {
-	var exists bool
-	if err := row.Scan(&exists); err != nil {
+func heartbeatMissError(row pgx.Row, maxClass string) error {
+	var exists, foundation bool
+	if err := row.Scan(&exists, &foundation); err != nil {
 		return err
 	}
-	if exists {
+	if exists && foundation && maxClass != relay.NodeClassFoundation {
 		return ErrNodeClassForbidden
 	}
 	return ErrRelayNotFound
 }
 
-func (s *PostgresStore) UpdateGeo(id string, geo relay.GeoLocation) error {
+func (s *PostgresStore) UpdateGeo(id, leaseToken string, geo relay.GeoLocation) error {
 	ctx, cancel := postgresOperationContext()
 	defer cancel()
 
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE relay_descriptors
-		SET city = $2, country = $3, country_code = $4, latitude = $5, longitude = $6
+		SET city = $3, country = $4, country_code = $5, latitude = $6, longitude = $7
 		WHERE id = $1
-	`, id, geo.City, geo.Country, geo.CountryCode, geo.Latitude, geo.Longitude)
+			AND (identity_public_key = '' OR (lease_token <> '' AND lease_token = $2))
+	`, id, leaseToken, geo.City, geo.Country, geo.CountryCode, geo.Latitude, geo.Longitude)
 	if err != nil {
 		return err
 	}
@@ -839,6 +863,7 @@ func scanDescriptor(row pgx.Row) (relay.Descriptor, error) {
 		&desc.ExitHost,
 		&desc.NodeClass,
 		&desc.IdentityPublicKey,
+		&desc.LeaseToken,
 	)
 	return desc, err
 }

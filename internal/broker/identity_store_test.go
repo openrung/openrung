@@ -80,7 +80,7 @@ func TestStoreIdentityRegistrationKeepsRelayIDAcrossReRegistration(t *testing.T)
 		}
 
 		// Heartbeat works against the derived ID like any other.
-		if _, err := store.Heartbeat(first.ID, relay.NodeClassVolunteer, later.Add(time.Minute), 3*time.Minute); err != nil {
+		if _, err := store.Heartbeat(first.ID, second.LeaseToken, relay.NodeClassVolunteer, later.Add(time.Minute), 3*time.Minute); err != nil {
 			t.Fatalf("heartbeat derived ID: %v", err)
 		}
 	})
@@ -120,6 +120,139 @@ func TestStoreIdentityEndpointMoveAbandonsOldRow(t *testing.T) {
 	})
 }
 
+func TestStoreIdentityHeartbeatCannotRenewDifferentRegistration(t *testing.T) {
+	runIdentityStoreTest(t, func(t *testing.T, store RelayStore) {
+		now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+		originalReq := signedIdentityRequest(t, identityStoreSeedA, func(r *relay.RegisterRequest) {
+			r.Transport = relay.TransportTunnel
+			r.PublicHost = "hub-a.example"
+			r.PublicPort = 20001
+		}, now)
+
+		legitimate, err := store.Register(originalReq, now, 3*time.Minute)
+		if err != nil {
+			t.Fatalf("register legitimate tunnel: %v", err)
+		}
+		if legitimate.LeaseToken == "" {
+			t.Fatal("stable registration returned an empty lease token")
+		}
+
+		// A tunnel proof intentionally does not bind the hub-assigned endpoint,
+		// so model a captured proof (or stale hub session) moving the stable ID.
+		replayedReq := originalReq
+		replayedReq.PublicHost = "hub-b.example"
+		replayedReq.PublicPort = 20002
+		replayed, err := store.Register(replayedReq, now.Add(time.Minute), 3*time.Minute)
+		if err != nil {
+			t.Fatalf("replay registration: %v", err)
+		}
+		if replayed.ID != legitimate.ID || replayed.LeaseToken == legitimate.LeaseToken {
+			t.Fatalf("registration incarnation did not rotate cleanly: first=%+v replayed=%+v", legitimate, replayed)
+		}
+
+		// The displaced session must receive not-found and must not extend the
+		// endpoint written by the replay. That response drives re-registration.
+		if _, err := store.Heartbeat(legitimate.ID, legitimate.LeaseToken, relay.NodeClassVolunteer, now.Add(2*time.Minute), 3*time.Minute); !errors.Is(err, ErrRelayNotFound) {
+			t.Fatalf("displaced heartbeat error = %v, want ErrRelayNotFound", err)
+		}
+		listed, err := store.List(now.Add(2*time.Minute), 20)
+		if err != nil {
+			t.Fatalf("list replayed relay: %v", err)
+		}
+		if len(listed) != 1 || listed[0].PublicHost != replayedReq.PublicHost || !listed[0].ExpiresAt.Equal(replayed.ExpiresAt) {
+			t.Fatalf("displaced heartbeat changed replayed registration: %+v", listed)
+		}
+
+		recovered, err := store.Register(originalReq, now.Add(2*time.Minute), 3*time.Minute)
+		if err != nil {
+			t.Fatalf("legitimate re-registration: %v", err)
+		}
+		if recovered.LeaseToken == replayed.LeaseToken {
+			t.Fatal("legitimate re-registration reused replay's lease token")
+		}
+		if _, err := store.Heartbeat(replayed.ID, replayed.LeaseToken, relay.NodeClassVolunteer, now.Add(3*time.Minute), 3*time.Minute); !errors.Is(err, ErrRelayNotFound) {
+			t.Fatalf("stale replay heartbeat error = %v, want ErrRelayNotFound", err)
+		}
+		if _, err := store.Heartbeat(recovered.ID, recovered.LeaseToken, relay.NodeClassVolunteer, now.Add(3*time.Minute), 3*time.Minute); err != nil {
+			t.Fatalf("recovered registration heartbeat: %v", err)
+		}
+
+		listed, err = store.List(now.Add(3*time.Minute), 20)
+		if err != nil {
+			t.Fatalf("list recovered relay: %v", err)
+		}
+		if len(listed) != 1 || listed[0].PublicHost != originalReq.PublicHost || listed[0].PublicPort != originalReq.PublicPort {
+			t.Fatalf("stale heartbeat displaced recovered endpoint: %+v", listed)
+		}
+	})
+}
+
+func TestStoreStableFoundationHeartbeatChecksClassBeforeLease(t *testing.T) {
+	runIdentityStoreTest(t, func(t *testing.T, store RelayStore) {
+		now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+		req := signedIdentityRequest(t, identityStoreSeedA, func(r *relay.RegisterRequest) {
+			r.NodeClass = relay.NodeClassFoundation
+		}, now)
+		desc, err := store.Register(req, now, 3*time.Minute)
+		if err != nil {
+			t.Fatalf("register stable foundation relay: %v", err)
+		}
+		if _, err := store.Heartbeat(desc.ID, "wrong-token", relay.NodeClassVolunteer, now.Add(time.Minute), 3*time.Minute); !errors.Is(err, ErrNodeClassForbidden) {
+			t.Fatalf("unprivileged wrong-token heartbeat = %v, want ErrNodeClassForbidden", err)
+		}
+		if _, err := store.Heartbeat(desc.ID, "wrong-token", relay.NodeClassFoundation, now.Add(time.Minute), 3*time.Minute); !errors.Is(err, ErrRelayNotFound) {
+			t.Fatalf("authorized wrong-token heartbeat = %v, want ErrRelayNotFound", err)
+		}
+	})
+}
+
+func TestStoreIdentityStaleGeoCannotUpdateReplacement(t *testing.T) {
+	runIdentityStoreTest(t, func(t *testing.T, store RelayStore) {
+		now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+		firstReq := signedIdentityRequest(t, identityStoreSeedA, func(r *relay.RegisterRequest) {
+			r.Transport = relay.TransportTunnel
+			r.PublicHost = "hub-a.example"
+			r.PublicPort = 20001
+		}, now)
+		first, err := store.Register(firstReq, now, 3*time.Minute)
+		if err != nil {
+			t.Fatalf("register first endpoint: %v", err)
+		}
+
+		secondReq := firstReq
+		secondReq.PublicHost = "hub-b.example"
+		secondReq.PublicPort = 20002
+		second, err := store.Register(secondReq, now.Add(time.Minute), 3*time.Minute)
+		if err != nil {
+			t.Fatalf("register replacement endpoint: %v", err)
+		}
+
+		staleGeo := relay.GeoLocation{City: "Old City", Country: "Old Country", CountryCode: "OC"}
+		if err := store.UpdateGeo(first.ID, first.LeaseToken, staleGeo); !errors.Is(err, ErrRelayNotFound) {
+			t.Fatalf("stale geo update = %v, want ErrRelayNotFound", err)
+		}
+		listed, err := store.List(now.Add(time.Minute), 20)
+		if err != nil {
+			t.Fatalf("list replacement after stale geo: %v", err)
+		}
+		if len(listed) != 1 || listed[0].PublicHost != secondReq.PublicHost || listed[0].GeoLocation != (relay.GeoLocation{}) {
+			t.Fatalf("stale geo contaminated replacement: %+v", listed)
+		}
+
+		freshGeo := relay.GeoLocation{City: "New City", Country: "New Country", CountryCode: "NC"}
+		if err := store.UpdateGeo(second.ID, second.LeaseToken, freshGeo); err != nil {
+			t.Fatalf("current geo update: %v", err)
+		}
+		listed, err = store.List(now.Add(time.Minute), 20)
+		if err != nil {
+			t.Fatalf("list replacement after current geo: %v", err)
+		}
+		if len(listed) != 1 || listed[0].GeoLocation != freshGeo {
+			t.Fatalf("current geo was not stored: %+v", listed)
+		}
+	})
+}
+
 func TestStoreIdentityCannotSeizeLiveFoundationEndpoint(t *testing.T) {
 	runIdentityStoreTest(t, func(t *testing.T, store RelayStore) {
 		now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
@@ -138,7 +271,7 @@ func TestStoreIdentityCannotSeizeLiveFoundationEndpoint(t *testing.T) {
 		if !errors.Is(err, ErrNodeClassForbidden) {
 			t.Fatalf("expected ErrNodeClassForbidden, got %v", err)
 		}
-		if _, err := store.Heartbeat(foundation.ID, relay.NodeClassFoundation, now.Add(time.Minute), 3*time.Minute); err != nil {
+		if _, err := store.Heartbeat(foundation.ID, foundation.LeaseToken, relay.NodeClassFoundation, now.Add(time.Minute), 3*time.Minute); err != nil {
 			t.Fatalf("foundation relay lost its row to a refused registration: %v", err)
 		}
 	})
@@ -171,7 +304,7 @@ func TestStoreIdentitySeizureRollbackKeepsOldRow(t *testing.T) {
 		if !errors.Is(err, ErrNodeClassForbidden) {
 			t.Fatalf("expected ErrNodeClassForbidden, got %v", err)
 		}
-		if _, err := store.Heartbeat(first.ID, relay.NodeClassVolunteer, now.Add(time.Minute), 3*time.Minute); err != nil {
+		if _, err := store.Heartbeat(first.ID, first.LeaseToken, relay.NodeClassVolunteer, now.Add(time.Minute), 3*time.Minute); err != nil {
 			t.Fatalf("refused move evicted the identity's own row: %v", err)
 		}
 	})

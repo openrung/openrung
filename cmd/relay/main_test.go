@@ -4,13 +4,78 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"openrung/internal/relay"
+	"openrung/internal/relayruntime"
 )
+
+func TestRelayEntrypointKeepsIdentitySeedOutOfArgv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("relay container entrypoint requires a POSIX shell")
+	}
+
+	original, err := os.ReadFile(filepath.Join("..", "..", "deploy", "relay", "entrypoint.sh"))
+	if err != nil {
+		t.Fatalf("read relay entrypoint: %v", err)
+	}
+
+	tempDir := t.TempDir()
+	argsPath := filepath.Join(tempDir, "args")
+	envPath := filepath.Join(tempDir, "identity-seed")
+	fakeRelayPath := filepath.Join(tempDir, "relay")
+	fakeRelay := `#!/bin/sh
+printf '%s\n' "$@" > "$OPENRUNG_TEST_ARGS_OUT"
+printf '%s' "${OPENRUNG_IDENTITY_SEED-}" > "$OPENRUNG_TEST_ENV_OUT"
+`
+	if err := os.WriteFile(fakeRelayPath, []byte(fakeRelay), 0o700); err != nil {
+		t.Fatalf("write fake relay: %v", err)
+	}
+
+	entrypoint := strings.Replace(string(original), "/usr/local/bin/relay", fakeRelayPath, 1)
+	if entrypoint == string(original) {
+		t.Fatal("entrypoint relay path was not replaced")
+	}
+	entrypointPath := filepath.Join(tempDir, "entrypoint.sh")
+	if err := os.WriteFile(entrypointPath, []byte(entrypoint), 0o700); err != nil {
+		t.Fatalf("write test entrypoint: %v", err)
+	}
+
+	const seed = "test-long-lived-identity-seed"
+	cmd := exec.Command("sh", entrypointPath)
+	cmd.Env = append(os.Environ(),
+		"OPENRUNG_MODE=tunnel",
+		"OPENRUNG_HUB_ADDR=hub.example:9443",
+		relayruntime.IdentitySeedEnvironmentVariable+"="+seed,
+		"OPENRUNG_TEST_ARGS_OUT="+argsPath,
+		"OPENRUNG_TEST_ENV_OUT="+envPath,
+	)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("run relay entrypoint: %v\n%s", err, output)
+	}
+
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read relay argv: %v", err)
+	}
+	if strings.Contains(string(args), "-identity-seed") || strings.Contains(string(args), seed) {
+		t.Fatalf("entrypoint exposed identity seed in relay argv: %q", args)
+	}
+	inheritedSeed, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read relay environment capture: %v", err)
+	}
+	if string(inheritedSeed) != seed {
+		t.Fatalf("relay received identity seed %q, want environment-provided seed", inheritedSeed)
+	}
+}
 
 // testPreparedRuntime supplies the identity key prepareRuntime would have
 // generated; tests construct preparedRuntime directly and bypass it.
@@ -257,7 +322,7 @@ func TestHeartbeatRefusesFoundationOverPlaintext(t *testing.T) {
 		HTTPClient:        client,
 		NodeClass:         relay.NodeClassFoundation,
 	}
-	if err := heartbeat(context.Background(), cfg.brokerClient(), "relay_foundation"); err == nil {
+	if err := heartbeat(context.Background(), cfg.brokerClient(), "relay_foundation", ""); err == nil {
 		t.Fatal("heartbeat() error = nil, want a cleartext-broker error")
 	}
 	if sent.Load() != 0 {
