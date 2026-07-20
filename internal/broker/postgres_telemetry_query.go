@@ -37,7 +37,6 @@ events AS (
 		COALESCE(relay_id, '') AS relay_id,
 		COALESCE(relay_node_class, '') AS relay_node_class,
 		host(source_ip) AS source_ip,
-		NULLIF(payload->>'application_package', '') AS application,
 		-- failure_stage/detail use NULLIF so the sessions CTE IS NOT NULL
 		-- filter mirrors the accumulator's plain != "" test (a present-but-
 		-- empty later connection_failed must not clobber an earlier non-empty
@@ -75,7 +74,12 @@ events AS (
 		(payload->'measurements'->>'download_mbps_milli')::bigint AS download_mbps_milli,
 		(payload->'measurements'->>'time_to_first_byte_ms')::bigint AS ttfb_ms
 	FROM telemetry_events
+	-- application_connection is excluded belt-and-braces: since the hourly
+	-- rollup landed those events are never inserted as rows, but partitions
+	-- written before the rollup (or by an older broker) may still hold them,
+	-- and at production volume they were ~95% of all rows.
 	WHERE received_at > $1 AND occurred_at >= $2 AND occurred_at <= $3
+		AND event <> 'application_connection'
 )`
 
 // The `latest non-empty wins` aggregations order by (received_at, occurred_at)
@@ -168,11 +172,18 @@ FROM events
 WHERE event IN ('connection_attempted', 'connection_succeeded', 'connection_failed')
 GROUP BY 4
 UNION ALL
--- top_applications through relay_failures: the event-level count groups, each a
--- (name, count) pair that sortedCounts / topRelaySummaries rank and truncate.
-SELECT 'top_applications', application, NULL::text, COUNT(*)::bigint, NULL::bigint, NULL::bigint, NULL::bigint
-FROM events WHERE application IS NOT NULL GROUP BY application
+-- top_applications reads the hourly rollup, not the events CTE:
+-- application_connection events are folded into telemetry_app_counts at
+-- ingestion and never stored as rows. The window edge is hour-granular (the
+-- truncated start hour is included whole), matching telemetryAppRollup's
+-- countsIn; the date_trunc runs in UTC like the trend buckets.
+SELECT 'top_applications', application, NULL::text, SUM(connections)::bigint, NULL::bigint, NULL::bigint, NULL::bigint
+FROM telemetry_app_counts
+WHERE hour >= date_trunc('hour', $2::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AND hour <= $3
+GROUP BY application
 UNION ALL
+-- failure_stages through relay_failures: the event-level count groups, each a
+-- (name, count) pair that sortedCounts / topRelaySummaries rank and truncate.
 SELECT 'failure_stages',
 	CASE WHEN btrim(COALESCE(failure_stage, '')) <> '' THEN failure_stage ELSE 'unknown' END,
 	NULL::text, COUNT(*)::bigint, NULL::bigint, NULL::bigint, NULL::bigint

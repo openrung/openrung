@@ -13,23 +13,39 @@ type TelemetryQuerier interface {
 	TelemetrySessions(now time.Time, window time.Duration, offset, limit int) ([]sessionSummary, int, error)
 }
 
+// telemetryAppCounter is the optional capability a TelemetryReader exposes
+// when it keeps an hourly application-connection rollup (the JSONL sink does);
+// the dashboard's top-apps panel is fed from it, never from stored records.
+type telemetryAppCounter interface {
+	AppConnectionCounts(now time.Time, window time.Duration) map[string]int
+}
+
 // telemetryReaderQuerier adapts any TelemetryReader (the JSONL sink's bounded
 // in-memory record set) to the dashboard's query interface by aggregating in
 // Go on every request.
 type telemetryReaderQuerier struct {
 	reader TelemetryReader
+	apps   telemetryAppCounter
 }
 
 func newTelemetryReaderQuerier(reader TelemetryReader) telemetryReaderQuerier {
-	return telemetryReaderQuerier{reader: reader}
+	querier := telemetryReaderQuerier{reader: reader}
+	if counter, ok := reader.(telemetryAppCounter); ok {
+		querier.apps = counter
+	}
+	return querier
 }
 
 func (q telemetryReaderQuerier) TelemetryOverview(now time.Time, window time.Duration) (telemetryOverview, error) {
-	return buildTelemetryOverview(q.reader.TelemetryRecords(now.Add(-window)), now, window), nil
+	var appCounts map[string]int
+	if q.apps != nil {
+		appCounts = q.apps.AppConnectionCounts(now, window)
+	}
+	return buildTelemetryOverview(q.reader.TelemetryRecords(now.Add(-window)), appCounts, now, window), nil
 }
 
 func (q telemetryReaderQuerier) TelemetrySessions(now time.Time, window time.Duration, offset, limit int) ([]sessionSummary, int, error) {
-	overview := buildTelemetryOverview(q.reader.TelemetryRecords(now.Add(-window)), now, window)
+	overview := buildTelemetryOverview(q.reader.TelemetryRecords(now.Add(-window)), nil, now, window)
 	total := len(overview.Recent)
 	if offset > total {
 		offset = total

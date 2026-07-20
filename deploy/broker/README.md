@@ -197,7 +197,11 @@ automatically) instead of the JSONL file. It uses
 needs no extra configuration; the broker refuses to start if neither is set.
 In postgres mode the admin dashboard aggregates in SQL, bounded by the
 selected time window, so dashboard cost and broker memory stay flat as event
-history grows.
+history grows. High-volume `application_connection` events are not stored as
+rows in either store: ingestion folds them into an hourly per-application
+count (`telemetry_app_counts` in postgres mode) that feeds the dashboard's
+top-applications panel, and discards the per-event destination and client
+metadata.
 
 ## Telemetry dashboard
 

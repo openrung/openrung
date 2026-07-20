@@ -75,6 +75,16 @@ attribution is collected on Android 10 and newer. This first implementation
 records connection starts and destinations, not per-flow byte counters or flow
 completion times.
 
+`application_connection` events are never stored as individual records — in
+either telemetry store. At ingestion the broker folds each one into an hourly
+per-application connection count (Postgres: the `telemetry_app_counts` table;
+JSONL mode: an in-memory rollup that restarts empty) and discards the rest of
+the event, so the destination IP and the per-event client metadata never reach
+disk. Only the aggregate feeds the dashboard's top-applications panel, whose
+window edge is consequently hour-granular. They are by far the highest-volume
+event (one per tunnelled flow, with a per-package fan-out on Android), so this
+also keeps dashboard queries bounded by session-grade volume.
+
 Before starting the tunnel, Android also resolves its public IP metadata and
 adds `client_ip`, `country`, `country_code`, `city`, `asn`, `isp`, and
 `organization` to subsequent session events. A failed metadata lookup does not
