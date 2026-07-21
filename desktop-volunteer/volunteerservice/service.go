@@ -43,10 +43,8 @@ const DefaultHubAddress = "43.201.124.63:9443"
 const DefaultHubCertFingerprint = "70c3a26b9ac7315d1975f417eb9eabbecc98ec0e2d5baadb6c224e87fd99c8b5"
 
 const (
-	defaultMaxSessions = 8
-	defaultMaxMbps     = 20
-	defaultListenPort  = 8443
-	logRingCapacity    = 200
+	defaultListenPort = 8443
+	logRingCapacity   = 200
 )
 
 // Connection modes exposed to the user.
@@ -235,10 +233,10 @@ func (s *Service) normalizedSettingsLocked() Settings {
 		ConnectionMode: s.settings.ConnectionMode,
 	}
 	if out.MaxSessions <= 0 {
-		out.MaxSessions = defaultMaxSessions
+		out.MaxSessions = relayruntime.DefaultMaxSessions
 	}
 	if out.MaxMbps <= 0 {
-		out.MaxMbps = defaultMaxMbps
+		out.MaxMbps = relayruntime.DefaultMaxMbps
 	}
 	if out.ListenPort <= 0 {
 		out.ListenPort = defaultListenPort

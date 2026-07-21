@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"openrung/desktop-volunteer/persist"
+	"openrung/internal/relayruntime"
 )
 
 const testComponentVersion = "9.8.7"
@@ -40,6 +41,16 @@ func TestStartRequiresXray(t *testing.T) {
 	s.XrayFound = false
 	if err := s.Start(); err == nil || !strings.Contains(err.Error(), "xray") {
 		t.Fatalf("Start without xray = %v, want xray error", err)
+	}
+}
+
+func TestDefaultCapacitySettings(t *testing.T) {
+	s := newTestService(t)
+	settings := s.GetState().Settings
+	if settings.MaxSessions != relayruntime.DefaultMaxSessions || settings.MaxMbps != relayruntime.DefaultMaxMbps {
+		t.Fatalf("default capacity = %d sessions / %d Mbps, want %d / %d",
+			settings.MaxSessions, settings.MaxMbps,
+			relayruntime.DefaultMaxSessions, relayruntime.DefaultMaxMbps)
 	}
 }
 

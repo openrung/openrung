@@ -22,8 +22,8 @@ function randomLabel(): string {
 function defaultSettings(): VolunteerSettings {
   return {
     label: randomLabel(),
-    maxSessions: 8,
-    maxMbps: 20,
+    maxSessions: 75,
+    maxMbps: 100,
     listenPort: 8443,
     brokerUrl: 'https://broker.openrung.org/',
     hubAddress: '',
