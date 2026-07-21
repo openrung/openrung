@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -95,6 +96,104 @@ func verifyRelayListSignature(t *testing.T, header string, body []byte, pubkeyHe
 	return parts[1]
 }
 
+type relayListWireTimestamps struct {
+	ServerTime string `json:"server_time"`
+	NotAfter   string `json:"not_after"`
+	Relays     []struct {
+		RegisteredAt    string `json:"registered_at"`
+		LastHeartbeatAt string `json:"last_heartbeat_at"`
+		ExpiresAt       string `json:"expires_at"`
+	} `json:"relays"`
+}
+
+func decodeRelayListWireTimestamps(t *testing.T, body []byte) relayListWireTimestamps {
+	t.Helper()
+	var wire relayListWireTimestamps
+	if err := json.Unmarshal(body, &wire); err != nil {
+		t.Fatalf("decode relay-list wire timestamps: %v", err)
+	}
+	return wire
+}
+
+func assertRelayListUsesWholeSecondUTCTimestamps(t *testing.T, body []byte) {
+	t.Helper()
+	if err := validateRelayListTimestampStrings(body); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func validateRelayListTimestampStrings(body []byte) error {
+	var decoded any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return fmt.Errorf("decode relay-list JSON: %w", err)
+	}
+	return validateJSONTimestampStrings(decoded, "$")
+}
+
+// validateJSONTimestampStrings walks the complete signed body rather than a
+// fixed response shape. Any future field that marshals an RFC 3339 timestamp
+// therefore inherits the whole-second UTC wire contract automatically.
+func validateJSONTimestampStrings(value any, path string) error {
+	switch value := value.(type) {
+	case map[string]any:
+		for key, child := range value {
+			if err := validateJSONTimestampStrings(child, path+"."+key); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for i, child := range value {
+			if err := validateJSONTimestampStrings(child, fmt.Sprintf("%s[%d]", path, i)); err != nil {
+				return err
+			}
+		}
+	case string:
+		parsed, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil {
+			return nil
+		}
+		want := parsed.UTC().Truncate(time.Second).Format(time.RFC3339)
+		if value != want {
+			return fmt.Errorf("%s = %q, want whole-second UTC %q", path, value, want)
+		}
+	}
+	return nil
+}
+
+func TestRelayListTimestampGuardScansUnknownNestedFields(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{
+			name:    "fractional timestamp",
+			body:    `{"future":{"attested_at":"2026-07-21T08:36:39.123456789Z"}}`,
+			wantErr: true,
+		},
+		{
+			name:    "non-UTC timestamp",
+			body:    `{"future":{"measured_at":"2026-07-21T16:36:39+08:00"}}`,
+			wantErr: true,
+		},
+		{
+			name: "whole-second UTC timestamp",
+			body: `{"future":{"issued_at":"2026-07-21T08:36:39Z"}}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateRelayListTimestampStrings([]byte(test.body))
+			if test.wantErr && err == nil {
+				t.Fatal("expected structural timestamp guard to reject body")
+			}
+			if !test.wantErr && err != nil {
+				t.Fatalf("expected structural timestamp guard to accept body: %v", err)
+			}
+		})
+	}
+}
+
 func TestParseSigningSeedFailFast(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -179,6 +278,61 @@ func TestPinnedKeyVectorsVerify(t *testing.T) {
 	}
 }
 
+func TestWriteSignedUsesWholeSecondUTCTimestampsWithoutMutatingSource(t *testing.T) {
+	vectors := loadSigningVectors(t)
+	zone := time.FixedZone("UTC+8", 8*60*60)
+	serverTime := time.Date(2026, time.July, 21, 16, 36, 39, 987654321, zone)
+	resp := relay.ListResponse{
+		Count:      1,
+		ServerTime: serverTime,
+		NotAfter:   serverTime.Add(apiNotAfterWindow),
+		KeyID:      vectors.SpecVector.KeyID,
+		Channel:    relay.ChannelAPI,
+		Limit:      1,
+		Relays: []relay.Descriptor{{
+			RegisteredAt:    serverTime.Add(-time.Hour),
+			LastHeartbeatAt: serverTime.Add(-12 * time.Second),
+			ExpiresAt:       serverTime.Add(3 * time.Minute),
+		}},
+	}
+	originalServerTime := resp.ServerTime
+	originalNotAfter := resp.NotAfter
+	originalRelay := resp.Relays[0]
+
+	recorder := httptest.NewRecorder()
+	newSigner(testSigningSeed()).writeSigned(recorder, resp)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.Bytes()
+	verifyRelayListSignature(t, recorder.Header().Get(signatureHeader), body, vectors.SpecVector.PubkeyHex)
+	assertRelayListUsesWholeSecondUTCTimestamps(t, body)
+
+	wire := decodeRelayListWireTimestamps(t, body)
+	if wire.ServerTime != "2026-07-21T08:36:39Z" {
+		t.Errorf("server_time = %q, want %q", wire.ServerTime, "2026-07-21T08:36:39Z")
+	}
+	if wire.NotAfter != "2026-07-21T09:06:39Z" {
+		t.Errorf("not_after = %q, want %q", wire.NotAfter, "2026-07-21T09:06:39Z")
+	}
+	if len(wire.Relays) != 1 {
+		t.Fatalf("relays = %d, want 1", len(wire.Relays))
+	}
+	if wire.Relays[0].RegisteredAt != "2026-07-21T07:36:39Z" {
+		t.Errorf("registered_at = %q, want %q", wire.Relays[0].RegisteredAt, "2026-07-21T07:36:39Z")
+	}
+	if wire.Relays[0].LastHeartbeatAt != "2026-07-21T08:36:27Z" {
+		t.Errorf("last_heartbeat_at = %q, want %q", wire.Relays[0].LastHeartbeatAt, "2026-07-21T08:36:27Z")
+	}
+	if wire.Relays[0].ExpiresAt != "2026-07-21T08:39:39Z" {
+		t.Errorf("expires_at = %q, want %q", wire.Relays[0].ExpiresAt, "2026-07-21T08:39:39Z")
+	}
+
+	if resp.ServerTime != originalServerTime || resp.NotAfter != originalNotAfter || resp.Relays[0] != originalRelay {
+		t.Fatal("writeSigned mutated the caller's timestamps")
+	}
+}
+
 // TestListRelaysSignsExactWireBytes pins sign-what-you-send end to end: a real
 // HTTP GET whose raw wire bytes must verify against the spec vector public
 // key. This is the test that catches the Marshal-vs-Encode trailing-newline
@@ -204,6 +358,7 @@ func TestListRelaysSignsExactWireBytes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read raw body: %v", err)
 	}
+	assertRelayListUsesWholeSecondUTCTimestamps(t, body)
 
 	keyID := verifyRelayListSignature(t, resp.Header.Get("X-OpenRung-Relays-Signature"), body, vectors.SpecVector.PubkeyHex)
 	if keyID != vectors.SpecVector.KeyID {
@@ -298,6 +453,7 @@ func TestMirrorRelayListFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read raw body: %v", err)
 	}
+	assertRelayListUsesWholeSecondUTCTimestamps(t, body)
 
 	verifyRelayListSignature(t, resp.Header.Get("X-OpenRung-Relays-Signature"), body, vectors.SpecVector.PubkeyHex)
 	var out relay.ListResponse

@@ -531,6 +531,9 @@ advisory routing between pinned keys), `channel` (`"api"` here), and `limit`
 (the effective request limit echoed back so a signed body cannot be replayed
 for a differently-shaped request). Responses are sent with
 `Cache-Control: no-store, no-transform` and an explicit `Content-Length`.
+All timestamp strings in the signed directory body use UTC RFC 3339 at
+whole-second precision (for example, `2026-06-09T07:00:00Z`); the broker keeps
+subsecond precision internally but does not expose fractional seconds here.
 
 Response:
 
