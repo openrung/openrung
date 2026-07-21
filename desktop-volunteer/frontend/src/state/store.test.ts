@@ -21,8 +21,8 @@ function sampleState(overrides: Partial<VolunteerState> = {}): VolunteerState {
     xrayFound: true,
     settings: {
       label: 'amber-otter-123',
-      maxSessions: 8,
-      maxMbps: 20,
+      maxSessions: 75,
+      maxMbps: 100,
       listenPort: 8443,
       brokerUrl: 'https://broker.openrung.org/',
       hubAddress: '',
@@ -43,6 +43,8 @@ describe('store', () => {
     expect(snap.volunteer.phase).toBe('idle');
     expect(snap.volunteer.running).toBe(false);
     expect(snap.volunteer.consentAccepted).toBe(false);
+    expect(snap.volunteer.settings.maxSessions).toBe(75);
+    expect(snap.volunteer.settings.maxMbps).toBe(100);
   });
 
   it('applyVolunteerState mirrors the payload and marks hydration', () => {

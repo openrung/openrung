@@ -145,10 +145,10 @@ func (c Config) withDefaults() Config {
 		c.RealityDest = "www.cloudflare.com:443"
 	}
 	if c.MaxSessions == 0 {
-		c.MaxSessions = 8
+		c.MaxSessions = relayruntime.DefaultMaxSessions
 	}
 	if c.MaxMbps == 0 {
-		c.MaxMbps = 20
+		c.MaxMbps = relayruntime.DefaultMaxMbps
 	}
 	if c.HeartbeatInterval == 0 {
 		c.HeartbeatInterval = 30 * time.Second

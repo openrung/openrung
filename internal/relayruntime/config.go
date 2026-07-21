@@ -14,10 +14,19 @@ import (
 	"strings"
 )
 
-// IdentitySeedEnvironmentVariable carries the relay's long-lived Ed25519
-// identity seed. Xray never needs it, so every Xray subprocess is launched
-// with this variable removed from its environment.
-const IdentitySeedEnvironmentVariable = "OPENRUNG_IDENTITY_SEED"
+const (
+	// IdentitySeedEnvironmentVariable carries the relay's long-lived Ed25519
+	// identity seed. Xray never needs it, so every Xray subprocess is launched
+	// with this variable removed from its environment.
+	IdentitySeedEnvironmentVariable = "OPENRUNG_IDENTITY_SEED"
+
+	// DefaultMaxSessions and DefaultMaxMbps are advertised capacity hints. The
+	// relay does not enforce them directly; the broker uses them when ranking
+	// candidates. Keep every relay surface on these shared defaults so the CLI
+	// and embeddable volunteer engine cannot drift apart.
+	DefaultMaxSessions = 75
+	DefaultMaxMbps     = 100
+)
 
 type XrayConfigInput struct {
 	ListenHost        string

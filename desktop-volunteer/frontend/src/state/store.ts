@@ -32,8 +32,8 @@ const INITIAL_VOLUNTEER_STATE: VolunteerState = {
   xrayFound: true,
   settings: {
     label: '',
-    maxSessions: 8,
-    maxMbps: 20,
+    maxSessions: 75,
+    maxMbps: 100,
     listenPort: 8443,
     brokerUrl: '',
     hubAddress: '',
