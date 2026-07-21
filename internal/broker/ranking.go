@@ -21,6 +21,12 @@ const (
 	rankingHeadroomWeight    = 0.20
 	rankingLatencyWeight     = 0.20
 	rankingSpeedWeight       = 0.10
+
+	// A full relay has already forfeited the entire 0.20 headroom contribution.
+	// Continue applying back-pressure above capacity, but cap it below the 0.05
+	// margin by which a 75%-reliable full relay beats a 25%-reliable idle one
+	// when their latency and speed signals are equal.
+	rankingMaxOverCapacityPenalty = 0.04
 )
 
 type metricValue struct {
@@ -131,14 +137,22 @@ func relayScore(desc relay.Descriptor, snapshot RelayMetricsSnapshot) float64 {
 	latencyScore := observedLatencyScore(snapshot)
 	speedScore := observedSpeedScore(desc, snapshot)
 
-	// Headroom already declines continuously to zero at capacity. Do not apply a
-	// second threshold penalty here: that cliff used to let idle, failing relays
-	// outrank full relays with substantially better observed reliability.
+	// Headroom declines continuously to zero at capacity. Beyond capacity, keep
+	// a small gradient rather than the old threshold multiplier: the bounded
+	// penalty supplies back-pressure without letting load dominate reliability.
 	score := rankingReliabilityWeight*successRate +
 		rankingHeadroomWeight*headroom +
 		rankingLatencyWeight*latencyScore +
 		rankingSpeedWeight*speedScore
-	return score
+	return clamp01(score - overCapacityPenalty(desc, snapshot))
+}
+
+func overCapacityPenalty(desc relay.Descriptor, snapshot RelayMetricsSnapshot) float64 {
+	if desc.MaxSessions <= 0 || snapshot.ActiveSessions <= desc.MaxSessions {
+		return 0
+	}
+	overCapacityRatio := float64(snapshot.ActiveSessions-desc.MaxSessions) / float64(desc.MaxSessions)
+	return rankingMaxOverCapacityPenalty * clamp01(overCapacityRatio)
 }
 
 func observedLatencyScore(snapshot RelayMetricsSnapshot) float64 {
