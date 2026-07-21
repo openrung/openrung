@@ -83,7 +83,8 @@ CREATE INDEX IF NOT EXISTS telemetry_events_session_occurred_idx
 -- application_connection events are never stored as telemetry_events rows —
 -- only this hourly per-application rollup survives ingestion (see
 -- telemetryAppConnectionEvent). It is what the dashboard's top-apps panel
--- reads, and it is tiny: one row per (hour, application) seen.
+-- reads, and it is tiny: one row per (hour, application) seen. connections is
+-- the sum of each event's bounded connection_count (one for legacy events).
 CREATE TABLE IF NOT EXISTS telemetry_app_counts (
 	hour timestamptz NOT NULL,
 	application text NOT NULL,
@@ -215,10 +216,15 @@ func (s *PostgresTelemetrySink) WriteTelemetry(ctx context.Context, records []Te
 		return errors.New("telemetry storage is closed")
 	}
 	evictedBefore := s.pendingAppCounts.evictedEntries
+	appCounts := make(telemetryAppConnectionBatchCounter)
 	for _, record := range records {
 		if record.Event.Event == telemetryAppConnectionEvent {
 			// Rolled up, never inserted as a row — see telemetryAppConnectionEvent.
-			if !s.pendingAppCounts.add(telemetryAppRollupHour(record, now), record.Event.Application, 1) {
+			if !s.pendingAppCounts.add(
+				telemetryAppRollupHour(record, now),
+				record.Event.Application,
+				appCounts.take(record.Event),
+			) {
 				dropped++
 			}
 			continue

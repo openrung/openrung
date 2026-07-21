@@ -199,9 +199,12 @@ In postgres mode the admin dashboard aggregates in SQL, bounded by the
 selected time window, so dashboard cost and broker memory stay flat as event
 history grows. High-volume `application_connection` events are not stored as
 rows in either store: ingestion folds them into an hourly per-application
-count (`telemetry_app_counts` in postgres mode) that feeds the dashboard's
-top-applications panel, and discards the per-event destination and client
-metadata.
+count (`telemetry_app_counts` in postgres mode), summing the bounded optional
+`measurements.connection_count` used by aggregating clients and defaulting to
+one for legacy or out-of-range integer values. One application can contribute
+at most 100,000 represented flows per batch. The aggregate feeds the
+dashboard's top-applications panel; per-event destination and client metadata
+is discarded.
 
 ## Telemetry dashboard
 

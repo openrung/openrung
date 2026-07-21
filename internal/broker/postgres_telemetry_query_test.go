@@ -151,8 +151,10 @@ func parityTelemetryRecords(now time.Time) []TelemetryRecord {
 
 		// application_connection events: stored by neither backend — both fold
 		// them into the hourly top-apps rollup keyed by receipt hour and drop
-		// the record. session-apponly/client-apponly exist only here, so they
-		// must appear in no total or panel besides top_applications. With
+		// the record. The first is a legacy one-flow event; the second represents
+		// 41 client-aggregated flows. session-apponly/client-apponly exist only
+		// here, so they must appear in no total or panel besides
+		// top_applications. With
 		// now=12:30, the two events received 3–4 minutes ago bucket to 12:00
 		// and the one received 70 minutes ago buckets to 11:00 — inside the 1h
 		// window's truncated start hour even though it was received before the
@@ -160,7 +162,7 @@ func parityTelemetryRecords(now time.Time) []TelemetryRecord {
 		record(3, 3, "application_connection", "client-apponly", "session-apponly", "relay-1", "203.0.113.10",
 			map[string]string{"_app": "com.instagram.android", "country": "IR", "client_ip": "203.0.113.77"}, nil),
 		record(4, 4, "application_connection", "client-apponly", "session-apponly", "relay-1", "203.0.113.10",
-			map[string]string{"_app": "com.instagram.android"}, nil),
+			map[string]string{"_app": "com.instagram.android"}, map[string]int64{telemetryAppConnectionCountMeasurement: 41}),
 		record(70, 70, "application_connection", "client-apponly", "session-apponly", "", "192.0.2.50",
 			map[string]string{"_app": "org.telegram.messenger"}, nil),
 	}

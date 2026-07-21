@@ -475,6 +475,25 @@ func telemetryPartitionExists(t *testing.T, sink *PostgresTelemetrySink, day str
 	return exists != nil
 }
 
+func TestPostgresTelemetrySinkBuffersAggregatedApplicationCounts(t *testing.T) {
+	now := time.Date(2026, 6, 24, 12, 30, 0, 0, time.UTC)
+	sink := &PostgresTelemetrySink{now: func() time.Time { return now }}
+	if err := sink.WriteTelemetry(context.Background(), []TelemetryRecord{
+		appConnectionRecordAt(now.Add(-time.Minute), "legacy-app", "com.example.app"),
+		appConnectionRecordWithCountAt(now.Add(-2*time.Minute), "aggregated-app", "com.example.app", 41),
+	}); err != nil {
+		t.Fatalf("buffer application counts: %v", err)
+	}
+
+	hour := now.Truncate(time.Hour)
+	if got := sink.pendingAppCounts.hours[hour]["com.example.app"]; got != 42 {
+		t.Fatalf("buffered legacy + aggregated count = %d, want 42", got)
+	}
+	if len(sink.pending) != 0 {
+		t.Fatalf("application events entered the row buffer: %+v", sink.pending)
+	}
+}
+
 func TestPostgresTelemetrySinkRollsUpApplicationConnections(t *testing.T) {
 	now := time.Date(2026, 6, 24, 12, 30, 0, 0, time.UTC)
 	sink := newTestPostgresTelemetrySink(t, now)
@@ -483,7 +502,7 @@ func TestPostgresTelemetrySinkRollsUpApplicationConnections(t *testing.T) {
 	records := []TelemetryRecord{
 		telemetryRecordAt(now.Add(-time.Minute), "kept-1"),
 		appConnectionRecordAt(now.Add(-2*time.Minute), "app-1", "com.instagram.android"),
-		appConnectionRecordAt(now.Add(-3*time.Minute), "app-2", "com.instagram.android"),
+		appConnectionRecordWithCountAt(now.Add(-3*time.Minute), "app-2", "com.instagram.android", 41),
 		appConnectionRecordAt(now.Add(-70*time.Minute), "app-3", "org.telegram.messenger"),
 	}
 	if err := sink.WriteTelemetry(ctx, records); err != nil {
@@ -500,11 +519,21 @@ func TestPostgresTelemetrySinkRollsUpApplicationConnections(t *testing.T) {
 	if eventRows != 1 {
 		t.Fatalf("application_connection events must not be inserted as rows, got %d rows", eventRows)
 	}
+	var firstCount int64
+	if err := sink.pool.QueryRow(
+		ctx,
+		`SELECT connections FROM telemetry_app_counts WHERE application = 'com.instagram.android'`,
+	).Scan(&firstCount); err != nil {
+		t.Fatalf("read first application count: %v", err)
+	}
+	if firstCount != 42 {
+		t.Fatalf("legacy + aggregated application count = %d, want 42", firstCount)
+	}
 
 	// A second batch in the same hour must increment via the upsert's conflict
 	// arm, not insert a second (hour, application) row.
 	if err := sink.WriteTelemetry(ctx, []TelemetryRecord{
-		appConnectionRecordAt(now.Add(-time.Minute), "app-4", "com.instagram.android"),
+		appConnectionRecordWithCountAt(now.Add(-time.Minute), "app-4", "com.instagram.android", 8),
 	}); err != nil {
 		t.Fatalf("write second batch: %v", err)
 	}
@@ -519,7 +548,7 @@ func TestPostgresTelemetrySinkRollsUpApplicationConnections(t *testing.T) {
 	// The telegram event was received 70 minutes ago — before the window
 	// opened, but inside the truncated start hour, so the hour-granular window
 	// edge keeps it (matching telemetryAppRollup.countsIn).
-	if len(overview.TopApps) != 2 || overview.TopApps[0].Name != "com.instagram.android" || overview.TopApps[0].Count != 3 || overview.TopApps[1].Count != 1 {
+	if len(overview.TopApps) != 2 || overview.TopApps[0].Name != "com.instagram.android" || overview.TopApps[0].Count != 50 || overview.TopApps[1].Count != 1 {
 		t.Fatalf("unexpected top apps: %+v", overview.TopApps)
 	}
 	// The app-only events created no session rows.

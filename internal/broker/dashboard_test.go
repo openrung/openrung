@@ -22,9 +22,14 @@ type dashboardTelemetryStore struct {
 // into the hourly rollup instead of being stored, so parity tests that feed
 // both backends the same batch exercise identical top-apps semantics.
 func (s *dashboardTelemetryStore) WriteTelemetry(_ context.Context, records []TelemetryRecord) error {
+	appCounts := make(telemetryAppConnectionBatchCounter)
 	for _, record := range records {
 		if record.Event.Event == telemetryAppConnectionEvent {
-			s.appRollup.add(telemetryAppRollupHour(record, time.Now().UTC()), record.Event.Application, 1)
+			s.appRollup.add(
+				telemetryAppRollupHour(record, time.Now().UTC()),
+				record.Event.Application,
+				appCounts.take(record.Event),
+			)
 			continue
 		}
 		s.records = append(s.records, record)

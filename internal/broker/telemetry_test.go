@@ -130,6 +130,36 @@ func TestTelemetryHandlerRejectsMissingIdentity(t *testing.T) {
 	}
 }
 
+func TestTelemetryHandlerRejectsMalformedConnectionCount(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "string", value: `"42"`},
+		{name: "fractional", value: `1.5`},
+		{name: "integer overflow", value: `9223372036854775808`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			sink := &memoryTelemetrySink{}
+			payload := []byte(fmt.Sprintf(
+				`{"events":[{"schema_version":1,"event_id":"event-1","event":"application_connection","occurred_at":"2026-06-20T12:00:00Z","client_id":"client-1","session_id":"session-1","application_package":"com.example.app","measurements":{"connection_count":%s}}]}`,
+				test.value,
+			))
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/telemetry/events", bytes.NewReader(payload))
+			recorder := httptest.NewRecorder()
+			telemetryHandler(sink, nil, newClientIPResolver(nil)).ServeHTTP(recorder, req)
+
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", recorder.Code, recorder.Body.String())
+			}
+			if len(sink.records) != 0 {
+				t.Fatalf("malformed count reached the sink: %+v", sink.records)
+			}
+		})
+	}
+}
+
 func TestSpeedTestHandlerStreamsRequestedBytes(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/speed-test?bytes=10000", nil)
 	recorder := httptest.NewRecorder()
@@ -691,6 +721,60 @@ func appConnectionRecordAt(receivedAt time.Time, eventID, application string) Te
 	return record
 }
 
+func appConnectionRecordWithCountAt(receivedAt time.Time, eventID, application string, count int64) TelemetryRecord {
+	record := appConnectionRecordAt(receivedAt, eventID, application)
+	record.Event.Measurements = map[string]int64{telemetryAppConnectionCountMeasurement: count}
+	return record
+}
+
+func TestTelemetryAppConnectionCount(t *testing.T) {
+	tests := []struct {
+		name         string
+		measurements map[string]int64
+		want         int64
+	}{
+		{name: "legacy event", want: 1},
+		{name: "unrelated measurement", measurements: map[string]int64{"relay_tcp_ms": 42}, want: 1},
+		{name: "aggregated event", measurements: map[string]int64{telemetryAppConnectionCountMeasurement: 42}, want: 42},
+		{name: "zero falls back", measurements: map[string]int64{telemetryAppConnectionCountMeasurement: 0}, want: 1},
+		{name: "negative falls back", measurements: map[string]int64{telemetryAppConnectionCountMeasurement: -7}, want: 1},
+		{name: "maximum accepted", measurements: map[string]int64{telemetryAppConnectionCountMeasurement: maxTelemetryAppConnectionCount}, want: maxTelemetryAppConnectionCount},
+		{name: "oversized falls back", measurements: map[string]int64{telemetryAppConnectionCountMeasurement: maxTelemetryAppConnectionCount + 1}, want: 1},
+		{name: "int64 maximum falls back", measurements: map[string]int64{telemetryAppConnectionCountMeasurement: 1<<63 - 1}, want: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			event := TelemetryEvent{Measurements: test.measurements}
+			if got := telemetryAppConnectionCount(event); got != test.want {
+				t.Fatalf("telemetryAppConnectionCount() = %d, want %d", got, test.want)
+			}
+		})
+	}
+}
+
+func TestTelemetryAppConnectionBatchCounterCapsEachApplication(t *testing.T) {
+	counts := make(telemetryAppConnectionBatchCounter)
+	event := func(application string, count int64) TelemetryEvent {
+		return TelemetryEvent{
+			Application:  application,
+			Measurements: map[string]int64{telemetryAppConnectionCountMeasurement: count},
+		}
+	}
+
+	if got := counts.take(event("app-a", 60_000)); got != 60_000 {
+		t.Fatalf("first app-a count = %d, want 60000", got)
+	}
+	if got := counts.take(event("app-a", 60_000)); got != 40_000 {
+		t.Fatalf("second app-a count = %d, want remaining 40000", got)
+	}
+	if got := counts.take(event("app-a", 1)); got != 0 {
+		t.Fatalf("app-a exceeded its batch budget by %d", got)
+	}
+	if got := counts.take(event("app-b", 60_000)); got != 60_000 {
+		t.Fatalf("app-b did not receive an independent budget: %d", got)
+	}
+}
+
 func TestTelemetryAppRollupBucketsPrunesAndCaps(t *testing.T) {
 	now := time.Date(2026, 6, 21, 12, 30, 0, 0, time.UTC)
 	var rollup telemetryAppRollup
@@ -797,7 +881,7 @@ func TestJSONLTelemetrySinkRollsUpApplicationConnections(t *testing.T) {
 	records := []TelemetryRecord{
 		telemetryRecordAt(now.Add(-time.Minute), "kept-1"),
 		appConnectionRecordAt(now.Add(-2*time.Minute), "app-1", "com.instagram.android"),
-		appConnectionRecordAt(now.Add(-3*time.Minute), "app-2", "com.instagram.android"),
+		appConnectionRecordWithCountAt(now.Add(-3*time.Minute), "app-2", "com.instagram.android", 41),
 		appConnectionRecordAt(now.Add(-70*time.Minute), "app-3", "org.telegram.messenger"),
 	}
 	if err := sink.WriteTelemetry(context.Background(), records); err != nil {
@@ -808,7 +892,7 @@ func TestJSONLTelemetrySinkRollsUpApplicationConnections(t *testing.T) {
 		t.Fatalf("application_connection records must not be retained: %+v", got)
 	}
 	counts := sink.AppConnectionCounts(now, time.Hour)
-	if counts["com.instagram.android"] != 2 || counts["org.telegram.messenger"] != 1 {
+	if counts["com.instagram.android"] != 42 || counts["org.telegram.messenger"] != 1 {
 		t.Fatalf("unexpected rollup counts: %+v", counts)
 	}
 	if err := sink.Close(); err != nil {
@@ -876,7 +960,7 @@ func TestTelemetryReaderQuerierServesTopAppsFromRollup(t *testing.T) {
 	err := store.WriteTelemetry(context.Background(), []TelemetryRecord{
 		telemetryRecordAt(now.Add(-time.Minute), "session-event"),
 		appConnectionRecordAt(now.Add(-2*time.Minute), "app-1", "com.instagram.android"),
-		appConnectionRecordAt(now.Add(-3*time.Minute), "app-2", "com.instagram.android"),
+		appConnectionRecordWithCountAt(now.Add(-3*time.Minute), "app-2", "com.instagram.android", 41),
 		appConnectionRecordAt(now.Add(-4*time.Minute), "app-3", "org.telegram.messenger"),
 	})
 	if err != nil {
@@ -886,7 +970,7 @@ func TestTelemetryReaderQuerierServesTopAppsFromRollup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(overview.TopApps) != 2 || overview.TopApps[0].Name != "com.instagram.android" || overview.TopApps[0].Count != 2 {
+	if len(overview.TopApps) != 2 || overview.TopApps[0].Name != "com.instagram.android" || overview.TopApps[0].Count != 42 {
 		t.Fatalf("unexpected top apps: %+v", overview.TopApps)
 	}
 	// The app-connection events created no sessions or clients: only the
