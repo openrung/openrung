@@ -58,9 +58,9 @@ Content-Type: application/json
       "session_id": "d9943d4f-fd59-4fb8-a170-ed8af949ccee",
       "application_package": "com.android.chrome",
       "application_uid": 10241,
-      "destination_ip": "142.250.191.142",
-      "destination_port": 443,
-      "protocol": "tcp"
+      "measurements": {
+        "connection_count": 237
+      }
     }
   ]
 }
@@ -71,19 +71,31 @@ more than one hour into the future are rejected (retention and dashboards key
 off the server's receipt time, so client clocks cannot extend either), and
 free-form fields are length-capped: attribute/measurement keys at 64
 characters, attribute values and `application_package` at 256. Package
-attribution is collected on Android 10 and newer. This first implementation
-records connection starts and destinations, not per-flow byte counters or flow
-completion times.
+attribution is collected on Android 10 and newer. Aggregating Android clients
+skip DNS, collapse repeated flows per application, and omit destination details.
+Legacy schema-version-1 clients may still send one event per flow and include
+destination fields; the broker accepts those fields but never retains them.
+
+For an `application_connection`, the optional integer
+`measurements.connection_count` says how many flows the event represents.
+Missing values count as `1` for legacy compatibility. Present integer values
+outside `1..100,000` also fall back to `1`, avoiding both a permanently retrying
+bad outbox item and maximum weighting for malformed input; non-integer values
+are rejected with the rest of an invalid JSON batch. Across one HTTP batch, all
+events for the same application can contribute at most `100,000`. The whole
+accepted count is assigned to the server receipt hour; it is a dashboard-grade
+approximation, not an exact per-flow timeline, and at-least-once client retries
+can duplicate counts.
 
 `application_connection` events are never stored as individual records — in
-either telemetry store. At ingestion the broker folds each one into an hourly
-per-application connection count (Postgres: the `telemetry_app_counts` table;
-JSONL mode: an in-memory rollup that restarts empty) and discards the rest of
-the event, so the destination IP and the per-event client metadata never reach
-disk. Only the aggregate feeds the dashboard's top-applications panel, whose
-window edge is consequently hour-granular. They are by far the highest-volume
-event (one per tunnelled flow, with a per-package fan-out on Android), so this
-also keeps dashboard queries bounded by session-grade volume.
+either telemetry store. At ingestion the broker adds the bounded represented
+flow count to an hourly per-application total (Postgres: the
+`telemetry_app_counts` table; JSONL mode: an in-memory rollup that restarts
+empty) and discards the rest of the event, so destination and per-event client
+metadata never reach disk. Only the aggregate feeds the dashboard's
+top-applications panel, whose window edge is consequently hour-granular. These
+were historically by far the highest-volume events, so client aggregation and
+the broker rollup keep dashboard queries bounded by session-grade volume.
 
 Before starting the tunnel, Android also resolves its public IP metadata and
 adds `client_ip`, `country`, `country_code`, `city`, `asn`, `isp`, and

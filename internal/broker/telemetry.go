@@ -149,14 +149,22 @@ type storedTelemetryRecord struct {
 	bytes  int64
 }
 
-// application_connection events are one row per tunnelled flow (with a
-// per-package fan-out on Android) — at production volume they were ~95% of all
-// telemetry rows while feeding exactly one dashboard panel, and their payload
-// pairs the client's IP with every destination it visited. No sink stores them
-// as records: every sink folds them into an hourly per-application count and
-// discards the rest of the event, so the destination/client-IP browsing log
-// never reaches disk. The dashboard's top-apps panel reads these rollups.
-const telemetryAppConnectionEvent = "application_connection"
+// Older clients send one application_connection event per tunnelled flow (with
+// a per-package fan-out on Android). Aggregating clients instead attach the
+// number of represented flows as connection_count. No sink stores these events
+// as records: every sink folds their bounded count into an hourly
+// per-application total and discards the payload, so destination/client-IP
+// browsing metadata never reaches disk. The dashboard's top-apps panel reads
+// these rollups.
+const (
+	telemetryAppConnectionEvent            = "application_connection"
+	telemetryAppConnectionCountMeasurement = "connection_count"
+	// A 15-minute client window would need to average more than 110 new flows
+	// per second to reach this ceiling. The same limit is shared by all events
+	// for one application in a write batch, preventing the 200-event HTTP batch
+	// from multiplying one anonymous application's contribution.
+	maxTelemetryAppConnectionCount int64 = 100_000
+)
 
 // maxTelemetryAppRollupEntries bounds the distinct (hour, application) pairs a
 // rollup holds in memory so a flood of fabricated package names cannot grow
@@ -173,6 +181,36 @@ func telemetryAppRollupHour(record TelemetryRecord, now time.Time) time.Time {
 		return at.UTC().Truncate(time.Hour)
 	}
 	return now.UTC().Truncate(time.Hour)
+}
+
+// telemetryAppConnectionCount returns how many flows an application event
+// represents. Missing values are legacy per-flow events. Invalid present
+// values also fall back to one so a bad telemetry item cannot permanently
+// block a client's retrying outbox or receive the maximum allowed weight.
+func telemetryAppConnectionCount(event TelemetryEvent) int64 {
+	count, ok := event.Measurements[telemetryAppConnectionCountMeasurement]
+	if !ok || count <= 0 || count > maxTelemetryAppConnectionCount {
+		return 1
+	}
+	return count
+}
+
+// telemetryAppConnectionBatchCounter enforces a per-application budget across
+// one sink write, which corresponds to one HTTP batch in production. It keeps
+// repeated events for the same package from multiplying the per-event bound;
+// different applications remain independent so one chatty app cannot consume
+// another application's legitimate count.
+type telemetryAppConnectionBatchCounter map[string]int64
+
+func (c telemetryAppConnectionBatchCounter) take(event TelemetryEvent) int64 {
+	used := c[event.Application]
+	remaining := maxTelemetryAppConnectionCount - used
+	if remaining <= 0 {
+		return 0
+	}
+	count := min(telemetryAppConnectionCount(event), remaining)
+	c[event.Application] = used + count
+	return count
 }
 
 // telemetryAppRollup accumulates hourly application-connection counts. None of
@@ -493,12 +531,17 @@ func (s *JSONLTelemetrySink) WriteTelemetry(_ context.Context, records []Telemet
 	s.appRollup.prune(cutoff)
 	droppedAppCounts := 0
 	evictedAppCountsBefore := s.appRollup.evictedEntries
+	appCounts := make(telemetryAppConnectionBatchCounter)
 	for _, record := range records {
 		if record.Event.Event == telemetryAppConnectionEvent {
 			// Rolled up, never persisted — see telemetryAppConnectionEvent. The
 			// in-memory rollup is this sink's only copy, so top-apps counts
 			// restart empty; the Postgres store persists its rollup instead.
-			if !s.appRollup.add(telemetryAppRollupHour(record, now), record.Event.Application, 1) {
+			if !s.appRollup.add(
+				telemetryAppRollupHour(record, now),
+				record.Event.Application,
+				appCounts.take(record.Event),
+			) {
 				droppedAppCounts++
 			}
 			continue
