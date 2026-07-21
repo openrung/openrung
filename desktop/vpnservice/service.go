@@ -895,6 +895,9 @@ func (s *Service) startCandidate(res *candidateResult, configInput client.SingBo
 		if res.accessTransport == relay.TransportDirect || res.accessTransport == "punch" {
 			return nil, markDirectPathError("internet_probe", err)
 		}
+		if res.accessTransport == accessTransportWSS {
+			return nil, markWSSTransportError("wss_internet_probe", res.frontID, err)
+		}
 		return nil, err
 	}
 	res.probeMS = probeMS

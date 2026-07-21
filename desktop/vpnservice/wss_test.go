@@ -455,6 +455,42 @@ func TestWSSFrontFailoverUsesExactAdvertisedFrontAndDoesNotAddRelayDamage(t *tes
 	}
 }
 
+func TestWSSInternetProbeFailureIsTransportScoped(t *testing.T) {
+	sink := newTelemetrySink(t)
+	fixture := relayWithWSS("relay-a", "JP", "Tokyo", "Japan", "127.0.0.10")
+	s, _ := newLadderService(t, func() []relay.Descriptor { return []relay.Descriptor{fixture} })
+	s.dialRelay = func(context.Context, string, int) (int64, error) {
+		return 0, errors.New("direct path blocked")
+	}
+	s.requestWSSTicket = func(_ context.Context, _ string, _ relay.WSSSessionTicketRequest, _, _ string) (relay.WSSSessionTicketResponse, error) {
+		return successfulWSSTicket(fixture.WSSFronts[0], "single-use-ticket"), nil
+	}
+	bridge := newFakeWSSBridge()
+	s.dialWSS = func(context.Context, string, string) (wssBridge, error) {
+		return bridge, nil
+	}
+	s.probeTunnel = func(context.Context, int) (int64, error) {
+		return 0, errors.New("inner Reality path carried no internet traffic")
+	}
+
+	if err := s.Connect(sink.srv.URL, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForStatus(t, s, StatusFailed)
+	waitIdle(t, s)
+	waitWSSSignal(t, bridge.exited, "WSS probe-failure cleanup")
+
+	if attempts := sink.named("relay_attempt_failed"); len(attempts) != 1 {
+		t.Fatalf("WSS probe failure added relay-health damage: %+v", attempts)
+	}
+	failures := sink.named("transport_failed")
+	if len(failures) != 1 ||
+		failures[0].Attributes["failure_stage"] != "wss_internet_probe" ||
+		failures[0].Attributes["front_id"] != fixture.WSSFronts[0].ID {
+		t.Fatalf("WSS probe failure telemetry = %+v", failures)
+	}
+}
+
 func TestWSSTicketURLMismatchFailsClosed(t *testing.T) {
 	sink := newTelemetrySink(t)
 	fixture := relayWithWSS("relay-a", "JP", "Tokyo", "Japan", "127.0.0.10")
