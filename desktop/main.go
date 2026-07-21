@@ -13,6 +13,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"openrung/desktop/proxyconfig"
 	"openrung/desktop/vpnservice"
 )
 
@@ -20,6 +21,12 @@ import (
 var assets embed.FS
 
 func main() {
+	// If this process was launched from a shell using OpenRung's helper, remove
+	// only our own inherited loopback proxy values before any HTTP transport can
+	// cache them. The parent shell remains activated and unrelated upstream
+	// proxy settings remain intact.
+	proxyconfig.SanitizeInheritedProxyEnvironment()
+
 	// WebKitGTK's DMABUF renderer blanks the whole window on some NVIDIA
 	// driver combinations; it must be disabled before the webview process is
 	// created, which is why this lives here and not in vpnservice.

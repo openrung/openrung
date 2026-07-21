@@ -122,7 +122,11 @@ export default function App() {
         )}
 
         {tab === 'settings' && (
-          <SettingsScreen consoleOpen={consoleOpen} onToggleConsole={() => setConsoleOpen(o => !o)} />
+          <SettingsScreen
+            consoleOpen={consoleOpen}
+            connectionStatus={state.native.status}
+            onToggleConsole={() => setConsoleOpen(o => !o)}
+          />
         )}
 
         {tab === 'about' &&

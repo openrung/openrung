@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"openrung/desktop/discovery"
+	"openrung/desktop/proxyconfig"
 	"openrung/internal/clienttelemetry"
 	"openrung/internal/relay"
 )
@@ -81,6 +83,7 @@ func newLadderService(t *testing.T, relays func() []relay.Descriptor) (*Service,
 	t.Setenv("HOME", tmp)
 	t.Setenv("XDG_CONFIG_HOME", tmp)
 	t.Setenv("AppData", tmp)
+	t.Setenv(proxyconfig.PortEnv, "")
 
 	cap := &capturingEmitter{}
 	s := New()
@@ -119,6 +122,84 @@ func waitForStatus(t *testing.T, s *Service, want ConnectionStatus) NativeVpnSta
 	return NativeVpnState{}
 }
 
+func TestRecoveryReportsStableProxyPortCollisionBeforeBlamingRelays(t *testing.T) {
+	fixtures := []relay.Descriptor{relayAt("a", "JP", "Tokyo", "Japan", "127.0.0.10")}
+	s, _ := newLadderService(t, func() []relay.Descriptor { return fixtures })
+	listener, err := net.Listen("tcp", proxyconfig.Host+":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
+
+	var tunnelStarted atomic.Bool
+	s.runTunnel = func(ctx context.Context, configPath string) error {
+		tunnelStarted.Store(true)
+		<-ctx.Done()
+		return nil
+	}
+	conn := &connection{brokerURL: "http://broker.example"}
+	result, _, stage, err := s.reladder(t.Context(), conn, port, "", "", "")
+	if result != nil {
+		result.teardown()
+	}
+	if err == nil || stage != "proxy_bind" || !strings.Contains(err.Error(), proxyconfig.PortEnv) {
+		t.Fatalf("reladder = result=%v stage=%q err=%v; want proxy_bind collision", result, stage, err)
+	}
+	if tunnelStarted.Load() {
+		t.Fatal("recovery started a relay attempt despite occupied stable proxy port")
+	}
+}
+
+func TestInitialConnectRechecksStableProxyPortAfterDiscovery(t *testing.T) {
+	sink := newTelemetrySink(t)
+	fixtures := []relay.Descriptor{relayAt("a", "JP", "Tokyo", "Japan", "127.0.0.10")}
+	s, _ := newLadderService(t, func() []relay.Descriptor { return fixtures })
+
+	reservation, err := net.Listen("tcp", proxyconfig.Host+":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := reservation.Addr().(*net.TCPAddr).Port
+	if err := reservation.Close(); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(proxyconfig.PortEnv, strconv.Itoa(port))
+
+	var claimed net.Listener
+	s.fetchRelays = func(ctx context.Context, brokerURL string, limit int, clientID, sessionID string) (discovery.Fetch, error) {
+		var listenErr error
+		claimed, listenErr = net.Listen("tcp", net.JoinHostPort(proxyconfig.Host, strconv.Itoa(port)))
+		if listenErr != nil {
+			return discovery.Fetch{}, listenErr
+		}
+		return discovery.Fetch{BrokerURL: brokerURL, Response: listOf(fixtures...)}, nil
+	}
+	defer func() {
+		if claimed != nil {
+			_ = claimed.Close()
+		}
+	}()
+
+	var tunnelStarted atomic.Bool
+	s.runTunnel = func(ctx context.Context, configPath string) error {
+		tunnelStarted.Store(true)
+		<-ctx.Done()
+		return nil
+	}
+	if err := s.Connect(sink.srv.URL, "", ""); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	state := waitForStatus(t, s, StatusFailed)
+	waitIdle(t, s)
+	if state.LastError == nil || !strings.Contains(*state.LastError, proxyconfig.PortEnv) {
+		t.Fatalf("lastError = %v; want stable proxy collision", state.LastError)
+	}
+	if tunnelStarted.Load() {
+		t.Fatal("connect started a relay attempt after discovery claimed the proxy port")
+	}
+}
+
 // waitIdle waits for the connect goroutine to fully finish so tests never leak
 // a supervisor into the next test.
 func waitIdle(t *testing.T, s *Service) {
@@ -138,6 +219,50 @@ func waitIdle(t *testing.T, s *Service) {
 
 func logLines(s *Service) string {
 	return strings.Join(s.GetState().LogLines, "\n")
+}
+
+func TestManualRelaySwitchReusesStableProxyPort(t *testing.T) {
+	sink := newTelemetrySink(t)
+	fixtures := []relay.Descriptor{
+		relayAt("a", "JP", "Tokyo", "Japan", "127.0.0.10"),
+		relayAt("b", "SG", "", "Singapore", "127.0.0.11"),
+	}
+	s, _ := newLadderService(t, func() []relay.Descriptor { return fixtures })
+	var portsMu sync.Mutex
+	var ports []int
+	s.probeTunnel = func(ctx context.Context, proxyPort int) (int64, error) {
+		portsMu.Lock()
+		ports = append(ports, proxyPort)
+		portsMu.Unlock()
+		return 2, nil
+	}
+
+	if err := s.Connect(sink.srv.URL, "", "a"); err != nil {
+		t.Fatalf("connect a: %v", err)
+	}
+	if state := waitForStatus(t, s, StatusConnected); state.RelayLabel == nil || *state.RelayLabel != "Tokyo, Japan" {
+		t.Fatalf("first relayLabel = %v", state.RelayLabel)
+	}
+
+	// A user-selected relay switch is a fresh top-level Connect. This used to
+	// allocate a new ephemeral port and break manual browser/shell settings.
+	if err := s.Connect(sink.srv.URL, "", "b"); err != nil {
+		t.Fatalf("connect b: %v", err)
+	}
+	if state := waitForStatus(t, s, StatusConnected); state.RelayLabel == nil || *state.RelayLabel != "Singapore" {
+		t.Fatalf("second relayLabel = %v", state.RelayLabel)
+	}
+	if err := s.Disconnect(); err != nil {
+		t.Fatalf("disconnect: %v", err)
+	}
+	waitForStatus(t, s, StatusDisconnected)
+	waitIdle(t, s)
+
+	portsMu.Lock()
+	defer portsMu.Unlock()
+	if len(ports) != 2 || ports[0] <= 0 || ports[1] != ports[0] {
+		t.Fatalf("proxy ports across relay switch = %v; want the same positive port", ports)
+	}
 }
 
 func TestLadderRankingSinksUnreachableRelay(t *testing.T) {

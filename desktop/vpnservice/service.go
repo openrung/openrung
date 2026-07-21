@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	"openrung/desktop/config"
 	"openrung/desktop/discovery"
 	"openrung/desktop/persist"
+	"openrung/desktop/proxyconfig"
 	"openrung/desktop/proxymode"
 	"openrung/internal/client"
 	"openrung/internal/clienttelemetry"
@@ -56,6 +58,21 @@ type NativeVpnState struct {
 type NativeIdentity struct {
 	ClientID  string  `json:"clientId"`
 	SessionID *string `json:"sessionId"`
+}
+
+// NativeProxyInfo is desktop-specific connection metadata, kept separate from
+// NativeVpnState so that state remains identical to the shared mobile bridge
+// contract. The helper commands are intended to be copied into a POSIX shell.
+type NativeProxyInfo struct {
+	Host                  string  `json:"host"`
+	Port                  int     `json:"port"`
+	Endpoint              string  `json:"endpoint"`
+	PersistenceWarning    *string `json:"persistenceWarning"`
+	ShellIntegration      bool    `json:"shellIntegration"`
+	ShellIntegrationError *string `json:"shellIntegrationError"`
+	HelperPath            string  `json:"helperPath"`
+	EnableCommand         string  `json:"enableCommand"`
+	DisableCommand        string  `json:"disableCommand"`
 }
 
 // clientID resolves the stable per-install identifier. It is a package var so
@@ -188,6 +205,13 @@ type Service struct {
 	proxy     proxymode.Controller
 	stopEmit  chan struct{}
 
+	// proxyPortMu pins only a successfully resolved endpoint for this process.
+	// A transient allocation failure remains retryable on the next Settings or
+	// Connect call. ResolvePort persists automatic selections across launches.
+	proxyPortMu   sync.Mutex
+	proxyPort     int
+	proxyPortWarn error
+
 	// Test seams (nil means the production implementation). They mirror the
 	// proxy-controller injection pattern above so ladder tests need no network,
 	// no broker, and no sing-box binary.
@@ -286,6 +310,17 @@ func (s *Service) Startup(ctx context.Context) {
 		s.core.recents = recents
 		s.mu.Unlock()
 	}
+	// Resolve the stable endpoint and generate its sourceable shell helper even
+	// while disconnected, so Settings can expose it immediately. Failure stays
+	// non-fatal here; Connect/GetProxyInfo surface the actionable error.
+	if info, err := s.GetProxyInfo(); err != nil {
+		s.appendLog("could not prepare local proxy configuration: " + err.Error())
+	} else if info.ShellIntegrationError != nil {
+		s.appendLog("could not prepare proxy shell helper: " + *info.ShellIntegrationError)
+	}
+	if warning := s.localProxyPortWarning(); warning != nil {
+		s.appendLog(warning.Error())
+	}
 	s.stopEmit = make(chan struct{})
 	go s.emitLoop()
 	s.emitCurrent()
@@ -379,6 +414,64 @@ func (s *Service) GetIdentity() NativeIdentity {
 	return NativeIdentity{ClientID: id, SessionID: session}
 }
 
+// GetProxyInfo returns the stable loopback endpoint and copyable shell helper
+// commands. Sourcing the helper is explicit because a GUI process cannot
+// mutate an already-running parent shell's environment.
+func (s *Service) GetProxyInfo() (NativeProxyInfo, error) {
+	port, err := s.localProxyPort()
+	if err != nil {
+		return NativeProxyInfo{}, err
+	}
+	info, err := proxyconfig.EndpointInfo(port)
+	if err != nil {
+		return NativeProxyInfo{}, err
+	}
+	native := NativeProxyInfo{
+		Host:             info.Host,
+		Port:             info.Port,
+		Endpoint:         info.Endpoint,
+		ShellIntegration: runtime.GOOS != "windows",
+	}
+	if warning := s.localProxyPortWarning(); warning != nil {
+		message := warning.Error()
+		native.PersistenceWarning = &message
+	}
+	if !native.ShellIntegration {
+		return native, nil
+	}
+	info, err = proxyconfig.WriteShellHelper(s.store, port)
+	if err != nil {
+		message := err.Error()
+		native.ShellIntegrationError = &message
+		return native, nil
+	}
+	native.HelperPath = info.HelperPath
+	native.EnableCommand = info.EnableCommand
+	native.DisableCommand = info.DisableCommand
+	return native, nil
+}
+
+func (s *Service) localProxyPort() (int, error) {
+	s.proxyPortMu.Lock()
+	defer s.proxyPortMu.Unlock()
+	if s.proxyPort != 0 {
+		return s.proxyPort, nil
+	}
+	resolution, err := proxyconfig.ResolvePort(s.store)
+	if err != nil {
+		return 0, err
+	}
+	s.proxyPort = resolution.Port
+	s.proxyPortWarn = resolution.PersistenceWarning
+	return s.proxyPort, nil
+}
+
+func (s *Service) localProxyPortWarning() error {
+	s.proxyPortMu.Lock()
+	defer s.proxyPortMu.Unlock()
+	return s.proxyPortWarn
+}
+
 // tunnelReadyPollInterval is how often awaitTunnelReady dials the mixed inbound
 // while waiting for sing-box to bind it.
 const tunnelReadyPollInterval = 25 * time.Millisecond
@@ -457,8 +550,11 @@ func (s *Service) connectFlow(ctx context.Context, conn *connection, brokerURL, 
 		mgr.Record("connection_attempted", "", nil, nil)
 	}
 
-	port, err := freeLoopbackPort()
+	port, err := s.localProxyPort()
 	if err != nil {
+		return "proxy_port", err
+	}
+	if err := proxyconfig.EnsureAvailable(port); err != nil {
 		return "proxy_port", err
 	}
 
@@ -481,6 +577,15 @@ func (s *Service) connectFlow(ctx context.Context, conn *connection, brokerURL, 
 	conn.brokerURL = fetch.BrokerURL
 	s.mu.Unlock()
 
+	// Discovery and ranking can take long enough for another process to claim
+	// the bind-and-close checked port. Recheck immediately before the ladder so
+	// a local collision is not recorded against every relay candidate.
+	if err := ctx.Err(); err != nil {
+		return "", nil
+	}
+	if err := proxyconfig.EnsureAvailable(port); err != nil {
+		return "proxy_port", err
+	}
 	res, err := s.runLadder(ctx, conn, ladder, port)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -599,9 +704,10 @@ func (s *Service) attemptCandidate(ctx context.Context, conn *connection, cand r
 	// Try a direct NAT-punched path first; on any failure fall back to the
 	// relay hub endpoint so the outcome is never worse than not punching.
 	configInput := client.SingBoxConfigInput{
-		Relay:           cand,
-		Mode:            client.ModeProxy,
-		ProxyListenPort: port,
+		Relay:              cand,
+		Mode:               client.ModeProxy,
+		ProxyListenAddress: proxyconfig.Host,
+		ProxyListenPort:    port,
 	}
 	if est := s.maybePunch(candCtx, conn.mgr, cand); est != nil {
 		res.punch = est
@@ -739,7 +845,7 @@ func (s *Service) recordRelayAttemptFailed(mgr *clienttelemetry.Manager, relayID
 // manual proxy address.
 func (s *Service) applyProxy(conn *connection, port int) {
 	if !s.proxy.Supported() {
-		s.appendLog(fmt.Sprintf("system proxy unavailable here; set manual proxy 127.0.0.1:%d", port))
+		s.appendLog(fmt.Sprintf("system proxy unavailable here; set manual proxy %s:%d", proxyconfig.Host, port))
 		return
 	}
 	if !conn.snapshotTaken {
@@ -757,8 +863,8 @@ func (s *Service) applyProxy(conn *connection, port int) {
 	// Mark restoration pending before Set: platform controllers can mutate OS
 	// state and only then fail while notifying applications of the change.
 	conn.proxySet = true
-	if err := s.proxy.Set("127.0.0.1", port); err != nil {
-		s.appendLog(fmt.Sprintf("system proxy set failed; set manual proxy 127.0.0.1:%d", port))
+	if err := s.proxy.Set(proxyconfig.Host, port); err != nil {
+		s.appendLog(fmt.Sprintf("system proxy set failed; set manual proxy %s:%d", proxyconfig.Host, port))
 		// A failed Set may have partially applied: put the captured setting back
 		// so the user's proxy is never left pointing at us with nothing there.
 		if restoreErr := s.proxy.Restore(conn.snapshot); restoreErr != nil {
@@ -781,7 +887,7 @@ func (s *Service) applyProxy(conn *connection, port int) {
 	if s.store != nil {
 		_ = s.store.SaveProxySnapshot(conn.snapshot)
 	}
-	s.appendLog(fmt.Sprintf("proxy listening on 127.0.0.1:%d", port))
+	s.appendLog(fmt.Sprintf("proxy listening on %s:%d", proxyconfig.Host, port))
 }
 
 // releaseProxy points the OS proxy back at the user's captured setting while

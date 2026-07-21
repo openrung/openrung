@@ -5,6 +5,7 @@
 // without a broker. It never touches the network or the OS.
 import type {
   NativeIdentity,
+  NativeProxyInfo,
   NativeVpnState,
   OpenRungVpnModule,
   RecentNode,
@@ -132,6 +133,20 @@ export class MockOpenRungVpn implements OpenRungVpnModule {
 
   async getIdentity(): Promise<NativeIdentity> {
     return { clientId: 'mock-client-0000', sessionId: null };
+  }
+
+  async getProxyInfo(): Promise<NativeProxyInfo> {
+    return {
+      host: '127.0.0.1',
+      port: 46685,
+      endpoint: '127.0.0.1:46685',
+      persistenceWarning: null,
+      shellIntegration: true,
+      shellIntegrationError: null,
+      helperPath: '$HOME/.config/openrung/proxy-env.sh',
+      enableCommand: '. "$HOME/.config/openrung/proxy-env.sh" && openrung_proxy_on',
+      disableCommand: 'openrung_proxy_off',
+    };
   }
 
   async listRelaysForDirectory(): Promise<RelayListResponse> {

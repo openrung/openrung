@@ -32,6 +32,7 @@ const realBridge: OpenRungVpnModule = {
   disconnect: () => wailsService()!.Disconnect(),
   getState: () => wailsService()!.GetState(),
   getIdentity: () => wailsService()!.GetIdentity(),
+  getProxyInfo: () => wailsService()!.GetProxyInfo(),
 };
 
 /** The active VPN module: the Go bridge when running under Wails, else the mock. */
@@ -58,4 +59,18 @@ export function listRelaysForDirectory(): Promise<RelayListResponse> {
     return mock.listRelaysForDirectory();
   }
   return wailsService()!.ListRelaysForDirectory();
+}
+
+/** Copies text through Wails, with the browser clipboard as a preview fallback. */
+export async function copyText(text: string): Promise<void> {
+  const runtime = wailsRuntime();
+  if (runtime != null) {
+    await runtime.ClipboardSetText(text);
+    return;
+  }
+  if (typeof navigator !== 'undefined' && navigator.clipboard != null) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  throw new Error('clipboard is unavailable');
 }

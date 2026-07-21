@@ -11,6 +11,7 @@ import (
 
 	"openrung/desktop/config"
 	"openrung/desktop/discovery"
+	"openrung/desktop/proxyconfig"
 	"openrung/internal/clienttelemetry"
 )
 
@@ -139,6 +140,13 @@ func (s *Service) reladder(ctx context.Context, conn *connection, port int, targ
 	conn.brokerURL = fetch.BrokerURL
 	s.mu.Unlock()
 
+	// The stable port was released while fetching and ranking. Recheck it at
+	// the last possible moment so a competing process that claimed it during
+	// that gap is reported as a local endpoint collision, not as a fleet of
+	// failed relays.
+	if err := proxyconfig.EnsureAvailable(port); err != nil {
+		return nil, 0, "proxy_bind", err
+	}
 	res, err := s.runLadder(ctx, conn, cands, port)
 	if err != nil {
 		return nil, 0, "relay_connect", err

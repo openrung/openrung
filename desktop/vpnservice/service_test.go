@@ -2,11 +2,16 @@ package vpnservice
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"openrung/desktop/persist"
+	"openrung/desktop/proxyconfig"
 	"openrung/desktop/proxymode"
 	"openrung/internal/relay"
 )
@@ -228,6 +233,103 @@ func TestGetIdentityWithoutSession(t *testing.T) {
 	}
 	if id.SessionID != nil {
 		t.Fatalf("sessionID should be nil when idle, got %v", *id.SessionID)
+	}
+}
+
+func TestGetProxyInfoUsesStableConfiguredEndpoint(t *testing.T) {
+	t.Setenv(proxyconfig.PortEnv, "46685")
+	s := New()
+	s.store = persist.NewInDir(t.TempDir())
+
+	info, err := s.GetProxyInfo()
+	if err != nil {
+		t.Fatalf("GetProxyInfo: %v", err)
+	}
+	if info.Host != proxyconfig.Host || info.Port != 46685 || info.Endpoint != "127.0.0.1:46685" {
+		t.Fatalf("unexpected proxy info: %+v", info)
+	}
+	if runtime.GOOS == "windows" {
+		if info.ShellIntegration || info.EnableCommand != "" || info.DisableCommand != "" {
+			t.Fatalf("unexpected Windows shell integration: %+v", info)
+		}
+	} else if !info.ShellIntegration || info.EnableCommand == "" || info.DisableCommand != "openrung_proxy_off" {
+		t.Fatalf("missing POSIX shell commands: %+v", info)
+	}
+
+	// The endpoint is process-stable even if the inherited environment were to
+	// change after startup.
+	t.Setenv(proxyconfig.PortEnv, "46686")
+	again, err := s.GetProxyInfo()
+	if err != nil {
+		t.Fatalf("GetProxyInfo again: %v", err)
+	}
+	if again.Port != info.Port {
+		t.Fatalf("proxy port changed within one process: %d -> %d", info.Port, again.Port)
+	}
+}
+
+func TestLocalProxyPortRetriesAfterResolutionFailure(t *testing.T) {
+	s := New()
+	s.store = persist.NewInDir(t.TempDir())
+	t.Setenv(proxyconfig.PortEnv, "not-a-port")
+	if _, err := s.localProxyPort(); err == nil {
+		t.Fatal("first invalid resolution unexpectedly succeeded")
+	}
+
+	t.Setenv(proxyconfig.PortEnv, "46685")
+	port, err := s.localProxyPort()
+	if err != nil || port != 46685 {
+		t.Fatalf("retry = %d, %v; want 46685, nil", port, err)
+	}
+
+	// Once resolution succeeds, later calls keep that endpoint even if the
+	// inherited environment changes.
+	t.Setenv(proxyconfig.PortEnv, "46686")
+	pinned, err := s.localProxyPort()
+	if err != nil || pinned != port {
+		t.Fatalf("successful endpoint was not pinned: %d, %v", pinned, err)
+	}
+}
+
+func TestGetProxyInfoKeepsEndpointWhenShellHelperCannotBeWritten(t *testing.T) {
+	t.Setenv(proxyconfig.PortEnv, "46685")
+	blocker := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("blocked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	s.store = persist.NewInDir(filepath.Join(blocker, "openrung"))
+
+	info, err := s.GetProxyInfo()
+	if err != nil {
+		t.Fatalf("GetProxyInfo: %v", err)
+	}
+	if info.Endpoint != "127.0.0.1:46685" {
+		t.Fatalf("endpoint hidden by helper failure: %+v", info)
+	}
+	if runtime.GOOS != "windows" && info.ShellIntegrationError == nil {
+		t.Fatalf("missing shell helper error: %+v", info)
+	}
+}
+
+func TestGetProxyInfoSurfacesNonFatalPersistenceWarning(t *testing.T) {
+	t.Setenv(proxyconfig.PortEnv, "")
+	blocker := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("blocked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	s.store = persist.NewInDir(filepath.Join(blocker, "openrung"))
+
+	info, err := s.GetProxyInfo()
+	if err != nil {
+		t.Fatalf("GetProxyInfo: %v", err)
+	}
+	if info.Port <= 0 || info.Endpoint == "" {
+		t.Fatalf("persistence failure blocked the endpoint: %+v", info)
+	}
+	if info.PersistenceWarning == nil || !strings.Contains(*info.PersistenceWarning, "may change next launch") {
+		t.Fatalf("missing persistence warning: %+v", info)
 	}
 }
 
