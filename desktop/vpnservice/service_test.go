@@ -268,6 +268,29 @@ func TestGetProxyInfoUsesStableConfiguredEndpoint(t *testing.T) {
 	}
 }
 
+func TestLocalProxyPortRetriesAfterResolutionFailure(t *testing.T) {
+	s := New()
+	s.store = persist.NewInDir(t.TempDir())
+	t.Setenv(proxyconfig.PortEnv, "not-a-port")
+	if _, err := s.localProxyPort(); err == nil {
+		t.Fatal("first invalid resolution unexpectedly succeeded")
+	}
+
+	t.Setenv(proxyconfig.PortEnv, "46685")
+	port, err := s.localProxyPort()
+	if err != nil || port != 46685 {
+		t.Fatalf("retry = %d, %v; want 46685, nil", port, err)
+	}
+
+	// Once resolution succeeds, later calls keep that endpoint even if the
+	// inherited environment changes.
+	t.Setenv(proxyconfig.PortEnv, "46686")
+	pinned, err := s.localProxyPort()
+	if err != nil || pinned != port {
+		t.Fatalf("successful endpoint was not pinned: %d, %v", pinned, err)
+	}
+}
+
 func TestGetProxyInfoKeepsEndpointWhenShellHelperCannotBeWritten(t *testing.T) {
 	t.Setenv(proxyconfig.PortEnv, "46685")
 	blocker := filepath.Join(t.TempDir(), "not-a-directory")

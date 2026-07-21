@@ -205,13 +205,12 @@ type Service struct {
 	proxy     proxymode.Controller
 	stopEmit  chan struct{}
 
-	// proxyPortOnce pins one endpoint for this process. ResolvePort also
-	// persists the automatically selected value, so future launches and manual
-	// shell/browser configuration see the same endpoint.
-	proxyPortOnce sync.Once
+	// proxyPortMu pins only a successfully resolved endpoint for this process.
+	// A transient allocation failure remains retryable on the next Settings or
+	// Connect call. ResolvePort persists automatic selections across launches.
+	proxyPortMu   sync.Mutex
 	proxyPort     int
 	proxyPortWarn error
-	proxyPortErr  error
 
 	// Test seams (nil means the production implementation). They mirror the
 	// proxy-controller injection pattern above so ladder tests need no network,
@@ -319,7 +318,7 @@ func (s *Service) Startup(ctx context.Context) {
 	} else if info.ShellIntegrationError != nil {
 		s.appendLog("could not prepare proxy shell helper: " + *info.ShellIntegrationError)
 	}
-	if warning := s.proxyPortWarn; warning != nil {
+	if warning := s.localProxyPortWarning(); warning != nil {
 		s.appendLog(warning.Error())
 	}
 	s.stopEmit = make(chan struct{})
@@ -433,8 +432,8 @@ func (s *Service) GetProxyInfo() (NativeProxyInfo, error) {
 		Endpoint:         info.Endpoint,
 		ShellIntegration: runtime.GOOS != "windows",
 	}
-	if s.proxyPortWarn != nil {
-		message := s.proxyPortWarn.Error()
+	if warning := s.localProxyPortWarning(); warning != nil {
+		message := warning.Error()
 		native.PersistenceWarning = &message
 	}
 	if !native.ShellIntegration {
@@ -453,13 +452,24 @@ func (s *Service) GetProxyInfo() (NativeProxyInfo, error) {
 }
 
 func (s *Service) localProxyPort() (int, error) {
-	s.proxyPortOnce.Do(func() {
-		resolution, err := proxyconfig.ResolvePort(s.store)
-		s.proxyPort = resolution.Port
-		s.proxyPortWarn = resolution.PersistenceWarning
-		s.proxyPortErr = err
-	})
-	return s.proxyPort, s.proxyPortErr
+	s.proxyPortMu.Lock()
+	defer s.proxyPortMu.Unlock()
+	if s.proxyPort != 0 {
+		return s.proxyPort, nil
+	}
+	resolution, err := proxyconfig.ResolvePort(s.store)
+	if err != nil {
+		return 0, err
+	}
+	s.proxyPort = resolution.Port
+	s.proxyPortWarn = resolution.PersistenceWarning
+	return s.proxyPort, nil
+}
+
+func (s *Service) localProxyPortWarning() error {
+	s.proxyPortMu.Lock()
+	defer s.proxyPortMu.Unlock()
+	return s.proxyPortWarn
 }
 
 // tunnelReadyPollInterval is how often awaitTunnelReady dials the mixed inbound
