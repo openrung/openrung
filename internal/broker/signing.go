@@ -94,6 +94,7 @@ func SigningKeyID(seed []byte) string {
 // appends a trailing newline that Marshal does not (an invisible one-byte
 // verification killer), and headers could not be set after its first write.
 func (s signer) writeSigned(w http.ResponseWriter, resp relay.ListResponse) {
+	resp = normalizeSignedRelayListTimes(resp)
 	body, err := json.Marshal(resp) // NOT Encode; no trailing newline
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not encode relay list")
@@ -108,4 +109,24 @@ func (s signer) writeSigned(w http.ResponseWriter, resp relay.ListResponse) {
 	w.Header().Set(signatureHeader, "ed25519;"+s.keyID+";"+base64.StdEncoding.EncodeToString(sig))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body) // identical buffer — sign-what-you-send
+}
+
+// normalizeSignedRelayListTimes narrows the public directory wire format to
+// UTC RFC 3339 at whole-second precision, which every supported client can
+// decode. It clones the descriptor slice before changing timestamps so the
+// broker retains subsecond precision for expiry checks and ranking.
+func normalizeSignedRelayListTimes(resp relay.ListResponse) relay.ListResponse {
+	resp.ServerTime = resp.ServerTime.UTC().Truncate(time.Second)
+	resp.NotAfter = resp.NotAfter.UTC().Truncate(time.Second)
+	if resp.Relays != nil {
+		relays := make([]relay.Descriptor, len(resp.Relays))
+		copy(relays, resp.Relays)
+		for i := range relays {
+			relays[i].RegisteredAt = relays[i].RegisteredAt.UTC().Truncate(time.Second)
+			relays[i].LastHeartbeatAt = relays[i].LastHeartbeatAt.UTC().Truncate(time.Second)
+			relays[i].ExpiresAt = relays[i].ExpiresAt.UTC().Truncate(time.Second)
+		}
+		resp.Relays = relays
+	}
+	return resp
 }
