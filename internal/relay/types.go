@@ -22,6 +22,11 @@ const (
 	TransportDirect = "direct"
 	TransportTunnel = "tunnel"
 
+	// WSSProtocolVersion is the opaque Reality-over-WebSocket protocol spoken
+	// between a desktop client's loopback adapter and a relay-local sidecar.
+	// Unknown versions are ignored so direct Reality remains backward-compatible.
+	WSSProtocolVersion = 1
+
 	// ChannelAPI and ChannelMirror name the two signed relay-list channels.
 	// The value lives inside the signed body so a long-lived mirror artifact
 	// can never be replayed into an API slot (or vice versa): clients check it
@@ -72,6 +77,17 @@ type RegisterRequest struct {
 	// deriving one from PublicHost, so the scheme/host/port match the hub's
 	// actual listener. Empty means "derive http://PublicHost:9444".
 	PunchEndpoint string `json:"punch_endpoint,omitempty"`
+	// WSSFronts are CDN URLs that terminate at this exact relay's local WSS
+	// sidecar. The broker accepts them only from a direct-mode Foundation relay
+	// on public port 443 with a stable identity, then includes them in the
+	// signed directory. They never describe a shared router or another relay.
+	WSSFronts []WSSFrontDescriptor `json:"wss_fronts,omitempty"`
+	// WSSCapabilityProof is a separate identity-key signature over this
+	// registration plus the ordered WSSFronts list. It deliberately does not
+	// alter the deployed relay-identity-v1 statement. All capability fields must
+	// travel together and are private registration material, not directory data.
+	WSSCapabilityProof     string `json:"wss_capability_proof,omitempty"`
+	WSSCapabilityExpiresAt string `json:"wss_capability_expires_at,omitempty"`
 	// ExitHost is set by the relay hub for tunnel-transport registrations: the
 	// relay's source IP as observed on its control connection, i.e. where
 	// tunneled traffic actually exits. The broker uses it only to geolocate the
@@ -144,6 +160,16 @@ type GeoLocation struct {
 	Longitude float64 `json:"longitude,omitempty"`
 }
 
+// WSSFrontDescriptor advertises one CDN path to the sidecar colocated with a
+// relay. ID is bound into tickets and to that front's origin-token set; URL is
+// public and contains no credential. Multiple entries let one relay use
+// independent CDN distributions without creating a shared data-plane service.
+type WSSFrontDescriptor struct {
+	ID              string `json:"id"`
+	URL             string `json:"url"`
+	ProtocolVersion int    `json:"protocol_version"`
+}
+
 type Descriptor struct {
 	ID         string `json:"id"`
 	Label      string `json:"label,omitempty"`
@@ -170,23 +196,24 @@ type Descriptor struct {
 	// NodeClassVolunteer). Always serialized, and covered by the relay-list
 	// signature like every other descriptor field; clients that predate it
 	// ignore it, clients that read it treat a missing value as the volunteer class.
-	NodeClass        string    `json:"node_class"`
-	Protocol         string    `json:"protocol"`
-	ClientID         string    `json:"client_id"`
-	RealityPublicKey string    `json:"reality_public_key"`
-	ShortID          string    `json:"short_id"`
-	ServerName       string    `json:"server_name"`
-	Flow             string    `json:"flow"`
-	ExitMode         string    `json:"exit_mode"`
-	MaxSessions      int       `json:"max_sessions"`
-	MaxMbps          int       `json:"max_mbps"`
-	RelayVersion     string    `json:"relay_version"`
-	Transport        string    `json:"transport,omitempty"`
-	PunchCapable     bool      `json:"punch_capable,omitempty"`
-	PunchEndpoint    string    `json:"punch_endpoint,omitempty"`
-	RegisteredAt     time.Time `json:"registered_at"`
-	LastHeartbeatAt  time.Time `json:"last_heartbeat_at"`
-	ExpiresAt        time.Time `json:"expires_at"`
+	NodeClass        string               `json:"node_class"`
+	Protocol         string               `json:"protocol"`
+	ClientID         string               `json:"client_id"`
+	RealityPublicKey string               `json:"reality_public_key"`
+	ShortID          string               `json:"short_id"`
+	ServerName       string               `json:"server_name"`
+	Flow             string               `json:"flow"`
+	ExitMode         string               `json:"exit_mode"`
+	MaxSessions      int                  `json:"max_sessions"`
+	MaxMbps          int                  `json:"max_mbps"`
+	RelayVersion     string               `json:"relay_version"`
+	Transport        string               `json:"transport,omitempty"`
+	PunchCapable     bool                 `json:"punch_capable,omitempty"`
+	PunchEndpoint    string               `json:"punch_endpoint,omitempty"`
+	WSSFronts        []WSSFrontDescriptor `json:"wss_fronts,omitempty"`
+	RegisteredAt     time.Time            `json:"registered_at"`
+	LastHeartbeatAt  time.Time            `json:"last_heartbeat_at"`
+	ExpiresAt        time.Time            `json:"expires_at"`
 }
 
 // RegisterResponse is the private response to a successful registration. It
@@ -301,6 +328,23 @@ type ListResponse struct {
 type HeartbeatResponse struct {
 	OK        bool      `json:"ok"`
 	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// WSSSessionTicketRequest asks for one short-lived, single-use ticket bound to
+// an exact relay and one of that relay's currently advertised CDN fronts.
+type WSSSessionTicketRequest struct {
+	RelayID string `json:"relay_id"`
+	FrontID string `json:"front_id"`
+}
+
+// WSSSessionTicketResponse returns the opaque ticket with the exact URL chosen
+// from the same live descriptor. Clients reject a response URL that differs
+// from the signed directory entry and send Ticket only as an Authorization
+// bearer during the WebSocket upgrade.
+type WSSSessionTicketResponse struct {
+	Ticket    string    `json:"ticket"`
+	ExpiresAt time.Time `json:"expires_at"`
+	URL       string    `json:"url"`
 }
 
 type ErrorResponse struct {

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -328,7 +329,7 @@ func TestWriteSignedUsesWholeSecondUTCTimestampsWithoutMutatingSource(t *testing
 		t.Errorf("expires_at = %q, want %q", wire.Relays[0].ExpiresAt, "2026-07-21T08:39:39Z")
 	}
 
-	if resp.ServerTime != originalServerTime || resp.NotAfter != originalNotAfter || resp.Relays[0] != originalRelay {
+	if resp.ServerTime != originalServerTime || resp.NotAfter != originalNotAfter || !reflect.DeepEqual(resp.Relays[0], originalRelay) {
 		t.Fatal("writeSigned mutated the caller's timestamps")
 	}
 }

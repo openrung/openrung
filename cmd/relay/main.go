@@ -6,6 +6,7 @@ import (
 	cryptorand "crypto/rand"
 	"crypto/tls"
 	_ "embed"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -15,6 +16,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -62,6 +64,7 @@ func main() {
 	flag.StringVar(&cfg.RealityPublicKey, "reality-public-key", "", "Reality public key; generated with xray x25519 when empty")
 	flag.StringVar(&cfg.ShortID, "short-id", "", "Reality short ID; generated when empty")
 	flag.StringVar(&cfg.IdentitySeed, "identity-seed", identitySeed, "base64 32-byte Ed25519 seed for the relay's stable identity (spec openrung-relay-identity-v1); the broker derives the relay ID from it, so a pinned seed keeps the same ID across restarts. Generated per process when empty")
+	flag.StringVar(&cfg.WSSFrontsRaw, "wss-fronts", os.Getenv("OPENRUNG_WSS_FRONTS"), "comma-separated per-relay CDN fronts as front-id=wss://cdn.example/api/v1/wss-bridge (Foundation direct mode on port 443 with an explicit identity seed only)")
 	flag.IntVar(&cfg.MaxSessions, "max-sessions", relayruntime.DefaultMaxSessions, "advertised max client sessions")
 	flag.IntVar(&cfg.MaxMbps, "max-mbps", relayruntime.DefaultMaxMbps, "advertised max Mbps")
 	flag.DurationVar(&cfg.HeartbeatInterval, "heartbeat-interval", 30*time.Second, "broker heartbeat interval")
@@ -117,6 +120,8 @@ type cliConfig struct {
 	RealityPublicKey  string
 	ShortID           string
 	IdentitySeed      string
+	WSSFrontsRaw      string
+	WSSFronts         []relay.WSSFrontDescriptor
 	MaxSessions       int
 	MaxMbps           int
 	HeartbeatInterval time.Duration
@@ -193,6 +198,99 @@ func applyFoundationTokenPosture(c *cliConfig) error {
 	return nil
 }
 
+func parseWSSFrontsFlag(raw string) ([]relay.WSSFrontDescriptor, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	entries := strings.Split(raw, ",")
+	fronts := make([]relay.WSSFrontDescriptor, 0, len(entries))
+	for index, rawEntry := range entries {
+		entry := strings.TrimSpace(rawEntry)
+		id, frontURL, ok := strings.Cut(entry, "=")
+		if !ok || strings.TrimSpace(id) == "" || strings.TrimSpace(frontURL) == "" {
+			return nil, fmt.Errorf("wss-fronts entry %d must use front-id=wss://cdn.example%s", index, relay.WSSBridgePath)
+		}
+		fronts = append(fronts, relay.WSSFrontDescriptor{
+			ID:              id,
+			URL:             frontURL,
+			ProtocolVersion: relay.WSSProtocolVersion,
+		})
+	}
+	normalized, err := relay.NormalizeWSSFronts(fronts)
+	if err != nil {
+		return nil, err
+	}
+	return normalized, nil
+}
+
+func (c *cliConfig) applyWSSFronts() error {
+	var (
+		fronts []relay.WSSFrontDescriptor
+		err    error
+	)
+	if strings.TrimSpace(c.WSSFrontsRaw) != "" {
+		fronts, err = parseWSSFrontsFlag(c.WSSFrontsRaw)
+	} else {
+		fronts, err = relay.NormalizeWSSFronts(c.WSSFronts)
+	}
+	if err != nil {
+		return err
+	}
+	c.WSSFronts = fronts
+	if len(fronts) > 0 && strings.TrimSpace(c.ListenHost) == "" {
+		// WSS relays bypass the per-connection observer so opaque fallback
+		// streams cannot create address/byte-count records. Pin the direct Xray
+		// listener to an IPv4 wildcard that also accepts 127.0.0.1:443.
+		c.ListenHost = "0.0.0.0"
+	}
+	return nil
+}
+
+func wssListenHostIncludesIPv4Loopback(c cliConfig) bool {
+	host := strings.ToLower(strings.TrimSpace(c.ListenHost))
+	if host == "" {
+		host = "0.0.0.0"
+	}
+	switch host {
+	case "0.0.0.0", "127.0.0.1":
+		return true
+	default:
+		return false
+	}
+}
+
+func validateWSSRelayConfig(c cliConfig, mode string) error {
+	copyForParsing := c
+	if err := copyForParsing.applyWSSFronts(); err != nil {
+		return fmt.Errorf("invalid wss-fronts: %w", err)
+	}
+	if len(copyForParsing.WSSFronts) == 0 {
+		return nil
+	}
+	if copyForParsing.NodeClass != relay.NodeClassFoundation {
+		return errors.New("wss-fronts require node-class foundation")
+	}
+	if mode != "direct" {
+		return errors.New("wss-fronts require direct mode")
+	}
+	if copyForParsing.PublicPort != 443 || copyForParsing.ListenPort != 443 {
+		return errors.New("wss-fronts require both public-port and listen-port 443 so the sidecar can reach only its local Reality listener")
+	}
+	if copyForParsing.ConnectionLog {
+		return errors.New("wss-fronts require connection-log=false so relay-local WSS streams produce no per-connection address or byte-count records")
+	}
+	if !wssListenHostIncludesIPv4Loopback(copyForParsing) {
+		return errors.New("wss-fronts require an IPv4-loopback-reachable listen-host: 0.0.0.0 (production) or 127.0.0.1 (testing)")
+	}
+	if strings.TrimSpace(copyForParsing.IdentitySeed) == "" {
+		return errors.New("wss-fronts require an explicit stable identity seed in -identity-seed or OPENRUNG_IDENTITY_SEED")
+	}
+	if _, err := relay.ParseIdentitySeed(copyForParsing.IdentitySeed); err != nil {
+		return errors.New("wss-fronts require a valid base64 32-byte stable identity seed")
+	}
+	return nil
+}
+
 func (c *cliConfig) ApplyDefaults() error {
 	if err := applyFoundationTokenPosture(c); err != nil {
 		return err
@@ -214,6 +312,9 @@ func (c *cliConfig) ApplyDefaults() error {
 		return fmt.Errorf("invalid node-class: %w", err)
 	}
 	c.NodeClass = nodeClass
+	if err := c.applyWSSFronts(); err != nil {
+		return fmt.Errorf("invalid wss-fronts: %w", err)
+	}
 	if c.Mode == "tunnel" || c.Mode == "auto" {
 		// Tunnel mode gets its public endpoint from the hub; auto mode resolves it
 		// at runtime from the reachability probe. Neither needs a public host now.
@@ -236,6 +337,9 @@ func (c cliConfig) Validate() error {
 		mode = normalizeMode("", c.TunnelMode, c.HubAddr)
 	}
 	if err := requireDirectModeForFoundation(c.NodeClass, mode); err != nil {
+		return err
+	}
+	if err := validateWSSRelayConfig(c, mode); err != nil {
 		return err
 	}
 	switch mode {
@@ -314,6 +418,9 @@ func run(cfg cliConfig) error {
 		return fmt.Errorf("invalid node-class: %w", err)
 	}
 	cfg.NodeClass = nodeClass
+	if err := cfg.applyWSSFronts(); err != nil {
+		return fmt.Errorf("invalid wss-fronts: %w", err)
+	}
 
 	mode := cfg.Mode
 	if mode == "" {
@@ -323,6 +430,9 @@ func run(cfg cliConfig) error {
 		// Keep this guard in the runtime path as well as Validate. Besides making
 		// run safe for programmatic callers, it guarantees rejection before
 		// resolveAutoMode can transmit the foundation token in a hub probe.
+		return err
+	}
+	if err := validateWSSRelayConfig(cfg, mode); err != nil {
 		return err
 	}
 	cfg.Mode = mode
@@ -727,6 +837,29 @@ func register(ctx context.Context, broker *relayruntime.BrokerClient, cfg cliCon
 	// The foundation token's cleartext-transport guard lives in BrokerClient
 	// (RequireSecureTransport, set by brokerClient() for foundation), so it
 	// covers heartbeat as well as registration and also refuses redirects.
+	if err := cfg.applyWSSFronts(); err != nil {
+		return relay.Descriptor{}, fmt.Errorf("invalid wss-fronts: %w", err)
+	}
+	mode := cfg.Mode
+	if mode == "" {
+		mode = normalizeMode("", cfg.TunnelMode, cfg.HubAddr)
+	}
+	if err := validateWSSRelayConfig(cfg, mode); err != nil {
+		return relay.Descriptor{}, err
+	}
+	fronts, err := relay.NormalizeWSSFronts(cfg.WSSFronts)
+	if err != nil {
+		return relay.Descriptor{}, fmt.Errorf("normalize WSS fronts: %w", err)
+	}
+	if !slices.Equal(fronts, cfg.WSSFronts) {
+		return relay.Descriptor{}, errors.New("WSS fronts must be normalized before registration")
+	}
+	if len(fronts) > 0 {
+		configuredIdentity, err := relay.ParseIdentitySeed(cfg.IdentitySeed)
+		if err != nil || !configuredIdentity.Equal(prepared.IdentityKey) {
+			return relay.Descriptor{}, errors.New("prepared WSS relay identity does not match the explicit stable identity seed")
+		}
+	}
 	req := relay.RegisterRequest{
 		PublicHost:       cfg.PublicHost,
 		PublicPort:       cfg.PublicPort,
@@ -742,10 +875,20 @@ func register(ctx context.Context, broker *relayruntime.BrokerClient, cfg cliCon
 		RelayVersion:     reportedRelayVersion(),
 		Label:            cfg.Label,
 		NodeClass:        cfg.NodeClass,
+		Transport:        relay.TransportDirect,
+		WSSFronts:        slices.Clone(cfg.WSSFronts),
 	}
 	// Signed after every other field is final: the statement binds them.
+	proofExpiresAt := time.Now().Add(relay.IdentityProofTTLDirect)
 	req.IdentityPublicKey, req.IdentityProof, req.IdentityExpiresAt =
-		relay.SignIdentity(prepared.IdentityKey, req, time.Now().Add(relay.IdentityProofTTLDirect))
+		relay.SignIdentity(prepared.IdentityKey, req, proofExpiresAt)
+	if len(req.WSSFronts) > 0 {
+		req.WSSCapabilityProof, req.WSSCapabilityExpiresAt, err =
+			relay.SignWSSCapability(prepared.IdentityKey, req, proofExpiresAt)
+		if err != nil {
+			return relay.Descriptor{}, fmt.Errorf("sign WSS capability: %w", err)
+		}
+	}
 	desc, err := broker.Register(ctx, req)
 	if err != nil {
 		return relay.Descriptor{}, err
@@ -755,6 +898,15 @@ func register(ctx context.Context, broker *relayruntime.BrokerClient, cfg cliCon
 	// mislabeled as a volunteer-class relay.
 	if req.NodeClass == relay.NodeClassFoundation && desc.NodeClass != relay.NodeClassFoundation {
 		return relay.Descriptor{}, fmt.Errorf("broker attested node_class %q instead of %q: the broker likely predates node_class support; upgrade it, or drop -node-class to serve as a volunteer-class relay", desc.NodeClass, relay.NodeClassFoundation)
+	}
+	if !slices.Equal(desc.WSSFronts, req.WSSFronts) {
+		return relay.Descriptor{}, errors.New("broker did not echo the exact signed per-relay WSS fronts; refusing to start WSS advertisement")
+	}
+	if len(req.WSSFronts) > 0 {
+		expectedRelayID := relay.DeriveRelayID(prepared.IdentityKey.Public().(ed25519.PublicKey))
+		if desc.ID != expectedRelayID {
+			return relay.Descriptor{}, errors.New("broker returned a relay ID that does not match the stable WSS relay identity")
+		}
 	}
 	return desc, nil
 }

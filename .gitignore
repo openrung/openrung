@@ -25,6 +25,7 @@ openrung-telemetry.jsonl
 .env
 .env.*
 !.env.example
+/deploy/relay/.wss.env
 
 # Wrangler local state (R2/Workers tooling)
 .wrangler/

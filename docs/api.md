@@ -5,13 +5,15 @@ All API paths are currently versioned under `/api/v1`.
 ## Abuse limits
 
 The unauthenticated endpoints (`GET /api/v1/relays`, `POST
-/api/v1/telemetry/events`, `GET /api/v1/speed-test`) are rate limited per
-client IP. Requests over the budget receive `429 Too Many Requests` with a
-`Retry-After` header (seconds); clients should back off and retry. The budgets
-are far above normal client behavior — relay-list polling, telemetry batching,
-and an occasional speed test never hit them — and they apply to the real client
-IP resolved through trusted proxies, so one abusive source behind Cloudflare
-does not exhaust anyone else's budget.
+/api/v1/wss/tickets`, `POST /api/v1/telemetry/events`, and `GET
+/api/v1/speed-test`) are rate limited. Requests over the budget receive `429
+Too Many Requests` with a `Retry-After` header (seconds); clients should back
+off and retry only within their bounded operation deadline. Most endpoints use
+the real client IP resolved through trusted proxies. WSS ticket requests also
+use a bounded, hashed `X-OpenRung-Client-ID` component when it is well formed,
+so legitimate clients behind one carrier-grade NAT address do not all consume
+one bucket. That identifier is not authentication, so relay-side admission
+limits remain mandatory.
 
 ## Client telemetry
 
@@ -224,13 +226,17 @@ Response:
 ```json
 {
   "ok": true,
-  "signing_key_id": "3097e2dee2cb4a34"
+  "signing_key_id": "3097e2dee2cb4a34",
+  "wss_ticket_key_id": "7dfe918ebc0d45b4"
 }
 ```
 
 `signing_key_id` identifies the active relay-list signing key (see List Relays)
 so a monitor can assert the expected key is live without parsing a relay body;
 it is public data that already ships in every relay-list response.
+`wss_ticket_key_id` is present only when WSS ticket issuance is configured and
+identifies the broker's active ticket signer, allowing operators to confirm the
+matching public key is installed on relay-local sidecars.
 
 When the broker uses PostgreSQL relay state, `/healthz` also verifies database
 connectivity. If relay state is unavailable, it returns `503` with an error
@@ -401,6 +407,73 @@ with `-identity-seed` / `OPENRUNG_IDENTITY_SEED` (base64 32-byte seed, minted
 per instance by the deploy scripts), the desktop volunteer app persists it in
 `identity.json`, and an unpinned relay generates one per process — which still
 keeps the ID stable across broker outages within the process lifetime.
+
+### Relay-owned WSS capability (spec `openrung-relay-wss-capability-v1`)
+
+An eligible relay advertises its own CDN fronts by adding all three capability
+fields to its Foundation registration:
+
+```json
+{
+  "node_class": "foundation",
+  "transport": "direct",
+  "public_port": 443,
+  "wss_fronts": [
+    {
+      "id": "iran-a",
+      "url": "wss://d111111abcdef8.cloudfront.net/api/v1/wss-bridge",
+      "protocol_version": 1
+    },
+    {
+      "id": "iran-b",
+      "url": "wss://d222222abcdef8.cloudfront.net/api/v1/wss-bridge",
+      "protocol_version": 1
+    }
+  ],
+  "wss_capability_proof": "<base64 Ed25519 signature>",
+  "wss_capability_expires_at": "2026-07-21T12:00:00Z"
+}
+```
+
+The fields are all-or-nothing. WSS is accepted only for a direct-transport,
+direct-exit Foundation relay on public port 443 that supplies a valid stable
+identity proof. `wss_capability_expires_at` must equal `identity_expires_at`, be
+in the future, and be no more than 48 hours ahead. The capability proof uses
+the same Ed25519 identity key as the stable relay identity but a separate
+domain-separated statement, so adding the capability does not change the
+deployed `openrung-relay-identity-v1` bytes:
+
+```text
+openrung-relay-wss-capability-v1
+<wss_capability_expires_at>
+<unpadded standard-base64 canonical capability JSON>
+```
+
+The canonical JSON has exactly `identity_statement_sha256` (unpadded
+standard-base64 SHA-256 of the identity statement) and `fronts` (the complete
+normalized list). `wss_capability_proof` is standard-base64 of the 64-byte
+Ed25519 signature over the three newline-separated lines above, with no
+trailing newline. The proof therefore binds the exact relay identity and exact
+ordered front set; changing a front ID, URL, protocol version, or expiry
+invalidates it.
+
+There may be at most four fronts. Front IDs are normalized lowercase strings of
+1–64 letters, digits, `.`, `_`, or `-`, beginning and ending alphanumeric, and
+the list is sorted by ID with no duplicate ID or URL. Each URL must use `wss`
+on its default port, contain a multi-label DNS name rather than an IP literal,
+use the exact path `/api/v1/wss-bridge`, and contain no userinfo, query, escaped
+path, or fragment. Each CDN origin must terminate at the relay that advertised
+it; neither the broker nor the relay-local sidecar accepts a client-selected
+destination.
+
+The broker verifies the proof before storing the descriptor. Invalid,
+incomplete, expired, or non-canonical capabilities fail registration rather
+than silently dropping WSS. If the broker has no WSS ticket signer configured,
+a registration advertising fronts returns `503`. The private capability proof
+and expiry are not published. Only `wss_fronts` is copied into registration and
+directory responses, where the ordinary detached relay-list signature covers
+the relay ID, Foundation class, endpoint, Reality parameters, and advertised
+fronts together.
 
 Response:
 
@@ -579,6 +652,91 @@ broker-attested and covered by the list signature. Clients written before the
 field existed ignore it; clients that read it must treat a missing value as
 `volunteer` and must not relax any signature or transport verification for
 `foundation` relays — the class is operator provenance, not a trust bypass.
+
+An eligible Foundation descriptor also contains its relay-owned capability:
+
+```json
+"wss_fronts": [
+  {
+    "id": "iran-a",
+    "url": "wss://d111111abcdef8.cloudfront.net/api/v1/wss-bridge",
+    "protocol_version": 1
+  }
+]
+```
+
+Clients must use fronts only from a fresh, verified directory response. A front
+belongs to the descriptor containing it; clients must never copy a URL to
+another relay. Unknown protocol versions are ignored, preserving direct
+Reality compatibility for older clients and newer front protocols.
+
+## Issue WSS Session Ticket
+
+```http
+POST /api/v1/wss/tickets
+Content-Type: application/json
+Cache-Control: no-store
+
+{
+  "relay_id": "relay_0123456789abcdef0123456789abcdef",
+  "front_id": "iran-a"
+}
+```
+
+This unauthenticated control-plane endpoint issues one short-lived, single-use
+ticket for the exact live relay and exact front named in the request. The
+broker looks up `front_id` only inside that relay's current signed capability;
+the request cannot supply a URL or destination. The relay must still be a live,
+direct-mode, direct-exit Foundation relay on public port 443 with a stable
+identity. Unknown, expired, ineligible, or mismatched relay/front pairs return
+the same `404` shape so the endpoint does not resolve arbitrary front IDs.
+
+Success is `201 Created` with cache prevention headers:
+
+```json
+{
+  "ticket": "v1.<key-id>.<claims>.<signature>",
+  "expires_at": "2026-07-21T11:32:00Z",
+  "url": "wss://d111111abcdef8.cloudfront.net/api/v1/wss-bridge"
+}
+```
+
+The returned URL is copied from the same live descriptor; the client must
+compare it with the selected front in its verified directory response. The
+ticket's Ed25519-authenticated claims contain the version, fixed audience,
+unique ticket ID, exact relay ID, exact front ID, issue/not-before/expiry times,
+and maximum stream count. They contain no host, port, Reality target, or
+browsing destination. The default broker ticket lifetime is two minutes,
+capped by the relay's remaining lease and the five-minute protocol maximum;
+the default stream limit is 64 and the protocol maximum is 1,024. The
+relay-local sidecar atomically consumes the unique ticket ID, rejects replay,
+requires the ticket relay ID to equal its configured local relay ID, and
+requires the front ID to match the authenticated CDN origin token.
+
+The client sends the opaque ticket only in the WebSocket upgrade:
+
+```http
+GET /api/v1/wss-bridge HTTP/1.1
+Authorization: Bearer <ticket>
+Sec-WebSocket-Protocol: openrung-wss-bridge-v1
+```
+
+Tickets must not appear in URLs, query parameters, cookies, subprotocol values,
+logs, telemetry, or error text. Ticket acquisition must use HTTPS (except the
+explicit loopback development allowance), must reject every redirect, and must
+never forward the POST to a redirect target. Desktop clients try configured
+broker fronts within one bounded operation deadline; network failures and
+eligible transient responses advance to the next front. `Retry-After` is
+honored only when valid and no greater than both the configured maximum wait
+and the remaining overall deadline. A ticket, broker-front, CDN, or WSS failure
+is fallback-local and must not reduce the selected relay's direct health rank.
+
+The endpoint exists only when `OPENRUNG_WSS_TICKET_SIGNING_SEED` is configured.
+`400` reports malformed or incomplete JSON, `409` asks the client to refresh a
+relay whose lease is too close to expiry, `429` includes a bounded
+`Retry-After`, and `503` reports temporary store failure. This fallback is
+implemented by the desktop client in this repository. Android and iOS live in
+separate repositories and are not restored or updated by this API change.
 
 ## Mirror Relay List
 

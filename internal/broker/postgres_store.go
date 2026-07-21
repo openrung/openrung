@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -43,7 +44,8 @@ const descriptorColumns = `
 	exit_host,
 	node_class,
 	identity_public_key,
-	lease_token
+	lease_token,
+	wss_fronts
 `
 
 const postgresOperationTimeout = 5 * time.Second
@@ -80,6 +82,7 @@ CREATE TABLE IF NOT EXISTS relay_descriptors (
 	node_class text NOT NULL DEFAULT 'volunteer',
 	identity_public_key text NOT NULL DEFAULT '',
 	lease_token text NOT NULL DEFAULT '',
+	wss_fronts jsonb NOT NULL DEFAULT '[]'::jsonb,
 	attributes jsonb NOT NULL DEFAULT '{}'::jsonb,
 	UNIQUE (public_host, public_port)
 );
@@ -125,6 +128,9 @@ ALTER TABLE relay_descriptors
 
 ALTER TABLE relay_descriptors
 	ADD COLUMN IF NOT EXISTS lease_token text NOT NULL DEFAULT '';
+
+ALTER TABLE relay_descriptors
+	ADD COLUMN IF NOT EXISTS wss_fronts jsonb NOT NULL DEFAULT '[]'::jsonb;
 
 CREATE INDEX IF NOT EXISTS relay_descriptors_active_idx
 	ON relay_descriptors (expires_at DESC, last_heartbeat_at DESC);
@@ -206,6 +212,9 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 	if err != nil {
 		return relay.Descriptor{}, err
 	}
+	if err := relay.VerifyWSSCapability(req, now); err != nil {
+		return relay.Descriptor{}, err
+	}
 	var id string
 	if identityKey != nil {
 		id = relay.DeriveRelayID(identityKey)
@@ -241,9 +250,14 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 		Transport:         normalizeTransport(req.Transport),
 		PunchCapable:      req.PunchCapable,
 		PunchEndpoint:     req.PunchEndpoint,
+		WSSFronts:         append([]relay.WSSFrontDescriptor(nil), req.WSSFronts...),
 		RegisteredAt:      now,
 		LastHeartbeatAt:   now,
 		ExpiresAt:         now.Add(ttl),
+	}
+	wssFrontsJSON, err := json.Marshal(desc.WSSFronts)
+	if err != nil {
+		return relay.Descriptor{}, fmt.Errorf("encode WSS fronts: %w", err)
 	}
 
 	// Geo columns are deliberately absent from the INSERT: a re-registration
@@ -319,9 +333,10 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 			exit_host,
 			node_class,
 			identity_public_key,
-			lease_token
+			lease_token,
+			wss_fronts
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26
 		)
 		ON CONFLICT (public_host, public_port) DO UPDATE SET
 			id = EXCLUDED.id,
@@ -351,9 +366,10 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 			exit_host = EXCLUDED.exit_host,
 			node_class = EXCLUDED.node_class,
 			identity_public_key = EXCLUDED.identity_public_key,
-			lease_token = EXCLUDED.lease_token
-		WHERE relay_descriptors.node_class <> $26
-			OR EXCLUDED.node_class = $26
+			lease_token = EXCLUDED.lease_token,
+			wss_fronts = EXCLUDED.wss_fronts
+		WHERE relay_descriptors.node_class <> $27
+			OR EXCLUDED.node_class = $27
 			OR relay_descriptors.expires_at <= EXCLUDED.registered_at
 		RETURNING `+descriptorColumns,
 		desc.ID,
@@ -381,6 +397,7 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 		desc.NodeClass,
 		desc.IdentityPublicKey,
 		desc.LeaseToken,
+		wssFrontsJSON,
 		relay.NodeClassFoundation,
 	))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -503,6 +520,18 @@ func (s *PostgresStore) List(now time.Time, limit int) ([]relay.Descriptor, erro
 		return relays[:limit], nil
 	}
 	return relays, nil
+}
+
+func (s *PostgresStore) RelayByID(id string, now time.Time) (relay.Descriptor, error) {
+	ctx, cancel := postgresOperationContext()
+	defer cancel()
+	desc, err := scanDescriptor(s.pool.QueryRow(ctx,
+		`SELECT `+descriptorColumns+` FROM relay_descriptors WHERE id = $1 AND expires_at > $2`,
+		id, now))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return relay.Descriptor{}, ErrRelayNotFound
+	}
+	return desc, err
 }
 
 func (s *PostgresStore) RelayNodeClasses(parent context.Context, ids []string, now time.Time) (map[string]string, error) {
@@ -834,6 +863,7 @@ func (s *PostgresStore) markSessionTerminal(ctx context.Context, tx pgx.Tx, even
 
 func scanDescriptor(row pgx.Row) (relay.Descriptor, error) {
 	var desc relay.Descriptor
+	var wssFrontsJSON []byte
 	err := row.Scan(
 		&desc.ID,
 		&desc.PublicHost,
@@ -864,8 +894,17 @@ func scanDescriptor(row pgx.Row) (relay.Descriptor, error) {
 		&desc.NodeClass,
 		&desc.IdentityPublicKey,
 		&desc.LeaseToken,
+		&wssFrontsJSON,
 	)
-	return desc, err
+	if err != nil {
+		return relay.Descriptor{}, err
+	}
+	if len(wssFrontsJSON) != 0 {
+		if err := json.Unmarshal(wssFrontsJSON, &desc.WSSFronts); err != nil {
+			return relay.Descriptor{}, fmt.Errorf("decode stored WSS fronts: %w", err)
+		}
+	}
+	return desc, nil
 }
 
 func positiveInt64(value int64) any {

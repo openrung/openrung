@@ -15,6 +15,8 @@ import (
 	"openrung/internal/clienttelemetry"
 )
 
+const networkRecoveryPollInterval = 5 * time.Second
+
 // supervise owns the connected phase: it watches the live tunnel process and a
 // periodic through-tunnel health probe, and on either trigger runs one
 // automatic recovery pass (fresh relay fetch + candidate ladder). It runs in
@@ -27,6 +29,7 @@ func (s *Service) supervise(ctx context.Context, conn *connection, cur *candidat
 		go s.healthLoop(cur.ctx, port, s.livenessFronts(conn), healthFail)
 
 		var trigger error
+		transportFailure := false
 		select {
 		case <-ctx.Done():
 			return "", nil
@@ -40,20 +43,54 @@ func (s *Service) supervise(ctx context.Context, conn *connection, cur *candidat
 				// treat like any other unexpected exit.
 				runErr = errors.New("tunnel exited unexpectedly")
 			}
+			if cur.accessTransport == accessTransportWSS {
+				// The WSS adapter is still alive: this is a local sing-box
+				// process failure, not evidence that either the CDN path or the
+				// relay failed. A fresh ladder could turn this local crash into a
+				// new single-use ticket request, so fail closed and let the user
+				// restart after the local fault has been corrected.
+				s.appendLog("local tunnel process stopped unexpectedly")
+				return "tunnel_process", markLocalCandidateError("active_tunnel_process", runErr)
+			}
 			trigger = runErr
 			s.appendLog("tunnel process exited unexpectedly; reconnecting")
+		case transportErr := <-cur.transportErr:
+			if ctx.Err() != nil || s.isDisconnecting(conn) {
+				return "", nil
+			}
+			if transportErr == nil {
+				transportErr = markWSSTransportError("wss_session", cur.frontID, errors.New("WSS access transport stopped"))
+			}
+			trigger = transportErr
+			transportFailure = true
+			s.appendLog("WSS access transport stopped unexpectedly; reconnecting")
 		case probeErr := <-healthFail:
 			if ctx.Err() != nil || s.isDisconnecting(conn) {
 				return "", nil
 			}
-			trigger = probeErr
+			if cur.accessTransport == accessTransportWSS {
+				// A live WSS socket can still have a blackholed CDN data path.
+				// Keep that failure transport-scoped so it never demotes the
+				// destination relay or emits relay_attempt_failed.
+				trigger = markWSSTransportError("wss_health_probe", cur.frontID, probeErr)
+				transportFailure = true
+			} else {
+				trigger = probeErr
+			}
 			s.appendLog(fmt.Sprintf("tunnel health check failed %d times; reconnecting", config.HealthFailureThreshold))
 		}
 
 		oldRelayID := cur.relay.ID
-		// The bare relay_attempt_failed (no attempt measurement — this is not a
-		// ladder rung) is what dents the dying relay's broker ranking.
-		s.recordRelayAttemptFailed(conn.mgr, oldRelayID, trigger, 0)
+		failedRelayID := oldRelayID
+		if transportFailure {
+			// A front/session failure is not evidence against the destination relay.
+			failedRelayID = ""
+			s.recordWSSTransportFailed(conn.mgr, oldRelayID, trigger)
+		} else {
+			// The bare relay_attempt_failed (no attempt measurement — this is not a
+			// ladder rung) is what dents the dying relay's broker ranking.
+			s.recordRelayAttemptFailed(conn.mgr, oldRelayID, trigger, 0)
+		}
 		// Keep the last relay label during recovery: the user sees connecting
 		// plus log lines, not a bogus disconnect.
 		s.setStatus(StatusConnecting, keepLabel, clearError)
@@ -65,10 +102,25 @@ func (s *Service) supervise(ctx context.Context, conn *connection, cur *candidat
 		// instead of blackholing it against the dead loopback port.
 		s.releaseProxy(conn)
 
-		next, fetchMS, _, err := s.reladder(ctx, conn, port, targetCountry, targetRelayID, oldRelayID)
-		if err != nil {
+		var next *candidateResult
+		var fetchMS int64
+		for {
+			if transportFailure && !s.waitForNetworkRecovery(ctx, conn) {
+				return "", nil
+			}
+			var err error
+			next, fetchMS, _, err = s.reladder(ctx, conn, port, targetCountry, targetRelayID, failedRelayID)
+			if err == nil {
+				break
+			}
 			if ctx.Err() != nil {
 				return "", nil
+			}
+			// If connectivity vanished during a WSS-triggered recovery, return to
+			// the local-outage gate and run another fresh direct-first ladder later.
+			if transportFailure && !s.networkAlive(ctx, s.livenessFronts(conn)) {
+				s.appendLog("network went down during WSS recovery; waiting for connectivity")
+				continue
 			}
 			// A recovery that dies after a prior success is a distinct terminal
 			// case from a first-connect failure — tag it so the dashboard does
@@ -82,7 +134,13 @@ func (s *Service) supervise(ctx context.Context, conn *connection, cur *candidat
 		// measured relay_failover instead: the broker credits the winning relay,
 		// while attempt/success trends remain one-to-one for this session.
 		if conn.mgr != nil {
-			attrs := map[string]string{"from_relay_id": oldRelayID}
+			attrs := map[string]string{
+				"from_relay_id": oldRelayID,
+				"transport":     next.accessTransport,
+			}
+			if next.frontID != "" {
+				attrs["front_id"] = next.frontID
+			}
 			if reason := clienttelemetry.ClassifyError(trigger); reason != "" {
 				attrs["failure_reason"] = reason
 			}
@@ -210,6 +268,9 @@ func (s *Service) healthLoop(ctx context.Context, port int, fronts []string, fai
 // available and independent of the relay fleet, so unlike dialing the candidate
 // relays this never mistakes a single dead relay for a local outage.
 func (s *Service) networkAlive(ctx context.Context, fronts []string) bool {
+	if s.checkNetworkAlive != nil {
+		return s.checkNetworkAlive(ctx, fronts)
+	}
 	for _, addr := range fronts {
 		dialer := net.Dialer{Timeout: config.RelayTCPTimeout}
 		conn, err := dialer.DialContext(ctx, "tcp", addr)
@@ -222,6 +283,39 @@ func (s *Service) networkAlive(ctx context.Context, fronts []string) bool {
 		}
 	}
 	return false
+}
+
+// waitForNetworkRecovery prevents a fatal WSS socket caused by Wi-Fi loss or
+// laptop sleep from becoming failover_exhausted. The dead local proxy has
+// already been released; recovery starts a fresh direct-first ladder only once
+// an independent HTTPS broker front is reachable again.
+func (s *Service) waitForNetworkRecovery(ctx context.Context, conn *connection) bool {
+	fronts := s.livenessFronts(conn)
+	if s.networkAlive(ctx, fronts) {
+		return true
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	s.appendLog("WSS transport stopped while the local network is down; waiting for connectivity")
+	delay := s.networkRetryDelay
+	if delay <= 0 {
+		delay = networkRecoveryPollInterval
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-timer.C:
+			if s.networkAlive(ctx, fronts) {
+				s.appendLog("network connectivity restored; starting a fresh direct-first ladder")
+				return true
+			}
+			timer.Reset(delay)
+		}
+	}
 }
 
 // livenessFronts is the broker-front host:port list used as the network-alive

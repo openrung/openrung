@@ -9,9 +9,11 @@ on:
     tags: ['relay-v*']
     paths:
       - 'cmd/relay/**'
+      - 'cmd/wsssidecar/**'
       - 'internal/relayruntime/**'
       - 'internal/tunnel/**'
       - 'internal/relay/**'
+      - 'internal/wssbridge/**'
       - 'internal/punch/**'
       - 'punchcore/**'
       - 'go.mod'

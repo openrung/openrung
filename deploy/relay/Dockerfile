@@ -42,7 +42,7 @@ RUN set -eux; \
     unzip -o /tmp/xray.zip LICENSE README.md -d /xray-licenses; \
     chmod +x /xray/xray
 
-# --- Stage 2: build the relay binary (cross-compiled, no cgo) ---
+# --- Stage 2: build the relay and its colocated WSS sidecar (no cgo) ---
 FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -64,7 +64,9 @@ RUN set -eux; \
       ldflags="$ldflags -X main.revision=$VCS_REVISION"; \
     fi; \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-      go build -trimpath -ldflags="$ldflags" -o /out/relay ./cmd/relay
+      go build -trimpath -ldflags="$ldflags" -o /out/relay ./cmd/relay; \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+      go build -trimpath -ldflags="$ldflags" -o /out/wss-sidecar ./cmd/wsssidecar
 
 # --- Stage 3: minimal runtime ---
 FROM alpine:3.21
@@ -80,10 +82,14 @@ LABEL org.opencontainers.image.source="https://github.com/openrung/openrung" \
       org.opencontainers.image.revision="$VCS_REVISION"
 RUN apk add --no-cache ca-certificates tzdata \
     && addgroup -S openrung \
-    && adduser -S -G openrung openrung
+    && adduser -S -G openrung openrung \
+    && mkdir -p /var/lib/openrung \
+    && chown openrung:openrung /var/lib/openrung \
+    && chmod 0700 /var/lib/openrung
 COPY --from=xray /xray/ /usr/local/bin/
 COPY --from=xray /xray-licenses/ /usr/local/share/openrung/xray/
 COPY --from=build /out/relay /usr/local/bin/relay
+COPY --from=build /out/wss-sidecar /usr/local/bin/wss-sidecar
 COPY deploy/relay/entrypoint.sh /usr/local/bin/entrypoint.sh
 # Third-party attribution + GPL/MPL source offers travel with the distributed image.
 COPY THIRD_PARTY_NOTICES.md /usr/local/share/openrung/THIRD_PARTY_NOTICES.md

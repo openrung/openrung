@@ -29,9 +29,11 @@ export const components: LicenseComponent[] = [
   { name: 'quic-go', license: 'MIT', url: 'https://github.com/quic-go/quic-go' },
   { name: 'wireguard-go', license: 'MIT', url: 'https://git.zx2c4.com/wireguard-go' },
   { name: 'utls', license: 'BSD-3-Clause', url: 'https://github.com/refraction-networking/utls' },
+  { name: 'yamux', license: 'MPL-2.0', url: 'https://github.com/hashicorp/yamux' },
   { name: 'Wails v2 (+ MIT runtime libraries)', license: 'MIT', url: 'https://github.com/wailsapp/wails' },
   { name: 'go-reflector', license: 'Apache-2.0', url: 'https://github.com/tkrajina/go-reflector' },
   { name: 'godbus/dbus', license: 'BSD-2-Clause', url: 'https://github.com/godbus/dbus' },
+  { name: 'gorilla/websocket', license: 'BSD-2-Clause', url: 'https://github.com/gorilla/websocket' },
   { name: 'pkg/browser + pkg/errors', license: 'BSD-2-Clause', url: 'https://github.com/pkg/browser' },
   { name: 'google/uuid', license: 'BSD-3-Clause', url: 'https://github.com/google/uuid' },
   { name: 'golang.org/x/* + Go stdlib', license: 'BSD-3-Clause', url: 'https://github.com/golang/go' },
@@ -90,6 +92,11 @@ sing-box name is used only descriptively.
 Statically linked into the OpenRung desktop binary
 (union of the darwin/windows/linux production builds):
 
+### MPL-2.0
+
+- github.com/hashicorp/yamux v0.1.2 — Copyright (c) HashiCorp, Inc.; source
+  and license: https://github.com/hashicorp/yamux/tree/v0.1.2
+
 ### MIT
 
 - github.com/wailsapp/wails/v2 — Copyright (c) 2018-Present Lea Anthony
@@ -109,6 +116,7 @@ Statically linked into the OpenRung desktop binary
 
 ### BSD-2-Clause
 
+- github.com/gorilla/websocket — Copyright (c) 2013 The Gorilla WebSocket Authors
 - github.com/pkg/errors — Copyright (c) 2015, Dave Cheney
 - github.com/pkg/browser — Copyright (c) 2014, Dave Cheney
 - github.com/godbus/dbus/v5 — Copyright (c) 2013, Georg Reinke, Google

@@ -1,8 +1,11 @@
 package broker
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -14,6 +17,8 @@ import (
 const (
 	relayListRatePerSecond = 2.0
 	relayListBurst         = 30
+	wssTicketRatePerSecond = 2.0
+	wssTicketBurst         = 30
 
 	telemetryRatePerSecond = 1.0
 	telemetryBurst         = 20
@@ -107,8 +112,12 @@ func (l *ipRateLimiter) sweepLocked(now time.Time) {
 // reach next. The key comes from the trusted-proxy-aware resolver so limits
 // apply to real client IPs, not to Cloudflare's.
 func rateLimited(limiter *ipRateLimiter, clientIP *clientIPResolver, retryAfterSeconds int, next http.HandlerFunc) http.HandlerFunc {
+	return rateLimitedBy(limiter, func(r *http.Request) string { return clientIP.clientIP(r) }, retryAfterSeconds, next)
+}
+
+func rateLimitedBy(limiter *ipRateLimiter, key func(*http.Request) string, retryAfterSeconds int, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !limiter.allow(clientIP.clientIP(r)) {
+		if !limiter.allow(key(r)) {
 			// A 429 is per-client state: a shared cache (Cloudflare's edge)
 			// storing one would replay it to every client behind the edge.
 			w.Header().Set("Cache-Control", "no-store")
@@ -117,5 +126,30 @@ func rateLimited(limiter *ipRateLimiter, clientIP *clientIPResolver, retryAfterS
 			return
 		}
 		next(w, r)
+	}
+}
+
+// wssTicketRateKey separates well-formed pseudonymous clients that share a
+// carrier-grade NAT address. The identifier is not authentication and may be
+// rotated by an attacker, so sidecar/CDN admission controls remain mandatory.
+// Hashing avoids retaining the raw client identifier in broker memory.
+func wssTicketRateKey(clientIP *clientIPResolver) func(*http.Request) string {
+	return func(r *http.Request) string {
+		source := clientIP.clientIP(r)
+		values := r.Header.Values("X-OpenRung-Client-ID")
+		if len(values) != 1 {
+			return source
+		}
+		clientID := values[0]
+		if len(clientID) < 1 || len(clientID) > 128 || strings.TrimSpace(clientID) != clientID {
+			return source
+		}
+		for _, b := range []byte(clientID) {
+			if b < 0x21 || b > 0x7e {
+				return source
+			}
+		}
+		digest := sha256.Sum256([]byte(clientID))
+		return source + "\x00" + hex.EncodeToString(digest[:16])
 	}
 }

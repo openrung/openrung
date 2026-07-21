@@ -3,6 +3,7 @@ module openrung
 go 1.25.0
 
 require (
+	github.com/gorilla/websocket v1.5.3
 	github.com/hashicorp/yamux v0.1.2
 	github.com/jackc/pgx/v5 v5.6.0
 	github.com/openrung/openrung/punchcore v0.0.0

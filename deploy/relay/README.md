@@ -203,8 +203,17 @@ State policy:
 ### Stable relay identity (recommended)
 
 Without an explicit identity, the relay generates a fresh one on every restart.
-Generate one once and paste the values into `.env`
-(`OPENRUNG_CLIENT_ID`, `OPENRUNG_REALITY_PRIVATE_KEY`, `OPENRUNG_REALITY_PUBLIC_KEY`,
+WSS advertisement therefore requires a separately generated, long-lived
+Ed25519 relay-identity seed in `.env`:
+
+```sh
+openssl rand -base64 32
+# paste the one-line result as OPENRUNG_IDENTITY_SEED=...
+```
+
+The VLESS/Reality connection values are independent. Pin those as well when a
+stable client configuration is desired (`OPENRUNG_CLIENT_ID`,
+`OPENRUNG_REALITY_PRIVATE_KEY`, `OPENRUNG_REALITY_PUBLIC_KEY`, and
 `OPENRUNG_SHORT_ID`):
 
 ```sh
@@ -229,6 +238,56 @@ docker compose up -d --build
 
 If this host previously used the legacy Compose project, follow the migration
 procedure above; the old and new host-network containers cannot share port 443.
+
+### Per-relay WSS sidecar (Foundation only)
+
+The same relay image and compose project contain an optional `wss-sidecar`
+profile. This is one sidecar per destination relay, never a standalone gateway
+fleet: it listens only on `127.0.0.1:8081` and can open Reality streams only to
+this host's loopback `127.0.0.1:443` listener.
+
+For an eligible direct-mode Foundation relay on public/local port 443:
+
+1. Pin `OPENRUNG_IDENTITY_SEED`, set `OPENRUNG_LISTEN_HOST=0.0.0.0` and
+   `OPENRUNG_CONNECTION_LOG=false`, and add this relay's canonical per-front
+   `OPENRUNG_WSS_FRONTS` entries to `.env` only when ready to advertise them.
+   WSS advertisement fails closed if the per-connection observer is enabled;
+   Xray must own `:443` directly so opaque loopback streams create no address
+   or byte-count records.
+2. Copy [`.wss.env.example`](.wss.env.example) to `.wss.env`, set mode `0600`,
+   and configure the exact relay ID, broker ticket public-key ring, and a unique
+   current/overlap origin-token ring for every advertised front.
+3. Configure CloudFront to use this relay's origin TLS listener on `8443`, with
+   the origin-facing firewall and fixed loopback proxy described in
+   [`cloudfront-wss.md`](cloudfront-wss.md). The compose file intentionally does
+   not invent or store origin certificate secrets.
+4. Start the colocated services:
+
+   ```sh
+   docker compose --profile wss up -d --build
+   docker compose --profile wss logs -f relay wss-sidecar
+   ```
+
+The sidecar keeps a read-only root filesystem. Its only persistent write is the
+hashed single-use ticket journal in the project-scoped `wss-replay-state` volume
+mounted at `/var/lib/openrung`; preserve that volume across container and image
+recreation. Failure to open, lock, write, or synchronize the journal makes the
+sidecar fail closed. Never share the volume between relay hosts.
+
+For a staged rollout, first run the stable relay without
+`OPENRUNG_WSS_FRONTS`, prepare `.wss.env`, start and verify the sidecar/origin,
+then add the fronts and recreate the `relay` service so the broker begins
+advertising them. Roll back in the reverse safety order: remove the fronts and
+recreate `relay` to stop ticket issuance; wait out issued tickets and the
+bounded session drain; stop `wss-sidecar` and origin `8443`; retain the replay
+volume. Public direct Reality on 443 remains available throughout.
+
+`foundation-up.sh` currently manages and rolls only the single Reality relay
+container. It does **not** coordinate the sidecar, its secret env, replay
+volume, or origin TLS process. WSS-enabled Foundation hosts must use this
+colocated compose profile (or explicitly extend that per-host workflow with the
+same ordering) rather than treating the sidecar as a separate fleet service or
+assuming `foundation-up.sh update/rollback` is an atomic WSS rollout.
 
 ### Plain `docker run`
 

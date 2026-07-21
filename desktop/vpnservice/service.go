@@ -111,6 +111,9 @@ type connection struct {
 	candidates    []relay.Descriptor
 	activeRelayID string
 	brokerURL     string // the front that served this session's fetch (health-monitor liveness reference)
+	// wssTicketRetryUsed permits at most one bounded all-front Retry-After wait
+	// per ladder pass, rather than one sleep for every relay and front.
+	wssTicketRetryUsed bool
 	// heartbeatOnce starts the telemetry heartbeat loop at most once per
 	// session, however many times a recovery re-ladder promotes a new relay.
 	heartbeatOnce sync.Once
@@ -120,19 +123,32 @@ type connection struct {
 // measurements that feed connection_succeeded. teardown releases the resources
 // in the pinned order and is idempotent.
 type candidateResult struct {
-	relay      relay.Descriptor
-	ctx        context.Context
-	cancel     context.CancelFunc
-	runErrCh   chan error
-	reaped     bool // runErrCh already drained (the process is reaped)
-	torndown   bool
-	punch      *punch.Establishment // live punched path, nil when using the hub
-	configPath string
-	proxyPort  int
-	tcpMS      int64
-	startMS    int64
-	probeMS    int64
-	attempt    int64 // 1-based index in the ladder that produced it
+	relay relay.Descriptor
+	// accessTransport is the client-to-relay path, distinct from the relay's
+	// registration transport. frontID is set only for relay-local WSS fallback.
+	accessTransport string
+	frontID         string
+	ctx             context.Context
+	cancel          context.CancelFunc
+	runErrCh        chan error
+	reaped          bool // runErrCh already drained (the process is reaped)
+	torndown        bool
+	punch           *punch.Establishment // live punched path, nil when using the hub
+
+	// The WSS adapter remains alive until sing-box has been cancelled and reaped.
+	// Its separate context preserves that teardown order.
+	wssBridge    wssBridge
+	wssDone      chan struct{}
+	wssCancel    context.CancelFunc
+	transportErr chan error
+	configPath   string
+	proxyPort    int
+	tcpMS        int64
+	hasTCPMS     bool
+	transportMS  int64
+	startMS      int64
+	probeMS      int64
+	attempt      int64 // 1-based index in the ladder that produced it
 	// brokerIndex is where this relay sat in the broker's order before client
 	// ranking reordered the ladder; -1 until ladderOrder.annotate stamps it, so
 	// an unannotated result never claims it was the broker's first choice.
@@ -140,6 +156,32 @@ type candidateResult struct {
 	// rankProbeMS is the ranker's measured TCP latency, nil when this relay was
 	// not probed or its probe failed.
 	rankProbeMS *int64
+}
+
+// localCandidateError marks failures independent of the selected relay path:
+// config generation, temp state, sing-box startup/early exit, and local inbound
+// readiness. Retrying a relay or minting a ticket cannot repair them.
+type localCandidateError struct {
+	stage string
+	err   error
+}
+
+func (e *localCandidateError) Error() string { return e.err.Error() }
+func (e *localCandidateError) Unwrap() error { return e.err }
+
+func markLocalCandidateError(stage string, err error) error {
+	if err == nil {
+		err = errors.New("local VPN setup failed")
+	}
+	return &localCandidateError{stage: stage, err: err}
+}
+
+func localCandidateErrorStage(err error) (string, bool) {
+	var localErr *localCandidateError
+	if !errors.As(err, &localErr) {
+		return "", false
+	}
+	return localErr.stage, true
 }
 
 // teardown releases a candidate's resources in the pinned order: cancel the
@@ -160,6 +202,15 @@ func (c *candidateResult) teardown() {
 	}
 	if c.punch != nil {
 		_ = c.punch.Close()
+	}
+	if c.wssBridge != nil {
+		if c.wssCancel != nil {
+			c.wssCancel()
+		}
+		_ = c.wssBridge.Close()
+	}
+	if c.wssDone != nil {
+		<-c.wssDone
 	}
 	if c.configPath != "" {
 		_ = os.Remove(c.configPath)
@@ -215,13 +266,27 @@ type Service struct {
 	// Test seams (nil means the production implementation). They mirror the
 	// proxy-controller injection pattern above so ladder tests need no network,
 	// no broker, and no sing-box binary.
-	runTunnel   func(ctx context.Context, configPath string) error
-	probeTunnel func(ctx context.Context, proxyPort int) (int64, error)
-	healthProbe func(ctx context.Context, proxyPort int) error
-	dialRelay   func(ctx context.Context, host string, port int) (int64, error)
-	fetchRelays func(ctx context.Context, brokerURL string, limit int, clientID, sessionID string) (discovery.Fetch, error)
-	tunnelReady func(ctx context.Context, proxyPort int) error
-	healthTick  time.Duration // 0 means config.HealthProbeInterval
+	runTunnel         func(ctx context.Context, configPath string) error
+	probeTunnel       func(ctx context.Context, proxyPort int) (int64, error)
+	healthProbe       func(ctx context.Context, proxyPort int) error
+	dialRelay         func(ctx context.Context, host string, port int) (int64, error)
+	fetchRelays       func(ctx context.Context, brokerURL string, limit int, clientID, sessionID string) (discovery.Fetch, error)
+	tunnelReady       func(ctx context.Context, proxyPort int) error
+	writeConfig       func(data []byte) (string, error)
+	requestWSSTicket  func(ctx context.Context, brokerURL string, request relay.WSSSessionTicketRequest, clientID, sessionID string) (relay.WSSSessionTicketResponse, error)
+	dialWSS           func(ctx context.Context, rawURL, ticket string) (wssBridge, error)
+	waitWSSRetry      func(ctx context.Context, delay time.Duration) error
+	checkNetworkAlive func(ctx context.Context, fronts []string) bool
+	healthTick        time.Duration // 0 means config.HealthProbeInterval
+	networkRetryDelay time.Duration // 0 means networkRecoveryPollInterval
+	tunnelReadyLimit  time.Duration // 0 means config.TunnelReadyTimeout
+}
+
+func (s *Service) candidateConfigWriter() func([]byte) (string, error) {
+	if s.writeConfig != nil {
+		return s.writeConfig
+	}
+	return writeTempConfig
 }
 
 func (s *Service) tunnelReadyProbe() func(context.Context, int) error {
@@ -484,7 +549,11 @@ const tunnelReadyPollInterval = 25 * time.Millisecond
 // exit; on the crash path it marks the candidate reaped.
 func (s *Service) awaitTunnelReady(ctx context.Context, res *candidateResult, port int) (int64, error) {
 	started := time.Now()
-	deadline := started.Add(config.TunnelReadyTimeout)
+	readyLimit := s.tunnelReadyLimit
+	if readyLimit <= 0 {
+		readyLimit = config.TunnelReadyTimeout
+	}
+	deadline := started.Add(readyLimit)
 	ticker := time.NewTicker(tunnelReadyPollInterval)
 	defer ticker.Stop()
 	for {
@@ -495,6 +564,11 @@ func (s *Service) awaitTunnelReady(ctx context.Context, res *candidateResult, po
 				runErr = errors.New("sing-box exited")
 			}
 			return 0, runErr
+		case transportErr := <-res.transportErr:
+			if transportErr == nil {
+				transportErr = errors.New("WSS access transport stopped")
+			}
+			return 0, transportErr
 		case <-ctx.Done():
 			return 0, ctx.Err()
 		case <-ticker.C:
@@ -664,6 +738,7 @@ func (s *Service) candidatesFor(resp relay.ListResponse, targetCountry, targetRe
 // rebound until the previous sing-box is reaped. Mirrors the mobile
 // connectFirstAvailable.
 func (s *Service) runLadder(ctx context.Context, conn *connection, cands []relay.Descriptor, port int) (*candidateResult, error) {
+	conn.wssTicketRetryUsed = false
 	var lastErr error
 	for i, cand := range cands {
 		if err := ctx.Err(); err != nil {
@@ -679,7 +754,13 @@ func (s *Service) runLadder(ctx context.Context, conn *connection, cands []relay
 			return nil, ctx.Err()
 		}
 		lastErr = err
-		s.recordRelayAttemptFailed(conn.mgr, cand.ID, err, i+1)
+		if stage, local := localCandidateErrorStage(err); local {
+			s.appendLog(fmt.Sprintf("local VPN setup failed at %s: %v", stage, err))
+			return nil, fmt.Errorf("local VPN setup failed: %w", err)
+		}
+		if !relayFailureAlreadyRecorded(err) {
+			s.recordRelayAttemptFailed(conn.mgr, cand.ID, err, i+1)
+		}
 		s.appendLog(fmt.Sprintf("relay %s failed: %v", cand.ID, err))
 	}
 	// Wrap so lastError shows the mobile all-failed message while telemetry
@@ -687,19 +768,68 @@ func (s *Service) runLadder(ctx context.Context, conn *connection, cands []relay
 	return nil, fmt.Errorf("All relay connection attempts failed. Last error: %w", lastErr)
 }
 
-// attemptCandidate runs one ladder rung: TCP pre-probe, optional punch, config,
-// sing-box start, then the end-to-end internet probe that gates CONNECTED. On
-// any failure the candidate is fully torn down before returning.
+// attemptCandidate always runs the legacy direct path first. Only a typed raw
+// TCP or post-ready data-path failure can unlock this exact relay's signed WSS
+// fronts. Local engine/configuration failures stop without requesting a ticket.
 func (s *Service) attemptCandidate(ctx context.Context, conn *connection, cand relay.Descriptor, port, attempt int) (*candidateResult, error) {
+	directResult, directErr := s.attemptDirectCandidate(ctx, conn, cand, port, attempt)
+	if directErr == nil {
+		return directResult, nil
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if _, eligible := directPathErrorStage(directErr); !eligible {
+		return nil, directErr
+	}
+	fronts := supportedWSSFronts(cand)
+	if len(fronts) == 0 {
+		return nil, directErr
+	}
+
+	// The direct path is an independently meaningful relay-health signal. Record
+	// it once before transport fallback; subsequent ticket/CDN/WSS failures must
+	// not add another relay-health penalty.
+	s.recordRelayAttemptFailed(conn.mgr, cand.ID, directErr, attempt)
+	s.recordTransportFallback(conn.mgr, cand.ID, directErr)
+	s.appendLog(fmt.Sprintf("direct path to relay %s failed; trying its WSS fronts", cand.ID))
+	lastErr := directErr
+	for _, front := range fronts {
+		result, err := s.attemptWSSCandidate(ctx, conn, cand, front, port, attempt)
+		if err == nil {
+			return result, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if _, local := localCandidateErrorStage(err); local {
+			return nil, err
+		}
+		lastErr = err
+		if _, transportFailure := wssTransportStage(err); transportFailure {
+			s.recordWSSTransportFailed(conn.mgr, cand.ID, err)
+		}
+		s.appendLog(fmt.Sprintf("WSS front %s failed: %v", front.ID, err))
+	}
+	return nil, markRelayFailureRecorded(fmt.Errorf("direct path failed (%v); WSS fallback failed: %w", directErr, lastErr))
+}
+
+// attemptDirectCandidate is the existing direct/punched rung split from its
+// path-independent sing-box lifecycle so WSS can reuse that lifecycle safely.
+func (s *Service) attemptDirectCandidate(ctx context.Context, conn *connection, cand relay.Descriptor, port, attempt int) (*candidateResult, error) {
 	s.appendLog(fmt.Sprintf("trying relay %s at %s:%d", cand.ID, cand.PublicHost, cand.PublicPort))
 	s.appendLog("checking relay TCP reachability")
 	tcpMS, err := s.relayDialer()(ctx, cand.PublicHost, cand.PublicPort)
 	if err != nil {
-		return nil, err
+		return nil, markDirectPathError("tcp", err)
 	}
 
 	candCtx, cancel := context.WithCancel(ctx)
-	res := &candidateResult{relay: cand, ctx: candCtx, cancel: cancel, proxyPort: port, tcpMS: tcpMS, attempt: int64(attempt), brokerIndex: -1}
+	res := &candidateResult{
+		relay: cand, accessTransport: relay.TransportDirect,
+		ctx: candCtx, cancel: cancel, proxyPort: port,
+		tcpMS: tcpMS, hasTCPMS: true, attempt: int64(attempt), brokerIndex: -1,
+	}
 
 	// Try a direct NAT-punched path first; on any failure fall back to the
 	// relay hub endpoint so the outcome is never worse than not punching.
@@ -711,47 +841,97 @@ func (s *Service) attemptCandidate(ctx context.Context, conn *connection, cand r
 	}
 	if est := s.maybePunch(candCtx, conn.mgr, cand); est != nil {
 		res.punch = est
+		res.accessTransport = "punch"
 		configInput.BridgeHost = est.BridgeHost
 		configInput.BridgePort = est.BridgePort
 		configInput.PunchPeerExcludeAddress = est.PeerIP
 		go func() { _ = est.Bridge.Serve(candCtx) }()
 		s.appendLog(fmt.Sprintf("punched direct path to %s (peer %s, nat %s)", cand.ID, est.PeerIP, est.NATClass))
 	}
+	return s.startCandidate(res, configInput)
+}
 
+// startCandidate owns path-independent config, process, readiness, and
+// end-to-end validation. Every path uses identical inner Reality settings.
+func (s *Service) startCandidate(res *candidateResult, configInput client.SingBoxConfigInput) (*candidateResult, error) {
 	configJSON, err := client.BuildSingBoxConfig(configInput)
 	if err != nil {
 		res.teardown()
-		return nil, err
+		return nil, markLocalCandidateError("config", err)
 	}
-	configPath, err := writeTempConfig(configJSON)
+	configPath, err := s.candidateConfigWriter()(configJSON)
 	if err != nil {
 		res.teardown()
-		return nil, err
+		return nil, markLocalCandidateError("config_file", err)
 	}
 	res.configPath = configPath
 
 	res.runErrCh = make(chan error, 1)
-	go func(errCh chan<- error, path string) { errCh <- s.tunnelRunner()(candCtx, path) }(res.runErrCh, configPath)
+	go func(errCh chan<- error, path string) { errCh <- s.tunnelRunner()(res.ctx, path) }(res.runErrCh, configPath)
 
 	// Wait until sing-box binds the mixed inbound (a real start measurement, and
 	// far faster than a fixed grace when the engine is ready in tens of ms), or
 	// it dies first — either way the candidate is decided before the probe.
-	startMS, err := s.awaitTunnelReady(candCtx, res, port)
+	startMS, err := s.awaitTunnelReady(res.ctx, res, res.proxyPort)
 	if err != nil {
 		res.teardown()
-		return nil, err
+		if _, transportFailure := wssTransportStage(err); transportFailure {
+			return nil, err
+		}
+		return nil, markLocalCandidateError("tunnel_start", err)
 	}
 	res.startMS = startMS
 
 	s.appendLog("verifying internet access through the VPN")
-	probeMS, err := s.tunnelProber()(candCtx, port)
+	probeMS, err := s.probeCandidate(res)
 	if err != nil {
 		res.teardown()
+		if _, local := localCandidateErrorStage(err); local {
+			return nil, err
+		}
+		if _, transportFailure := wssTransportStage(err); transportFailure {
+			return nil, err
+		}
+		if res.accessTransport == relay.TransportDirect || res.accessTransport == "punch" {
+			return nil, markDirectPathError("internet_probe", err)
+		}
 		return nil, err
 	}
 	res.probeMS = probeMS
 	s.appendLog(fmt.Sprintf("internet access verified in %d ms", probeMS))
 	return res, nil
+}
+
+// probeCandidate watches both the process and WSS adapter while the internet
+// probe is running. A sing-box exit is local; a WSS session exit is transport-
+// scoped; only a completed failing probe is a relay data-path result.
+func (s *Service) probeCandidate(res *candidateResult) (int64, error) {
+	type probeResult struct {
+		ms  int64
+		err error
+	}
+	probeCh := make(chan probeResult, 1)
+	go func() {
+		ms, err := s.tunnelProber()(res.ctx, res.proxyPort)
+		probeCh <- probeResult{ms: ms, err: err}
+	}()
+	select {
+	case result := <-probeCh:
+		return result.ms, result.err
+	case runErr := <-res.runErrCh:
+		res.reaped = true
+		if runErr == nil {
+			runErr = errors.New("sing-box exited during internet verification")
+		}
+		return 0, markLocalCandidateError("tunnel_probe_process", runErr)
+	case transportErr := <-res.transportErr:
+		if transportErr == nil {
+			transportErr = markWSSTransportError("wss_session", res.frontID, errors.New("WSS access transport stopped"))
+		}
+		return 0, transportErr
+	case <-res.ctx.Done():
+		return 0, res.ctx.Err()
+	}
 }
 
 // connectMeasurements is the winning candidate's timing, reported on the
@@ -760,7 +940,6 @@ func (s *Service) attemptCandidate(ctx context.Context, conn *connection, cand r
 func connectMeasurements(res *candidateResult, brokerFetchMS int64) map[string]int64 {
 	m := map[string]int64{
 		"broker_fetch_ms":   brokerFetchMS,
-		"relay_tcp_ms":      res.tcpMS,
 		"tunnel_start_ms":   res.startMS,
 		"internet_probe_ms": res.probeMS,
 		"relay_attempts":    res.attempt,
@@ -770,6 +949,12 @@ func connectMeasurements(res *candidateResult, brokerFetchMS int64) map[string]i
 		// tunnel_start_ms. relay_probe_ms is absent, never zero, when the relay
 		// was not probed: 0ms is a legitimate measurement.
 		"relay_broker_index": res.brokerIndex,
+	}
+	if res.hasTCPMS {
+		m["relay_tcp_ms"] = res.tcpMS
+	}
+	if res.accessTransport == accessTransportWSS {
+		m["transport_connect_ms"] = res.transportMS
 	}
 	if res.rankProbeMS != nil {
 		m["relay_probe_ms"] = *res.rankProbeMS
@@ -808,7 +993,11 @@ func (s *Service) promote(ctx context.Context, conn *connection, res *candidateR
 	if conn.mgr != nil {
 		conn.mgr.MarkConnected(res.relay.ID)
 		if initial {
-			conn.mgr.Record("connection_succeeded", res.relay.ID, nil, connectMeasurements(res, brokerFetchMS))
+			attrs := map[string]string{"transport": res.accessTransport}
+			if res.frontID != "" {
+				attrs["front_id"] = res.frontID
+			}
+			conn.mgr.Record("connection_succeeded", res.relay.ID, attrs, connectMeasurements(res, brokerFetchMS))
 			_ = conn.mgr.Flush(ctx)
 		}
 		conn.heartbeatOnce.Do(func() { go conn.mgr.RunHeartbeatLoop(ctx) })
