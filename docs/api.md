@@ -495,7 +495,7 @@ GET /api/v1/relays?limit=5
 ```
 
 The order of `relays` is the broker's candidate ranking. In global ranking mode,
-the broker uses recent active sessions, connection successes/failures, observed
+the broker uses recent connection successes/failures, active sessions, observed
 client latency, and speed-test telemetry. The latency it scores is aggregated
 across all clients, so it cannot describe any one client's path. IPv6 is only a
 final tie-breaker after score and heartbeat recency. `limit` truncates *after*

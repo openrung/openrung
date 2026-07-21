@@ -52,7 +52,7 @@ flowchart LR
 Relay transport uses [Xray-core](https://github.com/XTLS/Xray-core)'s
 VLESS + REALITY + Vision, designed to be hard to distinguish from ordinary TLS
 traffic. The broker ranks relay candidates using recent shared metrics —
-active sessions, connection success, observed latency, and speed tests — so
+connection success, active sessions, observed latency, and speed tests — so
 clients are steered toward relays that actually work.
 
 ## Highlights
