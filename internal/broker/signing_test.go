@@ -115,27 +115,82 @@ func decodeRelayListWireTimestamps(t *testing.T, body []byte) relayListWireTimes
 	return wire
 }
 
-func assertWholeSecondUTC(t *testing.T, field, value string) {
+func assertRelayListUsesWholeSecondUTCTimestamps(t *testing.T, body []byte) {
 	t.Helper()
-	parsed, err := time.Parse(time.RFC3339Nano, value)
-	if err != nil {
-		t.Fatalf("%s is not RFC 3339: %q: %v", field, value, err)
-	}
-	want := parsed.UTC().Truncate(time.Second).Format(time.RFC3339)
-	if value != want {
-		t.Fatalf("%s = %q, want whole-second UTC %q", field, value, want)
+	if err := validateRelayListTimestampStrings(body); err != nil {
+		t.Fatal(err)
 	}
 }
 
-func assertRelayListUsesWholeSecondUTCTimestamps(t *testing.T, body []byte) {
-	t.Helper()
-	wire := decodeRelayListWireTimestamps(t, body)
-	assertWholeSecondUTC(t, "server_time", wire.ServerTime)
-	assertWholeSecondUTC(t, "not_after", wire.NotAfter)
-	for i, relay := range wire.Relays {
-		assertWholeSecondUTC(t, fmt.Sprintf("relays[%d].registered_at", i), relay.RegisteredAt)
-		assertWholeSecondUTC(t, fmt.Sprintf("relays[%d].last_heartbeat_at", i), relay.LastHeartbeatAt)
-		assertWholeSecondUTC(t, fmt.Sprintf("relays[%d].expires_at", i), relay.ExpiresAt)
+func validateRelayListTimestampStrings(body []byte) error {
+	var decoded any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return fmt.Errorf("decode relay-list JSON: %w", err)
+	}
+	return validateJSONTimestampStrings(decoded, "$")
+}
+
+// validateJSONTimestampStrings walks the complete signed body rather than a
+// fixed response shape. Any future field that marshals an RFC 3339 timestamp
+// therefore inherits the whole-second UTC wire contract automatically.
+func validateJSONTimestampStrings(value any, path string) error {
+	switch value := value.(type) {
+	case map[string]any:
+		for key, child := range value {
+			if err := validateJSONTimestampStrings(child, path+"."+key); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for i, child := range value {
+			if err := validateJSONTimestampStrings(child, fmt.Sprintf("%s[%d]", path, i)); err != nil {
+				return err
+			}
+		}
+	case string:
+		parsed, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil {
+			return nil
+		}
+		want := parsed.UTC().Truncate(time.Second).Format(time.RFC3339)
+		if value != want {
+			return fmt.Errorf("%s = %q, want whole-second UTC %q", path, value, want)
+		}
+	}
+	return nil
+}
+
+func TestRelayListTimestampGuardScansUnknownNestedFields(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{
+			name:    "fractional timestamp",
+			body:    `{"future":{"attested_at":"2026-07-21T08:36:39.123456789Z"}}`,
+			wantErr: true,
+		},
+		{
+			name:    "non-UTC timestamp",
+			body:    `{"future":{"measured_at":"2026-07-21T16:36:39+08:00"}}`,
+			wantErr: true,
+		},
+		{
+			name: "whole-second UTC timestamp",
+			body: `{"future":{"issued_at":"2026-07-21T08:36:39Z"}}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateRelayListTimestampStrings([]byte(test.body))
+			if test.wantErr && err == nil {
+				t.Fatal("expected structural timestamp guard to reject body")
+			}
+			if !test.wantErr && err != nil {
+				t.Fatalf("expected structural timestamp guard to accept body: %v", err)
+			}
+		})
 	}
 }
 
