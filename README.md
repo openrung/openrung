@@ -29,8 +29,8 @@ relays in unrestricted regions.
 OpenRung connects censored users with relays in unrestricted regions, similar in
 spirit to Tor's [Snowflake](https://snowflake.torproject.org/):
 
-- **Clients** (the mobile app and a desktop CLI) route device traffic through a
-  VPN tunnel to a relay.
+- **Clients** (mobile VPN apps, the desktop proxy app, and a desktop TUN CLI)
+  route user traffic through a relay.
 - **Relay operators** — the OpenRung Foundation and community volunteers — run
   a small command-line app that relays that traffic to the open internet.
 - **The broker** is a control plane only: it matches clients with healthy
@@ -187,7 +187,8 @@ curl http://localhost:8080/api/v1/relays
 go run ./cmd/client check -broker http://localhost:8080
 ```
 
-For macOS full-device routing, see [`docs/desktop-client.md`](docs/desktop-client.md).
+For the zero-privilege desktop proxy app and macOS full-device CLI routing, see
+[`docs/desktop-client.md`](docs/desktop-client.md).
 The mobile app (React Native with native VPN modules) is developed in a
 separate repository; the original native iOS and Android clients have been
 retired from this one.
@@ -225,7 +226,7 @@ docs/                Architecture, API, client, and operations docs.
 | [Architecture](docs/architecture.md) | Goals, components, and trust boundaries |
 | [Broker API](docs/api.md) | HTTP API reference (`/api/v1`) |
 | [Component versioning](docs/versioning.md) | Independent release identities and compatibility contracts |
-| [Desktop client](docs/desktop-client.md) | macOS/CLI client and full-device routing |
+| [Desktop clients](docs/desktop-client.md) | GUI proxy mode, Linux shell setup, and CLI TUN routing |
 | [Security and abuse](docs/security-abuse.md) | Threat model, volunteer risk, and abuse handling |
 | [Relay hub deployment](deploy/relayhub/README.md) | Running a hub: TLS, ports, and cost |
 

@@ -3,7 +3,7 @@ import type { ConnectionStatus } from '../native/types';
 
 // Connection card, restyled to match the RN app: an inline status row (dot +
 // STATUS + relay label), an OUTLINED connect button with a power icon that
-// fills solid green once connected, and the fail-closed hint.
+// fills solid green once connected, and an accurate proxy-mode hint.
 
 const STATUS_LABEL: Record<ConnectionStatus, string> = {
   disconnected: 'DISCONNECTED',
@@ -72,8 +72,8 @@ export function ConnectCard() {
 
       <p className="or-connect-hint">
         {isConnected
-          ? 'vpn is fail-closed — traffic is routed through the relay'
-          : 'vpn is fail-closed — no traffic leaves until connected'}
+          ? 'configured proxy traffic can now use the relay'
+          : 'normal networking remains available until connected'}
       </p>
     </div>
   );

@@ -16,8 +16,8 @@ const HOW_STEPS = [
     body: 'When you connect, the broker hands your device a short list of healthy relays and the app picks the first one that answers.',
   },
   {
-    title: 'Traffic rides an encrypted tunnel',
-    body: 'Everything flows through a VLESS/REALITY tunnel that looks like ordinary TLS, and the VPN is fail-closed: no relay, no traffic.',
+    title: 'Configured traffic rides an encrypted tunnel',
+    body: 'Proxy-aware traffic flows through a VLESS/REALITY tunnel that looks like ordinary TLS. Other traffic continues to use normal networking.',
   },
 ];
 
@@ -37,9 +37,10 @@ export function AboutScreen({ onOpenLicenses }: Props) {
         </div>
         <span className="or-tagline">relay network</span>
         <p className="or-about-mission">
-          OpenRung routes your traffic through relays around the world, keeping the open internet
-          reachable when networks are filtered. No account is required and there are no ads. During
-          early testing, OpenRung collects diagnostic connection metadata to improve reliability.
+          OpenRung routes configured app traffic through relays around the world, keeping the open
+          internet reachable when networks are filtered. No account is required and there are no
+          ads. During early testing, OpenRung collects diagnostic connection metadata to improve
+          reliability.
         </p>
       </div>
 

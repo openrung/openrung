@@ -3,7 +3,6 @@ package vpnservice
 import (
 	"context"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -132,18 +131,6 @@ func demoteRelay(cands []relay.Descriptor, id string) []relay.Descriptor {
 		reordered = append(reordered, cand)
 	}
 	return append(reordered, demoted...)
-}
-
-// freeLoopbackPort returns an unused loopback TCP port for the mixed inbound.
-// There is a small TOCTOU window before sing-box binds; acceptable for a
-// user-launched desktop connect.
-func freeLoopbackPort() (int, error) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
-	}
-	defer listener.Close()
-	return listener.Addr().(*net.TCPAddr).Port, nil
 }
 
 func writeTempConfig(data []byte) (string, error) {

@@ -31,6 +31,19 @@ export interface NativeIdentity {
   sessionId: string | null; // active telemetry session id, null when idle
 }
 
+/** Desktop-only local proxy metadata, separate from the shared mobile state. */
+export interface NativeProxyInfo {
+  host: string; // fixed loopback host
+  port: number; // stable per-install port, unless explicitly overridden
+  endpoint: string; // host:port
+  persistenceWarning: string | null; // endpoint works, but may change next launch
+  shellIntegration: boolean; // sourceable POSIX helper available on this OS
+  shellIntegrationError: string | null; // helper failure; endpoint remains usable
+  helperPath: string; // generated sourceable POSIX shell helper
+  enableCommand: string; // source helper + enable in the current shell
+  disableCommand: string; // restore that shell's prior proxy variables
+}
+
 export interface OpenRungVpnModule {
   /** Ask for OS VPN consent. Desktop proxy mode needs none and resolves true;
    *  TUN mode performs the elevation handshake and resolves whether granted. */
@@ -48,4 +61,5 @@ export interface OpenRungVpnModule {
   disconnect(): Promise<void>;
   getState(): Promise<NativeVpnState>;
   getIdentity(): Promise<NativeIdentity>;
+  getProxyInfo(): Promise<NativeProxyInfo>;
 }
