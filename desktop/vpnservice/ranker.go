@@ -15,18 +15,18 @@ import (
 // Client-side latency ranking for the relay connect ladder. Port of the mobile
 // RelayRanker (Android net/RelayRanker.kt, iOS Shared/RelayRanker.swift).
 //
-// The broker already orders relays by a composite score (load headroom, success
-// rate, latency, speed) from its own vantage; the one signal it cannot know is
+// The broker already orders relays by a composite score (success rate, load
+// headroom, latency, speed) from its own vantage; the one signal it cannot know is
 // THIS client's network path. The ranker probes TCP connect latency to the head
 // of the candidate list in parallel and reorders by latency BUCKET, so broker
 // order — and with it the broker's load balancing — still decides among relays
 // whose measured latency falls in the same bucket.
 //
-// Bucketing is what makes the reorder safe to ship: the broker's largest scoring
-// term is load headroom, and it has no admission control, so position in the
-// list is the only thing keeping clients off a saturated relay. Sorting on raw
-// latency would hand the ladder to the nearest relay for a 2ms win and herd
-// every client in a region onto it. Note the buckets are absolute (probeMs /
+// Bucketing is what makes the reorder safe to ship: the broker weights recent
+// reliability most heavily but still uses load headroom, and it has no admission
+// control, so position in the list helps keep clients off a saturated relay.
+// Sorting on raw latency would hand the ladder to the nearest relay for a 2ms win
+// and herd every client in a region onto it. Note the buckets are absolute (probeMs /
 // RelayRankBucketMS, truncating), not relative clusters: 29ms and 31ms fall in
 // different buckets while 31ms and 59ms share one. The compromise is coarse, not
 // exact — it bounds how often the client overrides the broker, rather than

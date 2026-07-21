@@ -10,7 +10,18 @@ import (
 	"openrung/internal/relay"
 )
 
-const rankingWindow = 30 * time.Minute
+const (
+	rankingWindow = 30 * time.Minute
+
+	// Reliability is the strongest ranking signal: spare capacity is useful only
+	// when clients can actually reach the relay. Keeping headroom below the
+	// reliability weight also prevents an idle, repeatedly failing relay from
+	// displacing a busy relay with a strong recent success record.
+	rankingReliabilityWeight = 0.50
+	rankingHeadroomWeight    = 0.20
+	rankingLatencyWeight     = 0.20
+	rankingSpeedWeight       = 0.10
+)
 
 type metricValue struct {
 	total float64
@@ -120,10 +131,13 @@ func relayScore(desc relay.Descriptor, snapshot RelayMetricsSnapshot) float64 {
 	latencyScore := observedLatencyScore(snapshot)
 	speedScore := observedSpeedScore(desc, snapshot)
 
-	score := 0.45*headroom + 0.25*successRate + 0.20*latencyScore + 0.10*speedScore
-	if desc.MaxSessions > 0 && snapshot.ActiveSessions >= desc.MaxSessions {
-		score *= 0.2
-	}
+	// Headroom already declines continuously to zero at capacity. Do not apply a
+	// second threshold penalty here: that cliff used to let idle, failing relays
+	// outrank full relays with substantially better observed reliability.
+	score := rankingReliabilityWeight*successRate +
+		rankingHeadroomWeight*headroom +
+		rankingLatencyWeight*latencyScore +
+		rankingSpeedWeight*speedScore
 	return score
 }
 
