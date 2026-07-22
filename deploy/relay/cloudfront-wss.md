@@ -82,11 +82,23 @@ Do not forward the viewer `Host`. CloudFront otherwise requires the origin TLS
 certificate to match that viewer host rather than the origin hostname. See
 [Origin settings](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/DownloadDistValuesOrigin.html).
 
-“Front” here means a real CloudFront distribution hostname or a valid CNAME,
-with matching URL host, HTTP `Host`, and TLS SNI. It does not mean TLS domain
-fronting. CloudFront checks domain-fronting conditions and can reject mismatched
-requests with HTTP 421; see [Use custom URLs by adding alternate domain
+“Front” here means a real CloudFront distribution hostname or a valid CNAME.
+For a native one-label `*.cloudfront.net` URL, the desktop client enables
+`wsscore`'s no-SNI mode, verifies the default CloudFront certificate against
+the exact signed URL hostname, and sends that hostname as the encrypted HTTP
+`Host`.
+CloudFront documents that a client without SNI receives the default
+`*.cloudfront.net` certificate and that the `Host` header selects the
+distribution. A custom CNAME instead keeps matching URL host, HTTP `Host`, and
+TLS SNI because CloudFront's default certificate cannot authenticate it. This
+is not cross-domain TLS fronting: no unrelated SNI is supplied. See [Use custom
+URLs by adding alternate domain
 names](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/CNAMEs.html).
+
+Omitting SNI removes the distribution hostname from the TLS ClientHello, but
+ordinary DNS can still reveal it. Treat this as one blocking-resistance layer,
+not complete hostname confidentiality, and never retry the same ticket with
+SNI after an ambiguous handshake failure.
 
 ## Origin DNS and TLS
 

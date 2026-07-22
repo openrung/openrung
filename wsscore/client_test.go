@@ -179,4 +179,10 @@ func TestLifecycleAndClientBoundsRejectUnsafeValues(t *testing.T) {
 	}); err == nil {
 		t.Fatal("TLS server-name override accepted")
 	}
+	if _, err := DialClient(t.Context(), ClientOptions{
+		URL: "wss://d111111abcdef8.cloudfront.net" + BridgePath, Ticket: "ticket",
+		TLSConfig: &tls.Config{EncryptedClientHelloConfigList: []byte{1}}, CloudFrontNoSNI: true,
+	}); err == nil {
+		t.Fatal("encrypted client hello was accepted for CloudFront no-SNI mode")
+	}
 }
