@@ -97,7 +97,12 @@ jobs:
           curl -fsSL -o xray.zip "$BASE/${{ matrix.asset }}"
           curl -fsSL -o xray.zip.dgst "$BASE/${{ matrix.asset }}.dgst"
           expected="$(awk '/^SHA2-256=/ {print $2}' xray.zip.dgst)"
-          actual="$(sha256sum xray.zip | awk '{print $1}')"
+          # macOS runners have shasum, not sha256sum; Linux runners have both.
+          if command -v sha256sum >/dev/null 2>&1; then
+            actual="$(sha256sum xray.zip | awk '{print $1}')"
+          else
+            actual="$(shasum -a 256 xray.zip | awk '{print $1}')"
+          fi
           echo "xray v$V ${{ matrix.asset }} expected=$expected actual=$actual"
           test -n "$expected"
           test "$expected" = "$actual"
