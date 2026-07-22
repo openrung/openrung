@@ -1,7 +1,7 @@
-// Command wssmatrix runs the destructive-free, pre-advertisement acceptance
-// checks for one relay-local WSS front. It signs only short-lived tickets with
-// an explicitly supplied temporary test key; that key must be removed from the
-// sidecar before the front is advertised.
+// Command wssmatrix runs the destructive-free direct-path and
+// pre-advertisement acceptance checks for one relay-local WSS front. It signs
+// only short-lived tickets with an explicitly supplied temporary test key;
+// that key must be removed from the sidecar before the front is advertised.
 package main
 
 import (
@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/openrung/openrung/wsscore"
 
 	"openrung/internal/client"
 	"openrung/internal/relay"
@@ -70,7 +71,7 @@ func run(args []string) error {
 		return err
 	}
 	var signer *wssbridge.TicketSigner
-	if cfg.mode != "issued" {
+	if cfg.mode != "issued" && cfg.mode != "direct" {
 		signer, err = signerFromSeedFile(cfg.seedFile)
 		if err != nil {
 			return err
@@ -80,6 +81,8 @@ func run(args []string) error {
 	defer cancel()
 
 	switch cfg.mode {
+	case "direct":
+		err = runDirect(ctx, cfg)
 	case "edge":
 		err = runEdge(ctx, cfg, signer)
 	case "origin":
@@ -110,7 +113,7 @@ func parseConfig(args []string) (config, error) {
 	var cfg config
 	fs := flag.NewFlagSet("wssmatrix", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	fs.StringVar(&cfg.mode, "mode", "edge", "matrix mode: edge, origin, revoked, or issued")
+	fs.StringVar(&cfg.mode, "mode", "edge", "matrix mode: direct, edge, origin, revoked, or issued")
 	fs.StringVar(&cfg.url, "url", "", "exact WSS bridge URL")
 	fs.StringVar(&cfg.relayID, "relay-id", "", "exact local relay ID")
 	fs.StringVar(&cfg.frontID, "front-id", "", "exact front ID")
@@ -126,10 +129,19 @@ func parseConfig(args []string) (config, error) {
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
 		return config{}, errors.New("invalid WSS matrix arguments")
 	}
-	if cfg.mode != "edge" && cfg.mode != "origin" && cfg.mode != "revoked" && cfg.mode != "issued" {
-		return config{}, errors.New("mode must be edge, origin, revoked, or issued")
+	if cfg.mode != "direct" && cfg.mode != "edge" && cfg.mode != "origin" && cfg.mode != "revoked" && cfg.mode != "issued" {
+		return config{}, errors.New("mode must be direct, edge, origin, revoked, or issued")
 	}
-	if cfg.url == "" || cfg.relayID == "" || cfg.frontID == "" {
+	if cfg.relayID == "" {
+		return config{}, errors.New("relay-id is required")
+	}
+	if cfg.mode == "direct" {
+		if cfg.descriptorFile == "" || cfg.url != "" || cfg.frontID != "" || cfg.seedFile != "" || cfg.sourceLimit != 0 || cfg.expectCloseWithin != 0 || cfg.originTokenFile != "" || cfg.originTokenNextFile != "" || cfg.ticketResponseFile != "" {
+			return config{}, errors.New("direct mode requires only a relay id and descriptor file")
+		}
+		return cfg, nil
+	}
+	if cfg.url == "" || cfg.frontID == "" {
 		return config{}, errors.New("url, relay-id, and front-id are required")
 	}
 	if cfg.mode != "issued" && cfg.seedFile == "" {
@@ -158,6 +170,18 @@ func parseConfig(args []string) (config, error) {
 		}
 	}
 	return cfg, nil
+}
+
+func runDirect(ctx context.Context, cfg config) error {
+	descriptor, err := loadRelayDescriptor(cfg.descriptorFile, cfg.relayID)
+	if err != nil {
+		return err
+	}
+	if err := runRealityProbe(ctx, cfg, descriptor, "", 0); err != nil {
+		return err
+	}
+	fmt.Println("direct_reality_probe=ok")
+	return nil
 }
 
 func runIssued(ctx context.Context, cfg config) error {
@@ -193,7 +217,7 @@ func runIssued(ctx context.Context, cfg config) error {
 		fmt.Println("broker_ticket_issuance=ok production_reality_probe=ok")
 		return nil
 	}
-	bridge, err := wssbridge.DialClient(ctx, wssbridge.ClientOptions{URL: cfg.url, Ticket: response.Ticket})
+	bridge, err := wsscore.DialClient(ctx, wsscore.ClientOptions{URL: cfg.url, Ticket: response.Ticket})
 	if err != nil {
 		return errors.New("issued production ticket was rejected")
 	}
@@ -529,33 +553,11 @@ func endToEndProbe(ctx context.Context, cfg config, signer *wssbridge.TicketSign
 }
 
 func endToEndProbeTicket(ctx context.Context, cfg config, ticket string) error {
-	raw, err := os.ReadFile(cfg.descriptorFile)
+	descriptor, err := loadRelayDescriptor(cfg.descriptorFile, cfg.relayID)
 	if err != nil {
-		return errors.New("read public relay descriptor")
+		return err
 	}
-	var descriptor relay.Descriptor
-	if err := json.Unmarshal(raw, &descriptor); err != nil {
-		return errors.New("decode public relay descriptor")
-	}
-	if descriptor.ID != cfg.relayID {
-		var list struct {
-			Relays []relay.Descriptor `json:"relays"`
-		}
-		if err := json.Unmarshal(raw, &list); err != nil {
-			return errors.New("decode public relay list")
-		}
-		descriptor = relay.Descriptor{}
-		for _, candidate := range list.Relays {
-			if candidate.ID == cfg.relayID {
-				descriptor = candidate
-				break
-			}
-		}
-	}
-	if descriptor.ID != cfg.relayID {
-		return errors.New("public relay descriptor does not match matrix relay")
-	}
-	bridge, err := wssbridge.DialClient(ctx, wssbridge.ClientOptions{URL: cfg.url, Ticket: ticket})
+	bridge, err := wsscore.DialClient(ctx, wsscore.ClientOptions{URL: cfg.url, Ticket: ticket})
 	if err != nil {
 		return errors.New("start WSS bridge client")
 	}
@@ -565,11 +567,54 @@ func endToEndProbeTicket(ctx context.Context, cfg config, ticket string) error {
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- bridge.Serve(bridgeCtx) }()
 
+	bridgeHost, bridgePort := bridge.Endpoint()
+	if err := runRealityProbe(ctx, cfg, descriptor, bridgeHost, bridgePort); err != nil {
+		return err
+	}
+	cancelBridge()
+	select {
+	case <-serveDone:
+	case <-time.After(5 * time.Second):
+		return errors.New("WSS bridge cleanup timed out")
+	}
+	return nil
+}
+
+func loadRelayDescriptor(path, relayID string) (relay.Descriptor, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return relay.Descriptor{}, errors.New("read public relay descriptor")
+	}
+	var descriptor relay.Descriptor
+	if err := json.Unmarshal(raw, &descriptor); err != nil {
+		return relay.Descriptor{}, errors.New("decode public relay descriptor")
+	}
+	if descriptor.ID != relayID {
+		var list struct {
+			Relays []relay.Descriptor `json:"relays"`
+		}
+		if err := json.Unmarshal(raw, &list); err != nil {
+			return relay.Descriptor{}, errors.New("decode public relay list")
+		}
+		descriptor = relay.Descriptor{}
+		for _, candidate := range list.Relays {
+			if candidate.ID == relayID {
+				descriptor = candidate
+				break
+			}
+		}
+	}
+	if descriptor.ID != relayID {
+		return relay.Descriptor{}, errors.New("public relay descriptor does not match matrix relay")
+	}
+	return descriptor, nil
+}
+
+func runRealityProbe(ctx context.Context, cfg config, descriptor relay.Descriptor, bridgeHost string, bridgePort int) error {
 	proxyPort, err := availableLoopbackPort()
 	if err != nil {
 		return err
 	}
-	bridgeHost, bridgePort := bridge.Endpoint()
 	configJSON, err := client.BuildSingBoxConfig(client.SingBoxConfigInput{
 		Relay: descriptor, Mode: client.ModeProxy,
 		ProxyListenAddress: "127.0.0.1", ProxyListenPort: proxyPort,
@@ -628,12 +673,6 @@ func endToEndProbeTicket(ctx context.Context, cfg config, ticket string) error {
 	case <-runnerDone:
 	case <-time.After(5 * time.Second):
 		return errors.New("sing-box cleanup timed out")
-	}
-	cancelBridge()
-	select {
-	case <-serveDone:
-	case <-time.After(5 * time.Second):
-		return errors.New("WSS bridge cleanup timed out")
 	}
 	return nil
 }

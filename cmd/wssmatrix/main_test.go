@@ -53,6 +53,18 @@ func TestKeygenAndOverlappingKeyring(t *testing.T) {
 }
 
 func TestParseConfigSeparatesEdgeAndOriginInputs(t *testing.T) {
+	direct, err := parseConfig([]string{
+		"-mode", "direct", "-relay-id", "relay_a", "-descriptor-file", "/tmp/descriptor",
+	})
+	if err != nil || direct.mode != "direct" {
+		t.Fatalf("direct config: %#v, %v", direct, err)
+	}
+	if _, err := parseConfig([]string{
+		"-mode", "direct", "-relay-id", "relay_a", "-descriptor-file", "/tmp/descriptor",
+		"-url", "wss://example.cloudfront.net/api/v1/wss-bridge",
+	}); err == nil {
+		t.Fatal("direct mode accepted a WSS endpoint")
+	}
 	edge, err := parseConfig([]string{
 		"-mode", "edge", "-url", "wss://example.cloudfront.net/api/v1/wss-bridge",
 		"-relay-id", "relay_a", "-front-id", "front-a", "-seed-file", "/tmp/seed",

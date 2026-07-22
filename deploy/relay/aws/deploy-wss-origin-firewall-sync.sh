@@ -122,12 +122,12 @@ if aws --profile "$AWS_PROFILE" --region "$CONTROL_REGION" lambda get-function -
   aws --profile "$AWS_PROFILE" --region "$CONTROL_REGION" lambda wait function-updated-v2 --function-name "$FUNCTION_NAME"
   aws --profile "$AWS_PROFILE" --region "$CONTROL_REGION" lambda update-function-configuration \
     --function-name "$FUNCTION_NAME" --runtime python3.13 --handler lambda_function.lambda_handler \
-    --timeout 30 --memory-size 128 \
+    --timeout 120 --memory-size 128 \
     --environment "file://${TMP_DIR}/environment.json" >/dev/null
 else
   aws --profile "$AWS_PROFILE" --region "$CONTROL_REGION" lambda create-function \
     --function-name "$FUNCTION_NAME" --runtime python3.13 --handler lambda_function.lambda_handler \
-    --role "$ROLE_ARN" --timeout 30 --memory-size 128 \
+    --role "$ROLE_ARN" --timeout 120 --memory-size 128 \
     --environment "file://${TMP_DIR}/environment.json" \
     --zip-file "fileb://${TMP_DIR}/function.zip" >/dev/null
 fi
@@ -164,8 +164,18 @@ if [[ "${OPENRUNG_SUBSCRIBE_IP_SPACE:-0}" == 1 ]]; then
     --topic-arn "$SNS_TOPIC" --protocol lambda --notification-endpoint "$FUNCTION_ARN" >/dev/null
 fi
 
-aws --profile "$AWS_PROFILE" --region "$CONTROL_REGION" lambda invoke \
-  --function-name "$FUNCTION_NAME" "${TMP_DIR}/invoke.json" >/dev/null
-jq -e '.ok == true and .target_count == $count' --argjson count "$TARGET_COUNT" "${TMP_DIR}/invoke.json" >/dev/null \
-  || die "post-deployment synchronization failed"
+SYNCED=0
+for attempt in $(seq 1 6); do
+  aws --profile "$AWS_PROFILE" --region "$CONTROL_REGION" lambda invoke \
+    --function-name "$FUNCTION_NAME" --cli-read-timeout 150 "${TMP_DIR}/invoke.json" >/dev/null
+  if jq -e '.ok == true and .target_count == $count' --argjson count "$TARGET_COUNT" "${TMP_DIR}/invoke.json" >/dev/null; then
+    SYNCED=1
+    break
+  fi
+  jq -e '.ok == true and .skipped == true' "${TMP_DIR}/invoke.json" >/dev/null \
+    || die "post-deployment synchronization failed"
+  [[ "$attempt" -lt 6 ]] || break
+  sleep 10
+done
+[[ "$SYNCED" == 1 ]] || die "post-deployment synchronization remained lease-held"
 printf 'deployed targets=%s function=%s\n' "$TARGET_COUNT" "$FUNCTION_NAME"

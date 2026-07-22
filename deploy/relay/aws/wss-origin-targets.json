@@ -10,5 +10,37 @@
   {
     "instance": "witty-otter",
     "region": "ap-south-1"
+  },
+  {
+    "instance": "noble-pebble",
+    "region": "eu-north-1"
+  },
+  {
+    "instance": "swift-harbor",
+    "region": "ap-southeast-1"
+  },
+  {
+    "instance": "silly-lemur",
+    "region": "ap-southeast-1"
+  },
+  {
+    "instance": "zesty-tapir",
+    "region": "ap-east-1"
+  },
+  {
+    "instance": "sturdy-otter",
+    "region": "ap-northeast-2"
+  },
+  {
+    "instance": "grumpy-lantern",
+    "region": "ap-southeast-3"
+  },
+  {
+    "instance": "lucky-harbor",
+    "region": "sa-east-1"
+  },
+  {
+    "instance": "sleepy-salmon",
+    "region": "ap-southeast-2"
   }
 ]

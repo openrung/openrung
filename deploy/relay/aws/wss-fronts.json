@@ -25,5 +25,86 @@
     "distribution_id": "EUR0ML96FEMWU",
     "distribution_domain": "d2ruumwujr6ln0.cloudfront.net",
     "url": "wss://d2ruumwujr6ln0.cloudfront.net/api/v1/wss-bridge"
+  },
+  {
+    "relay": "noble-pebble",
+    "relay_id": "relay_1618b1b2866dc23e235e7beee0e3e0df",
+    "origin_host": "noble-pebble-origin.openrung.org",
+    "front_id": "noble-pebble-cf-a",
+    "distribution_id": "EI2CKOQAGGTNT",
+    "distribution_domain": "d1ojfh7p5a3j3i.cloudfront.net",
+    "url": "wss://d1ojfh7p5a3j3i.cloudfront.net/api/v1/wss-bridge"
+  },
+  {
+    "relay": "swift-harbor",
+    "relay_id": "relay_931b8ac564cd1a59425c0f9c3af8d039",
+    "origin_host": "swift-harbor-origin.openrung.org",
+    "front_id": "swift-harbor-cf-a",
+    "distribution_id": "E3OGTDZD57XEHJ",
+    "distribution_domain": "d16l8ib5ki8pgm.cloudfront.net",
+    "url": "wss://d16l8ib5ki8pgm.cloudfront.net/api/v1/wss-bridge"
+  },
+  {
+    "relay": "silly-lemur",
+    "relay_id": "relay_a14eb0d63b2955b301ed4c3a44a50ee6",
+    "origin_host": "silly-lemur-origin.openrung.org",
+    "front_id": "silly-lemur-cf-a",
+    "distribution_id": "E2A6UAATC7QMRL",
+    "distribution_domain": "d246niwuqj9ptm.cloudfront.net",
+    "url": "wss://d246niwuqj9ptm.cloudfront.net/api/v1/wss-bridge"
+  },
+  {
+    "relay": "zesty-tapir",
+    "relay_id": "relay_96af4ac177d8125588ee5fb36c484f6a",
+    "origin_host": "zesty-tapir-origin.openrung.org",
+    "front_id": "zesty-tapir-cf-a",
+    "distribution_id": "E3N7SXFVGB1WO5",
+    "distribution_domain": "d31wn3la53sowp.cloudfront.net",
+    "url": "wss://d31wn3la53sowp.cloudfront.net/api/v1/wss-bridge"
+  },
+  {
+    "relay": "sturdy-otter",
+    "relay_id": "relay_7433e9b74deb6ecab7b37b173ad0ed61",
+    "origin_host": "sturdy-otter-origin.openrung.org",
+    "front_id": "sturdy-otter-cf-a",
+    "distribution_id": "E1ZMBIUASJU99Q",
+    "distribution_domain": "dcqyqtg459acp.cloudfront.net",
+    "url": "wss://dcqyqtg459acp.cloudfront.net/api/v1/wss-bridge"
+  },
+  {
+    "relay": "cosmic-otter",
+    "relay_id": "relay_0c361e82219f315f8a8da6345854ac0f",
+    "origin_host": "cosmic-otter-origin.openrung.org",
+    "front_id": "cosmic-otter-cf-a",
+    "distribution_id": "E1ZAELEJSCOE59",
+    "distribution_domain": "d2r3j5fc0odli5.cloudfront.net",
+    "url": "wss://d2r3j5fc0odli5.cloudfront.net/api/v1/wss-bridge"
+  },
+  {
+    "relay": "grumpy-lantern",
+    "relay_id": "relay_c2e15212f3acf4d0c1f83fca18f646a9",
+    "origin_host": "grumpy-lantern-origin.openrung.org",
+    "front_id": "grumpy-lantern-cf-a",
+    "distribution_id": "E144J9KUZ7LZOJ",
+    "distribution_domain": "d176nwbfbkk114.cloudfront.net",
+    "url": "wss://d176nwbfbkk114.cloudfront.net/api/v1/wss-bridge"
+  },
+  {
+    "relay": "lucky-harbor",
+    "relay_id": "relay_a71d67222491c7fa45471003d275c66b",
+    "origin_host": "lucky-harbor-origin.openrung.org",
+    "front_id": "lucky-harbor-cf-a",
+    "distribution_id": "E3TQQG5F41MTSV",
+    "distribution_domain": "d3nm9rb28zt5wx.cloudfront.net",
+    "url": "wss://d3nm9rb28zt5wx.cloudfront.net/api/v1/wss-bridge"
+  },
+  {
+    "relay": "sleepy-salmon",
+    "relay_id": "relay_0e66a951e9775ff14ace7bff7eaa3645",
+    "origin_host": "sleepy-salmon-origin.openrung.org",
+    "front_id": "sleepy-salmon-cf-a",
+    "distribution_id": "E3V0KQJGUQK84O",
+    "distribution_domain": "dqlcgxhsgcgub.cloudfront.net",
+    "url": "wss://dqlcgxhsgcgub.cloudfront.net/api/v1/wss-bridge"
   }
 ]

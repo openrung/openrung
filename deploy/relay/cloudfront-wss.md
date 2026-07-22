@@ -299,12 +299,23 @@ The synchronizer must:
 4. Alert and fail closed if the provider quota cannot hold the new set.
 5. Update IPv4 and IPv6 independently.
 
-As verified on 2026-07-21, the feed contained 45 IPv4 and 3 IPv6
+As verified on 2026-07-22, the feed contained 45 IPv4 and 3 IPv6
 `CLOUDFRONT_ORIGIN_FACING` ranges. That is an observation, not a guaranteed
 limit. Lightsail currently documents up to 60 source addresses per address
 family; see [Control instance traffic with firewalls in
 Lightsail](https://docs.aws.amazon.com/lightsail/latest/userguide/understanding-firewall-and-port-mappings-in-amazon-lightsail.html).
 Keep origin IPv4-only unless IPv6 is operationally required.
+
+The checked-in Lambda synchronizer covers only the explicit Lightsail targets
+in `wss-origin-targets.json`. A non-Lightsail relay, such as a Hetzner origin,
+must have a dedicated provider firewall with TCP `8443` restricted to the same
+official IPv4 set. Do not attach the origin to a shared volunteer firewall.
+Refresh that dedicated rule set whenever `ip-ranges.json` changes, adding new
+ranges before removing retired ranges, and repeat the unauthenticated-origin
+and full WSS probes before considering the refresh complete. Until provider
+automation is installed, this is a manual operational obligation; stale rules
+fail closed and can make only that relay's WSS front unavailable, without
+affecting direct Reality on `443`.
 
 ## Quotas and capacity planning
 
@@ -374,10 +385,14 @@ AWS IP-range maintenance is shared control-plane automation:
   deploys the least-privilege Lambda and immediately converges every listed
   relay to the official `CLOUDFRONT_ORIGIN_FACING` IPv4 ranges on TCP `8443`.
   It preserves every unrelated port rule and updates add-before-remove.
-- `foundation-wss-host.sh` migrates one legacy Foundation relay to a pinned
-  image and stable identity, installs its own loopback sidecar, installs its
-  own Caddy TLS origin on `8443`, and audits the result. Secret files are
-  streamed over SSH stdin, must be mode `0600`, and are never command-line
+  The 120-second function bound and 180-second distributed lease allow a full
+  multi-region fleet pass while overlapping invocations remain serialized.
+- `foundation-wss-host.sh migrate` moves a legacy Foundation relay to a pinned
+  image and stable identity. `stabilize` handles a host that already has the
+  canonical environment file but lacks a persistent identity. Both paths keep
+  recoverable checkpoints. The same helper installs the relay's own loopback
+  sidecar and Caddy TLS origin on `8443`, then audits the result. Secret files
+  are streamed over SSH stdin, must be mode `0600`, and are never command-line
   arguments.
 - `cloudfront-wss-front.sh` creates or audits exactly one distribution whose
   only origin is that relay's origin hostname. The origin token comes from a
@@ -389,6 +404,23 @@ Do not put `OPENRUNG_WSS_FRONTS` in the relay environment until the complete
 matrix below passes for that exact distribution. Generate a temporary ticket
 key, add only its public key to the relay's overlapping verifier set, and keep
 its private seed on the operator workstation:
+
+Before changing the host, fetch its signed public descriptor and prove direct
+Reality end to end. Direct mode starts sing-box against only the selected relay
+and never requests or accepts a WSS ticket:
+
+```sh
+go run ./cmd/wssmatrix \
+  -mode direct \
+  -relay-id relay_EXACT \
+  -descriptor-file /absolute/private/public-relay-descriptor.json \
+  -sing-box /absolute/path/to/sing-box
+```
+
+Use `foundation-wss-host.sh migrate` when the host still has the legacy
+`volunteer.env`. Use `stabilize` when it already has `relay.env` but lacks
+`OPENRUNG_IDENTITY_SEED`. Stop if the direct probe, checkpoint preconditions,
+or post-transition registration fails.
 
 ```sh
 go run ./cmd/wssmatrix keygen \

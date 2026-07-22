@@ -28,7 +28,10 @@ LOCK_NAME = "cloudfront-origin-firewall-sync"
 MAX_FEED_BYTES = 5 << 20
 MAX_PREFIXES = 60
 MAX_TARGETS = 100
-LOCK_SECONDS = 120
+# The provider calls span every configured region sequentially. Keep the lease
+# longer than the Lambda timeout so a timed-out invocation remains fail-closed
+# and cannot overlap its successor while AWS finishes tearing it down.
+LOCK_SECONDS = 180
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
 REGION_RE = re.compile(r"^[a-z]{2}(?:-gov)?-[a-z]+-\d$")
 

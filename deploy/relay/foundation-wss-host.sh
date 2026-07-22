@@ -3,6 +3,7 @@
 #
 # Commands:
 #   migrate RELAY HOST REALITY_PUBLIC_KEY IMAGE
+#   stabilize RELAY HOST REALITY_PUBLIC_KEY IMAGE
 #   sidecar RELAY HOST RELAY_ID FRONT_ID IMAGE
 #   origin-tls RELAY HOST ORIGIN_HOST
 #   matrix-limits RELAY HOST enable|restore
@@ -13,6 +14,9 @@
 # currently active VLESS UUID, Reality private key, and short ID directly on
 # the host, adds a new persistent Ed25519 identity seed, and transactionally
 # starts the pinned image.  No private key or Foundation token is read back.
+# `stabilize` provides the same recoverable identity transition for a host that
+# already uses /etc/openrung/relay.env but predates OPENRUNG_IDENTITY_SEED.  It
+# keeps both a stopped-container checkpoint and a mode-0600 environment backup.
 #
 # `sidecar` requires these local mode-0600 files:
 #   OPENRUNG_WSS_TICKET_PUBLIC_KEYS_FILE  public verification key ring
@@ -30,7 +34,7 @@ KNOWN_HOSTS="${OPENRUNG_KNOWN_HOSTS:-$HOME/.ssh/known_hosts}"
 SSH_OPTS=(-i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=${KNOWN_HOSTS}")
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
-[[ "$COMMAND" =~ ^(migrate|sidecar|origin-tls|matrix-limits|advertise|audit)$ ]] || die "unknown command"
+[[ "$COMMAND" =~ ^(migrate|stabilize|sidecar|origin-tls|matrix-limits|advertise|audit)$ ]] || die "unknown command"
 [[ "$RELAY" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || die "relay name is invalid"
 [[ "$HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]{0,254}$ ]] || die "host is invalid"
 [[ -f "$SSH_KEY" && -f "$KNOWN_HOSTS" ]] || die "SSH key or known_hosts is missing"
@@ -168,6 +172,141 @@ REMOTE
       "sudo bash -s -- '$RELAY' '$REALITY_PUBLIC_KEY' '$IMAGE' '$CHECKPOINT'" <"$REMOTE_SCRIPT"
     ;;
 
+  stabilize)
+    REALITY_PUBLIC_KEY="${4:-}"
+    IMAGE="${5:-}"
+    [[ "$REALITY_PUBLIC_KEY" =~ ^[A-Za-z0-9_-]{40,64}$ ]] || die "Reality public key is invalid"
+    [[ "$IMAGE" =~ ^[A-Za-z0-9][A-Za-z0-9:/@._-]*$ ]] || die "image is invalid"
+    CHECKPOINT="openrung-relay-pre-wss-$(date -u +%Y%m%d%H%M%S)"
+    ENV_BACKUP="/etc/openrung/relay.env.pre-wss-stabilize-$(date -u +%Y%m%d%H%M%S)"
+    REMOTE_SCRIPT="$(mktemp)"
+    trap 'rm -f "$REMOTE_SCRIPT"' EXIT
+    umask 077
+    cat >"$REMOTE_SCRIPT" <<'REMOTE'
+set -euo pipefail
+relay="$1" public_key="$2" image="$3" checkpoint="$4" env_backup="$5"
+canonical=/etc/openrung/relay.env
+legacy=/etc/openrung/volunteer.env
+candidate=openrung-relay
+xray_snapshot="/run/openrung-${relay}-xray-config.json"
+
+test "$(sudo docker inspect -f '{{.State.Running}}' "$candidate" 2>/dev/null)" = true
+sudo test -f "$canonical"
+! sudo grep -q '^OPENRUNG_IDENTITY_SEED=' "$canonical"
+! sudo grep -q '^OPENRUNG_WSS_FRONTS=' "$canonical"
+! sudo test -e "$env_backup"
+! sudo docker ps -a --format '{{.Names}}' | grep -qx "$checkpoint"
+sudo docker exec "$candidate" test -f /tmp/openrung-xray-config.json
+sudo sh -c "umask 077; docker exec '$candidate' cat /tmp/openrung-xray-config.json > '$xray_snapshot'"
+sudo chown root:root "$xray_snapshot"
+sudo chmod 0600 "$xray_snapshot"
+trap 'sudo rm -f "$xray_snapshot" "$canonical.tmp"' EXIT
+
+sudo install -d -m 0700 -o root -g root /etc/openrung
+sudo install -m 0600 -o root -g root "$canonical" "$env_backup"
+sudo python3 - "$canonical" "$canonical.tmp" "$public_key" "$xray_snapshot" <<'PY'
+import base64, json, os, re, secrets, sys
+source, output, public_key, xray_snapshot = sys.argv[1:]
+with open(source, encoding="utf-8") as handle:
+    lines = handle.read().splitlines()
+managed = {
+    "OPENRUNG_IDENTITY_SEED", "OPENRUNG_CLIENT_ID", "OPENRUNG_REALITY_PRIVATE_KEY",
+    "OPENRUNG_REALITY_PUBLIC_KEY", "OPENRUNG_SHORT_ID", "OPENRUNG_CONNECTION_LOG",
+    "OPENRUNG_LISTEN_HOST", "OPENRUNG_WSS_FRONTS", "OPENRUNG_XRAY_PATH", "OPENRUNG_CONFIG_OUT",
+}
+kept = []
+seen = set()
+for line in lines:
+    if not line or line.startswith("#"):
+        continue
+    if "=" not in line:
+        raise SystemExit("canonical env contains an invalid line")
+    key, value = line.split("=", 1)
+    if not re.fullmatch(r"OPENRUNG_[A-Z0-9_]+", key) or key in seen:
+        raise SystemExit("canonical env contains an invalid or duplicate key")
+    seen.add(key)
+    if key not in managed:
+        kept.append((key, value))
+required = {"OPENRUNG_FOUNDATION_TOKEN", "OPENRUNG_PUBLIC_HOST", "OPENRUNG_LABEL"}
+values = dict(kept)
+if not required.issubset(values) or any(not values[key] or any(ch.isspace() for ch in values[key]) for key in required):
+    raise SystemExit("canonical env is missing a required value")
+with open(xray_snapshot, encoding="utf-8") as handle:
+    config = json.load(handle)
+inbound = config["inbounds"][0]
+client_id = inbound["settings"]["clients"][0]["id"]
+reality = inbound["streamSettings"]["realitySettings"]
+private_key = reality["privateKey"]
+short_id = reality["shortIds"][0]
+checks = {
+    "OPENRUNG_CLIENT_ID": (client_id, r"[0-9a-fA-F-]{36}"),
+    "OPENRUNG_REALITY_PRIVATE_KEY": (private_key, r"[A-Za-z0-9_-]{40,64}"),
+    "OPENRUNG_REALITY_PUBLIC_KEY": (public_key, r"[A-Za-z0-9_-]{40,64}"),
+    "OPENRUNG_SHORT_ID": (short_id, r"[0-9a-fA-F]{16}"),
+}
+for key, (value, pattern) in checks.items():
+    if not re.fullmatch(pattern, value):
+        raise SystemExit(f"generated Xray config contains invalid {key}")
+kept.extend([
+    ("OPENRUNG_LISTEN_HOST", "0.0.0.0"),
+    ("OPENRUNG_CONNECTION_LOG", "false"),
+    ("OPENRUNG_CLIENT_ID", client_id),
+    ("OPENRUNG_REALITY_PRIVATE_KEY", private_key),
+    ("OPENRUNG_REALITY_PUBLIC_KEY", public_key),
+    ("OPENRUNG_SHORT_ID", short_id),
+    ("OPENRUNG_IDENTITY_SEED", base64.b64encode(secrets.token_bytes(32)).decode("ascii")),
+])
+fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(fd, "w", encoding="utf-8") as handle:
+    for key, value in kept:
+        if "\n" in value or "\r" in value:
+            raise SystemExit("env value contains a newline")
+        handle.write(f"{key}={value}\n")
+PY
+sudo chown root:root "$canonical.tmp"
+sudo chmod 0600 "$canonical.tmp"
+sudo mv "$canonical.tmp" "$canonical"
+sudo rm -f "$xray_snapshot"
+
+rollback() {
+  sudo docker rm -f "$candidate" >/dev/null 2>&1 || true
+  sudo install -m 0600 -o root -g root "$env_backup" "$canonical" || true
+  if sudo docker ps -a --format '{{.Names}}' | grep -qx "$checkpoint"; then
+    sudo docker rename "$checkpoint" "$candidate" || true
+    sudo docker update --restart unless-stopped "$candidate" >/dev/null 2>&1 || true
+    sudo docker start "$candidate" >/dev/null 2>&1 || true
+  fi
+}
+trap rollback ERR
+sudo docker pull "$image" >/dev/null
+sudo docker stop "$candidate" >/dev/null
+sudo docker rename "$candidate" "$checkpoint"
+sudo docker update --restart no "$checkpoint" >/dev/null
+sudo docker run -d --name "$candidate" --restart unless-stopped \
+  --network host --cap-drop ALL --cap-add NET_BIND_SERVICE --read-only --tmpfs /tmp \
+  --env-file "$canonical" "$image" >/dev/null
+
+for _ in $(seq 1 30); do
+  state="$(sudo docker inspect -f '{{.State.Running}} {{.RestartCount}}' "$candidate" 2>/dev/null || true)"
+  if [ "$state" = "true 0" ] && sudo docker logs "$candidate" 2>&1 | grep -q 'registered relay'; then
+    break
+  fi
+  sleep 2
+done
+test "$(sudo docker inspect -f '{{.State.Running}} {{.RestartCount}}' "$candidate")" = "true 0"
+line="$(sudo docker logs "$candidate" 2>&1 | grep 'registered relay' | tail -1)"
+relay_id="$(printf '%s\n' "$line" | sed -n 's/.* id=\(relay_[0-9a-f]\{32\}\).*/\1/p')"
+test -n "$relay_id"
+if sudo test -f "$legacy"; then
+  sudo mv "$legacy" "${legacy}.pre-wss-$(date -u +%Y%m%d%H%M%S)"
+fi
+trap - ERR
+printf 'relay=%s relay_id=%s checkpoint=%s env_backup=%s\n' "$relay" "$relay_id" "$checkpoint" "$env_backup"
+REMOTE
+    ssh "${SSH_OPTS[@]}" "${SSH_USER}@${HOST}" \
+      "sudo bash -s -- '$RELAY' '$REALITY_PUBLIC_KEY' '$IMAGE' '$CHECKPOINT' '$ENV_BACKUP'" <"$REMOTE_SCRIPT"
+    ;;
+
   sidecar)
     RELAY_ID="${4:-}"
     FRONT_ID="${5:-}"
@@ -182,7 +321,7 @@ REMOTE
       mode="$(stat -f '%Lp' "$file" 2>/dev/null || stat -c '%a' "$file")"
       [[ "$mode" == 600 ]] || die "sidecar input files must have mode 0600"
     done
-    jq -e 'type == "array" and length >= 1 and length <= 2 and unique == . and all(.[]; type == "string" and length >= 32 and length <= 512 and test("^[^[:space:]]+$"))' "$TOKENS_FILE" >/dev/null \
+    jq -e 'type == "array" and length >= 1 and length <= 2 and (length == (unique | length)) and all(.[]; type == "string" and length >= 32 and length <= 512 and test("^[^[:space:]]+$"))' "$TOKENS_FILE" >/dev/null \
       || die "origin token ring is invalid"
     grep -Eq '^[A-Za-z0-9+/=]+(,[A-Za-z0-9+/=]+)*$' "$TICKET_FILE" || die "ticket public-key file is invalid"
     TMP_ENV="$(mktemp)"
