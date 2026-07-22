@@ -233,16 +233,72 @@ sequenceDiagram
     V->>V: Xray exits to destination
 ```
 
+### Relay-local WSS fallback (desktop client ↔ Foundation relay)
+
+Eligible direct-mode Foundation relays can expose a CDN-fronted WebSocket
+fallback when a client network blocks the relay's raw IP. This is not the Relay
+Hub and does not introduce a gateway fleet: every advertised front has that
+same relay as its CDN origin, and the relay-local sidecar can dial only its
+fixed loopback Reality listener. Direct Reality remains the desktop client's
+first choice, and Reality still authenticates and encrypts the complete inner
+connection end to end. See [`wss-fallback.md`](wss-fallback.md) for the full
+protocol, failure-classification, and rollout contract.
+
+The nested `wsscore/` Go module
+(`github.com/openrung/openrung/wsscore`) is the single reusable implementation
+of the WSS data-plane mechanics. Both the desktop client and the relay-local
+sidecar consume it. It owns the protocol constants, strict advertised-front URL
+validation, binary-only WebSocket byte-stream adapter, shared bounded yamux
+configuration, opaque bidirectional copying, lifecycle limits, and the optional
+socket-control hook a future Android integration can connect to
+`VpnService.protect`.
+
+The module deliberately does not own system policy or authority. Broker ticket
+issuance, relay-local ticket verification and replay persistence, CDN origin
+authentication, per-source admission policy, relay capability signing,
+CloudFront/deployment configuration, desktop direct-first and health/telemetry
+orchestration, and every platform UI remain in this repository's surrounding
+packages and applications. A ticket is only an opaque bearer value to the
+shared transport; `wsscore` never selects a relay or destination.
+
+#### wsscore pin/upgrade procedure
+
+1. Edit `wsscore/` in an openrung PR. The root and desktop Go modules consume
+   the in-tree source through local `replace` directives, keeping the desktop
+   client and relay sidecar on one implementation in this repository.
+2. Bump `wsscore/VERSION` in the same PR. Except for a `README.md`-only edit,
+   the Go checks reject a module change without a fresh, previously untagged
+   semantic version.
+3. Merge. The tag workflow creates `wsscore/v$(VERSION)` on the merge commit,
+   making that nested-module version fetchable without copying its code into a
+   consumer repository. Golden and live interoperability tests guard its public
+   protocol and transport behavior.
+4. External clients explicitly update their pinned module version, integrate
+   their platform socket-routing and fallback policy, run their own tests, and
+   publish their own application release. Updating or tagging `wsscore` does
+   not release a mobile app.
+
+Local cross-repository development may use an uncommitted `go.work` or local
+module replacement. Released consumers pin a `wsscore/vX.Y.Z` tag.
+
 ### Mobile Client
 
 The mobile client is an iOS/Android app using VPN mode. It asks the broker for
 relay candidates, configures a compatible VLESS Reality client, and routes
 device traffic through the selected relay.
 
-It is developed in a separate React Native repository with native VPN modules:
+Android and iOS are maintained outside this repository, with their own native
+VPN integration, tests, version pins, and release processes:
 
 - Android uses `VpnService` plus the embedded tunnel engine.
 - iOS uses a `NetworkExtension` packet tunnel provider.
+
+The reusable `wsscore` module makes a future transport integration possible but
+does not restore or ship WSS fallback on either platform. Android must still
+wire socket protection and the ticket/direct-first policy in its repository;
+iOS must perform its corresponding platform integration. Each mobile release
+must advertise support only after that repository independently implements and
+tests the complete contract.
 
 ### Future Dedicated Exit Mode
 

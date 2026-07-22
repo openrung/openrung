@@ -1,0 +1,46 @@
+name: wsscore-tag
+
+# Tags wsscore/v$(wsscore/VERSION) on the merge commit whenever VERSION
+# changes on main, making the nested module fetchable at that version without
+# a manual tagging step. The go-checks wsscore-version job enforces the
+# VERSION bump at PR time, so merging a wsscore change IS the release.
+# Idempotent ONLY when an existing tag already points at this commit; a tag
+# pointing anywhere else fails the job (a version must never silently mean
+# different code).
+
+on:
+  push:
+    branches: [main]
+    paths: [wsscore/VERSION]
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag wsscore version if missing
+        run: |
+          version="$(tr -d '[:space:]' < wsscore/VERSION)"
+          if ! printf '%s\n' "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "invalid wsscore/VERSION \"$version\" (want X.Y.Z)" >&2
+            exit 1
+          fi
+          tag="wsscore/v$version"
+          # Resolve the existing tag to its COMMIT (the ^{} peeled form covers
+          # annotated tags; for lightweight tags the plain ref is the commit).
+          existing="$(git ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}" | awk 'END {print $1}')"
+          if [ -n "$existing" ]; then
+            if [ "$existing" = "$GITHUB_SHA" ]; then
+              echo "$tag already points at $GITHUB_SHA; nothing to do"
+              exit 0
+            fi
+            echo "$tag already exists but points at $existing, not this commit ($GITHUB_SHA)." >&2
+            echo "A published version must never change meaning: bump wsscore/VERSION instead." >&2
+            exit 1
+          fi
+          git tag "$tag"
+          git push origin "refs/tags/$tag"

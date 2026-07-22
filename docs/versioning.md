@@ -11,6 +11,27 @@ implies that two components must be deployed together.
 | Volunteer desktop | `desktop-volunteer/VERSION` | `volunteer-vX.Y.Z` | `desktop-volunteer/X.Y.Z` |
 | Desktop client | `desktop/wails.json` → `info.productVersion` | `vX.Y.Z` | `X.Y.Z` in the About UI, native metadata, and broker telemetry |
 
+Shared Go modules are versioned separately from deployable applications:
+
+| Module | Version source | Module tag | Consumers |
+| --- | --- | --- | --- |
+| `github.com/openrung/openrung/punchcore` | `punchcore/VERSION` | `punchcore/vX.Y.Z` | Relay/hub and desktop code in this repository; pinned mobile punch bindings |
+| `github.com/openrung/openrung/wsscore` | `wsscore/VERSION` | `wsscore/vX.Y.Z` | Desktop client and relay sidecar in this repository; separately released mobile clients when they adopt WSS |
+
+These nested-module versions identify reusable code, not a running service or
+an application release. The root and desktop modules use local replacements so
+the server and desktop builds in one commit consume the same source. An
+external mobile repository instead pins an immutable module tag and updates it
+through its own reviewed dependency change. A new `wsscore` tag therefore does
+not make Android or iOS WSS-capable and does not publish either mobile app.
+
+The module workflows follow the same release rule. Except for a module
+`README.md`-only edit, a pull request that changes files in a module must also
+advance that module's strict `X.Y.Z` `VERSION`. CI rejects a version whose
+nested tag already exists. After merge, the matching tag workflow creates
+`punchcore/vX.Y.Z` or `wsscore/vX.Y.Z` on the merge commit. Consumers pin that
+tag rather than copying or hand-mirroring the implementation.
+
 The desktop client uses Wails' `info.productVersion` as its single version
 source. The frontend build and Go linker flags consume that value so the About
 screen, native package metadata, HTTP headers, and broker telemetry all report
@@ -62,6 +83,9 @@ replace compatibility contracts:
 - the reverse tunnel uses `tunnel.ProtocolVersion` plus additive capability
   flags;
 - NAT punching uses `punchcore.ProtoVersion` and its ALPN;
+- Reality-over-WSS uses the protocol constants and interoperability contract
+  owned by `wsscore`; its module version does not replace its on-wire protocol
+  version;
 - `relay_version` identifies the relay runtime and is not the relay hub,
   broker, or client version.
 

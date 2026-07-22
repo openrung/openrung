@@ -1,0 +1,104 @@
+{
+  "protocol": {
+    "version": 1,
+    "bridge_path": "/api/v1/wss-bridge",
+    "subprotocol": "openrung-wss-bridge-v1",
+    "ticket_authorization_header": "Authorization",
+    "ticket_bearer_prefix": "Bearer ",
+    "max_fronts": 4,
+    "max_front_id_bytes": 64,
+    "max_front_url_bytes": 512,
+    "max_ticket_bytes": 4096
+  },
+  "limits": {
+    "default_handshake_timeout": "10s",
+    "max_handshake_timeout": "1m0s",
+    "default_ping_interval": "30s",
+    "default_ping_write_timeout": "10s",
+    "max_ping_interval": "10m0s",
+    "max_ping_write_timeout": "1m0s",
+    "default_websocket_read_max": 1048576,
+    "max_websocket_read_max": 16777216,
+    "default_max_concurrent_streams": 128,
+    "max_concurrent_streams": 1024,
+    "default_stream_idle_timeout": "5m0s",
+    "default_no_stream_idle_timeout": "2m0s",
+    "default_session_lifetime": "6h0m0s",
+    "max_session_lifetime": "24h0m0s"
+  },
+  "front_json": {
+    "full": "{\"id\":\"front-a\",\"url\":\"wss://cdn.example/api/v1/wss-bridge\",\"protocol_version\":1}",
+    "zero": "{\"id\":\"\",\"url\":\"\",\"protocol_version\":0}",
+    "normalized_set": "[{\"id\":\"tehran-a\",\"url\":\"wss://d111111abcdef8.cloudfront.net/api/v1/wss-bridge\",\"protocol_version\":1},{\"id\":\"tehran-b\",\"url\":\"wss://d222222abcdef8.cloudfront.net/api/v1/wss-bridge\",\"protocol_version\":1}]"
+  },
+  "front_url_normalization": {
+    " WSS://D111111ABCDEF8.CLOUDFRONT.NET/api/v1/wss-bridge ": "wss://d111111abcdef8.cloudfront.net/api/v1/wss-bridge",
+    "wss://a.cdn.example/api/v1/wss-bridge": "wss://a.cdn.example/api/v1/wss-bridge"
+  },
+  "front_id_normalization": {
+    " Tehran-A ": "tehran-a",
+    "front_1.example": "front_1.example"
+  },
+  "invalid_front_urls": [
+    "",
+    "https://cdn.example/api/v1/wss-bridge",
+    "ws://cdn.example/api/v1/wss-bridge",
+    "wss://localhost/api/v1/wss-bridge",
+    "wss://192.0.2.10/api/v1/wss-bridge",
+    "wss://127.0.0.01/api/v1/wss-bridge",
+    "wss://127.1/api/v1/wss-bridge",
+    "wss://0177.0.0.1/api/v1/wss-bridge",
+    "wss://0x7f.0.0.1/api/v1/wss-bridge",
+    "wss://127.0.0.0x1/api/v1/wss-bridge",
+    "wss://1.2.3.0x7f/api/v1/wss-bridge",
+    "wss://[2001:db8::1]/api/v1/wss-bridge",
+    "wss://cdn.example:443/api/v1/wss-bridge",
+    "wss://cdn.example:/api/v1/wss-bridge",
+    "wss://user@cdn.example/api/v1/wss-bridge",
+    "wss://cdn.example/other",
+    "wss://cdn.example/api/v1/wss%2Dbridge",
+    "wss://cdn.example/api/v1/wss-bridge?ticket=secret",
+    "wss://cdn.example/api/v1/wss-bridge?",
+    "wss://cdn.example/api/v1/wss-bridge#relay",
+    "wss://cdn.example./api/v1/wss-bridge",
+    "wss://-cdn.example/api/v1/wss-bridge",
+    "wss://cdn.example/api/v1/wss-bridge\n"
+  ],
+  "invalid_front_ids": [
+    "",
+    "-front",
+    "front-",
+    "Front-A",
+    "front/a",
+    "front a",
+    "front\n"
+  ],
+  "normalized_fronts": [
+    {
+      "id": "tehran-a",
+      "url": "wss://d111111abcdef8.cloudfront.net/api/v1/wss-bridge",
+      "protocol_version": 1
+    },
+    {
+      "id": "tehran-b",
+      "url": "wss://d222222abcdef8.cloudfront.net/api/v1/wss-bridge",
+      "protocol_version": 1
+    }
+  ],
+  "yamux": {
+    "accept_backlog": 256,
+    "enable_keepalive": true,
+    "keepalive_interval": "15s",
+    "connection_write_timeout": "10s",
+    "max_stream_window_size": 262144,
+    "stream_open_timeout": "10s",
+    "stream_close_timeout": "5m0s",
+    "discard_logs": true
+  },
+  "lifecycle_defaults": {
+    "max_concurrent_streams": 128,
+    "stream_idle_timeout": "5m0s",
+    "no_stream_idle_timeout": "2m0s",
+    "session_lifetime": "6h0m0s"
+  }
+}

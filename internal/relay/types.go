@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/openrung/openrung/wsscore"
 )
 
 const (
@@ -25,7 +27,7 @@ const (
 	// WSSProtocolVersion is the opaque Reality-over-WebSocket protocol spoken
 	// between a desktop client's loopback adapter and a relay-local sidecar.
 	// Unknown versions are ignored so direct Reality remains backward-compatible.
-	WSSProtocolVersion = 1
+	WSSProtocolVersion = wsscore.ProtocolVersion
 
 	// ChannelAPI and ChannelMirror name the two signed relay-list channels.
 	// The value lives inside the signed body so a long-lived mirror artifact
@@ -164,11 +166,7 @@ type GeoLocation struct {
 // relay. ID is bound into tickets and to that front's origin-token set; URL is
 // public and contains no credential. Multiple entries let one relay use
 // independent CDN distributions without creating a shared data-plane service.
-type WSSFrontDescriptor struct {
-	ID              string `json:"id"`
-	URL             string `json:"url"`
-	ProtocolVersion int    `json:"protocol_version"`
-}
+type WSSFrontDescriptor = wsscore.Front
 
 type Descriptor struct {
 	ID         string `json:"id"`

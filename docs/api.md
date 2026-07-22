@@ -735,8 +735,13 @@ The endpoint exists only when `OPENRUNG_WSS_TICKET_SIGNING_SEED` is configured.
 `400` reports malformed or incomplete JSON, `409` asks the client to refresh a
 relay whose lease is too close to expiry, `429` includes a bounded
 `Retry-After`, and `503` reports temporary store failure. This fallback is
-implemented by the desktop client in this repository. Android and iOS live in
-separate repositories and are not restored or updated by this API change.
+implemented by the desktop client in this repository. Its opaque WebSocket and
+multiplexing mechanics come from the shared, independently tagged
+`github.com/openrung/openrung/wsscore` module; HTTPS ticket acquisition,
+broker-front failover, and relay-health policy remain outside that module.
+Android and iOS live in separate repositories and release independently. A
+`wsscore` tag does not restore, update, or make either mobile client
+WSS-capable.
 
 ## Mirror Relay List
 

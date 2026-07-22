@@ -11,11 +11,13 @@ on:
       - 'cmd/broker/**'
       - 'internal/broker/**'
       - 'internal/relay/**'
+      - 'internal/wssbridge/**'
       - 'go.mod'
       - 'go.sum'
-      # The root go.mod replaces punchcore with ./punchcore, so the broker's
-      # `go mod download` layer depends on punchcore/go.mod too.
+      # The root go.mod replaces nested modules with local directories, so the
+      # broker's build/download layers depend on their contents too.
       - 'punchcore/go.mod'
+      - 'wsscore/**'
       - 'deploy/broker/**'
       - '.github/workflows/broker-image.yml'
   workflow_dispatch:

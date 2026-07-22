@@ -6,6 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/openrung/openrung/wsscore"
 )
 
 const (
@@ -21,7 +23,7 @@ const (
 	// tune them, while global caps remain the primary overload boundary.
 	DefaultMaxSessionsPerSource = 512
 	DefaultMaxStreamsPerSource  = 4096
-	DefaultNoStreamIdleTimeout  = 2 * time.Minute
+	DefaultNoStreamIdleTimeout  = wsscore.DefaultNoStreamIdleTimeout
 
 	maxTrackedSources   = 1_000_000
 	maxTokenRefillDelay = 100 * 365 * 24 * time.Hour
@@ -257,81 +259,6 @@ func (u *sourceUsage) releaseStream(key string) {
 func (u *sourceUsage) deleteEmptyLocked(key string, entry *sourceUsageEntry) {
 	if entry.sessions == 0 && entry.streams == 0 {
 		delete(u.entries, key)
-	}
-}
-
-type sessionIdleGuard struct {
-	mu         sync.Mutex
-	timeout    time.Duration
-	active     int
-	expired    bool
-	closed     bool
-	generation uint64
-	timer      *time.Timer
-	onExpire   func()
-}
-
-func newSessionIdleGuard(timeout time.Duration, onExpire func()) *sessionIdleGuard {
-	g := &sessionIdleGuard{timeout: timeout, onExpire: onExpire}
-	g.scheduleLocked()
-	return g
-}
-
-func (g *sessionIdleGuard) startStream() bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.closed || g.expired {
-		return false
-	}
-	if g.active == 0 {
-		g.generation++
-		if g.timer != nil {
-			g.timer.Stop()
-		}
-	}
-	g.active++
-	return true
-}
-
-func (g *sessionIdleGuard) endStream() {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.closed || g.active == 0 {
-		return
-	}
-	g.active--
-	if g.active == 0 {
-		g.scheduleLocked()
-	}
-}
-
-func (g *sessionIdleGuard) close() {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.closed = true
-	g.generation++
-	if g.timer != nil {
-		g.timer.Stop()
-	}
-}
-
-func (g *sessionIdleGuard) scheduleLocked() {
-	g.generation++
-	generation := g.generation
-	g.timer = time.AfterFunc(g.timeout, func() { g.expire(generation) })
-}
-
-func (g *sessionIdleGuard) expire(generation uint64) {
-	g.mu.Lock()
-	if g.closed || g.expired || g.active != 0 || generation != g.generation {
-		g.mu.Unlock()
-		return
-	}
-	g.expired = true
-	onExpire := g.onExpire
-	g.mu.Unlock()
-	if onExpire != nil {
-		onExpire()
 	}
 }
 

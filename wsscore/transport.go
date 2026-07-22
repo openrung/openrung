@@ -1,4 +1,4 @@
-package wssbridge
+package wsscore
 
 import (
 	"context"
@@ -10,19 +10,33 @@ import (
 	"github.com/hashicorp/yamux"
 )
 
-func bridgeYamuxConfig() *yamux.Config {
-	cfg := yamux.DefaultConfig()
-	cfg.EnableKeepAlive = true
-	cfg.KeepAliveInterval = 15 * time.Second
-	cfg.ConnectionWriteTimeout = 10 * time.Second
-	cfg.StreamOpenTimeout = 10 * time.Second
-	cfg.LogOutput = io.Discard
-	return cfg
+func yamuxConfig() *yamux.Config {
+	return &yamux.Config{
+		AcceptBacklog:          256,
+		EnableKeepAlive:        true,
+		KeepAliveInterval:      15 * time.Second,
+		ConnectionWriteTimeout: 10 * time.Second,
+		MaxStreamWindowSize:    256 << 10,
+		StreamOpenTimeout:      10 * time.Second,
+		StreamCloseTimeout:     5 * time.Minute,
+		LogOutput:              io.Discard,
+	}
 }
 
-// copyOpaque copies bytes without inspecting or logging them. When idle is
-// positive, activity in either direction refreshes one shared deadline.
-func copyOpaque(ctx context.Context, a, b net.Conn, idle time.Duration) {
+// NewClientSession creates the client half of the one WSS yamux profile.
+func NewClientSession(conn net.Conn) (*yamux.Session, error) {
+	return yamux.Client(conn, yamuxConfig())
+}
+
+// NewServerSession creates the relay half of the one WSS yamux profile.
+func NewServerSession(conn net.Conn) (*yamux.Session, error) {
+	return yamux.Server(conn, yamuxConfig())
+}
+
+// CopyOpaque copies bytes in both directions without inspecting or logging
+// them. When idle is positive, activity in either direction refreshes one
+// shared deadline. Completion closes both connections.
+func CopyOpaque(ctx context.Context, a, b net.Conn, idle time.Duration) {
 	var deadlineMu sync.Mutex
 	touch := func() {
 		if idle <= 0 {
@@ -56,6 +70,8 @@ func copyOpaque(ctx context.Context, a, b net.Conn, idle time.Duration) {
 			if n > 0 {
 				touch()
 				if _, writeErr := writeAll(dst, buffer[:n]); writeErr != nil {
+					_ = dst.Close()
+					_ = src.Close()
 					return
 				}
 				touch()

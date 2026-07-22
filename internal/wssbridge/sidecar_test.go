@@ -3,6 +3,8 @@ package wssbridge
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +16,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
+	"github.com/openrung/openrung/wsscore"
 )
 
 const (
@@ -90,14 +95,12 @@ func (f *sidecarFixture) ticket(t *testing.T, relayID, frontID string) string {
 }
 
 type testEdge struct {
-	URL      string
-	server   *http.Server
-	listener net.Listener
+	URL    string
+	server *httptest.Server
 }
 
 func (e *testEdge) Close() {
-	_ = e.server.Close()
-	_ = e.listener.Close()
+	e.server.Close()
 }
 
 func sidecarEdge(t *testing.T, handler http.Handler, originToken, viewer string) *testEdge {
@@ -107,23 +110,31 @@ func sidecarEdge(t *testing.T, handler http.Handler, originToken, viewer string)
 		r.Header.Set(DefaultViewerAddressHeader, viewer)
 		handler.ServeHTTP(w, r)
 	})
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := &http.Server{Handler: edgeHandler}
-	edge := &testEdge{URL: "http://" + listener.Addr().String(), server: server, listener: listener}
-	go func() { _ = server.Serve(listener) }()
+	server := httptest.NewUnstartedServer(edgeHandler)
+	server.StartTLS()
+	edge := &testEdge{URL: "wss://example.com" + wsscore.BridgePath, server: server}
 	t.Cleanup(edge.Close)
 	return edge
 }
 
-func dialSidecarClient(t *testing.T, edge *testEdge, ticket string) (*Client, error) {
+func sidecarClientOptions(edge *testEdge, ticket string) wsscore.ClientOptions {
+	certificate := edge.server.Certificate()
+	roots := x509.NewCertPool()
+	roots.AddCert(certificate)
+	dialer := &websocket.Dialer{
+		NetDialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, edge.server.Listener.Addr().String())
+		},
+	}
+	return wsscore.ClientOptions{
+		URL: edge.URL, Ticket: ticket, PingInterval: -1, WebSocketDialer: dialer,
+		TLSConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12},
+	}
+}
+
+func dialSidecarClient(t *testing.T, edge *testEdge, ticket string) (*wsscore.Client, error) {
 	t.Helper()
-	return DialClient(t.Context(), ClientOptions{
-		URL:    strings.Replace(edge.URL, "http://", "ws://", 1) + BridgePath,
-		Ticket: ticket, PingInterval: -1,
-	})
+	return wsscore.DialClient(t.Context(), sidecarClientOptions(edge, ticket))
 }
 
 func waitSnapshot(t *testing.T, stats *SidecarStats, check func(SidecarSnapshot) bool) SidecarSnapshot {
@@ -430,16 +441,13 @@ func TestSidecarPendingHandshakeLimitBoundsReplayStalls(t *testing.T) {
 	})
 	edge := sidecarEdge(t, fixture.handler, testOriginOld, "198.51.100.15:443")
 	type dialResult struct {
-		client *Client
+		client *wsscore.Client
 		err    error
 	}
 	firstResult := make(chan dialResult, 1)
 	firstTicket := fixture.ticket(t, "relay-a", "front-a")
 	go func() {
-		client, err := DialClient(context.Background(), ClientOptions{
-			URL:    strings.Replace(edge.URL, "http://", "ws://", 1) + BridgePath,
-			Ticket: firstTicket, PingInterval: -1,
-		})
+		client, err := wsscore.DialClient(context.Background(), sidecarClientOptions(edge, firstTicket))
 		firstResult <- dialResult{client: client, err: err}
 	}()
 	waitWSS := func(signal <-chan struct{}) {

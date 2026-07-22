@@ -10,12 +10,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openrung/openrung/wsscore"
+
 	"openrung/desktop/config"
 	"openrung/desktop/proxyconfig"
 	"openrung/internal/client"
 	"openrung/internal/clienttelemetry"
 	"openrung/internal/relay"
-	"openrung/internal/wssbridge"
 )
 
 const (
@@ -144,7 +145,7 @@ func (s *Service) wssDialer() func(context.Context, string, string) (wssBridge, 
 		return s.dialWSS
 	}
 	return func(ctx context.Context, rawURL, ticket string) (wssBridge, error) {
-		return wssbridge.DialClient(ctx, wssbridge.ClientOptions{URL: rawURL, Ticket: ticket})
+		return wsscore.DialClient(ctx, wsscore.ClientOptions{URL: rawURL, Ticket: ticket})
 	}
 }
 

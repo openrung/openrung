@@ -5,6 +5,23 @@ mixed HTTP/SOCKS proxy on loopback, requiring no administrator privileges.
 This repository also contains the original command-line TUN client described
 below.
 
+## Direct-first WSS fallback
+
+The Wails desktop app tries the selected relay's public Reality endpoint first.
+Only a genuine remote network/data-path failure can unlock that relay's own
+signed WSS/CDN fronts; successful direct connections and local sing-box,
+configuration, permission, or OS-integration failures never request a ticket.
+The complete policy and failure model are documented in
+[`wss-fallback.md`](wss-fallback.md).
+
+The app consumes `github.com/openrung/openrung/wsscore` for strict front
+validation and the opaque WebSocket/yamux transport shared with every
+relay-local sidecar. Ticket acquisition and broker-front failover, relay-health
+and telemetry decisions, sing-box configuration, recovery, and UI state remain
+desktop application responsibilities. Android and iOS are maintained and
+released outside this repository; publishing the shared module does not restore
+or enable their WSS fallback.
+
 ## Desktop App: Local Proxy
 
 The desktop app chooses one local port on first launch and persists it under
