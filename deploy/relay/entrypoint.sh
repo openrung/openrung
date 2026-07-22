@@ -104,6 +104,7 @@ if [ -n "${OPENRUNG_CLIENT_ID:-}" ]; then set -- "$@" -client-id "${OPENRUNG_CLI
 if [ -n "${OPENRUNG_REALITY_PRIVATE_KEY:-}" ]; then set -- "$@" -reality-private-key "${OPENRUNG_REALITY_PRIVATE_KEY}"; fi
 if [ -n "${OPENRUNG_REALITY_PUBLIC_KEY:-}" ]; then set -- "$@" -reality-public-key "${OPENRUNG_REALITY_PUBLIC_KEY}"; fi
 if [ -n "${OPENRUNG_SHORT_ID:-}" ]; then set -- "$@" -short-id "${OPENRUNG_SHORT_ID}"; fi
+if [ -n "${OPENRUNG_WSS_FRONTS:-}" ]; then set -- "$@" -wss-fronts "${OPENRUNG_WSS_FRONTS}"; fi
 if [ -n "${OPENRUNG_MAX_SESSIONS:-}" ]; then set -- "$@" -max-sessions "${OPENRUNG_MAX_SESSIONS}"; fi
 if [ -n "${OPENRUNG_MAX_MBPS:-}" ]; then set -- "$@" -max-mbps "${OPENRUNG_MAX_MBPS}"; fi
 

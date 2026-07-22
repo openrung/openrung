@@ -51,6 +51,12 @@ type Config struct {
 	// with ParseSigningSeed and refuses to start without it, because serving
 	// unsigned lists is an invisible outage for verifying clients.
 	SigningSeed []byte
+	// WSSTicketSigningSeed is a dedicated Ed25519 seed for short-lived WSS
+	// tickets. Keeping it separate from relay-list signing permits independent
+	// rotation; sidecars accept the new and old public keys during overlap.
+	WSSTicketSigningSeed []byte
+	WSSTicketTTL         time.Duration
+	WSSTicketMaxStreams  int
 }
 
 func NewServer(store RelayStore, cfg Config) http.Handler {
@@ -58,12 +64,14 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 		cfg.RelayLeaseTTL = 3 * time.Minute
 	}
 	relaySigner := newSigner(cfg.SigningSeed)
+	wssIssuer := newWSSTicketIssuer(cfg)
 	clientIP := newClientIPResolver(cfg.TrustedProxyCIDRs)
 	clientSeen := newClientSeenDeduper(clientSeenDedupWindow, clientSeenDedupMaxEntries)
 	relayListLimiter := newIPRateLimiter(relayListRatePerSecond, relayListBurst, rateLimiterMaxTrackedIPs)
 	telemetryLimiter := newIPRateLimiter(telemetryRatePerSecond, telemetryBurst, rateLimiterMaxTrackedIPs)
 	speedTestLimiter := newIPRateLimiter(speedTestRatePerSecond, speedTestBurst, rateLimiterMaxTrackedIPs)
 	relayRegistrationLimiter := newIPRateLimiter(relayRegistrationRatePerSecond, relayRegistrationBurst, rateLimiterMaxTrackedIPs)
+	wssTicketLimiter := newIPRateLimiter(wssTicketRatePerSecond, wssTicketBurst, rateLimiterMaxTrackedIPs)
 	registerRelay := rateLimited(relayRegistrationLimiter, clientIP, 10, registerHandler(store, cfg))
 	heartbeatRelay := rateLimited(relayRegistrationLimiter, clientIP, 10, heartbeatHandler(store, cfg))
 
@@ -76,12 +84,19 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 		}
 		// signing_key_id is public data (it ships in every relay-list body) and
 		// lets the monitor assert the active key without parsing a relay list.
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "signing_key_id": relaySigner.keyID})
+		response := map[string]any{"ok": true, "signing_key_id": relaySigner.keyID}
+		if wssIssuer != nil {
+			response["wss_ticket_key_id"] = wssIssuer.signer.KeyID()
+		}
+		writeJSON(w, http.StatusOK, response)
 	})
 	mux.HandleFunc("POST /api/v1/relays/register", registerRelay)
 	mux.HandleFunc("POST /api/v1/relays/", heartbeatRelay)
 	mux.HandleFunc("GET /api/v1/relays", rateLimited(relayListLimiter, clientIP, 10, listRelaysHandler(store, cfg.TelemetrySink, clientIP, clientSeen, relaySigner)))
 	mux.HandleFunc("GET /api/v1/relays.mirror", rateLimited(relayListLimiter, clientIP, 10, listRelaysMirrorHandler(store, relaySigner)))
+	if wssIssuer != nil {
+		mux.HandleFunc("POST /api/v1/wss/tickets", rateLimitedBy(wssTicketLimiter, wssTicketRateKey(clientIP), 10, wssTicketHandler(store, wssIssuer)))
+	}
 	mux.HandleFunc("POST /api/v1/telemetry/events", rateLimited(telemetryLimiter, clientIP, 10, telemetryHandler(cfg.TelemetrySink, store, clientIP)))
 	mux.HandleFunc("GET /api/v1/speed-test", rateLimited(speedTestLimiter, clientIP, 30, speedTestHandler(speedTestMaxConcurrent)))
 	querier := cfg.TelemetryQuerier
@@ -135,6 +150,10 @@ func registerHandler(store RelayStore, cfg Config) http.HandlerFunc {
 			writeError(w, http.StatusForbidden, "node_class foundation requires the foundation registration token")
 			return
 		}
+		if len(req.WSSFronts) > 0 && len(cfg.WSSTicketSigningSeed) == 0 {
+			writeError(w, http.StatusServiceUnavailable, "WSS ticket issuance is not configured")
+			return
+		}
 
 		if err := validateRegisterRequest(req); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -148,7 +167,8 @@ func registerHandler(store RelayStore, cfg Config) http.HandlerFunc {
 		// operator can see it, mirroring the foundation-token posture above.
 		// The exact expired message is a contract: the relay hub matches it to
 		// recycle a tunnel session whose stored proof has aged out.
-		if errors.Is(err, relay.ErrIdentityProofExpired) || errors.Is(err, relay.ErrIdentityProofInvalid) || errors.Is(err, relay.ErrIdentityIncomplete) {
+		if errors.Is(err, relay.ErrIdentityProofExpired) || errors.Is(err, relay.ErrIdentityProofInvalid) || errors.Is(err, relay.ErrIdentityIncomplete) ||
+			errors.Is(err, relay.ErrWSSCapabilityExpired) || errors.Is(err, relay.ErrWSSCapabilityInvalid) || errors.Is(err, relay.ErrWSSCapabilityIncomplete) {
 			writeError(w, http.StatusUnauthorized, err.Error())
 			return
 		}
@@ -273,12 +293,16 @@ func listRelaysHandler(store RelayStore, telemetrySink TelemetrySink, clientIP *
 		}
 
 		now := time.Now().UTC()
-		relays, err := store.List(now, limit)
+		// Ask both stores for the ranked set, then reserve one already-advertised
+		// per-relay WSS-capable Foundation descriptor in a short page. This never
+		// attaches a shared URL or changes ordering when the page already has one.
+		relays, err := store.List(now, 0)
 		if err != nil {
 			slog.Error("could not list relays", "error", err)
 			writeError(w, http.StatusServiceUnavailable, "could not list relays")
 			return
 		}
+		relays = reserveWSSCandidate(relays, limit)
 		s.writeSigned(w, relay.ListResponse{
 			Count:      len(relays),
 			ServerTime: now,
@@ -309,12 +333,13 @@ func listRelaysMirrorHandler(store RelayStore, s signer) http.HandlerFunc {
 		// Same caching rule as the API list: errors must not be cached either.
 		w.Header().Set("Cache-Control", "no-store")
 		now := time.Now().UTC()
-		relays, err := store.List(now, mirrorRelayLimit)
+		relays, err := store.List(now, 0)
 		if err != nil {
 			slog.Error("could not list relays for mirror", "error", err)
 			writeError(w, http.StatusServiceUnavailable, "could not list relays")
 			return
 		}
+		relays = reserveWSSCandidate(relays, mirrorRelayLimit)
 		s.writeSigned(w, relay.ListResponse{
 			Count:      len(relays),
 			ServerTime: now,

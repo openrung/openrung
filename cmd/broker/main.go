@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	_ "embed"
+	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	"openrung/internal/broker"
+	"openrung/internal/wssbridge"
 )
 
 //go:embed VERSION
@@ -35,6 +38,7 @@ func main() {
 
 func run() error {
 	showVersion := flag.Bool("version", false, "print broker version and exit")
+	printWSSTicketPublicKey := flag.Bool("print-wss-ticket-public-key", false, "print the active WSS ticket verification key and exit")
 	addr := flag.String("addr", envDefault("OPENRUNG_ADDR", ":8080"), "HTTP listen address")
 	leaseTTL := flag.Duration("lease-ttl", 3*time.Minute, "relay lease TTL")
 	telemetryFile := flag.String("telemetry-file", envDefault("OPENRUNG_TELEMETRY_FILE", "openrung-telemetry.jsonl"), "append-only client telemetry JSONL file (its directory must be writable)")
@@ -48,6 +52,18 @@ func run() error {
 	flag.Parse()
 	if *showVersion {
 		fmt.Println(versionInfo())
+		return nil
+	}
+	wssTicketSeed, err := parseOptionalWSSTicketSeed(os.Getenv("OPENRUNG_WSS_TICKET_SIGNING_SEED"))
+	if err != nil {
+		return err
+	}
+	if *printWSSTicketPublicKey {
+		if len(wssTicketSeed) == 0 {
+			return errors.New("OPENRUNG_WSS_TICKET_SIGNING_SEED is required")
+		}
+		publicKey := ed25519.NewKeyFromSeed(wssTicketSeed).Public().(ed25519.PublicKey)
+		fmt.Printf("%s=%s\n", wssbridge.TicketKeyID(publicKey), base64.StdEncoding.EncodeToString(publicKey))
 		return nil
 	}
 
@@ -102,9 +118,10 @@ func run() error {
 		TelemetrySink:     telemetrySink,
 		DashboardToken:    os.Getenv("OPENRUNG_DASHBOARD_TOKEN"),
 		// Cloudflare's published ranges are trusted by default; add more (e.g. an upstream LB) here.
-		TrustedProxyCIDRs: splitAndTrim(os.Getenv("OPENRUNG_TRUSTED_PROXY_CIDRS")),
-		GeoIP:             geoResolver,
-		SigningSeed:       signingSeed,
+		TrustedProxyCIDRs:    splitAndTrim(os.Getenv("OPENRUNG_TRUSTED_PROXY_CIDRS")),
+		GeoIP:                geoResolver,
+		SigningSeed:          signingSeed,
+		WSSTicketSigningSeed: wssTicketSeed,
 	}
 	// The Postgres store aggregates dashboard queries in SQL; the JSONL sink's
 	// dashboard is aggregated in Go from its in-memory record set.
@@ -148,7 +165,7 @@ func run() error {
 		close(shutdownDone)
 	}()
 
-	slog.Info("starting broker", "version", resolvedVersion(), "revision", resolvedRevision(), "addr", *addr, "lease_ttl", leaseTTL.String(), "telemetry_store", *telemetryStore, "telemetry_file", *telemetryFile, "relay_store", *relayStore, "relay_ranking", rankingMode, "dashboard_enabled", os.Getenv("OPENRUNG_DASHBOARD_TOKEN") != "", "foundation_registration_enabled", foundationToken != "", "status_interval", statusInterval.String(), "geoip_enabled", geoResolver != nil)
+	slog.Info("starting broker", "version", resolvedVersion(), "revision", resolvedRevision(), "addr", *addr, "lease_ttl", leaseTTL.String(), "telemetry_store", *telemetryStore, "telemetry_file", *telemetryFile, "relay_store", *relayStore, "relay_ranking", rankingMode, "dashboard_enabled", os.Getenv("OPENRUNG_DASHBOARD_TOKEN") != "", "foundation_registration_enabled", foundationToken != "", "wss_ticket_issuance_enabled", len(wssTicketSeed) != 0, "status_interval", statusInterval.String(), "geoip_enabled", geoResolver != nil)
 	err = server.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {
 		<-shutdownDone
@@ -255,6 +272,21 @@ func splitAndTrim(value string) []string {
 		}
 	}
 	return out
+}
+
+func parseOptionalWSSTicketSeed(value string) ([]byte, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	seed, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		return nil, errors.New("OPENRUNG_WSS_TICKET_SIGNING_SEED must be standard base64")
+	}
+	if len(seed) != ed25519.SeedSize {
+		return nil, fmt.Errorf("OPENRUNG_WSS_TICKET_SIGNING_SEED must decode to %d bytes", ed25519.SeedSize)
+	}
+	return append([]byte(nil), seed...), nil
 }
 
 // pruneTelemetryPartitions drops aged-out telemetry partitions when the sink

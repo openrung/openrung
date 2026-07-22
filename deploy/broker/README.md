@@ -3,8 +3,9 @@
 The broker is the **control plane**: it matches clients with healthy relays and
 records operational telemetry. It never carries user traffic and never holds any
 Reality key — it only serves the relay directory (`GET /api/v1/relays`), accepts
-relay registrations/heartbeats, ingests client telemetry, and (optionally)
-serves a protected telemetry dashboard.
+relay registrations/heartbeats, optionally issues relay- and front-bound WSS
+tickets, ingests client telemetry, and (optionally) serves a protected telemetry
+dashboard.
 
 Because its traffic is tiny (control-plane only), the broker can run anywhere —
 unlike relay hubs, egress cost is not a concern. In production it is typically
@@ -13,7 +14,7 @@ fronted by Cloudflare with a direct-IP origin fallback on `:8080`.
 ## Quick start
 
 ```sh
-cp .env.example .env          # edit: signing seed, token/anonymous, dashboard, store
+cp .env.example .env          # edit: signing seeds, token/anonymous, dashboard, store
 docker compose up -d --build
 docker compose logs -f
 ```
@@ -174,6 +175,56 @@ matching public keys, so production must run the operator's active seed; the
 startup log line `relay list signing enabled key_id=…` and the `signing_key_id`
 field on `/healthz` confirm which key is live.
 
+## WSS ticket signing and relay public-key handoff
+
+WSS ticket signing is optional and uses a dedicated Ed25519 key. Set
+`OPENRUNG_WSS_TICKET_SIGNING_SEED` to standard base64 of a 32-byte seed in the
+root-owned mode-`0600` broker env file:
+
+```sh
+openssl rand -base64 32
+```
+
+Do not reuse `OPENRUNG_RELAY_SIGNING_KEY`; relay-list and ticket keys have
+different trust and rotation lifecycles. Recreate the broker container with
+`--env-file` after adding the seed. When the variable is unset, the broker does
+not register `POST /api/v1/wss/tickets` and rejects registrations that advertise
+`wss_fronts`; ordinary direct Reality discovery and connections are unchanged.
+
+Only the broker receives the private seed. Print the active public verification
+key from the configured compose environment with:
+
+```sh
+docker compose run --rm broker -print-wss-ticket-public-key
+# <16-hex-key-id>=<standard-base64-32-byte-public-key>
+```
+
+Copy that complete `key-id=public-key` entry to
+`OPENRUNG_WSS_TICKET_PUBLIC_KEYS` on every eligible relay-local sidecar. Never
+copy the seed. Each sidecar also has its own configured relay ID and fixed
+loopback Reality target, so possession of a valid ticket for one relay cannot
+authorize another. `/healthz` includes `wss_ticket_key_id` while issuance is
+enabled; compare it with the printed ID during deployment checks. The broker
+remains a control plane and never receives the WebSocket or Reality byte stream.
+
+Rotate with overlap:
+
+1. Derive the next seed's public key in a secured staging environment and add
+   it alongside the current public key on every eligible relay sidecar.
+2. After sidecar rollout completes, switch every broker issuer to the next
+   private seed. Brokers sign new tickets with only that current key.
+3. Keep the previous public key accepted until the maximum ticket lifetime,
+   allowed clock skew, and replay-retention window have elapsed, then remove it.
+
+Do not clear sidecar replay state during rotation. A load-balanced broker fleet
+may briefly contain both issuers only after every affected sidecar accepts both
+public keys. The `lightsail-up.sh` helper does not generate or install the WSS
+ticket seed; transfer it post-boot into `/etc/openrung/broker.env` over an
+authenticated channel, then recreate the container with the existing hardened
+flags and `--env-file`. See the [broker API](../../docs/api.md#issue-wss-session-ticket)
+for the wire contract and the [per-relay CloudFront guide](../relay/cloudfront-wss.md)
+for sidecar and origin deployment.
+
 ## Telemetry persistence
 
 By default (`OPENRUNG_TELEMETRY_STORE=jsonl`) the broker appends client
@@ -284,6 +335,7 @@ docker inspect openrung-broker \
 | `OPENRUNG_ALLOW_ANONYMOUS_REGISTRATION` | yes\* | —                                   | Set `true` to run open when no token is set (\*one of these)   |
 | `OPENRUNG_FOUNDATION_TOKEN`          | no       | —                                   | Privileged token for `node_class=foundation` registrations; must differ from the volunteer token |
 | `OPENRUNG_RELAY_SIGNING_KEY`         | yes      | —                                   | Std-base64 32-byte Ed25519 seed; signs every relay-list response |
+| `OPENRUNG_WSS_TICKET_SIGNING_SEED`   | no       | —                                   | Dedicated std-base64 32-byte Ed25519 seed; enables relay/front-bound WSS tickets |
 | `OPENRUNG_DASHBOARD_TOKEN`           | no       | —                                   | Enables the protected `/admin/telemetry` dashboard             |
 | `OPENRUNG_ADDR`                      | no       | `:8080`                             | HTTP listen address                                            |
 | `OPENRUNG_TRUSTED_PROXY_CIDRS`       | no       | Cloudflare ranges                   | Extra trusted proxy CIDRs for forwarded client IPs             |

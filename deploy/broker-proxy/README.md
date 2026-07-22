@@ -1,11 +1,11 @@
 # Broker CDN front (Cloudflare Worker)
 
 `broker.openrung.org` is a TLS-terminating Cloudflare Worker that reverse-proxies the OpenRung
-broker. It gives China clients an **HTTPS, CDN-fronted** relay-discovery endpoint instead of a
-single plaintext IP that a one-line ACL can null-route.
+broker. It gives clients on censored networks an **HTTPS, CDN-fronted** control-plane endpoint
+instead of a single plaintext IP that a one-line ACL can null-route.
 
 ```
-China client ──HTTPS──► Cloudflare edge ──Worker──HTTP:8080──► broker-origin.openrung.org ──► 54.238.185.205
+censored client ──HTTPS──► Cloudflare edge ──Worker──HTTPS:443──► broker-origin.openrung.org ──► 54.238.185.205
 ```
 
 - The broker is a stateless JSON control-plane API; the Worker forwards bytes and never serves
@@ -66,11 +66,32 @@ Notes:
   that recently served a fresh response. A colo that never saw a healthy response has nothing to
   fall back on and returns the error as before.
 - Degraded responses are detectable (by clients and in telemetry) via `X-OpenRung-Stale: 1`.
-- All other paths and methods remain untouched passthrough with **no timeout** (the speed-test
-  endpoint is long-lived by design).
+- Paths other than the exact relay-list GET and WSS-ticket POST remain untouched passthrough with
+  **no timeout** (the speed-test endpoint is long-lived by design).
+
+## WSS ticket passthrough (`POST /api/v1/wss/tickets`)
+
+WSS ticket acquisition is control-plane traffic. For this exact method and path, the Worker:
+
+- forwards the JSON POST to the broker with a **10 s timeout** and `redirect: "manual"`, so an
+  origin redirect is returned to the client rather than followed with the POST or identity
+  headers;
+- never uses stale relay-list data and never caches a success or error;
+- forces `Cache-Control: no-store` and `Pragma: no-cache` while preserving the origin status,
+  body, and semantic headers such as `Retry-After` and `Location`; and
+- returns an uncached JSON `502` when the ticket origin times out or is unreachable.
+
+Desktop clients require HTTPS, reject every redirect response, and try the next configured broker
+front within one bounded ticket-acquisition deadline. They honor `Retry-After` only when it fits
+both their configured maximum wait and the remaining deadline. The Worker neither issues the
+ticket itself nor receives the subsequent WebSocket data: after validating the response against
+the signed directory, the client connects to the selected relay's advertised WSS front and sends
+the ticket only as `Authorization: Bearer` on `/api/v1/wss-bridge`. That CDN front's origin is the
+same relay's local sidecar.
 
 Unit tests: `npm test` (Node's built-in runner) from this directory covers the fresh, stale,
-cold-cache, 4xx-unmasked, and passthrough paths with injected fetch/cache fakes.
+cold-cache, 4xx-unmasked, WSS-ticket timeout/redirect/cache behavior, and ordinary passthrough
+paths with injected fetch/cache fakes.
 
 ## Deploy
 
@@ -94,15 +115,13 @@ Logs: `wrangler tail openrung-broker-proxy`.
 
 ## Known limitations / follow-ups
 
-- **Origin leg is plaintext HTTP (this Worker front only).** The censorship-relevant leg
-  (client → Cloudflare) is encrypted, but *this Worker's* Cloudflare → origin subrequest is still
-  HTTP (`http://broker-origin.openrung.org:8080`) over the public internet. Harden by giving the
-  origin a Cloudflare Origin CA cert and switching SSL/TLS mode to Full (strict), by fronting via a
-  Cloudflare Tunnel (no public origin port), or by firewalling the origin to Cloudflare egress
-  ranges only. **The independent AWS CloudFront front already has end-to-end TLS to the origin**
-  (via a Caddy Let's Encrypt terminator on `:443` — see `deploy/broker/origin-tls.md`); the same
-  `:443` origin endpoint is now available to point this Worker at
-  (`https://broker-origin.openrung.org`) to close its leg too.
+- **Origin leg uses HTTPS.** This Worker defaults to the same Caddy Let's
+  Encrypt terminator on `:443` used by the independent AWS CloudFront broker
+  front (see `deploy/broker/origin-tls.md`). Keep certificate validation
+  enabled and firewall the origin to approved CDN egress ranges. The old
+  `http://broker-origin.openrung.org:8080` endpoint must not be configured in
+  production because successful ticket responses contain short-lived bearer
+  credentials.
 - **Client IP recovery (done).** The Worker forwards the real client IP as `X-Forwarded-For`, and
   the broker now honors `CF-Connecting-IP` / `X-Forwarded-For` **only when the request arrives from a
   trusted proxy** (Cloudflare's published ranges by default; extend via `OPENRUNG_TRUSTED_PROXY_CIDRS`).

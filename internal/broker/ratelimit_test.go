@@ -80,6 +80,65 @@ func TestIPRateLimiterSweepsIdleBuckets(t *testing.T) {
 	}
 }
 
+func TestWSSTicketRateKeySeparatesClientsBehindSharedSource(t *testing.T) {
+	resolver := newClientIPResolver(nil)
+	key := wssTicketRateKey(resolver)
+	request := func(clientID string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/wss/tickets", nil)
+		r.RemoteAddr = "203.0.113.9:44321"
+		if clientID != "" {
+			r.Header.Set("X-OpenRung-Client-ID", clientID)
+		}
+		return r
+	}
+	first := key(request("client-1"))
+	second := key(request("client-2"))
+	if first == second || first == "203.0.113.9" || second == "203.0.113.9" {
+		t.Fatalf("valid client keys were not separated and pseudonymized: %q / %q", first, second)
+	}
+	if got := key(request("")); got != "203.0.113.9" {
+		t.Fatalf("missing client ID key = %q, want source fallback", got)
+	}
+	for _, invalid := range []string{" client", "client\nother", string(make([]byte, 129))} {
+		if got := key(request(invalid)); got != "203.0.113.9" {
+			t.Fatalf("invalid client ID key = %q, want source fallback", got)
+		}
+	}
+}
+
+func TestWSSTicketRateLimiterDoesNotCollapseSharedSourceClients(t *testing.T) {
+	limiter := newIPRateLimiter(1, 1, 10)
+	resolver := newClientIPResolver(nil)
+	hits := 0
+	handler := rateLimitedBy(limiter, wssTicketRateKey(resolver), 10, func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusNoContent)
+	})
+	request := func(clientID string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/wss/tickets", nil)
+		r.RemoteAddr = "203.0.113.9:44321"
+		r.Header.Set("X-OpenRung-Client-ID", clientID)
+		return r
+	}
+	for _, test := range []struct {
+		clientID string
+		want     int
+	}{
+		{clientID: "client-1", want: http.StatusNoContent},
+		{clientID: "client-1", want: http.StatusTooManyRequests},
+		{clientID: "client-2", want: http.StatusNoContent},
+	} {
+		recorder := httptest.NewRecorder()
+		handler(recorder, request(test.clientID))
+		if recorder.Code != test.want {
+			t.Fatalf("client %q status = %d, want %d", test.clientID, recorder.Code, test.want)
+		}
+	}
+	if hits != 2 {
+		t.Fatalf("handler hits = %d, want one request for each client", hits)
+	}
+}
+
 func TestServerRateLimitsSpeedTest(t *testing.T) {
 	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed()})
 

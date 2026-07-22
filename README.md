@@ -18,7 +18,7 @@ relays in unrestricted regions.
 [![Platforms](https://img.shields.io/badge/platforms-iOS%20%C2%B7%20Android%20%C2%B7%20macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-4a5568)](#quick-start)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-1d8a4f)](CONTRIBUTING.md)
 
-[Website](https://openrung.org) · [Architecture](docs/architecture.md) · [Broker API](docs/api.md) · [Report an issue](https://github.com/openrung/openrung/issues)
+[Website](https://openrung.org) · [Architecture](docs/architecture.md) · [WSS fallback](docs/wss-fallback.md) · [Broker API](docs/api.md) · [Report an issue](https://github.com/openrung/openrung/issues)
 
 </div>
 
@@ -55,6 +55,13 @@ traffic. The broker ranks relay candidates using recent shared metrics —
 connection success, active sessions, observed latency, and speed tests — so
 clients are steered toward relays that actually work.
 
+The desktop client still tries direct Reality first. When a genuine network
+failure blocks a direct-mode Foundation relay, that relay may advertise its own
+signed WSS fronts. Each CDN front terminates at the same relay's local sidecar,
+which carries opaque Reality bytes only to that relay's loopback Reality
+listener. The broker issues relay- and front-bound authorization tickets but
+remains outside the user data path.
+
 ## Highlights
 
 - 🙌 **Simple volunteering** — one CLI plus an Xray binary; IPv6-first with
@@ -63,6 +70,9 @@ clients are steered toward relays that actually work.
   through a reverse-tunnel relay hub.
 - 📱 **Full-device mobile client** — the OpenRung app routes all device
   traffic in VPN mode (developed in a separate React Native repository).
+- 🛡️ **Direct-first censorship fallback** — the desktop client can carry the
+  existing end-to-end Reality connection through a relay-owned WSS/CDN front
+  when the direct route is blocked.
 - 🧭 **Privacy-aware control plane** — the broker matchmakes but never carries
   user traffic.
 - 🗄️ **Production-friendly broker** — optional shared PostgreSQL state for safe
@@ -189,9 +199,9 @@ go run ./cmd/client check -broker http://localhost:8080
 
 For the zero-privilege desktop proxy app and macOS full-device CLI routing, see
 [`docs/desktop-client.md`](docs/desktop-client.md).
-The mobile app (React Native with native VPN modules) is developed in a
-separate repository; the original native iOS and Android clients have been
-retired from this one.
+The WSS fallback implemented here is desktop-only. Android and iOS are
+developed in separate repositories and are not restored or updated by this
+change; the original native clients have been retired from this repository.
 
 ## Repository layout
 
@@ -200,6 +210,7 @@ cmd/broker/          Broker HTTP API (control plane).
 cmd/relay/           Relay CLI for Xray-backed registration.
 cmd/relayhub/        Relay hub for CGNAT volunteer-run relays
                      (reverse-tunnel data plane).
+cmd/wsssidecar/      Relay-local WSS/CDN origin with a fixed loopback target.
 cmd/client/          Desktop CLI client.
 internal/broker/     Broker store and HTTP handlers.
 internal/client/     Client engine, relay selection, and sing-box config.
@@ -209,6 +220,7 @@ internal/relay/      Shared relay descriptor models.
 internal/relayhub/   Relay hub configuration.
 internal/tunnel/     Reverse-tunnel transport (hub + relay client, yamux).
 internal/relayruntime/  Relay runtime, Xray config, and broker client helpers.
+internal/wssbridge/  Opaque Reality-over-WSS transport, tickets, and limits.
 punchcore/           Shared NAT hole-punch protocol core (nested Go module
                      github.com/openrung/openrung/punchcore) consumed by the
                      servers, the desktop client, and the mobile app's binding.
@@ -227,6 +239,8 @@ docs/                Architecture, API, client, and operations docs.
 | [Broker API](docs/api.md) | HTTP API reference (`/api/v1`) |
 | [Component versioning](docs/versioning.md) | Independent release identities and compatibility contracts |
 | [Desktop clients](docs/desktop-client.md) | GUI proxy mode, Linux shell setup, and CLI TUN routing |
+| [WSS fallback](docs/wss-fallback.md) | Per-relay protocol, trust boundaries, failure policy, and rollout |
+| [Per-relay CloudFront deployment](deploy/relay/cloudfront-wss.md) | CloudFront and relay-local sidecar configuration |
 | [Security and abuse](docs/security-abuse.md) | Threat model, volunteer risk, and abuse handling |
 | [Relay hub deployment](deploy/relayhub/README.md) | Running a hub: TLS, ports, and cost |
 

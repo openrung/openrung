@@ -13,10 +13,15 @@
 //   - Everything else: byte-for-byte passthrough with fetch-layer caching disabled and NO
 //     timeout (the speed-test endpoint deliberately holds the connection open).
 
-export const DEFAULT_ORIGIN = "http://broker-origin.openrung.org:8080";
+// Keep the ticket-bearing control-plane leg encrypted all the way to the
+// broker origin. Port 8080 remains available only as an explicit development
+// override; it must never be the production default.
+export const DEFAULT_ORIGIN = "https://broker-origin.openrung.org";
 
 const RELAYS_PATH = "/api/v1/relays";
+const WSS_TICKETS_PATH = "/api/v1/wss/tickets";
 const ORIGIN_TIMEOUT_MS = 10_000;
+const WSS_TICKET_TIMEOUT_MS = 10_000;
 
 // How long a stale copy may be served after the last healthy 200. Every client validates relay
 // `expires_at` against the `server_time` carried in the SAME response body, so client-side
@@ -48,10 +53,36 @@ export function createHandler({ fetchImpl, cache }) {
       return relaysWithStaleFallback(proxied, request.url, ctx, fetchImpl, cache);
     }
 
+    if (request.method === "POST" && url.pathname === WSS_TICKETS_PATH) {
+      return wssTicketPassthrough(proxied, fetchImpl);
+    }
+
     // All other paths/methods: passthrough exactly as before. No timeout — the speed-test
     // endpoint is long-lived by design.
     return fetchImpl(proxied, { cf: NO_FETCH_CACHE });
   };
+}
+
+async function wssTicketPassthrough(proxied, fetchImpl) {
+  try {
+    const response = await fetchImpl(proxied, {
+      cf: NO_FETCH_CACHE,
+      redirect: "manual",
+      signal: AbortSignal.timeout(WSS_TICKET_TIMEOUT_MS),
+    });
+    // Tickets and ticket errors are per-client state. Preserve the streaming
+    // body and all semantic headers (notably Retry-After), but prohibit every
+    // downstream/shared cache from storing them.
+    const uncached = new Response(response.body, response);
+    uncached.headers.set("Cache-Control", "no-store");
+    uncached.headers.set("Pragma", "no-cache");
+    return uncached;
+  } catch {
+    return new Response(JSON.stringify({ error: "broker ticket origin unreachable" }), {
+      status: 502,
+      headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+    });
+  }
 }
 
 function buildProxiedRequest(request, url, originBase) {

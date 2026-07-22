@@ -88,8 +88,9 @@ recipients of the MPL-2.0 terms and where to obtain the source.
 
 ### yamux
 
-- **Component:** `github.com/hashicorp/yamux` v0.1.2 (reverse-tunnel transport;
-  statically linked into the relay runtime and relayhub binaries).
+- **Component:** `github.com/hashicorp/yamux` v0.1.2 (reverse-tunnel and
+  Reality-over-WSS stream multiplexing; statically linked into the relay,
+  relayhub, relay-local sidecar, and desktop binaries).
 - **License:** MPL-2.0.
 - **Source:** https://github.com/hashicorp/yamux/tree/v0.1.2
 
@@ -152,6 +153,12 @@ apply to the Docker image channel only.
 
 ## 5. Permissive components (attribution required on distribution)
 
+### BSD-2-Clause
+
+- `github.com/gorilla/websocket` v1.5.3 — Copyright (c) 2013 The
+  Gorilla WebSocket Authors (statically linked into the relay-local WSS
+  sidecar and the desktop application)
+
 ### BSD-3-Clause
 
 Statically linked into the Go server binaries:
@@ -210,6 +217,11 @@ transitive set from the exact sing-box version pinned in
 Union of `GOOS={darwin,windows,linux} go list -deps -tags desktop,production`
 (2026-07-11, versions per `desktop/go.mod`):
 
+**MPL-2.0**
+
+- `github.com/hashicorp/yamux` v0.1.2 — Copyright (c) HashiCorp, Inc.;
+  source and license: https://github.com/hashicorp/yamux/tree/v0.1.2
+
 **MIT**
 
 - `github.com/wailsapp/wails/v2` — Copyright (c) 2018-Present Lea Anthony
@@ -229,6 +241,8 @@ Union of `GOOS={darwin,windows,linux} go list -deps -tags desktop,production`
 
 **BSD-2-Clause**
 
+- `github.com/gorilla/websocket` — Copyright (c) 2013 The Gorilla WebSocket
+  Authors
 - `github.com/pkg/errors` — Copyright (c) 2015, Dave Cheney
 - `github.com/pkg/browser` — Copyright (c) 2014, Dave Cheney
 - `github.com/godbus/dbus/v5` — Copyright (c) 2013, Georg Reinke, Google

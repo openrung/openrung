@@ -42,6 +42,9 @@ type RelayStore interface {
 	Heartbeat(id, leaseToken, maxClass string, now time.Time, ttl time.Duration) (relay.Descriptor, error)
 	UpdateGeo(id, leaseToken string, geo relay.GeoLocation) error
 	List(time.Time, int) ([]relay.Descriptor, error)
+	// RelayByID resolves one currently active descriptor for relay-bound ticket
+	// issuance. It must never return an expired row.
+	RelayByID(string, time.Time) (relay.Descriptor, error)
 	// RelayNodeClasses resolves active relay IDs to the broker-attested class
 	// stored on their descriptors. Telemetry ingestion uses this bounded lookup
 	// so the class can be retained with historical events after the short relay
@@ -90,6 +93,9 @@ func (s *Store) Register(req relay.RegisterRequest, now time.Time, ttl time.Dura
 	if err != nil {
 		return relay.Descriptor{}, err
 	}
+	if err := relay.VerifyWSSCapability(req, now); err != nil {
+		return relay.Descriptor{}, err
+	}
 	var id string
 	if identityKey != nil {
 		id = relay.DeriveRelayID(identityKey)
@@ -126,6 +132,7 @@ func (s *Store) Register(req relay.RegisterRequest, now time.Time, ttl time.Dura
 		Transport:         normalizeTransport(req.Transport),
 		PunchCapable:      req.PunchCapable,
 		PunchEndpoint:     req.PunchEndpoint,
+		WSSFronts:         append([]relay.WSSFrontDescriptor(nil), req.WSSFronts...),
 		RegisteredAt:      now,
 		LastHeartbeatAt:   now,
 		ExpiresAt:         now.Add(ttl),
@@ -174,7 +181,7 @@ func (s *Store) Register(req relay.RegisterRequest, now time.Time, ttl time.Dura
 	// so it is normal traffic and not logged.)
 	s.relays[id] = desc
 
-	return desc, nil
+	return cloneRelayDescriptor(desc), nil
 }
 
 func (s *Store) Heartbeat(id, leaseToken, maxClass string, now time.Time, ttl time.Duration) (relay.Descriptor, error) {
@@ -201,7 +208,7 @@ func (s *Store) Heartbeat(id, leaseToken, maxClass string, now time.Time, ttl ti
 	desc.ExpiresAt = now.Add(ttl)
 	s.relays[id] = desc
 
-	return desc, nil
+	return cloneRelayDescriptor(desc), nil
 }
 
 func (s *Store) UpdateGeo(id, leaseToken string, geo relay.GeoLocation) error {
@@ -231,7 +238,7 @@ func (s *Store) List(now time.Time, limit int) ([]relay.Descriptor, error) {
 	relays := make([]relay.Descriptor, 0, len(s.relays))
 	for _, desc := range s.relays {
 		if desc.ExpiresAt.After(now) {
-			relays = append(relays, desc)
+			relays = append(relays, cloneRelayDescriptor(desc))
 		}
 	}
 
@@ -242,6 +249,21 @@ func (s *Store) List(now time.Time, limit int) ([]relay.Descriptor, error) {
 	}
 
 	return relays, nil
+}
+
+func (s *Store) RelayByID(id string, now time.Time) (relay.Descriptor, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	desc, ok := s.relays[id]
+	if !ok || !desc.ExpiresAt.After(now) {
+		return relay.Descriptor{}, ErrRelayNotFound
+	}
+	return cloneRelayDescriptor(desc), nil
+}
+
+func cloneRelayDescriptor(desc relay.Descriptor) relay.Descriptor {
+	desc.WSSFronts = append([]relay.WSSFrontDescriptor(nil), desc.WSSFronts...)
+	return desc
 }
 
 func (s *Store) RelayNodeClasses(_ context.Context, ids []string, now time.Time) (map[string]string, error) {

@@ -37,3 +37,44 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+
+  # Optional, relay-local CDN fallback. Enable only on an eligible Foundation
+  # relay with: docker compose --profile wss up -d --build
+  #
+  # This is deliberately the same per-relay image and host network as `relay`,
+  # not a gateway fleet. The process binds only 127.0.0.1:8081 and its fixed
+  # upstream defaults to 127.0.0.1:443, so it can reach only this host's Reality
+  # listener. Terminate the CloudFront origin TLS listener on host port 8443 and
+  # proxy that one route to this loopback listener; do not publish 8081.
+  wss-sidecar:
+    profiles: [wss]
+    image: openrung-relay:latest
+    container_name: openrung-wss-sidecar
+    restart: unless-stopped
+    entrypoint: [/usr/local/bin/wss-sidecar]
+    depends_on:
+      - relay
+
+    # Keep origin tokens out of the relay/Xray container. Copy
+    # .wss.env.example to .wss.env (mode 0600); the sidecar fails closed when
+    # required identity, ticket-key, or per-front token values are absent.
+    env_file:
+      - path: .wss.env
+        required: false
+    network_mode: host
+
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      # A consumed ticket remains single-use across sidecar/container restarts.
+      # The journal contains only ticket-ID hashes and bounded expiry metadata.
+      - wss-replay-state:/var/lib/openrung
+
+volumes:
+  # Project-scoped and relay-local: never share this replay volume between
+  # relay hosts or replace it with a fleet-wide service.
+  wss-replay-state:

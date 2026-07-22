@@ -12,6 +12,13 @@ const RELAYS_URL = `${EDGE}/api/v1/relays?limit=1`;
 // deploys, so pre-signing bodies cannot replay to signature-requiring clients).
 const CACHE_KEY_URL = `${RELAYS_URL}&__or_cache_v=1`;
 
+test("production broker origin remains HTTPS", () => {
+  const origin = new URL(DEFAULT_ORIGIN);
+  assert.equal(origin.protocol, "https:");
+  assert.equal(origin.username, "");
+  assert.equal(origin.password, "");
+});
+
 // Minimal Cache API fake: stores immutable snapshots keyed by URL, counts interactions, and —
 // like the real Cache API — honors the stored copy's max-age/s-maxage on match (against an
 // injectable clock), so the handler's stale-TTL bound is actually exercised by tests.
@@ -354,6 +361,52 @@ test("non-relays path: exact passthrough, no timeout, cache never touched", asyn
     assert.equal(cache.putCalls.length, 0);
     assert.equal(ctx.pending.length, 0);
   }
+});
+
+test("WSS ticket POST is bounded, uncached, streamed, and never follows redirects", async () => {
+  const { handler, cache, ctx, fetchImpl } = setup(
+    () => new Response('{"error":"use another front"}', {
+      status: 307,
+      headers: { Location: "https://unexpected.example/tickets", "Retry-After": "7" },
+    }),
+  );
+  const request = new Request(`${EDGE}/api/v1/wss/tickets`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-OpenRung-Client-ID": "client-1" },
+    body: '{"relay_id":"relay_a","front_id":"front-a"}',
+  });
+  const response = await handler(request, undefined, ctx);
+
+  assert.equal(response.status, 307);
+  assert.equal(response.headers.get("Location"), "https://unexpected.example/tickets");
+  assert.equal(response.headers.get("Retry-After"), "7");
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  assert.equal(response.headers.get("Pragma"), "no-cache");
+  assert.equal(fetchImpl.calls.length, 1);
+  const { request: proxied, init } = fetchImpl.calls[0];
+  assert.equal(new URL(proxied.url).pathname, "/api/v1/wss/tickets");
+  assert.equal(proxied.method, "POST");
+  assert.equal(init.redirect, "manual");
+  assert.ok(init.signal instanceof AbortSignal);
+  assert.deepEqual(init.cf, { cacheTtl: 0, cacheEverything: false });
+  assert.equal(cache.matchCalls, 0);
+  assert.equal(cache.putCalls.length, 0);
+  assert.equal(ctx.pending.length, 0);
+});
+
+test("WSS ticket origin timeout returns an uncached JSON 502", async () => {
+  const { handler, cache, ctx } = setup(() => {
+    throw new DOMException("timed out", "TimeoutError");
+  });
+  const response = await handler(new Request(`${EDGE}/api/v1/wss/tickets`, {
+    method: "POST",
+    body: '{"relay_id":"relay_a","front_id":"front-a"}',
+  }), undefined, ctx);
+  assert.equal(response.status, 502);
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  assert.equal((await response.json()).error, "broker ticket origin unreachable");
+  assert.equal(cache.matchCalls, 0);
+  assert.equal(cache.putCalls.length, 0);
 });
 
 test("non-relays 5xx: passed through with no stale substitution", async () => {
