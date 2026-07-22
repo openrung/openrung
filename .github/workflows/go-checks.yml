@@ -2,10 +2,10 @@ name: go-checks
 
 # Vet + test every Go module in the repo on each PR and push to main. This is
 # the compile/test gate for the module edges between the root module, the
-# nested punchcore module, and the two Wails app modules. The app modules are
-# gated on their Go service subpackages only, not `./...`, which would require
-# frontend/dist to exist; their release workflows package but never test, so
-# this is the only thing standing behind their suites.
+# nested punchcore and wsscore modules, and the two Wails app modules. The app
+# modules are gated on their Go service subpackages only, not `./...`, which
+# would require frontend/dist to exist; their release workflows package but
+# never test, so this is the only thing standing behind their suites.
 
 on:
   pull_request:
@@ -59,6 +59,12 @@ jobs:
 
       - name: punchcore module (vet + test)
         working-directory: punchcore
+        run: |
+          go vet ./...
+          go test -race ./...
+
+      - name: wsscore module (vet + test)
+        working-directory: wsscore
         run: |
           go vet ./...
           go test -race ./...
@@ -124,6 +130,41 @@ jobs:
             exit 1
           fi
           echo "punchcore/VERSION -> $version (will tag $tag on merge)"
+
+  # Keep the independently consumable WSS transport module releasable by
+  # requiring every non-documentation change to declare a fresh module version.
+  wsscore-version:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require a fresh VERSION when wsscore changes
+        run: |
+          base="origin/${{ github.base_ref }}"
+          changed="$(git diff --name-only "$base"...HEAD -- wsscore/ ':!wsscore/README.md')"
+          if [ -z "$changed" ]; then
+            echo "wsscore/ untouched"
+            exit 0
+          fi
+          if git diff --quiet "$base"...HEAD -- wsscore/VERSION; then
+            echo "wsscore/ changed without a wsscore/VERSION bump:" >&2
+            echo "$changed" >&2
+            exit 1
+          fi
+          version="$(tr -d '[:space:]' < wsscore/VERSION)"
+          if ! printf '%s\n' "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "invalid wsscore/VERSION \"$version\" (want X.Y.Z)" >&2
+            exit 1
+          fi
+          tag="wsscore/v$version"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "wsscore/VERSION is $version but $tag already exists; bump to a new version" >&2
+            exit 1
+          fi
+          echo "wsscore/VERSION -> $version (will tag $tag on merge)"
 
   # PR-time smoke build of every deploy image. The image workflows themselves
   # only run on pushes to main, so without this a Docker packaging error (e.g.

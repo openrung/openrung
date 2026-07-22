@@ -5,11 +5,12 @@ RELAYHUB_IMAGE ?= openrung-relayhub:latest
 BROKER_IMAGE ?= openrung-broker:latest
 
 fmt:
-	gofmt -w cmd internal punchcore
+	gofmt -w cmd internal punchcore wsscore
 
 test:
 	go test ./...
 	cd punchcore && go test ./...
+	cd wsscore && go test ./...
 
 broker:
 	OPENRUNG_ALLOW_ANONYMOUS_REGISTRATION=true go run ./cmd/broker -addr :8080

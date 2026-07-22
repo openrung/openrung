@@ -60,7 +60,11 @@ failure blocks a direct-mode Foundation relay, that relay may advertise its own
 signed WSS fronts. Each CDN front terminates at the same relay's local sidecar,
 which carries opaque Reality bytes only to that relay's loopback Reality
 listener. The broker issues relay- and front-bound authorization tickets but
-remains outside the user data path.
+remains outside the user data path. The desktop client and relay-local sidecar
+share the transport mechanics from the independently versioned
+[`wsscore`](wsscore/README.md) module; ticket authority, origin authentication,
+deployment policy, telemetry orchestration, and user interfaces remain in
+their owning applications.
 
 ## Highlights
 
@@ -220,10 +224,15 @@ internal/relay/      Shared relay descriptor models.
 internal/relayhub/   Relay hub configuration.
 internal/tunnel/     Reverse-tunnel transport (hub + relay client, yamux).
 internal/relayruntime/  Relay runtime, Xray config, and broker client helpers.
-internal/wssbridge/  Opaque Reality-over-WSS transport, tickets, and limits.
+internal/wssbridge/  Relay-side tickets, replay/origin authentication,
+                     admission limits, and sidecar orchestration over wsscore.
 punchcore/           Shared NAT hole-punch protocol core (nested Go module
                      github.com/openrung/openrung/punchcore) consumed by the
                      servers, the desktop client, and the mobile app's binding.
+wsscore/             Shared opaque Reality-over-WSS transport core (nested Go
+                     module github.com/openrung/openrung/wsscore) consumed by
+                     the desktop client and relay-local sidecar, and available
+                     for separately released mobile clients to pin.
 desktop/             Desktop GUI client (Wails v2 + React; own Go module).
 desktop-volunteer/   One-click volunteer relay GUI (Wails v2 + React; own
                      Go module).

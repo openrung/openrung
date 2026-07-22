@@ -14,6 +14,7 @@ on:
       - 'internal/relay/**'
       - 'internal/punch/**'
       - 'punchcore/**'
+      - 'wsscore/**'
       - 'go.mod'
       - 'go.sum'
       - 'deploy/relayhub/**'

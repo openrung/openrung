@@ -54,6 +54,33 @@ The sidecar must copy bytes without interpreting VLESS, Reality, DNS, HTTP, or
 the eventual target address. A WSS success is not a substitute for the inner
 Reality handshake succeeding.
 
+## Shared transport implementation
+
+The nested Go module `github.com/openrung/openrung/wsscore` is the single
+reusable implementation of these data-plane mechanics. The desktop client and
+relay-local sidecar both consume it; neither maintains a second WebSocket,
+yamux, or opaque-copy implementation. The module owns the public protocol
+constants, strict production front-URL validation, binary-only WebSocket stream
+adaptation, the shared bounded yamux profile, opaque bidirectional copying,
+session/stream lifecycle controls, and an optional socket-control hook for a
+future Android caller to connect to `VpnService.protect`.
+
+`wsscore` is intentionally authority-free. Its client is given one exact URL
+and an opaque bearer ticket by its caller, and its server-side transport is
+given an already authenticated, locally authorized connection. Ticket issuance
+and verification policy, durable replay storage, origin-token authentication,
+viewer-address trust and source admission, signed relay capability handling,
+CloudFront and relay deployment, direct-first and broker-front orchestration,
+telemetry, and platform UI all remain outside the module. In particular, the
+module cannot choose a relay or client-supplied destination, and extraction
+does not change the sidecar's one fixed loopback target.
+
+The module has its own `VERSION`, golden/interoperability suite, and
+`wsscore/vX.Y.Z` nested-module tags. In-repository root and desktop builds use
+local replacements so the desktop and sidecar move together. Other
+repositories must pin a released tag and deliberately upgrade it; a module tag
+is not an Android or iOS application release.
+
 ## Signed capability and fronts
 
 An eligible relay registers a WSS capability signed by its stable relay
@@ -271,15 +298,20 @@ counter policy.
 ## Client repository scope
 
 This repository's desktop client is the only client restored by this change.
-Its WSS implementation preserves direct-first selection, local-failure
-classification, broker-front failover, bounded retry handling, and independent
-fallback health as described above.
+It consumes `wsscore` for the shared transport while retaining direct-first
+selection, local-failure classification, ticket and broker-front failover,
+bounded retry handling, telemetry, and independent fallback health in the
+desktop application layer as described above.
 
 Android and iOS are developed in separate repositories. They are not updated,
 restored, or made WSS-capable by this repository change. Mobile release notes
 must continue to describe WSS fallback as unavailable until each mobile
 repository independently implements and tests the same protocol and security
-contract.
+contract. The reusable module and its Android socket-control hook are adoption
+building blocks only: Android still has to wire the hook to
+`VpnService.protect`, and both platforms must add their own ticket,
+direct-first, lifecycle, and UI integration before publishing a separate
+mobile release.
 
 ## Rollout and rollback contract
 

@@ -1,12 +1,14 @@
 package wssbridge
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"net/http"
@@ -16,25 +18,31 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/hashicorp/yamux"
+	"github.com/openrung/openrung/wsscore"
 )
 
 const (
+	BridgePath                 = wsscore.BridgePath
+	Subprotocol                = wsscore.Subprotocol
+	HealthPath                 = "/healthz"
+	OriginTokenHeader          = "X-OpenRung-Origin-Token"
+	DefaultViewerAddressHeader = "CloudFront-Viewer-Address"
+
 	DefaultFixedTarget          = "127.0.0.1:443"
 	DefaultMaxSessions          = 2048
 	DefaultMaxPendingHandshakes = 4096
-	DefaultMaxStreamsPerSession = 128
+	DefaultMaxStreamsPerSession = wsscore.DefaultMaxConcurrentStreams
 	DefaultMaxGlobalStreams     = 16_384
 	DefaultDialTimeout          = 5 * time.Second
 	DefaultFirstByteTimeout     = 10 * time.Second
-	DefaultStreamIdleTimeout    = 5 * time.Minute
-	DefaultSessionLifetime      = 6 * time.Hour
+	DefaultStreamIdleTimeout    = wsscore.DefaultStreamIdleTimeout
+	DefaultSessionLifetime      = wsscore.DefaultSessionLifetime
 	DefaultSidecarPingInterval  = 4 * time.Minute
 	DefaultSidecarPingTimeout   = 10 * time.Second
 
 	maxSidecarSessions      = 100_000
 	maxSidecarGlobalStreams = 100_000
-	maxSessionLifetime      = 24 * time.Hour
+	maxSessionLifetime      = wsscore.MaxSessionLifetime
 	maxConfiguredFronts     = 32
 	maxTokensPerFront       = 8
 	firstByteBufferSize     = 4096
@@ -179,7 +187,7 @@ func NewSidecarHandler(opts SidecarOptions) (http.Handler, error) {
 	if opts.MaxTrackedSources, err = boundedDefault(opts.MaxTrackedSources, DefaultMaxTrackedSources, maxTrackedSources, "max tracked sources"); err != nil {
 		return nil, err
 	}
-	if opts.HandshakeTimeout, err = durationDefault(opts.HandshakeTimeout, defaultHandshakeTimeout, time.Minute, "handshake timeout"); err != nil {
+	if opts.HandshakeTimeout, err = durationDefault(opts.HandshakeTimeout, wsscore.DefaultHandshakeTimeout, wsscore.MaxHandshakeTimeout, "handshake timeout"); err != nil {
 		return nil, err
 	}
 	if opts.DialTimeout, err = durationDefault(opts.DialTimeout, DefaultDialTimeout, time.Minute, "dial timeout"); err != nil {
@@ -213,10 +221,10 @@ func NewSidecarHandler(opts SidecarOptions) (http.Handler, error) {
 		return nil, errors.New("ping write timeout must be at most one minute and shorter than the ping interval")
 	}
 	if opts.ReadLimit <= 0 {
-		opts.ReadLimit = defaultWebSocketReadMax
+		opts.ReadLimit = wsscore.DefaultWebSocketReadMax
 	}
-	if opts.ReadLimit > 16<<20 {
-		return nil, errors.New("WebSocket message read limit must not exceed 16 MiB")
+	if opts.ReadLimit > wsscore.MaxWebSocketReadMax {
+		return nil, fmt.Errorf("WebSocket message read limit must not exceed %d bytes", wsscore.MaxWebSocketReadMax)
 	}
 	if opts.DialContext == nil {
 		opts.DialContext = (&net.Dialer{KeepAlive: 30 * time.Second}).DialContext
@@ -309,7 +317,7 @@ func (h *sidecarHandler) handleBridge(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "WebSocket upgrade with required subprotocol expected", http.StatusBadRequest)
 		return
 	}
-	ticket, ok := bearerTicket(r.Header.Values("Authorization"))
+	ticket, ok := bearerTicket(r.Header.Values(wsscore.TicketAuthorizationHeader))
 	if !ok {
 		h.stats.ticketRejections.Add(1)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -414,22 +422,32 @@ func (h *sidecarHandler) authenticateOrigin(values []string) (string, bool) {
 func (h *sidecarHandler) serveSession(parent context.Context, ws *websocket.Conn, claims Claims, sourceIP string) {
 	ctx, cancel := context.WithTimeout(parent, h.sessionLifetime)
 	defer cancel()
-	streamConn := newWebsocketStreamConn(ws, h.readLimit)
-	streamConn.startPings(ctx, h.pingInterval, h.pingWriteTimeout)
-	session, err := yamux.Server(streamConn, bridgeYamuxConfig())
+	streamConn, err := wsscore.NewWebSocketConn(ws, h.readLimit)
+	if err != nil {
+		_ = ws.Close()
+		return
+	}
+	if err := streamConn.StartPings(ctx, h.pingInterval, h.pingWriteTimeout); err != nil {
+		_ = streamConn.Close()
+		return
+	}
+	session, err := wsscore.NewServerSession(streamConn)
 	if err != nil {
 		_ = streamConn.Close()
 		return
 	}
 	defer session.Close()
 	defer streamConn.Close()
-	idle := newSessionIdleGuard(h.noStreamIdleTimeout, func() {
+	idle, err := wsscore.NewIdleGuard(h.noStreamIdleTimeout, func() {
 		h.stats.idleSessionCloses.Add(1)
 		cancel()
 		_ = session.Close()
 		_ = streamConn.Close()
 	})
-	defer idle.close()
+	if err != nil {
+		return
+	}
+	defer idle.Close()
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -480,7 +498,7 @@ func (h *sidecarHandler) serveSession(parent context.Context, ws *websocket.Conn
 			_ = stream.Close()
 			continue
 		}
-		if !idle.startStream() {
+		if !idle.Start() {
 			h.sourceUsage.releaseStream(sourceIP)
 			<-h.globalStreams
 			<-perSession
@@ -492,7 +510,7 @@ func (h *sidecarHandler) serveSession(parent context.Context, ws *websocket.Conn
 		wg.Add(1)
 		go func(stream net.Conn) {
 			defer wg.Done()
-			defer idle.endStream()
+			defer idle.Done()
 			defer h.stats.currentStreams.Add(-1)
 			defer h.sourceUsage.releaseStream(sourceIP)
 			defer func() { <-perSession }()
@@ -525,10 +543,10 @@ func (h *sidecarHandler) handleStream(ctx context.Context, stream net.Conn) {
 		return
 	}
 	defer target.Close()
-	if _, err := writeAll(target, first[:n]); err != nil {
+	if _, err := io.Copy(target, bytes.NewReader(first[:n])); err != nil {
 		return
 	}
-	copyOpaque(ctx, stream, target, h.streamIdleTimeout)
+	wsscore.CopyOpaque(ctx, stream, target, h.streamIdleTimeout)
 }
 
 // NormalizeLoopbackTarget validates and canonicalizes the only address the
@@ -562,7 +580,7 @@ func validateFrontOriginTokens(configured map[string][]string) ([]frontOriginAut
 	fronts := make([]frontOriginAuth, 0, len(configured))
 	owners := make(map[[sha256.Size]byte]string)
 	for frontID, tokens := range configured {
-		if !validFrontID(frontID) {
+		if wsscore.ValidateFrontID(frontID) != nil {
 			return nil, fmt.Errorf("WSS sidecar front ID %q is invalid", frontID)
 		}
 		if len(tokens) == 0 || len(tokens) > maxTokensPerFront {
@@ -604,10 +622,10 @@ func requestsSubprotocol(r *http.Request, wanted string) bool {
 }
 
 func bearerTicket(values []string) (string, bool) {
-	if len(values) != 1 || !strings.HasPrefix(values[0], "Bearer ") {
+	if len(values) != 1 || !strings.HasPrefix(values[0], wsscore.TicketBearerPrefix) {
 		return "", false
 	}
-	ticket := strings.TrimPrefix(values[0], "Bearer ")
+	ticket := strings.TrimPrefix(values[0], wsscore.TicketBearerPrefix)
 	if ticket == "" || strings.TrimSpace(ticket) != ticket || len(ticket) > MaxTicketBytes {
 		return "", false
 	}
@@ -653,8 +671,8 @@ func durationDefault(value, fallback, hardMax time.Duration, name string) (time.
 	if value == 0 {
 		value = fallback
 	}
-	if value < 0 || value > hardMax {
-		return 0, fmt.Errorf("%s must be within (0, %s]", name, hardMax)
+	if value < time.Millisecond || value > hardMax {
+		return 0, fmt.Errorf("%s must be within [1ms, %s]", name, hardMax)
 	}
 	return value, nil
 }

@@ -16,6 +16,7 @@ on:
       - 'internal/wssbridge/**'
       - 'internal/punch/**'
       - 'punchcore/**'
+      - 'wsscore/**'
       - 'go.mod'
       - 'go.sum'
       - '.dockerignore'

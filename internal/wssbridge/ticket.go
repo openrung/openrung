@@ -1,6 +1,7 @@
-// Package wssbridge carries an end-to-end Reality byte stream through an
-// authenticated WebSocket connection. The CDN and relay-local sidecar never
-// receive Reality key material and cannot decrypt the inner stream.
+// Package wssbridge implements broker ticket policy and relay-local origin,
+// replay, source-limit, and fixed-target policy around wsscore. The CDN and
+// relay-local sidecar never receive Reality key material and cannot decrypt
+// the inner stream.
 package wssbridge
 
 import (
@@ -14,15 +15,15 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/openrung/openrung/wsscore"
 )
 
 const (
-	Subprotocol = "openrung-wss-bridge-v1"
-
 	TicketVersion  = 1
 	TicketAudience = "openrung-wss-bridge"
 
-	MaxTicketBytes     = 4096
+	MaxTicketBytes     = wsscore.MaxTicketBytes
 	MaxTicketLifetime  = 5 * time.Minute
 	MaxTicketClockSkew = 2 * time.Minute
 	MaxTicketStreams   = 1024
@@ -265,7 +266,7 @@ func validateClaims(c Claims, now time.Time, opts TicketOptions, verifying bool,
 	if !validID(c.RelayID, 1, 128) || (verifying && c.RelayID != localRelayID) {
 		return fail("wrong relay")
 	}
-	if !validFrontID(c.FrontID) {
+	if wsscore.ValidateFrontID(c.FrontID) != nil {
 		return fail("invalid front")
 	}
 	if c.MaxStreams < 1 || c.MaxStreams > MaxTicketStreams {
@@ -310,26 +311,6 @@ func validID(value string, minLen, maxLen int) bool {
 		default:
 			return false
 		}
-	}
-	return true
-}
-
-func validFrontID(value string) bool {
-	if len(value) < 1 || len(value) > 64 {
-		return false
-	}
-	isAlphaNumeric := func(char byte) bool {
-		return (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9')
-	}
-	if !isAlphaNumeric(value[0]) || !isAlphaNumeric(value[len(value)-1]) {
-		return false
-	}
-	for i := range len(value) {
-		char := value[i]
-		if isAlphaNumeric(char) || char == '.' || char == '_' || char == '-' {
-			continue
-		}
-		return false
 	}
 	return true
 }

@@ -7,12 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
-	"net/url"
 	"slices"
-	"sort"
 	"strings"
 	"time"
+
+	"github.com/openrung/openrung/wsscore"
 )
 
 // WSSCapabilitySpecV1 is intentionally separate from IdentitySpecV1. Adding
@@ -23,11 +22,11 @@ const WSSCapabilitySpecV1 = "openrung-relay-wss-capability-v1"
 const (
 	// WSSBridgePath is the sole public WebSocket path exposed by every
 	// relay-local sidecar. A front URL cannot select any other sidecar route.
-	WSSBridgePath = "/api/v1/wss-bridge"
+	WSSBridgePath = wsscore.BridgePath
 
-	MaxWSSFronts        = 4
-	MaxWSSFrontIDBytes  = 64
-	MaxWSSFrontURLBytes = 512
+	MaxWSSFronts        = wsscore.MaxFronts
+	MaxWSSFrontIDBytes  = wsscore.MaxFrontIDBytes
+	MaxWSSFrontURLBytes = wsscore.MaxFrontURLBytes
 	// Capability and identity expiry are required to match exactly, so keep
 	// their signer TTL and verifier ceiling tied together as well.
 	MaxWSSCapabilityProofWindow = MaxIdentityProofWindow
@@ -53,118 +52,11 @@ type wssCapabilityPayload struct {
 // purpose of the feature, while alternate ports, paths, queries, and userinfo
 // would create unnecessary routing ambiguity.
 func NormalizeWSSFronts(fronts []WSSFrontDescriptor) ([]WSSFrontDescriptor, error) {
-	if len(fronts) == 0 {
-		return nil, nil
-	}
-	if len(fronts) > MaxWSSFronts {
-		return nil, fmt.Errorf("%w: at most %d fronts are allowed", ErrWSSFrontInvalid, MaxWSSFronts)
-	}
-
-	normalized := make([]WSSFrontDescriptor, 0, len(fronts))
-	for index, front := range fronts {
-		if strings.ContainsAny(front.ID, "\r\n\t") || strings.ContainsAny(front.URL, "\r\n\t") {
-			return nil, fmt.Errorf("%w: front %d contains control whitespace", ErrWSSFrontInvalid, index)
-		}
-		id := strings.ToLower(strings.TrimSpace(front.ID))
-		if !validWSSFrontID(id) {
-			return nil, fmt.Errorf("%w: front %d ID must be 1..%d lowercase letters, digits, '.', '_', or '-'", ErrWSSFrontInvalid, index, MaxWSSFrontIDBytes)
-		}
-		if front.ProtocolVersion != WSSProtocolVersion {
-			return nil, fmt.Errorf("%w: front %q protocol_version must be %d", ErrWSSFrontInvalid, id, WSSProtocolVersion)
-		}
-
-		rawURL := strings.TrimSpace(front.URL)
-		if rawURL == "" || len(rawURL) > MaxWSSFrontURLBytes {
-			return nil, fmt.Errorf("%w: front %q URL is empty, oversized, or contains control whitespace", ErrWSSFrontInvalid, id)
-		}
-		parsed, err := url.Parse(rawURL)
-		if err != nil || parsed.Opaque != "" || parsed.Host == "" {
-			return nil, fmt.Errorf("%w: front %q URL must be an absolute hierarchical URL", ErrWSSFrontInvalid, id)
-		}
-		if !strings.EqualFold(parsed.Scheme, "wss") {
-			return nil, fmt.Errorf("%w: front %q URL must use wss", ErrWSSFrontInvalid, id)
-		}
-		if parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
-			return nil, fmt.Errorf("%w: front %q URL may not contain userinfo, a query, or a fragment", ErrWSSFrontInvalid, id)
-		}
-		if parsed.Port() != "" || parsed.Host != parsed.Hostname() {
-			return nil, fmt.Errorf("%w: front %q URL must use the default WSS port", ErrWSSFrontInvalid, id)
-		}
-		host := strings.ToLower(parsed.Hostname())
-		if !validWSSFrontDNSName(host) || net.ParseIP(host) != nil {
-			return nil, fmt.Errorf("%w: front %q URL host must be a CDN DNS name, not an IP literal", ErrWSSFrontInvalid, id)
-		}
-		if parsed.Path != WSSBridgePath || parsed.RawPath != "" {
-			return nil, fmt.Errorf("%w: front %q URL path must be %s", ErrWSSFrontInvalid, id, WSSBridgePath)
-		}
-
-		parsed.Scheme = "wss"
-		parsed.Host = host
-		normalized = append(normalized, WSSFrontDescriptor{
-			ID:              id,
-			URL:             parsed.String(),
-			ProtocolVersion: WSSProtocolVersion,
-		})
-	}
-
-	sort.Slice(normalized, func(i, j int) bool { return normalized[i].ID < normalized[j].ID })
-	for index := range normalized {
-		if index > 0 && normalized[index-1].ID == normalized[index].ID {
-			return nil, fmt.Errorf("%w: duplicate front ID %q", ErrWSSFrontInvalid, normalized[index].ID)
-		}
-		for previous := 0; previous < index; previous++ {
-			if normalized[previous].URL == normalized[index].URL {
-				return nil, fmt.Errorf("%w: duplicate front URL", ErrWSSFrontInvalid)
-			}
-		}
+	normalized, err := wsscore.NormalizeFronts(fronts)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrWSSFrontInvalid, err)
 	}
 	return normalized, nil
-}
-
-func validWSSFrontID(id string) bool {
-	if len(id) == 0 || len(id) > MaxWSSFrontIDBytes {
-		return false
-	}
-	isAlphaNumeric := func(char byte) bool {
-		return (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9')
-	}
-	if !isAlphaNumeric(id[0]) || !isAlphaNumeric(id[len(id)-1]) {
-		return false
-	}
-	for _, char := range id {
-		if (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') {
-			continue
-		}
-		switch char {
-		case '.', '_', '-':
-			continue
-		default:
-			return false
-		}
-	}
-	return true
-}
-
-func validWSSFrontDNSName(host string) bool {
-	if len(host) == 0 || len(host) > 253 || strings.HasSuffix(host, ".") {
-		return false
-	}
-	labels := strings.Split(host, ".")
-	if len(labels) < 2 {
-		return false
-	}
-	for _, label := range labels {
-		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
-			return false
-		}
-		for _, char := range label {
-			if (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '-' {
-				continue
-			}
-			return false
-		}
-	}
-	return true
 }
 
 func validateWSSCapabilityEligibility(req RegisterRequest) error {

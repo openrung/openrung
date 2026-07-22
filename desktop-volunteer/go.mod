@@ -7,7 +7,10 @@ require (
 	openrung v0.0.0
 )
 
-require github.com/openrung/openrung/punchcore v0.0.0 // indirect
+require (
+	github.com/openrung/openrung/punchcore v0.0.0 // indirect
+	github.com/openrung/openrung/wsscore v0.0.0 // indirect
+)
 
 require (
 	git.sr.ht/~jackmordaunt/go-toast/v2 v2.0.3 // indirect
@@ -45,3 +48,5 @@ require (
 replace openrung => ../
 
 replace github.com/openrung/openrung/punchcore => ../punchcore
+
+replace github.com/openrung/openrung/wsscore => ../wsscore
