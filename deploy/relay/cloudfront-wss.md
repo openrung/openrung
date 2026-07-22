@@ -447,6 +447,43 @@ Delete the temporary private seed. Only then may rollout step 6 advertise the
 front. Run this sequence independently for every relay/front; one passing
 distribution never authorizes another relay's advertisement.
 
+Advertise with the transactional host command. It preserves a mode-`0600`
+pre-advertisement relay environment at
+`/etc/openrung/relay.env.pre-wss-advertise`, restores it automatically if the
+new relay process does not register, and never changes the sidecar or Reality
+credentials:
+
+```sh
+deploy/relay/foundation-wss-host.sh advertise \
+  RELAY PUBLIC_IP FRONT_ID \
+  wss://DIST.cloudfront.net/api/v1/wss-bridge \
+  ghcr.io/openrung/openrung-relay:sha-REVISION
+```
+
+Fetch a fresh signed directory and require the relay descriptor to contain
+exactly that one front. Request a ticket from `POST /api/v1/wss/tickets` into a
+pre-created mode-`0600` file without printing it, then consume it through the
+production sidecar. Supplying the public descriptor file also runs an actual
+sing-box/Reality Internet probe:
+
+```sh
+go run ./cmd/wssmatrix \
+  -mode issued \
+  -url wss://DIST.cloudfront.net/api/v1/wss-bridge \
+  -relay-id relay_EXACT \
+  -front-id FRONT_ID \
+  -ticket-response-file /absolute/private/ticket-response.json \
+  -descriptor-file /absolute/private/public-relay-list.json \
+  -sing-box /absolute/path/to/sing-box
+
+deploy/relay/foundation-wss-host.sh audit \
+  RELAY PUBLIC_IP ghcr.io/openrung/openrung-relay:sha-REVISION \
+  FRONT_ID wss://DIST.cloudfront.net/api/v1/wss-bridge
+```
+
+Delete the consumed ticket response immediately after the audit. Never put its
+ticket in shell arguments, URLs, logs, or the public distribution inventory.
+
 ## Rollback
 
 Rollback is additive and does not touch public Reality on `443`:

@@ -46,6 +46,7 @@ type config struct {
 	probeURL            string
 	originTokenFile     string
 	originTokenNextFile string
+	ticketResponseFile  string
 	sourceLimit         int
 	expectCloseWithin   time.Duration
 }
@@ -68,9 +69,12 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	signer, err := signerFromSeedFile(cfg.seedFile)
-	if err != nil {
-		return err
+	var signer *wssbridge.TicketSigner
+	if cfg.mode != "issued" {
+		signer, err = signerFromSeedFile(cfg.seedFile)
+		if err != nil {
+			return err
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -82,6 +86,8 @@ func run(args []string) error {
 		err = runOrigin(ctx, cfg, signer)
 	case "revoked":
 		err = runRevoked(ctx, cfg, signer)
+	case "issued":
+		err = runIssued(ctx, cfg)
 	default:
 		err = errors.New("unknown matrix mode")
 	}
@@ -104,7 +110,7 @@ func parseConfig(args []string) (config, error) {
 	var cfg config
 	fs := flag.NewFlagSet("wssmatrix", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	fs.StringVar(&cfg.mode, "mode", "edge", "matrix mode: edge, origin, or revoked")
+	fs.StringVar(&cfg.mode, "mode", "edge", "matrix mode: edge, origin, revoked, or issued")
 	fs.StringVar(&cfg.url, "url", "", "exact WSS bridge URL")
 	fs.StringVar(&cfg.relayID, "relay-id", "", "exact local relay ID")
 	fs.StringVar(&cfg.frontID, "front-id", "", "exact front ID")
@@ -114,36 +120,86 @@ func parseConfig(args []string) (config, error) {
 	fs.StringVar(&cfg.probeURL, "probe-url", "https://www.cloudflare.com/cdn-cgi/trace", "end-to-end probe URL")
 	fs.StringVar(&cfg.originTokenFile, "origin-token-file", "", "mode-0600 current origin token")
 	fs.StringVar(&cfg.originTokenNextFile, "origin-token-next-file", "", "mode-0600 next origin token")
+	fs.StringVar(&cfg.ticketResponseFile, "ticket-response-file", "", "mode-0600 broker ticket response")
 	fs.IntVar(&cfg.sourceLimit, "source-limit", 0, "configured per-source session limit to verify")
 	fs.DurationVar(&cfg.expectCloseWithin, "expect-close-within", 0, "maximum expected idle/lifetime cleanup delay")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
 		return config{}, errors.New("invalid WSS matrix arguments")
 	}
-	if cfg.mode != "edge" && cfg.mode != "origin" && cfg.mode != "revoked" {
-		return config{}, errors.New("mode must be edge, origin, or revoked")
+	if cfg.mode != "edge" && cfg.mode != "origin" && cfg.mode != "revoked" && cfg.mode != "issued" {
+		return config{}, errors.New("mode must be edge, origin, revoked, or issued")
 	}
-	if cfg.url == "" || cfg.relayID == "" || cfg.frontID == "" || cfg.seedFile == "" {
-		return config{}, errors.New("url, relay-id, front-id, and seed-file are required")
+	if cfg.url == "" || cfg.relayID == "" || cfg.frontID == "" {
+		return config{}, errors.New("url, relay-id, and front-id are required")
+	}
+	if cfg.mode != "issued" && cfg.seedFile == "" {
+		return config{}, errors.New("seed-file is required")
 	}
 	parsed, err := url.Parse(cfg.url)
 	if err != nil || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Path != wssbridge.BridgePath {
 		return config{}, errors.New("url must be an exact bridge URL without query or fragment")
 	}
 	if cfg.mode == "edge" {
-		if parsed.Scheme != "wss" || cfg.descriptorFile == "" || cfg.sourceLimit != 0 || cfg.expectCloseWithin != 0 {
+		if parsed.Scheme != "wss" || cfg.descriptorFile == "" || cfg.sourceLimit != 0 || cfg.expectCloseWithin != 0 || cfg.originTokenFile != "" || cfg.originTokenNextFile != "" || cfg.ticketResponseFile != "" {
 			return config{}, errors.New("edge mode requires wss and a descriptor file only")
 		}
 	} else if cfg.mode == "revoked" {
-		if parsed.Scheme != "wss" || cfg.descriptorFile != "" || cfg.sourceLimit != 0 || cfg.expectCloseWithin != 0 || cfg.originTokenFile != "" || cfg.originTokenNextFile != "" {
+		if parsed.Scheme != "wss" || cfg.descriptorFile != "" || cfg.sourceLimit != 0 || cfg.expectCloseWithin != 0 || cfg.originTokenFile != "" || cfg.originTokenNextFile != "" || cfg.ticketResponseFile != "" {
 			return config{}, errors.New("revoked mode requires only a wss endpoint and test signer")
+		}
+	} else if cfg.mode == "issued" {
+		if parsed.Scheme != "wss" || cfg.ticketResponseFile == "" || cfg.seedFile != "" || cfg.sourceLimit != 0 || cfg.expectCloseWithin != 0 || cfg.originTokenFile != "" || cfg.originTokenNextFile != "" {
+			return config{}, errors.New("issued mode requires a wss endpoint and ticket response file")
 		}
 	} else {
 		host := net.ParseIP(parsed.Hostname())
-		if parsed.Scheme != "ws" || host == nil || !host.IsLoopback() || cfg.originTokenFile == "" || cfg.originTokenNextFile == "" || cfg.sourceLimit < 1 {
+		if parsed.Scheme != "ws" || host == nil || !host.IsLoopback() || cfg.originTokenFile == "" || cfg.originTokenNextFile == "" || cfg.sourceLimit < 1 || cfg.descriptorFile != "" || cfg.ticketResponseFile != "" {
 			return config{}, errors.New("origin mode requires a loopback ws URL, two token files, and a positive source limit")
 		}
 	}
 	return cfg, nil
+}
+
+func runIssued(ctx context.Context, cfg config) error {
+	info, err := os.Lstat(cfg.ticketResponseFile)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || info.Size() < 1 || info.Size() > 64<<10 {
+		return errors.New("ticket response must be a bounded mode-0600 regular file")
+	}
+	raw, err := os.ReadFile(cfg.ticketResponseFile)
+	if err != nil {
+		return errors.New("read ticket response")
+	}
+	var response relay.WSSSessionTicketResponse
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&response); err != nil {
+		return errors.New("decode ticket response")
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return errors.New("ticket response must contain one JSON object")
+	}
+	if response.URL != cfg.url || len(response.Ticket) < 1 || len(response.Ticket) > wssbridge.MaxTicketBytes {
+		return errors.New("ticket response does not match the expected front")
+	}
+	remaining := time.Until(response.ExpiresAt)
+	if remaining <= 0 || remaining > wssbridge.MaxTicketLifetime {
+		return errors.New("ticket response expiry is outside protocol bounds")
+	}
+	if cfg.descriptorFile != "" {
+		if err := endToEndProbeTicket(ctx, cfg, response.Ticket); err != nil {
+			return err
+		}
+		fmt.Println("broker_ticket_issuance=ok production_reality_probe=ok")
+		return nil
+	}
+	bridge, err := wssbridge.DialClient(ctx, wssbridge.ClientOptions{URL: cfg.url, Ticket: response.Ticket})
+	if err != nil {
+		return errors.New("issued production ticket was rejected")
+	}
+	_ = bridge.Close()
+	fmt.Println("broker_ticket_issuance=ok production_sidecar_acceptance=ok")
+	return nil
 }
 
 func runRevoked(ctx context.Context, cfg config, signer *wssbridge.TicketSigner) error {
@@ -465,6 +521,14 @@ func lifecycleProbe(ctx context.Context, cfg config, signer *wssbridge.TicketSig
 }
 
 func endToEndProbe(ctx context.Context, cfg config, signer *wssbridge.TicketSigner) error {
+	ticket, err := signedTicket(signer, cfg.relayID, cfg.frontID)
+	if err != nil {
+		return err
+	}
+	return endToEndProbeTicket(ctx, cfg, ticket)
+}
+
+func endToEndProbeTicket(ctx context.Context, cfg config, ticket string) error {
 	raw, err := os.ReadFile(cfg.descriptorFile)
 	if err != nil {
 		return errors.New("read public relay descriptor")
@@ -490,10 +554,6 @@ func endToEndProbe(ctx context.Context, cfg config, signer *wssbridge.TicketSign
 	}
 	if descriptor.ID != cfg.relayID {
 		return errors.New("public relay descriptor does not match matrix relay")
-	}
-	ticket, err := signedTicket(signer, cfg.relayID, cfg.frontID)
-	if err != nil {
-		return err
 	}
 	bridge, err := wssbridge.DialClient(ctx, wssbridge.ClientOptions{URL: cfg.url, Ticket: ticket})
 	if err != nil {

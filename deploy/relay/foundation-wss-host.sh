@@ -6,7 +6,8 @@
 #   sidecar RELAY HOST RELAY_ID FRONT_ID IMAGE
 #   origin-tls RELAY HOST ORIGIN_HOST
 #   matrix-limits RELAY HOST enable|restore
-#   audit RELAY HOST IMAGE
+#   advertise RELAY HOST FRONT_ID FRONT_URL IMAGE
+#   audit RELAY HOST IMAGE [FRONT_ID FRONT_URL]
 #
 # `migrate` is the one-time legacy-to-stable transition.  It preserves the
 # currently active VLESS UUID, Reality private key, and short ID directly on
@@ -29,7 +30,7 @@ KNOWN_HOSTS="${OPENRUNG_KNOWN_HOSTS:-$HOME/.ssh/known_hosts}"
 SSH_OPTS=(-i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=${KNOWN_HOSTS}")
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
-[[ "$COMMAND" =~ ^(migrate|sidecar|origin-tls|matrix-limits|audit)$ ]] || die "unknown command"
+[[ "$COMMAND" =~ ^(migrate|sidecar|origin-tls|matrix-limits|advertise|audit)$ ]] || die "unknown command"
 [[ "$RELAY" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || die "relay name is invalid"
 [[ "$HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]{0,254}$ ]] || die "host is invalid"
 [[ -f "$SSH_KEY" && -f "$KNOWN_HOSTS" ]] || die "SSH key or known_hosts is missing"
@@ -284,9 +285,69 @@ EOF
     printf 'relay=%s matrix_limits=%s advertised=false\n' "$RELAY" "$ACTION"
     ;;
 
+  advertise)
+    FRONT_ID="${4:-}"
+    FRONT_URL="${5:-}"
+    IMAGE="${6:-}"
+    [[ "$FRONT_ID" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]] || die "front ID is invalid"
+    [[ "$FRONT_URL" =~ ^wss://[a-z0-9]+\.cloudfront\.net/api/v1/wss-bridge$ ]] || die "front URL is invalid"
+    [[ "$IMAGE" =~ ^[A-Za-z0-9][A-Za-z0-9:/@._-]*$ ]] || die "image is invalid"
+    REMOTE_SCRIPT="$(mktemp)"
+    trap 'rm -f "$REMOTE_SCRIPT"' EXIT
+    cat >"$REMOTE_SCRIPT" <<'REMOTE'
+set -euo pipefail
+front_id="$1" front_url="$2" image="$3"
+env=/etc/openrung/relay.env
+backup=/etc/openrung/relay.env.pre-wss-advertise
+
+test "$(sudo docker inspect -f '{{.Config.Image}} {{.State.Running}}' openrung-relay)" = "$image true"
+sudo test -f "$env"
+! sudo test -e "$backup"
+! sudo grep -q '^OPENRUNG_WSS_FRONTS=' "$env"
+sudo install -m 0600 -o root -g root "$env" "$backup"
+sudo sed -i "\$aOPENRUNG_WSS_FRONTS=${front_id}=${front_url}" "$env"
+
+start_relay() {
+  sudo docker rm -f openrung-relay >/dev/null 2>&1 || true
+  sudo docker run -d --name openrung-relay --restart unless-stopped \
+    --network host --cap-drop ALL --cap-add NET_BIND_SERVICE --read-only --tmpfs /tmp \
+    --env-file "$env" "$image" >/dev/null
+}
+rollback() {
+  sudo install -m 0600 -o root -g root "$backup" "$env"
+  start_relay
+}
+trap rollback ERR
+start_relay
+for _ in $(seq 1 30); do
+  state="$(sudo docker inspect -f '{{.State.Running}} {{.RestartCount}}' openrung-relay 2>/dev/null || true)"
+  if [ "$state" = "true 0" ] && sudo docker logs openrung-relay 2>&1 | grep -q 'registered relay'; then
+    break
+  fi
+  sleep 2
+done
+test "$(sudo docker inspect -f '{{.State.Running}} {{.RestartCount}}' openrung-relay)" = 'true 0'
+test "$(sudo grep -c '^OPENRUNG_WSS_FRONTS=' "$env")" = 1
+sudo grep -Fqx "OPENRUNG_WSS_FRONTS=${front_id}=${front_url}" "$env"
+trap - ERR
+REMOTE
+    ssh "${SSH_OPTS[@]}" "${SSH_USER}@${HOST}" \
+      "sudo bash -s -- '$FRONT_ID' '$FRONT_URL' '$IMAGE'" <"$REMOTE_SCRIPT"
+    printf 'relay=%s front=%s advertised=pending-broker-verification\n' "$RELAY" "$FRONT_ID"
+    ;;
+
   audit)
     IMAGE="${4:-}"
+    FRONT_ID="${5:-}"
+    FRONT_URL="${6:-}"
     [[ "$IMAGE" =~ ^[A-Za-z0-9][A-Za-z0-9:/@._-]*$ ]] || die "image is invalid"
+    if [[ -n "$FRONT_ID" || -n "$FRONT_URL" ]]; then
+      [[ "$FRONT_ID" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]] || die "front ID is invalid"
+      [[ "$FRONT_URL" =~ ^wss://[a-z0-9]+\.cloudfront\.net/api/v1/wss-bridge$ ]] || die "front URL is invalid"
+      FRONT_CHECK="test \"\$(sudo grep -c '^OPENRUNG_WSS_FRONTS=' /etc/openrung/relay.env)\" = 1 && sudo grep -Fqx 'OPENRUNG_WSS_FRONTS=${FRONT_ID}=${FRONT_URL}' /etc/openrung/relay.env && sudo test -f /etc/openrung/relay.env.pre-wss-advertise && test \"\$(sudo stat -c '%a %U:%G' /etc/openrung/relay.env.pre-wss-advertise)\" = '600 root:root'"
+    else
+      FRONT_CHECK="! sudo grep -q '^OPENRUNG_WSS_FRONTS=' /etc/openrung/relay.env"
+    fi
     ssh_run "set -e
       test \"\$(sudo docker inspect -f '{{.Config.Image}} {{.State.Running}} {{.RestartCount}} {{.HostConfig.NetworkMode}} {{.HostConfig.ReadonlyRootfs}}' openrung-relay)\" = '$IMAGE true 0 host true'
       test \"\$(sudo docker inspect -f '{{.Config.Image}} {{.State.Running}} {{.RestartCount}} {{.HostConfig.NetworkMode}} {{.HostConfig.ReadonlyRootfs}}' openrung-wss-sidecar)\" = '$IMAGE true 0 host true'
@@ -297,7 +358,7 @@ EOF
       ! sudo test -e /etc/openrung/wss.env.pre-matrix
       test \"\$(sudo stat -c '%a %U:%G' /etc/openrung/relay.env)\" = '600 root:root'
       test \"\$(sudo stat -c '%a %U:%G' /etc/openrung/wss.env)\" = '600 root:root'
-      ! sudo grep -q '^OPENRUNG_WSS_FRONTS=' /etc/openrung/relay.env
+      $FRONT_CHECK
       test \"\$(sudo grep -c '^OPENRUNG_WSS_MAX_SESSIONS_PER_SOURCE=512\$' /etc/openrung/wss.env)\" = 1
       ! sudo grep -q '^OPENRUNG_WSS_NO_STREAM_IDLE_TIMEOUT=' /etc/openrung/wss.env
       ! sudo grep -q '^OPENRUNG_WSS_FIXED_TARGET=' /etc/openrung/wss.env
@@ -307,6 +368,10 @@ EOF
       test \"\$(sudo grep -c 'reverse_proxy 127.0.0.1:8081' /etc/caddy/Caddyfile)\" = 1
       ! sudo grep -Eq '^[[:space:]]*log([[:space:]]|\{)' /etc/caddy/Caddyfile
       sudo systemctl is-active --quiet caddy"
-    printf 'relay=%s host_audit=ok advertised=false\n' "$RELAY"
+    if [[ -n "$FRONT_ID" ]]; then
+      printf 'relay=%s front=%s host_audit=ok advertised=true\n' "$RELAY" "$FRONT_ID"
+    else
+      printf 'relay=%s host_audit=ok advertised=false\n' "$RELAY"
+    fi
     ;;
 esac

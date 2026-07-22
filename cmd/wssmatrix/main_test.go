@@ -85,4 +85,12 @@ func TestParseConfigSeparatesEdgeAndOriginInputs(t *testing.T) {
 	if err != nil || revoked.mode != "revoked" {
 		t.Fatalf("revoked config: %#v, %v", revoked, err)
 	}
+	issued, err := parseConfig([]string{
+		"-mode", "issued", "-url", "wss://example.cloudfront.net/api/v1/wss-bridge",
+		"-relay-id", "relay_a", "-front-id", "front-a",
+		"-ticket-response-file", "/tmp/ticket-response", "-descriptor-file", "/tmp/descriptor",
+	})
+	if err != nil || issued.mode != "issued" {
+		t.Fatalf("issued config: %#v, %v", issued, err)
+	}
 }
