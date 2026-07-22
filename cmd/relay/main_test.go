@@ -145,6 +145,9 @@ func TestRelayDeploymentCoLocatesHardenedWSSSidecar(t *testing.T) {
 		"COPY --from=build /out/wss-sidecar /usr/local/bin/wss-sidecar",
 		"chown openrung:openrung /var/lib/openrung",
 		"chmod 0700 /var/lib/openrung",
+		"setcap 'cap_net_bind_service=+ep' /usr/local/bin/relay",
+		"setcap 'cap_net_bind_service=+ep' /usr/local/bin/xray",
+		"getcap /usr/local/bin/xray | grep -q 'cap_net_bind_service=ep'",
 	} {
 		if !strings.Contains(dockerfile, required) {
 			t.Errorf("relay Dockerfile does not bundle sidecar: missing %q", required)

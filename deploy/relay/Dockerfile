@@ -93,13 +93,18 @@ COPY --from=build /out/wss-sidecar /usr/local/bin/wss-sidecar
 COPY deploy/relay/entrypoint.sh /usr/local/bin/entrypoint.sh
 # Third-party attribution + GPL/MPL source offers travel with the distributed image.
 COPY THIRD_PARTY_NOTICES.md /usr/local/share/openrung/THIRD_PARTY_NOTICES.md
-# Let the non-root relay process bind the privileged public port (443). Pairs with
+# Let the non-root relay process, or its Xray child when the connection observer
+# is disabled, bind the privileged public port (443). Both executables need the
+# file capability because Linux clears relay's effective capability when it
+# execs the otherwise-unprivileged Xray binary. This pairs with
 # `cap_add: NET_BIND_SERVICE` at runtime. NOTE: file capabilities are ignored
 # under no-new-privileges, so do not enable that flag for this image (or switch
 # to a public port >= 1024 and run with zero capabilities instead).
 RUN apk add --no-cache --virtual .setcap libcap \
     && setcap 'cap_net_bind_service=+ep' /usr/local/bin/relay \
+    && setcap 'cap_net_bind_service=+ep' /usr/local/bin/xray \
     && getcap /usr/local/bin/relay | grep -q 'cap_net_bind_service=ep' \
+    && getcap /usr/local/bin/xray | grep -q 'cap_net_bind_service=ep' \
     && apk del .setcap \
     && chmod +x /usr/local/bin/entrypoint.sh
 USER openrung
