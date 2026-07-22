@@ -145,7 +145,9 @@ func (s *Service) wssDialer() func(context.Context, string, string) (wssBridge, 
 		return s.dialWSS
 	}
 	return func(ctx context.Context, rawURL, ticket string) (wssBridge, error) {
-		return wsscore.DialClient(ctx, wsscore.ClientOptions{URL: rawURL, Ticket: ticket})
+		return wsscore.DialClient(ctx, wsscore.ClientOptions{
+			URL: rawURL, Ticket: ticket, CloudFrontNoSNI: true,
+		})
 	}
 }
 

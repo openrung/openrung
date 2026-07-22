@@ -29,8 +29,14 @@ type ClientOptions struct {
 	URL    string
 	Ticket string
 
-	TLSConfig        *tls.Config
-	WebSocketDialer  *websocket.Dialer
+	TLSConfig       *tls.Config
+	WebSocketDialer *websocket.Dialer
+
+	// CloudFrontNoSNI omits ClientHello SNI for native one-label
+	// *.cloudfront.net URLs while retaining certificate verification against
+	// the signed URL hostname. It has no effect on custom CNAMEs or other CDNs.
+	CloudFrontNoSNI bool
+
 	HandshakeTimeout time.Duration
 	PingInterval     time.Duration
 	PingWriteTimeout time.Duration
@@ -64,6 +70,8 @@ func DialClient(ctx context.Context, opts ClientOptions) (*Client, error) {
 	if err := ValidateFrontURL(opts.URL); err != nil {
 		return nil, err
 	}
+	verificationName, nativeCloudFront := cloudFrontDistributionHost(opts.URL)
+	omitSNI := opts.CloudFrontNoSNI && nativeCloudFront
 	if len(opts.Ticket) == 0 || len(opts.Ticket) > MaxTicketBytes || strings.ContainsAny(opts.Ticket, "\r\n") {
 		return nil, errors.New("WSS ticket is missing or oversized")
 	}
@@ -80,6 +88,9 @@ func DialClient(ctx context.Context, opts ClientOptions) (*Client, error) {
 	tlsConfig, err := normalizedTLSConfig(opts)
 	if err != nil {
 		return nil, err
+	}
+	if omitSNI && len(tlsConfig.EncryptedClientHelloConfigList) != 0 {
+		return nil, errors.New("WSS CloudFront no-SNI mode cannot be combined with encrypted client hello")
 	}
 
 	loopback := opts.LoopbackHost
@@ -116,6 +127,13 @@ func DialClient(ctx context.Context, opts ClientOptions) (*Client, error) {
 	if dialer.NetDialContext == nil {
 		networkDialer := newNetworkDialer(handshakeTimeout, opts.SocketProtector)
 		dialer.NetDialContext = networkDialer.DialContext
+	}
+	if omitSNI {
+		// Gorilla otherwise fills an empty TLS ServerName from the URL host.
+		// Complete TLS here so the distribution name remains confined to the
+		// encrypted HTTP Host header while the protected/custom TCP dial path is
+		// preserved.
+		dialer.NetDialTLSContext = noSNITLSDialContext(dialer.NetDialContext, tlsConfig, verificationName)
 	}
 
 	header := make(http.Header)

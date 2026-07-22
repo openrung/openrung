@@ -45,6 +45,13 @@ stream-control metadata plus the same opaque Reality bytes. Neither receives
 the Reality private session keys or plaintext destinations. Reality continues
 to authenticate the selected relay and encrypt client traffic end to end.
 
+For a native `*.cloudfront.net` distribution URL, the client omits TLS SNI and
+CloudFront selects the distribution from the encrypted HTTP `Host` header.
+The client still verifies CloudFront's default certificate against the exact
+signed URL hostname. This removes one cleartext hostname signal, but ordinary
+DNS resolution can still expose the distribution hostname; custom CNAME and
+non-CloudFront fronts retain normal SNI.
+
 The client and sidecar require WebSocket subprotocol
 `openrung-wss-bridge-v1`, disable WebSocket compression, and accept binary
 messages only. One ticket authorizes one bounded multiplexing session, not an

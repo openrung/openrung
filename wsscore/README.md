@@ -55,8 +55,16 @@ message, stream-idle, no-stream-idle, stream-concurrency, and session-lifetime
 controls. Custom network dial callbacks cannot be combined with
 `SocketProtector`, because that could silently bypass Android socket
 protection. Custom callbacks that claim to have completed TLS are rejected
-entirely, TLS verification cannot be disabled, and the TLS server name always
-comes from the signed front URL.
+entirely, and TLS verification cannot be disabled. When
+`ClientOptions.CloudFrontNoSNI` is enabled for a native, one-label
+`*.cloudfront.net` distribution URL, `DialClient` omits the ClientHello SNI,
+accepts only a normally trusted certificate valid for the exact signed URL
+host, and leaves that hostname in the encrypted HTTP `Host` header. Custom
+CloudFront CNAMEs and every other CDN URL retain ordinary SNI derived from the
+signed front URL. Encrypted ClientHello configuration is rejected on the
+CloudFront no-SNI path so it cannot silently add a different public SNI. The
+in-repository desktop client enables this option; external module consumers
+must opt in deliberately when they upgrade.
 
 ## Compatibility tests
 
