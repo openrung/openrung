@@ -325,7 +325,7 @@ REMOTE
       || die "origin token ring is invalid"
     grep -Eq '^[A-Za-z0-9+/=]+(,[A-Za-z0-9+/=]+)*$' "$TICKET_FILE" || die "ticket public-key file is invalid"
     TMP_ENV="$(mktemp)"
-    trap 'rm -f "$TMP_ENV"' EXIT
+    trap 'rm -f "$TMP_ENV" "${TMP_ENV}.tokens"' EXIT
     umask 077
     jq -n --arg front "$FRONT_ID" --slurpfile tokens "$TOKENS_FILE" '{($front):$tokens[0]}' >"${TMP_ENV}.tokens"
     {

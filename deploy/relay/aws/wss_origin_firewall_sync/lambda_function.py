@@ -91,6 +91,11 @@ def _notification_sync_token(event: Any) -> int | None:
     raise ValueError("SNS message contains an invalid sync token")
 
 
+def _prefix_sort_key(value: str) -> tuple[int, int]:
+    network = ipaddress.ip_network(value)
+    return int(network.network_address), network.prefixlen
+
+
 def _download_prefixes(
     opener: Callable[..., Any] = urllib.request.urlopen,
 ) -> tuple[list[str], int]:
@@ -135,7 +140,7 @@ def _download_prefixes(
         if network.prefixlen == 0:
             raise ValueError("origin-facing range must not be world-open")
         prefixes.add(raw_prefix)
-    result = sorted(prefixes, key=lambda value: int(ipaddress.ip_network(value).network_address))
+    result = sorted(prefixes, key=_prefix_sort_key)
     if not result or len(result) > MAX_PREFIXES:
         raise ValueError(f"origin-facing IPv4 range count must be 1..{MAX_PREFIXES}")
     return result, int(token)
@@ -159,7 +164,7 @@ def _rule(prefixes: list[str]) -> dict[str, Any]:
 
 
 def _sort_prefixes(prefixes: Any) -> list[str]:
-    return sorted(set(prefixes), key=lambda value: int(ipaddress.ip_network(value).network_address))
+    return sorted(set(prefixes), key=_prefix_sort_key)
 
 
 def _replace_origin_rule(port_infos: list[dict[str, Any]], replacement: dict[str, Any]) -> list[dict[str, Any]]:

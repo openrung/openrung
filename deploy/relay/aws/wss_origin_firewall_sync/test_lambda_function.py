@@ -70,6 +70,28 @@ class FirewallSyncTest(unittest.TestCase):
         self.assertEqual(result, ["203.0.113.0/24"])
         self.assertEqual(token, 7)
 
+    def test_prefix_sort_includes_prefix_length(self):
+        prefixes = ["3.172.0.0/22", "3.172.0.0/18", "13.124.199.0/24"]
+        expected = ["3.172.0.0/18", "3.172.0.0/22", "13.124.199.0/24"]
+        self.assertEqual(sync._sort_prefixes(prefixes), expected)
+
+        feed = {"syncToken": "8", "prefixes": [
+            {"ip_prefix": prefix, "service": sync.ORIGIN_SERVICE}
+            for prefix in prefixes
+        ]}
+        result, _ = sync._download_prefixes(lambda *_args, **_kwargs: Response(json.dumps(feed).encode()))
+        self.assertEqual(result, expected)
+
+        client = FakeLightsail([{
+            "fromPort": 8443,
+            "toPort": 8443,
+            "protocol": "tcp",
+            "state": "open",
+            "cidrs": list(reversed(expected)),
+        }])
+        self.assertFalse(sync._sync_target(client, "relay-a", expected))
+        self.assertEqual(client.writes, [])
+
     def test_sync_adds_before_removing(self):
         client = FakeLightsail([
             {"fromPort": 443, "toPort": 443, "protocol": "tcp", "state": "open", "cidrs": ["0.0.0.0/0"]},
