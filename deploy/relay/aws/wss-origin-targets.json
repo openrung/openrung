@@ -1,0 +1,14 @@
+[
+  {
+    "instance": "witty-salmon",
+    "region": "us-east-1"
+  },
+  {
+    "instance": "quiet-meadow",
+    "region": "eu-central-1"
+  },
+  {
+    "instance": "witty-otter",
+    "region": "ap-south-1"
+  }
+]

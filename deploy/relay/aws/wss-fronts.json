@@ -1,0 +1,29 @@
+[
+  {
+    "relay": "witty-salmon",
+    "relay_id": "relay_a986b909a0bdcf85fe2f49e464c9ba07",
+    "origin_host": "witty-salmon-origin.openrung.org",
+    "front_id": "witty-salmon-cf-a",
+    "distribution_id": "E1CPABNGYUNWJA",
+    "distribution_domain": "d1g2q5hgh6r0dw.cloudfront.net",
+    "url": "wss://d1g2q5hgh6r0dw.cloudfront.net/api/v1/wss-bridge"
+  },
+  {
+    "relay": "quiet-meadow",
+    "relay_id": "relay_513d3265d3a7580e07cd51c24049a820",
+    "origin_host": "quiet-meadow-origin.openrung.org",
+    "front_id": "quiet-meadow-cf-a",
+    "distribution_id": "E2LQ3YA4RYUJ1D",
+    "distribution_domain": "d2ccasa6pyf0ym.cloudfront.net",
+    "url": "wss://d2ccasa6pyf0ym.cloudfront.net/api/v1/wss-bridge"
+  },
+  {
+    "relay": "witty-otter",
+    "relay_id": "relay_2b33aaa02db7b6c65e7b7b55341edfbc",
+    "origin_host": "witty-otter-origin.openrung.org",
+    "front_id": "witty-otter-cf-a",
+    "distribution_id": "EUR0ML96FEMWU",
+    "distribution_domain": "d2ruumwujr6ln0.cloudfront.net",
+    "url": "wss://d2ruumwujr6ln0.cloudfront.net/api/v1/wss-bridge"
+  }
+]

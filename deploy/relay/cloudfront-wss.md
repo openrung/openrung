@@ -361,6 +361,92 @@ Roll out one relay and one front at a time:
 7. Canary the desktop fallback while continuing to measure direct Reality
    independently. Add further relays/fronts only after the canary is stable.
 
+### Fleet automation and pre-advertisement matrix
+
+The checked-in fleet tooling keeps the data plane per-relay even though the
+AWS IP-range maintenance is shared control-plane automation:
+
+- `deploy/relay/aws/wss-origin-targets.json` is the explicit Lightsail origin
+  firewall inventory. It carries only instance names and regions; `apply`
+  resolves the exact instance ARNs from the live account, so the AWS account ID
+  and instance identifiers are never checked in.
+  `deploy-wss-origin-firewall-sync.sh check` validates the inventory; `apply`
+  deploys the least-privilege Lambda and immediately converges every listed
+  relay to the official `CLOUDFRONT_ORIGIN_FACING` IPv4 ranges on TCP `8443`.
+  It preserves every unrelated port rule and updates add-before-remove.
+- `foundation-wss-host.sh` migrates one legacy Foundation relay to a pinned
+  image and stable identity, installs its own loopback sidecar, installs its
+  own Caddy TLS origin on `8443`, and audits the result. Secret files are
+  streamed over SSH stdin, must be mode `0600`, and are never command-line
+  arguments.
+- `cloudfront-wss-front.sh` creates or audits exactly one distribution whose
+  only origin is that relay's origin hostname. The origin token comes from a
+  mode-`0600` file; the written state file is public metadata only.
+  `wss-fronts.json` inventories that public distribution metadata and does not
+  imply that a listed front is advertised by its relay.
+
+Do not put `OPENRUNG_WSS_FRONTS` in the relay environment until the complete
+matrix below passes for that exact distribution. Generate a temporary ticket
+key, add only its public key to the relay's overlapping verifier set, and keep
+its private seed on the operator workstation:
+
+```sh
+go run ./cmd/wssmatrix keygen \
+  -seed-file /absolute/private/test-ticket.seed \
+  -public-key-file /absolute/private/test-ticket.pub
+
+go run ./cmd/wssmatrix \
+  -mode edge \
+  -url wss://DIST.cloudfront.net/api/v1/wss-bridge \
+  -relay-id relay_EXACT \
+  -front-id relay-name-cf-a \
+  -seed-file /absolute/private/test-ticket.seed \
+  -descriptor-file /absolute/private/public-relay-descriptor.json \
+  -sing-box /absolute/path/to/sing-box
+```
+
+Edge mode verifies missing-ticket rejection, wrong-relay and wrong-front
+binding, single-use replay enforcement, and a real end-to-end Internet request
+through sing-box and Reality inside the WebSocket. It never sends a ticket in
+a URL or query parameter and never prints a ticket or response payload.
+
+For relay-local controls, temporarily set a small
+`OPENRUNG_WSS_MAX_SESSIONS_PER_SOURCE` and short
+`OPENRUNG_WSS_NO_STREAM_IDLE_TIMEOUT`, restart only the unadvertised sidecar,
+and forward its loopback listener over SSH. Origin mode verifies rejection of
+an invalid origin token, acceptance of both rotation-overlap tokens, exact
+per-source saturation and release, and bounded idle/lifetime cleanup:
+
+```sh
+go run ./cmd/wssmatrix \
+  -mode origin \
+  -url ws://127.0.0.1:LOCAL_FORWARD/api/v1/wss-bridge \
+  -relay-id relay_EXACT \
+  -front-id relay-name-cf-a \
+  -seed-file /absolute/private/test-ticket.seed \
+  -origin-token-file /absolute/private/origin-current \
+  -origin-token-next-file /absolute/private/origin-next \
+  -source-limit 2 \
+  -expect-close-within 10s
+```
+
+Restore the production source/idle limits, restore the production-only ticket
+verification key set, restart and audit the sidecar, and prove a ticket signed
+by the temporary key is rejected:
+
+```sh
+go run ./cmd/wssmatrix \
+  -mode revoked \
+  -url wss://DIST.cloudfront.net/api/v1/wss-bridge \
+  -relay-id relay_EXACT \
+  -front-id relay-name-cf-a \
+  -seed-file /absolute/private/test-ticket.seed
+```
+
+Delete the temporary private seed. Only then may rollout step 6 advertise the
+front. Run this sequence independently for every relay/front; one passing
+distribution never authorizes another relay's advertisement.
+
 ## Rollback
 
 Rollback is additive and does not touch public Reality on `443`:

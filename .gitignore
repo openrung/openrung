@@ -2,6 +2,8 @@
 .cache/
 .gocache/
 .build/
+__pycache__/
+*.py[cod]
 
 # Local multi-module workspaces (dev-only; module wiring is via replace directives)
 go.work
