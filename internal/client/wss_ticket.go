@@ -79,7 +79,7 @@ func (c BrokerClient) RequestWSSSessionTicket(
 
 	httpClient := c.HTTPClient
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = defaultBrokerHTTPClient
 	}
 	noRedirectClient := *httpClient
 	noRedirectClient.CheckRedirect = func(*http.Request, []*http.Request) error {

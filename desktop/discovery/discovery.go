@@ -83,7 +83,7 @@ func ListRelays(ctx context.Context, brokerURL string, opts Options) (relay.List
 
 	httpClient := opts.HTTPClient
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: requestTimeout}
+		httpClient = client.NewBrokerHTTPClient(requestTimeout)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
