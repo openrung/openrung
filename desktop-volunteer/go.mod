@@ -47,6 +47,8 @@ require (
 
 replace openrung => ../
 
+replace github.com/openrung/openrung/brokerapi => ../brokerapi
+
 replace github.com/openrung/openrung/punchcore => ../punchcore
 
 replace github.com/openrung/openrung/wsscore => ../wsscore

@@ -6,11 +6,14 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/hashicorp/yamux v0.1.2
 	github.com/jackc/pgx/v5 v5.6.0
+	github.com/openrung/openrung/brokerapi v0.0.0
 	github.com/openrung/openrung/punchcore v0.0.0
 	github.com/openrung/openrung/wsscore v0.0.0
 	github.com/quic-go/quic-go v0.60.0
 	golang.org/x/sys v0.45.0
 )
+
+replace github.com/openrung/openrung/brokerapi => ./brokerapi
 
 replace github.com/openrung/openrung/punchcore => ./punchcore
 

@@ -3,29 +3,28 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
-	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/openrung/openrung/brokerapi"
 
 	"openrung/internal/client"
 	"openrung/internal/clienttelemetry"
 )
 
 const (
-	relayDialTimeout    = 10 * time.Second
-	probeWindow         = 5 * time.Second
-	probeRequestTimeout = 4 * time.Second
+	relayDialTimeout = 10 * time.Second
+	probeWindow      = 5 * time.Second
 )
 
 // newConnectManager builds the telemetry manager for a connect session.
 // Telemetry is always on (parity with the mobile apps); if it cannot initialize
 // it is best-effort disabled (nil) so connecting never fails on telemetry.
 func newConnectManager(brokerURL string) *clienttelemetry.Manager {
-	mgr, err := clienttelemetry.New(brokerURL, client.AppVersion(), client.NewBrokerHTTPClient(0))
+	mgr, err := clienttelemetry.New(brokerURL, client.AppVersion(), nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: telemetry unavailable: %v\n", err)
 		return nil
@@ -50,32 +49,18 @@ func tcpReachMs(ctx context.Context, host string, port int) (int64, error) {
 // confirm connectivity after the tunnel starts. It retries within probeWindow.
 // Returns the successful probe duration in ms, or ok=false if it never succeeds.
 func probeInternet(ctx context.Context, brokerURL string) (int64, bool) {
-	target, err := healthURL(brokerURL)
-	if err != nil {
-		return 0, false
-	}
-	// The request timeout deliberately exceeds the shared two-second ECH phase
-	// so a network that blackholes ECH still has time for the verified plain-TLS
-	// fallback. The outer context keeps the complete retry sweep at five seconds.
-	httpClient := client.NewBrokerHTTPClient(probeRequestTimeout)
-	httpClient.CheckRedirect = func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	}
+	// brokerapi keeps each request above the two-second ECH phase so a network
+	// that blackholes ECH still has time for verified plain-TLS fallback. The
+	// outer context keeps the complete retry sweep at five seconds.
+	api := brokerapi.NewClient(nil, brokerapi.Options{
+		AppVersion: client.AppVersion(),
+	})
 	probeCtx, cancel := context.WithTimeout(ctx, probeWindow)
 	defer cancel()
 	for {
 		started := time.Now()
-		req, reqErr := http.NewRequestWithContext(probeCtx, http.MethodGet, target, nil)
-		if reqErr != nil {
-			return 0, false
-		}
-		resp, doErr := httpClient.Do(req)
-		if doErr == nil {
-			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-			resp.Body.Close()
-			if resp.StatusCode >= 200 && resp.StatusCode < 500 {
-				return time.Since(started).Milliseconds(), true
-			}
+		if err := api.ProbeHealth(probeCtx, brokerURL); err == nil {
+			return time.Since(started).Milliseconds(), true
 		}
 		if probeCtx.Err() != nil {
 			return 0, false
@@ -91,18 +76,7 @@ func probeInternet(ctx context.Context, brokerURL string) (int64, bool) {
 }
 
 func healthURL(brokerURL string) (string, error) {
-	parsed, err := client.EnforceSecureBrokerURL(brokerURL)
-	if err != nil {
-		return "", err
-	}
-	basePath := strings.Trim(parsed.Path, "/")
-	parts := []string{"healthz"}
-	if basePath != "" {
-		parts = append([]string{basePath}, parts...)
-	}
-	parsed.Path = "/" + strings.Join(parts, "/")
-	parsed.RawQuery = ""
-	return parsed.String(), nil
+	return brokerapi.HealthURL(brokerURL)
 }
 
 // errorType returns a short type name for an error, mirroring Android's use of

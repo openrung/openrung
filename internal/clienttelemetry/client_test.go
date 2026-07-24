@@ -15,6 +15,10 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+type decodedBatch struct {
+	Events []Event `json:"events"`
+}
+
 func jsonResponse(r *http.Request, status int, body string) *http.Response {
 	return &http.Response{
 		StatusCode: status,
@@ -47,7 +51,7 @@ func TestTelemetryURL(t *testing.T) {
 
 func TestSendSetsIdentityHeadersAndBody(t *testing.T) {
 	var gotPath, gotClientID, gotSessionID string
-	var gotBatch batch
+	var gotBatch decodedBatch
 	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		gotPath = r.URL.Path
 		gotClientID = r.Header.Get("X-OpenRung-Client-ID")

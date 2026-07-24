@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-package client
+package brokerapi
 
 import (
 	"bytes"
@@ -15,26 +15,20 @@ import (
 )
 
 const (
-	cloudflareBrokerHost = "broker.openrung.org"
-
-	// Keep the entire ECH phase below desktop discovery's 2.5-second
-	// cross-front stagger and the WSS ticket path's 5-second per-front limit.
-	// A censor that blackholes ECH therefore reaches the ordinary TLS fallback
-	// while the same Cloudflare request still has time to succeed.
+	// The ECH attempt and one authenticated retry stay below discovery's
+	// 2.5-second cross-front stagger. A censor that drops ECH therefore reaches
+	// ordinary TLS quickly enough to preserve current reachability.
 	brokerECHTimeout = 2 * time.Second
 )
 
 // embeddedCloudflareECHConfigList is a serialized ECHConfigList, including its
-// outer uint16 length. It is deliberately compiled into every Go client: never
-// replace this with an HTTPS/SVCB lookup, because blocking that DNS bootstrap
-// is how the networks this protects disable ECH.
+// outer uint16 length. It is deliberately compiled into the module. Never
+// replace it with an HTTPS/SVCB lookup: blocking that DNS bootstrap is the
+// censorship technique this protects against.
 //
-// This list was captured from Cloudflare's certificate-authenticated ECH retry
-// on 2026-07-24, without an ECH DNS lookup.
-//
-// Cloudflare authenticates a newer list in the outer TLS handshake when this
-// one becomes stale. brokerECHConfigState adopts such a retry list only after
-// a connection using it succeeds.
+// Captured from Cloudflare's certificate-authenticated ECH retry on
+// 2026-07-24 without an ECH DNS lookup. Successful authenticated retry
+// handshakes promote newer server-provided configs in memory.
 var embeddedCloudflareECHConfigList = []byte{
 	0x00, 0x45, 0xfe, 0x0d, 0x00, 0x41, 0x19, 0x00,
 	0x20, 0x00, 0x20, 0xe2, 0xaf, 0xd5, 0x98, 0x82,
@@ -47,26 +41,26 @@ var embeddedCloudflareECHConfigList = []byte{
 	0x68, 0x2e, 0x63, 0x6f, 0x6d, 0x00, 0x00,
 }
 
-type brokerECHConfigState struct {
+type echConfigState struct {
 	mu         sync.RWMutex
 	configList []byte
 	generation uint64
 }
 
-func newBrokerECHConfigState(configList []byte) *brokerECHConfigState {
-	return &brokerECHConfigState{configList: bytes.Clone(configList)}
+func newECHConfigState(configList []byte) *echConfigState {
+	return &echConfigState{configList: bytes.Clone(configList)}
 }
 
-func (s *brokerECHConfigState) snapshot() ([]byte, uint64) {
+func (s *echConfigState) snapshot() ([]byte, uint64) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return bytes.Clone(s.configList), s.generation
 }
 
-// promote installs a certificate-authenticated retry list after a successful
-// ECH retry. The generation check prevents an older concurrent handshake from
-// replacing a config that another request refreshed first.
-func (s *brokerECHConfigState) promote(oldGeneration uint64, configList []byte) {
+// promote accepts only a retry list whose ECH handshake and ordinary
+// certificate verification both succeeded. The generation check prevents an
+// older concurrent handshake from replacing a newer config.
+func (s *echConfigState) promote(oldGeneration uint64, configList []byte) {
 	if len(configList) == 0 {
 		return
 	}
@@ -79,15 +73,15 @@ func (s *brokerECHConfigState) promote(oldGeneration uint64, configList []byte) 
 	s.generation++
 }
 
-type brokerECHDialer struct {
+type echDialer struct {
 	networkDial       func(context.Context, string, string) (net.Conn, error)
 	baseTLSConfig     *tls.Config
-	state             *brokerECHConfigState
+	state             *echConfigState
 	echTimeout        time.Duration
 	tlsHandshakeLimit time.Duration
 }
 
-func (d *brokerECHDialer) dialTLSContext(ctx context.Context, network, address string) (net.Conn, error) {
+func (d *echDialer) dialTLSContext(ctx context.Context, network, address string) (net.Conn, error) {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
 		return nil, err
@@ -116,19 +110,17 @@ func (d *brokerECHDialer) dialTLSContext(ctx context.Context, network, address s
 	}
 	cancelECH()
 
-	// Cancellation means the caller no longer wants this request (for example,
-	// another desktop discovery front won). Never leak a plain SNI afterward.
+	// If another discovery front won, never perform a late plain-SNI retry.
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
 
-	// ECH is an opportunistic privacy layer, not a reachability requirement.
-	// Redial from scratch without ECH so networks that drop ECH handshakes keep
-	// today's broker behavior and certificate verification.
+	// ECH is opportunistic. Redial from scratch without it for networks that
+	// drop ECH, preserving ordinary TLS hostname and certificate verification.
 	return d.dialTLS(ctx, network, address, host, nil, d.tlsHandshakeLimit)
 }
 
-func (d *brokerECHDialer) dialTLS(
+func (d *echDialer) dialTLS(
 	ctx context.Context,
 	network string,
 	address string,
@@ -176,13 +168,9 @@ func isCloudflareBrokerAddress(address string) bool {
 	return port == "443" && strings.EqualFold(host, cloudflareBrokerHost)
 }
 
-func newBrokerTransport(
-	base *http.Transport,
-	state *brokerECHConfigState,
-	echTimeout time.Duration,
-) *http.Transport {
+func newTransport(base *http.Transport, state *echConfigState, echTimeout time.Duration) *http.Transport {
 	transport := base.Clone()
-	dialer := &brokerECHDialer{
+	dialer := &echDialer{
 		networkDial:       transport.DialContext,
 		baseTLSConfig:     transport.TLSClientConfig,
 		state:             state,
@@ -194,23 +182,22 @@ func newBrokerTransport(
 }
 
 var (
-	defaultBrokerECHState  = newBrokerECHConfigState(embeddedCloudflareECHConfigList)
-	defaultBrokerTransport = newBrokerTransport(
+	defaultECHState  = newECHConfigState(embeddedCloudflareECHConfigList)
+	defaultTransport = newTransport(
 		http.DefaultTransport.(*http.Transport),
-		defaultBrokerECHState,
+		defaultECHState,
 		brokerECHTimeout,
 	)
-	defaultBrokerHTTPClient = &http.Client{Transport: defaultBrokerTransport}
 )
 
-// NewBrokerHTTPClient returns an HTTP client whose direct connections to the
-// Cloudflare broker front opportunistically use the embedded ECH config.
-// CloudFront, custom brokers, loopback development, and proxy CONNECT paths
-// keep the standard transport behavior. All returned clients share connection
-// pools and certificate-authenticated ECH retry-config state.
-func NewBrokerHTTPClient(timeout time.Duration) *http.Client {
+// NewHTTPClient returns an HTTP client whose direct connection to the
+// Cloudflare front opportunistically uses the embedded ECH config. CloudFront,
+// custom brokers, loopback, and proxy CONNECT paths retain standard TLS.
+// Returned clients share connection pools and authenticated retry-config state.
+func NewHTTPClient(timeout time.Duration) *http.Client {
 	return &http.Client{
-		Transport: defaultBrokerTransport,
-		Timeout:   timeout,
+		Transport:     defaultTransport,
+		Timeout:       timeout,
+		CheckRedirect: refuseRedirect,
 	}
 }

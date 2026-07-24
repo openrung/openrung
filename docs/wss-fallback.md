@@ -74,13 +74,16 @@ future Android caller to connect to `VpnService.protect`.
 
 `wsscore` is intentionally authority-free. Its client is given one exact URL
 and an opaque bearer ticket by its caller, and its server-side transport is
-given an already authenticated, locally authorized connection. Ticket issuance
-and verification policy, durable replay storage, origin-token authentication,
-viewer-address trust and source admission, signed relay capability handling,
-CloudFront and relay deployment, direct-first and broker-front orchestration,
-telemetry, and platform UI all remain outside the module. In particular, the
-module cannot choose a relay or client-supplied destination, and extraction
-does not change the sidecar's one fixed loopback target.
+given an already authenticated, locally authorized connection. Client-side
+ticket acquisition and other hardened broker HTTP exchanges live in the
+separately versioned `github.com/openrung/openrung/brokerapi` module. Ticket
+issuance and verification policy, durable replay storage, origin-token
+authentication, viewer-address trust and source admission, signed relay
+capability handling, CloudFront and relay deployment, direct-first and
+broker-front orchestration, telemetry lifecycle, and platform UI remain
+outside `wsscore`. In particular, the module cannot choose a relay or
+client-supplied destination, and extraction does not change the sidecar's one
+fixed loopback target.
 
 The module has its own `VERSION`, golden/interoperability suite, and
 `wsscore/vX.Y.Z` nested-module tags. In-repository root and desktop builds use
@@ -305,10 +308,11 @@ counter policy.
 ## Client repository scope
 
 This repository's desktop client is the only client restored by this change.
-It consumes `wsscore` for the shared transport while retaining direct-first
-selection, local-failure classification, ticket and broker-front failover,
-bounded retry handling, telemetry, and independent fallback health in the
-desktop application layer as described above.
+It consumes `wsscore` for the shared transport and `brokerapi` for the broker
+HTTP exchanges while retaining direct-first selection, local-failure
+classification, broker-front scheduling, bounded retry handling, telemetry
+lifecycle, and independent fallback health in the desktop application layer as
+described above.
 
 Android and iOS are developed in separate repositories. They are not updated,
 restored, or made WSS-capable by this repository change. Mobile release notes
@@ -318,7 +322,10 @@ contract. The reusable module and its Android socket-control hook are adoption
 building blocks only: Android still has to wire the hook to
 `VpnService.protect`, and both platforms must add their own ticket,
 direct-first, lifecycle, and UI integration before publishing a separate
-mobile release.
+mobile release. The reusable `brokerapi` module lets those repositories adopt
+the same ECH-capable broker client without reimplementing it, but its tag is
+also only an adoption building block until a mobile binding is integrated and
+released.
 
 ## Rollout and rollback contract
 

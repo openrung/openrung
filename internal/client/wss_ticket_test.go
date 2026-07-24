@@ -31,7 +31,7 @@ func TestWSSTicketURL(t *testing.T) {
 }
 
 func TestBrokerClientRequestWSSSessionTicket(t *testing.T) {
-	expires := time.Date(2026, 7, 21, 13, 0, 0, 0, time.UTC)
+	expires := time.Date(2099, 7, 21, 13, 0, 0, 0, time.UTC)
 	wantResponse := relay.WSSSessionTicketResponse{
 		Ticket:    "opaque-ticket",
 		ExpiresAt: expires,
@@ -49,7 +49,7 @@ func TestBrokerClientRequestWSSSessionTicket(t *testing.T) {
 		if got := r.Header.Get("Content-Type"); got != "application/json" {
 			t.Fatalf("Content-Type = %q", got)
 		}
-		if got := r.Header.Get("Cache-Control"); got != "no-store" {
+		if got := r.Header.Get("Cache-Control"); got != "no-cache, no-store" {
 			t.Fatalf("Cache-Control = %q", got)
 		}
 		if got := r.Header.Get("Pragma"); got != "no-cache" {
@@ -186,35 +186,13 @@ func TestBrokerClientRequestWSSTicketStatusErrorIgnoresOriginBody(t *testing.T) 
 	}
 }
 
-func TestParseWSSTicketRetryAfter(t *testing.T) {
-	now := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
-	for _, tc := range []struct {
-		name  string
-		value string
-		want  time.Duration
-	}{
-		{name: "seconds", value: " 12 ", want: 12 * time.Second},
-		{name: "date", value: now.Add(30 * time.Second).Format(http.TimeFormat), want: 30 * time.Second},
-		{name: "past", value: now.Add(-time.Second).Format(http.TimeFormat)},
-		{name: "negative", value: "-1"},
-		{name: "overflow", value: "9223372036854775807"},
-		{name: "invalid", value: "later"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := parseWSSTicketRetryAfter(tc.value, now); got != tc.want {
-				t.Fatalf("parseWSSTicketRetryAfter(%q) = %s, want %s", tc.value, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestBrokerClientRequestWSSSessionTicketRejectsOversizedResponse(t *testing.T) {
 	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Status:     "200 OK",
 			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(strings.Repeat("x", maxWSSTicketResponseBytes+1))),
+			Body:       io.NopCloser(strings.NewReader(strings.Repeat("x", (64<<10)+1))),
 			Request:    r,
 		}, nil
 	})}
@@ -229,9 +207,9 @@ func TestBrokerClientRequestWSSSessionTicketRejectsOversizedResponse(t *testing.
 
 func TestBrokerClientRequestWSSSessionTicketRejectsIncompleteResponse(t *testing.T) {
 	for _, body := range []string{
-		`{"expires_at":"2026-07-21T13:00:00Z","url":"wss://bridge.example.com/bridge"}`,
+		`{"expires_at":"2099-07-21T13:00:00Z","url":"wss://bridge.example.com/bridge"}`,
 		`{"ticket":"ticket","url":"wss://bridge.example.com/bridge"}`,
-		`{"ticket":"ticket","expires_at":"2026-07-21T13:00:00Z"}`,
+		`{"ticket":"ticket","expires_at":"2099-07-21T13:00:00Z"}`,
 	} {
 		t.Run(body, func(t *testing.T) {
 			httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {

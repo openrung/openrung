@@ -1,6 +1,6 @@
 # Keep the Docker build context small and free of non-Go assets / secrets.
-# The relay image only needs go.mod/go.sum, cmd/, internal/, and
-# deploy/relay/entrypoint.sh.
+# Server images need go.mod/go.sum, cmd/, internal/, the nested Go modules,
+# and their component-specific deploy assets.
 
 .git
 .gitignore

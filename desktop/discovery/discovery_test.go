@@ -2,10 +2,6 @@ package discovery
 
 import (
 	"context"
-	"crypto/ed25519"
-	"encoding/base64"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -17,15 +13,12 @@ import (
 
 	"openrung/desktop/config"
 	"openrung/internal/client"
-	"openrung/internal/relay"
 )
 
 // relayBody is unsigned: every httptest server here is a loopback host, which
-// the shared verification shim (client.ReadVerifiedRelayList) exempts from the
-// relay-list signature requirement — the same dev-flow allowance as
-// EnforceSecureBrokerURL's loopback http. The signed path is exercised against
-// a non-loopback stub in TestListRelaysSignatureNonLoopback.
-const relayBody = `{"count":1,"server_time":"2026-07-06T00:00:00Z","relays":[{"id":"r1","public_host":"1.2.3.4","public_port":443}]}`
+// brokerapi exempts from the relay-list signature requirement — the same
+// development-flow allowance as the loopback cleartext exception.
+const relayBody = `{"count":1,"server_time":"2026-07-06T00:00:00Z","relays":[{"id":"r1","public_host":"1.2.3.4","public_port":443,"protocol":"vless-reality-vision","client_id":"client","reality_public_key":"key","short_id":"01","server_name":"example.com","flow":"xtls-rprx-vision","exit_mode":"direct","max_sessions":1,"max_mbps":10,"volunteer_version":"1.0.0","registered_at":"2026-07-06T00:00:00Z","last_heartbeat_at":"2026-07-06T00:00:00Z","expires_at":"2099-07-06T00:10:00Z"}]}`
 
 // noOverride wraps urls as a pure-race candidate list — what
 // config.BrokerCandidates builds when no genuine user override is set.
@@ -63,68 +56,29 @@ func TestListRelaysSuccess(t *testing.T) {
 	}
 }
 
-// TestListRelaysSignatureNonLoopback drives this package's own entry point —
-// it wraps the shared shim with its own request/429 handling, so it needs its
-// own coverage — against a non-loopback broker: an unsigned list must fail
-// with the distinguishable "unsigned/invalid relay list" error, and the same
-// body signed under a (test-)pinned key must verify.
+// TestListRelaysSignatureNonLoopback checks that this desktop adapter does not
+// bypass brokerapi's production signature requirement. Detailed signature and
+// key-rotation vectors live in the brokerapi module itself.
 func TestListRelaysSignatureNonLoopback(t *testing.T) {
-	pub, priv, err := ed25519.GenerateKey(nil)
-	if err != nil {
-		t.Fatalf("generate test key: %v", err)
-	}
-	restore := client.PinRelayListKeysForTest(hex.EncodeToString(pub))
-	defer restore()
-
-	now := time.Now().UTC()
-	body, err := json.Marshal(relay.ListResponse{
-		Count:      1,
-		ServerTime: now,
-		NotAfter:   now.Add(30 * time.Minute),
-		Channel:    relay.ChannelAPI,
+	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(relayBody)),
+			Header:     make(http.Header),
+			Request:    r,
+		}, nil
+	})}
+	_, err := ListRelays(context.Background(), "https://broker.example.com", Options{
 		Limit:      20,
-		Relays:     []relay.Descriptor{{ID: "r1", PublicHost: "1.2.3.4", PublicPort: 443}},
+		HTTPClient: httpClient,
 	})
-	if err != nil {
-		t.Fatalf("marshal relay list: %v", err)
+	if err == nil {
+		t.Fatal("unsigned non-loopback response must fail")
 	}
-	sigHeader := "ed25519;anyadvisoryid;" + base64.StdEncoding.EncodeToString(ed25519.Sign(priv, body))
-
-	stub := func(signed bool) *http.Client {
-		return &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-			h := make(http.Header)
-			if signed {
-				h.Set(client.RelaySignatureHeader, sigHeader)
-			}
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Status:     "200 OK",
-				Body:       io.NopCloser(strings.NewReader(string(body))),
-				Header:     h,
-				Request:    r,
-			}, nil
-		})}
+	if !strings.Contains(err.Error(), "unsigned/invalid relay list") {
+		t.Fatalf("want the unsigned/invalid marker, got: %v", err)
 	}
-
-	t.Run("unsigned fails distinguishably", func(t *testing.T) {
-		_, err := ListRelays(context.Background(), "https://broker.example.com", Options{Limit: 20, HTTPClient: stub(false)})
-		if err == nil {
-			t.Fatal("unsigned non-loopback response must fail")
-		}
-		if !strings.Contains(err.Error(), "unsigned/invalid relay list") {
-			t.Fatalf("want the unsigned/invalid marker, got: %v", err)
-		}
-	})
-
-	t.Run("signed verifies", func(t *testing.T) {
-		resp, err := ListRelays(context.Background(), "https://broker.example.com", Options{Limit: 20, HTTPClient: stub(true)})
-		if err != nil {
-			t.Fatalf("signed response must verify: %v", err)
-		}
-		if len(resp.Relays) != 1 || resp.Relays[0].ID != "r1" {
-			t.Fatalf("unexpected relays: %+v", resp.Relays)
-		}
-	})
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -353,11 +307,10 @@ func TestFirstReachableCancelsLosersOnceWinnerReturns(t *testing.T) {
 	}
 }
 
-func TestFirstReachableParentCancelDrainsStartedAttempts(t *testing.T) {
+func TestFirstReachableParentCancelStopsStartedAttempts(t *testing.T) {
 	// Both candidates hang. Once BOTH attempts are in flight the caller cancels;
-	// the ctx.Done() drain must reap both aborted attempts and return promptly
-	// with the primary's context.Canceled — not deadlock, and not wait out the
-	// 15s per-attempt request timeout.
+	// cancellation must abort both and return promptly with context.Canceled —
+	// not deadlock or wait out the 15s per-attempt request timeout.
 	const stagger = 100 * time.Millisecond
 
 	primaryStarted := make(chan struct{})
@@ -386,8 +339,7 @@ func TestFirstReachableParentCancelDrainsStartedAttempts(t *testing.T) {
 		done <- outcome{fetch: fetch, err: err}
 	}()
 
-	// Only cancel once both attempts have reached their servers, so the drain
-	// branch runs with two in-flight attempts to reap.
+	// Only cancel once both attempts have reached their servers.
 	select {
 	case <-primaryStarted:
 	case <-time.After(10 * time.Second):
@@ -414,9 +366,8 @@ func TestFirstReachableParentCancelDrainsStartedAttempts(t *testing.T) {
 
 func TestFirstReachableParentCancelBeforeStaggerSkipsUnstartedCandidate(t *testing.T) {
 	// The caller cancels while only candidate[0] is in flight (the stagger is
-	// far from elapsing). The drain must reap exactly the one started attempt —
-	// not block waiting on results from candidates that never started — and the
-	// fallback must never see a request.
+	// far from elapsing). The race must return without waiting on a candidate
+	// that never started, and the fallback must never see a request.
 	const stagger = time.Minute // never elapses within the test's lifetime
 
 	primaryStarted := make(chan struct{})
@@ -630,20 +581,5 @@ func TestFirstReachableNoCandidates(t *testing.T) {
 	_, err := FirstReachable(context.Background(), config.Candidates{}, Options{})
 	if err == nil {
 		t.Fatal("want error for empty candidate list")
-	}
-}
-
-func TestParseRetryAfter(t *testing.T) {
-	if got := parseRetryAfter("30"); got != 30*time.Second {
-		t.Errorf("delta-seconds: got %v", got)
-	}
-	if got := parseRetryAfter(""); got != 0 {
-		t.Errorf("empty: got %v", got)
-	}
-	if got := parseRetryAfter("-5"); got != 0 {
-		t.Errorf("negative: got %v", got)
-	}
-	if got := parseRetryAfter("garbage"); got != 0 {
-		t.Errorf("garbage: got %v", got)
 	}
 }

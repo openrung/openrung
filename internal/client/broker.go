@@ -4,92 +4,49 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net"
 	"net/http"
 	"net/url"
-	"strings"
+
+	"github.com/openrung/openrung/brokerapi"
 
 	"openrung/internal/relay"
 )
 
-const defaultRelayLimit = 5
-
-// effectiveRelayLimit is the limit actually sent to the broker: callers pass
-// zero or negative for "default". RelayListURL and the signature limit-echo
-// check (signing.go) MUST share this normalization, or verification would
-// reject every default-limit fetch as a limit mismatch.
-func effectiveRelayLimit(limit int) int {
-	if limit < 1 {
-		return defaultRelayLimit
-	}
-	return limit
-}
-
 type BrokerClient struct {
 	BaseURL    string
 	HTTPClient *http.Client
+	Platform   brokerapi.Platform
 }
 
 // ListRelays fetches relay candidates from the broker. When clientID and
 // sessionID are non-empty they are sent as identity headers so the broker can
 // auto-record a client_seen telemetry event for the request. Successful
-// responses pass through ReadVerifiedRelayList (signing.go): any non-loopback
-// broker must sign the list with a pinned operator key or the fetch fails.
+// responses are signature-verified by brokerapi before this compatibility
+// adapter decodes them into the application's relay model.
 func (c BrokerClient) ListRelays(ctx context.Context, limit int, clientID, sessionID string) (relay.ListResponse, error) {
-	endpoint, err := RelayListURL(c.BaseURL, limit)
+	list, err := brokerapi.NewClient(c.HTTPClient, brokerapi.Options{
+		AppVersion: AppVersion(),
+		Platform:   c.Platform,
+	}).ListRelays(ctx, c.BaseURL, brokerapi.ListOptions{
+		Limit: limit,
+		Identity: brokerapi.Identity{
+			ClientID:  clientID,
+			SessionID: sessionID,
+		},
+	})
 	if err != nil {
 		return relay.ListResponse{}, err
 	}
 
-	httpClient := c.HTTPClient
-	if httpClient == nil {
-		httpClient = defaultBrokerHTTPClient
+	var response relay.ListResponse
+	if err := json.Unmarshal(list.JSON(), &response); err != nil {
+		return relay.ListResponse{}, fmt.Errorf("decode verified relay list: %w", err)
 	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return relay.ListResponse{}, err
-	}
-	if clientID != "" && sessionID != "" {
-		req.Header.Set("X-OpenRung-Client-ID", clientID)
-		req.Header.Set("X-OpenRung-Session-ID", sessionID)
-		req.Header.Set("X-OpenRung-App-Version", AppVersion())
-	}
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return relay.ListResponse{}, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return relay.ListResponse{}, brokerStatusError(resp)
-	}
-
-	return ReadVerifiedRelayList(resp, endpoint, limit)
+	return response, nil
 }
 
 func RelayListURL(baseURL string, limit int) (string, error) {
-	limit = effectiveRelayLimit(limit)
-
-	parsed, err := EnforceSecureBrokerURL(baseURL)
-	if err != nil {
-		return "", err
-	}
-
-	basePath := strings.Trim(parsed.Path, "/")
-	pathParts := []string{"api/v1/relays"}
-	if basePath != "" {
-		pathParts = append([]string{basePath}, pathParts...)
-	}
-	parsed.Path = "/" + strings.Join(pathParts, "/")
-
-	query := parsed.Query()
-	query.Set("limit", fmt.Sprintf("%d", limit))
-	parsed.RawQuery = query.Encode()
-
-	return parsed.String(), nil
+	return brokerapi.RelayListURL(baseURL, limit)
 }
 
 // EnforceSecureBrokerURL parses baseURL and rejects cleartext broker endpoints.
@@ -103,66 +60,9 @@ func RelayListURL(baseURL string, limit int) (string, error) {
 // (A pinned bare-IP HTTPS fallback for a blocked edge can be layered on later;
 // until then there is no cleartext path off the device.)
 func EnforceSecureBrokerURL(baseURL string) (*url.URL, error) {
-	trimmed := strings.TrimSpace(baseURL)
-	if trimmed == "" {
-		return nil, fmt.Errorf("broker URL is required")
-	}
-	parsed, err := url.Parse(trimmed)
-	if err != nil {
-		return nil, fmt.Errorf("parse broker URL: %w", err)
-	}
-	if parsed.Scheme == "" || parsed.Host == "" {
-		return nil, fmt.Errorf("broker URL must include scheme and host")
-	}
-	switch strings.ToLower(parsed.Scheme) {
-	case "https":
-		return parsed, nil
-	case "http":
-		if hostIsLoopback(parsed.Hostname()) {
-			return parsed, nil
-		}
-		return nil, fmt.Errorf("refusing cleartext broker URL %q: use https (plain http is allowed only to localhost)", trimmed)
-	default:
-		return nil, fmt.Errorf("broker URL scheme must be https, got %q", parsed.Scheme)
-	}
+	return brokerapi.EnforceSecureBrokerURL(baseURL)
 }
 
-// hostIsLoopback reports whether host is localhost or a loopback IP literal.
-func hostIsLoopback(host string) bool {
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	if ip := net.ParseIP(host); ip != nil {
-		return ip.IsLoopback()
-	}
-	return false
-}
-
-// BrokerStatusError reports a broker non-2xx response and carries the status
-// code so error classification can label it (429 → rate_limited, otherwise
-// http_<code>) without matching on the message string. The discovery fetch path
-// reuses this type for the same reason.
-type BrokerStatusError struct {
-	StatusCode int
-	Message    string
-}
-
-func (e *BrokerStatusError) Error() string {
-	return fmt.Sprintf("broker list relays: %s", e.Message)
-}
-
-// HTTPStatus exposes the broker response status for error classification.
-func (e *BrokerStatusError) HTTPStatus() int { return e.StatusCode }
-
-func brokerStatusError(resp *http.Response) error {
-	var apiErr relay.ErrorResponse
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	_ = json.Unmarshal(body, &apiErr)
-	if apiErr.Error == "" {
-		apiErr.Error = strings.TrimSpace(string(body))
-	}
-	if apiErr.Error == "" {
-		apiErr.Error = resp.Status
-	}
-	return &BrokerStatusError{StatusCode: resp.StatusCode, Message: apiErr.Error}
-}
+// BrokerStatusError remains as a compatibility alias for callers that classify
+// broker errors by HTTP status.
+type BrokerStatusError = brokerapi.BrokerStatusError

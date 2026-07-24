@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-package client
+package brokerapi
 
 import (
 	"bytes"
@@ -23,8 +23,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"openrung/internal/relay"
 )
 
 const testECHPublicName = "cloudflare-ech.com"
@@ -64,7 +62,7 @@ func TestBrokerECHDialerRefreshesFromAuthenticatedRetryConfig(t *testing.T) {
 	}}
 
 	networkDial, results, calls := testTLSPipeDialer(serverConfig)
-	state := newBrokerECHConfigState(oldList)
+	state := newECHConfigState(oldList)
 	dialer := testBrokerECHDialer(networkDial, roots, state)
 
 	conn, err := dialer.dialTLSContext(t.Context(), "tcp", cloudflareBrokerHost+":443")
@@ -113,7 +111,7 @@ func TestBrokerECHDialerFallsBackToPlainTLS(t *testing.T) {
 	certificate, roots := testBrokerCertificate(t)
 	serverConfig := testBrokerServerConfig(certificate)
 	networkDial, results, calls := testTLSPipeDialer(serverConfig)
-	state := newBrokerECHConfigState(embeddedCloudflareECHConfigList)
+	state := newECHConfigState(embeddedCloudflareECHConfigList)
 	dialer := testBrokerECHDialer(networkDial, roots, state)
 
 	conn, err := dialer.dialTLSContext(t.Context(), "tcp", cloudflareBrokerHost+":443")
@@ -159,7 +157,7 @@ func TestBrokerECHDialerBlackholeFallsBackWithinBudget(t *testing.T) {
 		}
 	})
 
-	state := newBrokerECHConfigState(embeddedCloudflareECHConfigList)
+	state := newECHConfigState(embeddedCloudflareECHConfigList)
 	dialer := testBrokerECHDialer(networkDial, roots, state)
 	dialer.echTimeout = 40 * time.Millisecond
 
@@ -200,7 +198,7 @@ func TestBrokerECHDialerCancellationDoesNotLeakPlainSNI(t *testing.T) {
 		}
 	})
 
-	state := newBrokerECHConfigState(embeddedCloudflareECHConfigList)
+	state := newECHConfigState(embeddedCloudflareECHConfigList)
 	dialer := testBrokerECHDialer(networkDial, roots, state)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -239,7 +237,7 @@ func TestBrokerECHDialerPreservesCertificateVerification(t *testing.T) {
 	// Deliberately omit the test certificate from RootCAs. Both the outer ECH
 	// authentication and the ordinary broker certificate check must fail, and
 	// the unauthenticated retry list must not enter shared state.
-	state := newBrokerECHConfigState(oldList)
+	state := newECHConfigState(oldList)
 	dialer := testBrokerECHDialer(networkDial, x509.NewCertPool(), state)
 	conn, err := dialer.dialTLSContext(t.Context(), "tcp", cloudflareBrokerHost+":443")
 	if conn != nil {
@@ -262,7 +260,7 @@ func TestBrokerECHDialerLeavesCloudFrontPlain(t *testing.T) {
 	certificate, roots := testBrokerCertificate(t)
 	serverConfig := testBrokerServerConfig(certificate)
 	networkDial, results, calls := testTLSPipeDialer(serverConfig)
-	dialer := testBrokerECHDialer(networkDial, roots, newBrokerECHConfigState(embeddedCloudflareECHConfigList))
+	dialer := testBrokerECHDialer(networkDial, roots, newECHConfigState(embeddedCloudflareECHConfigList))
 
 	conn, err := dialer.dialTLSContext(t.Context(), "tcp", "d2r7mdpyevvs1m.cloudfront.net:443")
 	if err != nil {
@@ -283,7 +281,7 @@ func TestBrokerECHDialerDoesNotForceHTTP2ALPN(t *testing.T) {
 	serverConfig := testBrokerServerConfig(certificate)
 	serverConfig.NextProtos = []string{"h2", "http/1.1"}
 	networkDial, results, _ := testTLSPipeDialer(serverConfig)
-	dialer := testBrokerECHDialer(networkDial, roots, newBrokerECHConfigState(embeddedCloudflareECHConfigList))
+	dialer := testBrokerECHDialer(networkDial, roots, newECHConfigState(embeddedCloudflareECHConfigList))
 	dialer.baseTLSConfig.NextProtos = nil
 
 	conn, err := dialer.dialTLSContext(t.Context(), "tcp", "d2r7mdpyevvs1m.cloudfront.net:443")
@@ -356,9 +354,9 @@ func TestBrokerECHBlackholeFallsBackAtHTTPLevel(t *testing.T) {
 	baseTransport.ForceAttemptHTTP2 = false
 
 	httpClient := &http.Client{
-		Transport: newBrokerTransport(
+		Transport: newTransport(
 			baseTransport,
-			newBrokerECHConfigState(embeddedCloudflareECHConfigList),
+			newECHConfigState(embeddedCloudflareECHConfigList),
 			20*time.Millisecond,
 		),
 		Timeout: 2 * time.Second,
@@ -403,7 +401,7 @@ func TestBrokerECHFallbackDoesNotReplayWSSTicketPOST(t *testing.T) {
 				t.Errorf("read request body: %v", err)
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, `{"ticket":"opaque","expires_at":"2026-07-24T12:00:00Z","url":"wss://relay.example/bridge"}`)
+			_, _ = io.WriteString(w, `{"ticket":"opaque","expires_at":"2099-01-01T00:00:00Z","url":"wss://relay.example/bridge"}`)
 		}),
 		ErrorLog: log.New(io.Discard, "", 0),
 	}
@@ -434,20 +432,22 @@ func TestBrokerECHFallbackDoesNotReplayWSSTicketPOST(t *testing.T) {
 	baseTransport.ForceAttemptHTTP2 = false
 
 	httpClient := &http.Client{
-		Transport: newBrokerTransport(
+		Transport: newTransport(
 			baseTransport,
-			newBrokerECHConfigState(embeddedCloudflareECHConfigList),
+			newECHConfigState(embeddedCloudflareECHConfigList),
 			time.Second,
 		),
 		Timeout: 2 * time.Second,
 	}
-	_, err := (BrokerClient{
-		BaseURL:    "https://" + cloudflareBrokerHost,
-		HTTPClient: httpClient,
-	}).RequestWSSSessionTicket(t.Context(), relay.WSSSessionTicketRequest{
-		RelayID: "relay-1",
-		FrontID: "front-1",
-	}, "client-1", "session-1")
+	_, err := NewClient(httpClient, Options{}).RequestWSSTicket(
+		t.Context(),
+		"https://"+cloudflareBrokerHost,
+		WSSTicketRequest{
+			RelayID:  "relay-1",
+			FrontID:  "front-1",
+			Identity: Identity{ClientID: "client-1", SessionID: "session-1"},
+		},
+	)
 	if err != nil {
 		t.Fatalf("request WSS ticket through ECH fallback: %v", err)
 	}
@@ -566,9 +566,9 @@ func readTLSServerResults(t *testing.T, results <-chan tlsServerResult, count in
 func testBrokerECHDialer(
 	networkDial func(context.Context, string, string) (net.Conn, error),
 	roots *x509.CertPool,
-	state *brokerECHConfigState,
-) *brokerECHDialer {
-	return &brokerECHDialer{
+	state *echConfigState,
+) *echDialer {
+	return &echDialer{
 		networkDial: networkDial,
 		baseTLSConfig: &tls.Config{
 			RootCAs:    roots,

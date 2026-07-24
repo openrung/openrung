@@ -281,6 +281,52 @@ shared transport; `wsscore` never selects a relay or destination.
 Local cross-repository development may use an uncommitted `go.work` or local
 module replacement. Released consumers pin a `wsscore/vX.Y.Z` tag.
 
+### Shared Broker Client
+
+The nested `brokerapi/` Go module
+(`github.com/openrung/openrung/brokerapi`) is the client-side source of truth
+for end-user connection and session broker exchanges implemented by the
+module. The desktop CLI and GUI consume the in-tree module, and mobile
+repositories can expose the same implementation through a small gomobile
+binding instead of maintaining parallel request code. The broker server and
+its authorization policy remain in
+`internal/broker`; extracting the client does not move the broker or add it to
+the relay data path.
+
+`brokerapi` owns the end-user relay-directory HTTP exchange and returns its exact
+verified JSON bytes for platform-owned decoding. It also owns raw-body
+relay-list signature verification and pinned keys, WSS-ticket requests, broker
+URL and redirect hardening, identity and no-store request headers, telemetry
+posting, and the shared HTTP transport. Cleartext broker URLs remain valid only
+for loopback development endpoints. Certificate validation, signed-directory
+verification, and redirect refusal are not caller-selectable compatibility
+options.
+
+Connections to the exact Cloudflare broker front opportunistically use
+Encrypted Client Hello. The initial ECH configuration is compiled into the
+module rather than fetched through DNS; an authenticated server retry
+configuration can refresh it after a successful retry. ECH failure is never a
+hard failure: the attempt is tightly bounded and starts a fresh ordinary-TLS
+connection so networks that drop Cloudflare ECH retain the existing behavior.
+CloudFront and custom broker URLs do not receive ECH, and every fallback keeps
+normal hostname and certificate verification.
+
+Relay registration/heartbeat clients and the relay data path remain outside
+`brokerapi`.
+
+#### brokerapi pin/upgrade procedure
+
+1. Change `brokerapi/` in an OpenRung pull request. Root and desktop consumers
+   use local `replace` directives so their tests exercise the same source.
+2. Bump `brokerapi/VERSION` in the same pull request. Except for a
+   `README.md`-only edit, CI rejects a module change without a fresh semantic
+   version.
+3. Merge. The tag workflow creates `brokerapi/v$(VERSION)` on the merge commit,
+   making that nested module fetchable without copying its implementation.
+4. Mobile repositories explicitly update the pinned tag, rebuild their native
+   binding, run platform VPN tests, and publish their own application release.
+   A module tag alone does not update a mobile binary.
+
 ### Mobile Client
 
 The mobile client is an iOS/Android app using VPN mode. It asks the broker for
@@ -292,6 +338,19 @@ VPN integration, tests, version pins, and release processes:
 
 - Android uses `VpnService` plus the embedded tunnel engine.
 - iOS uses a `NetworkExtension` packet tunnel provider.
+
+Mobile broker requests should consume a pinned `brokerapi` release through the
+platform's native binding. This removes the TypeScript TLS limitation and gives
+mobile the same opportunistic ECH, signature verification, identity headers,
+cache policy, and URL hardening as desktop. Publishing this module does not by
+itself update either separately released app.
+
+The mobile app's update-manifest checker is a separate signed-content client
+with its own keys, rollback protection, and GitHub fallback. Its current
+Cloudflare-broker candidate must also move behind the Go ECH transport—or be
+removed—during mobile integration. Until then, that request still exposes the
+broker SNI, so integrating relay discovery and telemetry alone is not complete
+mobile broker-SNI concealment.
 
 The reusable `wsscore` module makes a future transport integration possible but
 does not restore or ship WSS fallback on either platform. Android must still

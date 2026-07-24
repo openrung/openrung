@@ -175,6 +175,12 @@ func findWSSFront(fronts []relay.WSSFrontDescriptor, id string) (relay.WSSFrontD
 }
 
 func reserveWSSCandidate(relays []relay.Descriptor, limit int) []relay.Descriptor {
+	// Keep the public relay-list wire shape stable when a store (notably the
+	// Postgres implementation with zero rows) returns a nil slice. Clients
+	// require an array and deliberately reject "relays":null.
+	if len(relays) == 0 {
+		return []relay.Descriptor{}
+	}
 	if limit <= 0 || len(relays) <= limit {
 		return relays
 	}

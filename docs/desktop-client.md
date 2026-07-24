@@ -16,11 +16,14 @@ The complete policy and failure model are documented in
 
 The app consumes `github.com/openrung/openrung/wsscore` for strict front
 validation and the opaque WebSocket/yamux transport shared with every
-relay-local sidecar. Ticket acquisition and broker-front failover, relay-health
-and telemetry decisions, sing-box configuration, recovery, and UI state remain
-desktop application responsibilities. Android and iOS are maintained and
-released outside this repository; publishing the shared module does not restore
-or enable their WSS fallback.
+relay-local sidecar. It consumes
+`github.com/openrung/openrung/brokerapi` for signed directory fetches, the
+ticket HTTP exchange, telemetry posting, URL hardening, and the shared broker
+TLS transport. Direct-first selection, multi-front scheduling, relay-health
+and telemetry lifecycle decisions, sing-box configuration, recovery, and UI
+state remain desktop application responsibilities. Android and iOS are
+maintained and released outside this repository; publishing either shared
+module does not restore or enable their WSS fallback.
 
 ## Desktop App: Local Proxy
 

@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/openrung/openrung/brokerapi"
 )
 
 const (
@@ -51,12 +53,28 @@ type TrafficCounters func() (sent, received int64)
 // New builds a Manager for the given broker. It resolves the persistent client
 // id up front so every event in the session shares it.
 func New(brokerURL, appVersion string, httpClient *http.Client) (*Manager, error) {
+	return NewWithPlatform(brokerURL, appVersion, brokerapi.PlatformNone, httpClient)
+}
+
+// NewWithPlatform builds a Manager whose broker requests carry the shared,
+// fixed platform marker selected by brokerapi.
+func NewWithPlatform(
+	brokerURL string,
+	appVersion string,
+	platform brokerapi.Platform,
+	httpClient *http.Client,
+) (*Manager, error) {
 	clientID, err := ClientID()
 	if err != nil {
 		return nil, err
 	}
 	return &Manager{
-		poster:     HTTPClient{BaseURL: brokerURL, HTTP: httpClient},
+		poster: HTTPClient{
+			BaseURL:    brokerURL,
+			HTTP:       httpClient,
+			AppVersion: appVersion,
+			Platform:   platform,
+		},
 		appVersion: appVersion,
 		clientID:   clientID,
 		now:        time.Now,

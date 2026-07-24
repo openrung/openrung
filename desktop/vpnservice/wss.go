@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openrung/openrung/brokerapi"
 	"github.com/openrung/openrung/wsscore"
 
 	"openrung/desktop/config"
@@ -21,7 +22,6 @@ import (
 
 const (
 	accessTransportWSS    = "wss"
-	wssTicketHTTPTimeout  = 15 * time.Second
 	wssTicketAttemptLimit = 5 * time.Second
 	wssTicketDefaultRetry = 10 * time.Second
 	wssTicketMaxRetry     = 30 * time.Second
@@ -131,8 +131,8 @@ func (s *Service) wssTicketRequester() func(context.Context, string, relay.WSSSe
 	}
 	return func(ctx context.Context, brokerURL string, request relay.WSSSessionTicketRequest, clientID, sessionID string) (relay.WSSSessionTicketResponse, error) {
 		brokerClient := client.BrokerClient{
-			BaseURL:    brokerURL,
-			HTTPClient: client.NewBrokerHTTPClient(wssTicketHTTPTimeout),
+			BaseURL:  brokerURL,
+			Platform: brokerapi.PlatformDesktop,
 		}
 		return brokerClient.RequestWSSSessionTicket(ctx, request, clientID, sessionID)
 	}
