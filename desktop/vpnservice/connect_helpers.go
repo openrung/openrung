@@ -3,7 +3,6 @@ package vpnservice
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -15,11 +14,10 @@ import (
 	"openrung/internal/relay"
 )
 
-// telemetryHTTPTimeout bounds every telemetry request. Without it the manager
-// falls back to http.DefaultClient (no timeout), so a broker that accepts the
-// connection but stalls the response would hang the synchronous Flush on the
-// connect path — and, since Flush runs before supervision starts, disable
-// mid-session recovery. Matches the mobile client's 15s request deadline.
+// telemetryHTTPTimeout bounds every telemetry request so a broker that accepts
+// the connection but stalls the response cannot hang the synchronous Flush on
+// the connect path and disable mid-session recovery. Matches the mobile
+// client's 15s request deadline.
 const telemetryHTTPTimeout = 15 * time.Second
 
 // newManager builds a best-effort telemetry manager (parity with the mobile
@@ -29,7 +27,7 @@ func newManager(brokerURL string) *clienttelemetry.Manager {
 	if brokerURL == "" {
 		brokerURL = config.TelemetryBrokerURL
 	}
-	mgr, err := clienttelemetry.New(brokerURL, client.AppVersion(), &http.Client{Timeout: telemetryHTTPTimeout})
+	mgr, err := clienttelemetry.New(brokerURL, client.AppVersion(), client.NewBrokerHTTPClient(telemetryHTTPTimeout))
 	if err != nil {
 		return nil
 	}

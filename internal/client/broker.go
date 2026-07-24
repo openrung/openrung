@@ -44,7 +44,7 @@ func (c BrokerClient) ListRelays(ctx context.Context, limit int, clientID, sessi
 
 	httpClient := c.HTTPClient
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = defaultBrokerHTTPClient
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)

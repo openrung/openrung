@@ -131,10 +131,8 @@ func (s *Service) wssTicketRequester() func(context.Context, string, relay.WSSSe
 	}
 	return func(ctx context.Context, brokerURL string, request relay.WSSSessionTicketRequest, clientID, sessionID string) (relay.WSSSessionTicketResponse, error) {
 		brokerClient := client.BrokerClient{
-			BaseURL: brokerURL,
-			HTTPClient: &http.Client{
-				Timeout: wssTicketHTTPTimeout,
-			},
+			BaseURL:    brokerURL,
+			HTTPClient: client.NewBrokerHTTPClient(wssTicketHTTPTimeout),
 		}
 		return brokerClient.RequestWSSSessionTicket(ctx, request, clientID, sessionID)
 	}

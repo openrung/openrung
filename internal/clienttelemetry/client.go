@@ -47,10 +47,14 @@ func (c HTTPClient) Send(ctx context.Context, events []Event) error {
 
 	httpClient := c.HTTP
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = client.NewBrokerHTTPClient(0)
+	}
+	noRedirectClient := *httpClient
+	noRedirectClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
 	}
 
-	resp, err := httpClient.Do(req)
+	resp, err := noRedirectClient.Do(req)
 	if err != nil {
 		return err
 	}

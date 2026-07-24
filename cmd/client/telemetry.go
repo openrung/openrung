@@ -16,16 +16,16 @@ import (
 )
 
 const (
-	relayDialTimeout = 10 * time.Second
-	probeWindow      = 5 * time.Second
-	probeTimeout     = 2 * time.Second
+	relayDialTimeout    = 10 * time.Second
+	probeWindow         = 5 * time.Second
+	probeRequestTimeout = 4 * time.Second
 )
 
 // newConnectManager builds the telemetry manager for a connect session.
 // Telemetry is always on (parity with the mobile apps); if it cannot initialize
 // it is best-effort disabled (nil) so connecting never fails on telemetry.
 func newConnectManager(brokerURL string) *clienttelemetry.Manager {
-	mgr, err := clienttelemetry.New(brokerURL, client.AppVersion(), nil)
+	mgr, err := clienttelemetry.New(brokerURL, client.AppVersion(), client.NewBrokerHTTPClient(0))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: telemetry unavailable: %v\n", err)
 		return nil
@@ -54,11 +54,18 @@ func probeInternet(ctx context.Context, brokerURL string) (int64, bool) {
 	if err != nil {
 		return 0, false
 	}
-	httpClient := &http.Client{Timeout: probeTimeout}
-	deadline := time.Now().Add(probeWindow)
+	// The request timeout deliberately exceeds the shared two-second ECH phase
+	// so a network that blackholes ECH still has time for the verified plain-TLS
+	// fallback. The outer context keeps the complete retry sweep at five seconds.
+	httpClient := client.NewBrokerHTTPClient(probeRequestTimeout)
+	httpClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, probeWindow)
+	defer cancel()
 	for {
 		started := time.Now()
-		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+		req, reqErr := http.NewRequestWithContext(probeCtx, http.MethodGet, target, nil)
 		if reqErr != nil {
 			return 0, false
 		}
@@ -70,10 +77,16 @@ func probeInternet(ctx context.Context, brokerURL string) (int64, bool) {
 				return time.Since(started).Milliseconds(), true
 			}
 		}
-		if ctx.Err() != nil || time.Now().After(deadline) {
+		if probeCtx.Err() != nil {
 			return 0, false
 		}
-		time.Sleep(250 * time.Millisecond)
+		retryDelay := time.NewTimer(250 * time.Millisecond)
+		select {
+		case <-probeCtx.Done():
+			retryDelay.Stop()
+			return 0, false
+		case <-retryDelay.C:
+		}
 	}
 }
 
