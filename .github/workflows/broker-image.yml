@@ -16,6 +16,7 @@ on:
       - 'go.sum'
       # The root go.mod replaces nested modules with local directories, so the
       # broker's build/download layers depend on their contents too.
+      - 'brokerapi/go.mod'
       - 'punchcore/go.mod'
       - 'wsscore/**'
       - 'deploy/broker/**'

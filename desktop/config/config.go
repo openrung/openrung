@@ -1,12 +1,11 @@
-// Package config holds the desktop client's broker endpoints and discovery
-// tuning. It is the Go analog of the mobile app's src/config.ts (AppConfig):
-// the same constant names and values, so the two clients discover relays
-// identically.
+// Package config holds desktop-specific connection and discovery tuning.
+// Shared broker endpoints and candidate ordering come from brokerapi.
 package config
 
 import (
-	"strings"
 	"time"
+
+	"github.com/openrung/openrung/brokerapi"
 )
 
 const (
@@ -14,7 +13,7 @@ const (
 	// Discovery runs BEFORE the tunnel is up, so it must be TLS: the relay list
 	// seeds the entire VPN config and the request carries the client identity, so
 	// a cleartext endpoint would hand both to an on-path censor.
-	DefaultBrokerURL = "https://broker.openrung.org/"
+	DefaultBrokerURL = brokerapi.DefaultBrokerURL
 
 	// TelemetryBrokerURL is the endpoint for client telemetry. It must be HTTPS:
 	// the first events (BeginSession / connection_attempted) fire BEFORE the
@@ -48,7 +47,7 @@ const (
 	// blocked or hung primary delays discovery by one interval instead of a full
 	// request timeout. Must stay in sync with the mobile AppConfig's
 	// DISCOVERY_STAGGER_MS so every client races identically.
-	DiscoveryStagger = 2500 * time.Millisecond
+	DiscoveryStagger = brokerapi.DefaultDiscoveryStagger
 
 	// RelayTCPTimeout bounds the pre-connect TCP reachability check against a
 	// relay's public endpoint (it feeds relay_tcp_ms). Must stay in sync with
@@ -121,8 +120,8 @@ var InternetProbeURLs = []string{
 // a staggered start — each entry gets a DiscoveryStagger head start over the
 // next, and the first to return relays wins (see discovery.FirstReachable).
 //
-// Every entry MUST be HTTPS. The relay list is now Ed25519-signed (see
-// signing.go), which detaches its authenticity from the transport — but
+// Every entry MUST be HTTPS. The relay list is Ed25519-signed (see
+// brokerapi/signing.go), which detaches its authenticity from the transport — but
 // discovery still runs BEFORE the tunnel and the client-identity headers ride
 // these requests, so a cleartext or bare-IP entry would expose them to an
 // on-path censor. EnforceSecureBrokerURL rejects non-HTTPS hosts.
@@ -135,31 +134,19 @@ var InternetProbeURLs = []string{
 // static mirrors, a pinned direct-IP fallback) become safe to add in a later
 // step. Keep this list in sync with the mobile clients' AppConfig so every
 // client discovers identically.
-var DefaultBrokerURLs = []string{
-	"https://broker.openrung.org/",
-	// Independent second front: AWS CloudFront (different provider + DNS zone).
-	"https://d2r7mdpyevvs1m.cloudfront.net/",
-}
+var DefaultBrokerURLs = brokerapi.DefaultBrokerURLs()
 
 // Candidates are the ordered discovery endpoints for one request, plus
 // whether URLs[0] is a genuine user override. Built by BrokerCandidates and
 // consumed by discovery.FirstReachable; carrying the flag alongside the list
 // keeps the two from being computed inconsistently.
-type Candidates struct {
-	URLs []string
-	// OverrideFirst marks URLs[0] as a genuine user override — a non-blank
-	// primary that is not one of DefaultBrokerURLs. discovery.FirstReachable
-	// then tries it strictly first (full per-attempt timeout) and only races
-	// the remaining defaults after it fails, so a custom broker that is merely
-	// slower than the stagger is never silently outrun by a default front.
-	OverrideFirst bool
-}
+type Candidates = brokerapi.Candidates
 
 // BrokerCandidates returns the ordered, de-duplicated discovery candidates for
 // a request: a genuine primary override first (with OverrideFirst set), then
 // the built-in defaults.
 //
-// Ported from the mobile app's candidates() (src/net/brokerClient.ts): a
+// The shared policy matches the mobile app's candidates() behavior: a
 // non-blank primary is tried FIRST only when it is a genuine override, i.e.
 // not already one of the defaults — and only such an override sets
 // OverrideFirst, giving it the strict head phase described on Candidates. A
@@ -168,35 +155,5 @@ type Candidates struct {
 // whose last-used default was the raw IP would keep hitting the IP before the
 // Cloudflare-fronted endpoint.
 func BrokerCandidates(primary string) Candidates {
-	ordered := make([]string, 0, len(DefaultBrokerURLs)+1)
-	seen := make(map[string]struct{}, len(DefaultBrokerURLs)+1)
-	add := func(value string) {
-		if _, ok := seen[value]; ok {
-			return
-		}
-		seen[value] = struct{}{}
-		ordered = append(ordered, value)
-	}
-
-	overrideFirst := false
-	trimmedPrimary := strings.TrimSpace(primary)
-	if trimmedPrimary != "" {
-		isDefault := false
-		for _, fallback := range DefaultBrokerURLs {
-			if strings.TrimSpace(fallback) == trimmedPrimary {
-				isDefault = true
-				break
-			}
-		}
-		if !isDefault {
-			add(trimmedPrimary)
-			overrideFirst = true
-		}
-	}
-	for _, fallback := range DefaultBrokerURLs {
-		if trimmed := strings.TrimSpace(fallback); trimmed != "" {
-			add(trimmed)
-		}
-	}
-	return Candidates{URLs: ordered, OverrideFirst: overrideFirst}
+	return brokerapi.BrokerCandidates(primary)
 }

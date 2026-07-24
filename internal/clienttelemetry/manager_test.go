@@ -16,7 +16,7 @@ type captureTransport struct {
 }
 
 func (c *captureTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	var b batch
+	var b decodedBatch
 	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
 		return nil, err
 	}

@@ -214,7 +214,7 @@ func TestRelayDeploymentCoLocatesHardenedWSSSidecar(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read relay image workflow: %v", err)
 	}
-	for _, required := range []string{"cmd/wsssidecar/**", "internal/wssbridge/**", "wsscore/**"} {
+	for _, required := range []string{"cmd/wsssidecar/**", "internal/wssbridge/**", "brokerapi/go.mod", "wsscore/**"} {
 		if !strings.Contains(string(workflow), required) {
 			t.Errorf("relay image workflow will not rebuild for %q changes", required)
 		}

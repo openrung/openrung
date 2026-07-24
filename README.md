@@ -55,6 +55,16 @@ traffic. The broker ranks relay candidates using recent shared metrics —
 connection success, active sessions, observed latency, and speed tests — so
 clients are steered toward relays that actually work.
 
+End-user broker-facing clients share the independently versioned
+[`brokerapi`](brokerapi/README.md) Go module. It is the single source for relay
+directory requests and raw-response signature verification, identity and
+cache-control headers, telemetry and WSS-ticket requests, the loopback-only
+cleartext exception, and the broker TLS transport. For the Cloudflare front
+that transport opportunistically uses a compiled-in ECH configuration,
+refreshes it from authenticated retry configurations, and quickly retries with
+ordinary TLS when ECH is blocked. It never bootstraps ECH through DNS and never
+applies ECH to the CloudFront front.
+
 The desktop client still tries direct Reality first. When a genuine network
 failure blocks a direct-mode Foundation relay, that relay may advertise its own
 signed WSS fronts. Each CDN front terminates at the same relay's local sidecar,
@@ -226,6 +236,9 @@ internal/tunnel/     Reverse-tunnel transport (hub + relay client, yamux).
 internal/relayruntime/  Relay runtime, Xray config, and broker client helpers.
 internal/wssbridge/  Relay-side tickets, replay/origin authentication,
                      admission limits, and sidecar orchestration over wsscore.
+brokerapi/           Shared broker control-plane Go client (nested module
+                     github.com/openrung/openrung/brokerapi) for desktop and
+                     separately released mobile bindings.
 punchcore/           Shared NAT hole-punch protocol core (nested Go module
                      github.com/openrung/openrung/punchcore) consumed by the
                      servers, the desktop client, and the mobile app's binding.

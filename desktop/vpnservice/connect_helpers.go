@@ -7,18 +7,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openrung/openrung/brokerapi"
+
 	"openrung/desktop/config"
 	"openrung/desktop/persist"
 	"openrung/internal/client"
 	"openrung/internal/clienttelemetry"
 	"openrung/internal/relay"
 )
-
-// telemetryHTTPTimeout bounds every telemetry request so a broker that accepts
-// the connection but stalls the response cannot hang the synchronous Flush on
-// the connect path and disable mid-session recovery. Matches the mobile
-// client's 15s request deadline.
-const telemetryHTTPTimeout = 15 * time.Second
 
 // newManager builds a best-effort telemetry manager (parity with the mobile
 // apps). A nil result means telemetry is unavailable; every call site guards
@@ -27,7 +23,12 @@ func newManager(brokerURL string) *clienttelemetry.Manager {
 	if brokerURL == "" {
 		brokerURL = config.TelemetryBrokerURL
 	}
-	mgr, err := clienttelemetry.New(brokerURL, client.AppVersion(), client.NewBrokerHTTPClient(telemetryHTTPTimeout))
+	mgr, err := clienttelemetry.NewWithPlatform(
+		brokerURL,
+		client.AppVersion(),
+		brokerapi.PlatformDesktop,
+		nil,
+	)
 	if err != nil {
 		return nil
 	}

@@ -14,31 +14,17 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/openrung/openrung/brokerapi"
 )
 
 // SchemaVersion is the telemetry schema the broker validates against
 // (internal/broker/telemetry.go validateTelemetryEvent requires it to be 1).
-const SchemaVersion = 1
+const SchemaVersion = brokerapi.TelemetrySchemaVersion
 
-// Event is a single telemetry event. JSON tags match the broker's TelemetryEvent
-// exactly. The Android-only application_* / destination_* / protocol fields are
-// omitted; the broker marks them omitempty, so leaving them off stays compatible.
-type Event struct {
-	SchemaVersion int               `json:"schema_version"`
-	EventID       string            `json:"event_id"`
-	Event         string            `json:"event"`
-	OccurredAt    time.Time         `json:"occurred_at"`
-	ClientID      string            `json:"client_id"`
-	SessionID     string            `json:"session_id"`
-	RelayID       string            `json:"relay_id,omitempty"`
-	Attributes    map[string]string `json:"attributes,omitempty"`
-	Measurements  map[string]int64  `json:"measurements,omitempty"`
-}
-
-// batch is the request body accepted by POST /api/v1/telemetry/events.
-type batch struct {
-	Events []Event `json:"events"`
-}
+// Event is the single-sourced broker telemetry wire contract. The CLI fills
+// the common session fields and leaves mobile-only fields empty.
+type Event = brokerapi.TelemetryEvent
 
 // newUUID returns a random RFC 4122 v4 UUID. Mirrors the crypto/rand pattern in
 // internal/relayruntime/config.go GenerateUUID (replicated to avoid importing the

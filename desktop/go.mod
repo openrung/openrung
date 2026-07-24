@@ -3,6 +3,7 @@ module openrung/desktop
 go 1.25.0
 
 require (
+	github.com/openrung/openrung/brokerapi v0.0.0
 	github.com/openrung/openrung/punchcore v0.0.0
 	github.com/openrung/openrung/wsscore v0.0.0
 	github.com/wailsapp/wails/v2 v2.12.0
@@ -43,6 +44,8 @@ require (
 )
 
 replace openrung => ../
+
+replace github.com/openrung/openrung/brokerapi => ../brokerapi
 
 replace github.com/openrung/openrung/punchcore => ../punchcore
 
