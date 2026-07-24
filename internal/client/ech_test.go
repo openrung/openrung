@@ -300,6 +300,94 @@ func TestBrokerECHDialerDoesNotForceHTTP2ALPN(t *testing.T) {
 	}
 }
 
+func TestBrokerECHBlackholeFallsBackAtHTTPLevel(t *testing.T) {
+	certificate, roots := testBrokerCertificate(t)
+	listener := newPipeListener()
+	tlsListener := tls.NewListener(listener, testBrokerServerConfig(certificate))
+	var handlerCalls atomic.Int64
+	server := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handlerCalls.Add(1)
+			if r.Method != http.MethodGet || r.URL.Path != "/blackhole-fallback" {
+				t.Errorf("request = %s %s", r.Method, r.URL.Path)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		}),
+		ErrorLog: log.New(io.Discard, "", 0),
+	}
+	serveDone := make(chan struct{})
+	go func() {
+		_ = server.Serve(tlsListener)
+		close(serveDone)
+	}()
+
+	var dials atomic.Int64
+	var blackhole net.Conn
+	networkDial := func(ctx context.Context, network, address string) (net.Conn, error) {
+		if dials.Add(1) == 1 {
+			clientSide, serverSide := net.Pipe()
+			blackhole = serverSide
+			return clientSide, nil
+		}
+		return listener.DialContext(ctx, network, address)
+	}
+	t.Cleanup(func() {
+		if blackhole != nil {
+			_ = blackhole.Close()
+		}
+		_ = server.Close()
+		_ = listener.Close()
+		select {
+		case <-serveDone:
+		case <-time.After(time.Second):
+			t.Error("HTTP server did not stop")
+		}
+	})
+
+	baseTransport := http.DefaultTransport.(*http.Transport).Clone()
+	baseTransport.Proxy = nil
+	baseTransport.DialContext = networkDial
+	baseTransport.TLSClientConfig = &tls.Config{
+		RootCAs:    roots,
+		MinVersion: tls.VersionTLS13,
+		NextProtos: []string{"http/1.1"},
+	}
+	baseTransport.TLSHandshakeTimeout = time.Second
+	baseTransport.ForceAttemptHTTP2 = false
+
+	httpClient := &http.Client{
+		Transport: newBrokerTransport(
+			baseTransport,
+			newBrokerECHConfigState(embeddedCloudflareECHConfigList),
+			20*time.Millisecond,
+		),
+		Timeout: 2 * time.Second,
+	}
+	req, err := http.NewRequestWithContext(
+		t.Context(),
+		http.MethodGet,
+		"https://"+cloudflareBrokerHost+"/blackhole-fallback",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET through blackholed ECH fallback: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNoContent)
+	}
+	if got := dials.Load(); got != 2 {
+		t.Fatalf("TLS connection attempts = %d, want blackholed ECH + plain fallback = 2", got)
+	}
+	if got := handlerCalls.Load(); got != 1 {
+		t.Fatalf("HTTP handler calls = %d, want exactly one GET", got)
+	}
+}
+
 func TestBrokerECHFallbackDoesNotReplayWSSTicketPOST(t *testing.T) {
 	certificate, roots := testBrokerCertificate(t)
 	listener := newPipeListener()

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -70,6 +72,83 @@ func TestSendSetsIdentityHeadersAndBody(t *testing.T) {
 	}
 	if len(gotBatch.Events) != 1 || gotBatch.Events[0].EventID != "e1" {
 		t.Fatalf("unexpected batch body: %+v", gotBatch)
+	}
+}
+
+func TestSendNilHTTPClientUsesBrokerDefault(t *testing.T) {
+	type receivedRequest struct {
+		method    string
+		path      string
+		clientID  string
+		sessionID string
+	}
+	received := make(chan receivedRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received <- receivedRequest{
+			method:    r.Method,
+			path:      r.URL.Path,
+			clientID:  r.Header.Get("X-OpenRung-Client-ID"),
+			sessionID: r.Header.Get("X-OpenRung-Session-ID"),
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+
+	events := []Event{{EventID: "e1", ClientID: "client-1", SessionID: "session-1", Event: "x"}}
+	if err := (HTTPClient{BaseURL: server.URL}).Send(t.Context(), events); err != nil {
+		t.Fatalf("send with nil HTTP client: %v", err)
+	}
+
+	got := <-received
+	if got.method != http.MethodPost || got.path != "/api/v1/telemetry/events" {
+		t.Fatalf("request = %s %s, want POST /api/v1/telemetry/events", got.method, got.path)
+	}
+	if got.clientID != "client-1" || got.sessionID != "session-1" {
+		t.Fatalf("identity headers = client %q, session %q", got.clientID, got.sessionID)
+	}
+}
+
+func TestSendRefusesRedirectWithoutReplayingIdentity(t *testing.T) {
+	var originRequests atomic.Int64
+	var redirectedRequests atomic.Int64
+	var originSawIdentity atomic.Bool
+	var redirectLeakedIdentity atomic.Bool
+
+	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectedRequests.Add(1)
+		if r.Header.Get("X-OpenRung-Client-ID") != "" || r.Header.Get("X-OpenRung-Session-ID") != "" {
+			redirectLeakedIdentity.Store(true)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer redirectTarget.Close()
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originRequests.Add(1)
+		if r.Header.Get("X-OpenRung-Client-ID") == "client-1" &&
+			r.Header.Get("X-OpenRung-Session-ID") == "session-1" {
+			originSawIdentity.Store(true)
+		}
+		http.Redirect(w, r, redirectTarget.URL+"/collect", http.StatusTemporaryRedirect)
+	}))
+	defer origin.Close()
+
+	events := []Event{{EventID: "e1", ClientID: "client-1", SessionID: "session-1", Event: "x"}}
+	err := (HTTPClient{BaseURL: origin.URL}).Send(t.Context(), events)
+	if err == nil {
+		t.Fatal("redirected telemetry send succeeded, want redirect refusal")
+	}
+	if !originSawIdentity.Load() {
+		t.Fatal("origin did not receive the expected identity headers")
+	}
+	if got := originRequests.Load(); got != 1 {
+		t.Fatalf("origin requests = %d, want 1", got)
+	}
+	if got := redirectedRequests.Load(); got != 0 {
+		t.Fatalf("redirect target requests = %d, want 0", got)
+	}
+	if redirectLeakedIdentity.Load() {
+		t.Fatal("redirect replay leaked persistent identity headers")
 	}
 }
 
