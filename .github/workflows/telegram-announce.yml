@@ -1,0 +1,91 @@
+name: telegram-announce
+
+# Announce a published release in the four OpenRung Telegram channels
+# (@openrung_official, @openrung_ru, @openrung_fa, @openrung_zh).
+#
+# CANONICAL COPY: openrung/openrung-telegram-bot (private),
+# deploy/github-actions/. Copies live in each public release repo at
+# .github/workflows/telegram-announce.yml — keep them in sync.
+#
+# Why it exists: Telegram is the distribution channel that keeps working when
+# openrung.org is blocked, so users in Russia, Iran and China learn about new
+# builds there. Announcing by hand meant several releases shipped unannounced.
+# This job cannot invent copy (translations are written by a human), but it
+# CAN refuse to let a release pass silently: with no announcement copy and no
+# explicit skip marker, it fails and GitHub emails the maintainer.
+#
+# Where the copy comes from, and the <!--telegram:skip--> escape hatch, are
+# documented at the top of .github/scripts/telegram_announce.py.
+#
+# Security: triggers only on `release: published` and manual `workflow_dispatch`
+# — never on `pull_request`, so a fork PR can never reach the bot token. Keep
+# it that way. The release body is untrusted text (anyone with write access
+# edits it), so it is passed to the script through the environment, never
+# interpolated into a shell command.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to announce (e.g. v0.3.4)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Render and validate without sending'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  # One announcement at a time per tag; never cancel a run that may be
+  # mid-post, or a channel could end up half-announced.
+  group: telegram-announce-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  announce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Release runs check out the tag, so a .github/telegram/<tag>.md committed
+      # in the version-bump PR is present. Manual runs check out the branch they
+      # were dispatched from, so copy added after the fact is picked up.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref_name }}
+
+      - name: Resolve release notes
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          TAG_INPUT: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_BODY: ${{ github.event.release.body }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "release" ]; then
+            tag="$RELEASE_TAG"
+            printf '%s' "$RELEASE_BODY" > /tmp/release-body.md
+          else
+            tag="$TAG_INPUT"
+            gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json body -q .body > /tmp/release-body.md
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "::notice::Announcing $tag ($(wc -c < /tmp/release-body.md) bytes of release notes)."
+
+      - name: Post to Telegram channels
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          # `true` on manual runs unless explicitly unticked; automatic
+          # release runs always send.
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          RELEASE_BODY="$(cat /tmp/release-body.md)" \
+            python3 .github/scripts/telegram_announce.py
