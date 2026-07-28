@@ -6,12 +6,15 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"openrung/internal/tunnel"
@@ -21,6 +24,31 @@ import (
 // treating the hub HTTP API as unavailable.
 const detectAttempts = 3
 
+// DirectProbeOutcome classifies a direct-connect reachability attempt. Bind
+// failures are kept separate from external reachability so callers never
+// mistake a router/firewall failure for a local OS permission problem.
+type DirectProbeOutcome string
+
+const (
+	DirectProbeReachable             DirectProbeOutcome = "reachable"
+	DirectProbePermissionDenied      DirectProbeOutcome = "permission_denied"
+	DirectProbePortInUse             DirectProbeOutcome = "port_in_use"
+	DirectProbeExternallyUnreachable DirectProbeOutcome = "externally_unreachable"
+	DirectProbeAPIUnavailable        DirectProbeOutcome = "probe_api_unavailable"
+	DirectProbeBindFailed            DirectProbeOutcome = "bind_failed"
+	DirectProbeInternalFailure       DirectProbeOutcome = "internal_failure"
+)
+
+// DirectProbeResult is the structured result of ProbeDirectReachability.
+// Err is populated for local bind failures and probe-API failures; a completed
+// negative callback is represented by DirectProbeExternallyUnreachable with a
+// nil Err.
+type DirectProbeResult struct {
+	Outcome      DirectProbeOutcome
+	ObservedHost string
+	Err          error
+}
+
 // DetectDirectReachable opens a temporary TCP listener on port, asks the hub to
 // dial it back at the relay's observed public IP, and reports whether that
 // inbound connection succeeded. The temporary listener answers each accepted
@@ -29,9 +57,19 @@ const detectAttempts = 3
 // tunnel); a non-nil err means the probe itself could not run (hub HTTP API
 // unreachable), which the caller treats as inconclusive.
 func DetectDirectReachable(ctx context.Context, hubHTTPBase, token, listenHost string, port int, httpClient *http.Client) (reachable bool, observedHost string, err error) {
+	result := ProbeDirectReachability(ctx, hubHTTPBase, token, listenHost, port, httpClient)
+	return result.Outcome == DirectProbeReachable, result.ObservedHost, result.Err
+}
+
+// ProbeDirectReachability is the structured form of DetectDirectReachable.
+// Direct mode is safe to advertise only when Outcome is DirectProbeReachable.
+func ProbeDirectReachability(ctx context.Context, hubHTTPBase, token, listenHost string, port int, httpClient *http.Client) DirectProbeResult {
 	nonceBytes := make([]byte, 8)
 	if _, err := rand.Read(nonceBytes); err != nil {
-		return false, "", fmt.Errorf("generate probe nonce: %w", err)
+		return DirectProbeResult{
+			Outcome: DirectProbeInternalFailure,
+			Err:     fmt.Errorf("generate probe nonce: %w", err),
+		}
 	}
 	nonce := hex.EncodeToString(nonceBytes)
 
@@ -41,7 +79,10 @@ func DetectDirectReachable(ctx context.Context, hubHTTPBase, token, listenHost s
 	bindAddr := ProbeBindAddr(listenHost, port)
 	ln, err := net.Listen("tcp", bindAddr)
 	if err != nil {
-		return false, "", fmt.Errorf("bind probe listener on %s: %w", bindAddr, err)
+		return DirectProbeResult{
+			Outcome: classifyProbeBindError(err),
+			Err:     fmt.Errorf("bind probe listener on %s: %w", bindAddr, err),
+		}
 	}
 	defer ln.Close()
 
@@ -70,21 +111,49 @@ func DetectDirectReachable(ctx context.Context, hubHTTPBase, token, listenHost s
 	var lastErr error
 	for attempt := 0; attempt < detectAttempts; attempt++ {
 		if ctx.Err() != nil {
-			return false, "", ctx.Err()
+			return DirectProbeResult{Outcome: DirectProbeAPIUnavailable, Err: ctx.Err()}
 		}
 		resp, callErr := doProbe(ctx, httpClient, url, token, payload)
 		if callErr != nil {
 			lastErr = callErr
 			select {
 			case <-ctx.Done():
-				return false, "", ctx.Err()
+				return DirectProbeResult{Outcome: DirectProbeAPIUnavailable, Err: ctx.Err()}
 			case <-time.After(time.Second):
 			}
 			continue
 		}
-		return resp.Reachable, resp.ObservedHost, nil
+		outcome := DirectProbeExternallyUnreachable
+		if resp.Reachable {
+			outcome = DirectProbeReachable
+		}
+		return DirectProbeResult{Outcome: outcome, ObservedHost: resp.ObservedHost}
 	}
-	return false, "", fmt.Errorf("hub probe endpoint unreachable: %w", lastErr)
+	return DirectProbeResult{
+		Outcome: DirectProbeAPIUnavailable,
+		Err:     fmt.Errorf("hub probe endpoint unreachable: %w", lastErr),
+	}
+}
+
+func classifyProbeBindError(err error) DirectProbeOutcome {
+	if errors.Is(err, os.ErrPermission) || os.IsPermission(err) || platformProbePermissionDenied(err) {
+		return DirectProbePermissionDenied
+	}
+	if errors.Is(err, syscall.EADDRINUSE) || platformProbePortInUse(err) {
+		return DirectProbePortInUse
+	}
+
+	// Go exposes different address-in-use errno values on Unix and Windows.
+	// net.Listen's stable cross-platform surface is the wrapped error text, so
+	// recognize the messages emitted by both families after checking the
+	// portable permission sentinel above.
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "address already in use") ||
+		strings.Contains(message, "address is already in use") ||
+		strings.Contains(message, "only one usage of each socket address") {
+		return DirectProbePortInUse
+	}
+	return DirectProbeBindFailed
 }
 
 func doProbe(ctx context.Context, httpClient *http.Client, url, token string, payload []byte) (tunnel.ProbeResponse, error) {

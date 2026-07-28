@@ -2,11 +2,15 @@ package relayruntime
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"syscall"
 	"testing"
 
 	"openrung/internal/tunnel"
@@ -62,6 +66,57 @@ func TestDetectDirectReachableHubDown(t *testing.T) {
 	}
 	if reachable {
 		t.Fatal("must not report reachable when the probe could not run")
+	}
+}
+
+func TestProbeDirectReachabilityClassifiesOccupiedPort(t *testing.T) {
+	ln, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatalf("occupy port: %v", err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	result := ProbeDirectReachability(context.Background(), "http://127.0.0.1:1", "", "::", port, &http.Client{})
+
+	if result.Outcome != DirectProbePortInUse {
+		t.Fatalf("occupied port outcome = %q (%v), want %q", result.Outcome, result.Err, DirectProbePortInUse)
+	}
+	if result.Err == nil {
+		t.Fatal("occupied port result has nil error")
+	}
+}
+
+func TestProbeDirectReachabilityClassifiesExternalFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"reachable":false,"observed_host":"198.51.100.1"}`))
+	}))
+	defer server.Close()
+
+	result := ProbeDirectReachability(context.Background(), server.URL, "", "::", freeTCPPort(t), server.Client())
+
+	if result.Outcome != DirectProbeExternallyUnreachable {
+		t.Fatalf("negative callback outcome = %q (%v), want %q", result.Outcome, result.Err, DirectProbeExternallyUnreachable)
+	}
+	if result.Err != nil {
+		t.Fatalf("negative callback error = %v, want nil", result.Err)
+	}
+	if result.ObservedHost != "198.51.100.1" {
+		t.Fatalf("observed host = %q, want 198.51.100.1", result.ObservedHost)
+	}
+}
+
+func TestClassifyProbeBindErrorPermissionDenied(t *testing.T) {
+	err := &os.PathError{Op: "listen", Path: ":443", Err: os.ErrPermission}
+	if got := classifyProbeBindError(err); got != DirectProbePermissionDenied {
+		t.Fatalf("permission outcome = %q, want %q", got, DirectProbePermissionDenied)
+	}
+	if got := classifyProbeBindError(errors.New("unrelated bind failure")); got != DirectProbeBindFailed {
+		t.Fatalf("generic bind outcome = %q, want %q", got, DirectProbeBindFailed)
+	}
+	if got := classifyProbeBindError(fmt.Errorf("wrapped: %w", syscall.EADDRINUSE)); got != DirectProbePortInUse {
+		t.Fatalf("EADDRINUSE outcome = %q, want %q", got, DirectProbePortInUse)
 	}
 }
 

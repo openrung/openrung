@@ -131,7 +131,7 @@ func TestDirectSessionRegistersAndRecovers(t *testing.T) {
 	brokerClient := &relayruntime.BrokerClient{BaseURL: ts.URL}
 	// Bypass IPv6 detection: pretend probing already resolved us.
 	go func() {
-		_ = eng.runDirectSession(context.Background(), brokerClient, eng.cfg, "test-relay", testIdentity, "127.0.0.1")
+		_ = eng.runDirectSession(context.Background(), brokerClient, eng.cfg, "test-relay", testIdentity, "127.0.0.1", directOnlyListenHost)
 	}()
 
 	eventually(t, 5*time.Second, "online status", func() bool {

@@ -82,7 +82,7 @@ func TestAutoResolveReachableSelectsDirect(t *testing.T) {
 
 	eng := New(Config{}, Events{})
 	// Reachable machines must serve directly, advertising the hub-observed host.
-	mode, host := eng.autoResolve(context.Background(), Config{
+	mode, host, port := eng.autoResolve(context.Background(), Config{
 		HubHTTPURL: ts.URL,
 		HTTPClient: ts.Client(),
 		ListenPort: freePort(t),
@@ -92,6 +92,9 @@ func TestAutoResolveReachableSelectsDirect(t *testing.T) {
 	}
 	if host != "127.0.0.1" {
 		t.Fatalf("reachable → host = %q, want 127.0.0.1", host)
+	}
+	if port == 0 {
+		t.Fatal("reachable → selected port = 0, want probed port")
 	}
 }
 
@@ -107,7 +110,7 @@ func TestAutoResolveHubDownNeverGuessesDirect(t *testing.T) {
 	// never a speculative direct.
 	stubIPv6(t, "2001:db8::1", nil)
 	eng := New(Config{}, Events{})
-	mode, host := eng.autoResolve(context.Background(), Config{
+	mode, host, port := eng.autoResolve(context.Background(), Config{
 		HubHTTPURL: "http://127.0.0.1:1", // refuses connections
 		HTTPClient: &http.Client{},
 		ListenPort: freePort(t),
@@ -117,5 +120,8 @@ func TestAutoResolveHubDownNeverGuessesDirect(t *testing.T) {
 	}
 	if host != "" {
 		t.Fatalf("hub down → host = %q, want empty (nothing verified to advertise)", host)
+	}
+	if port != 0 {
+		t.Fatalf("hub down → selected port = %d, want zero", port)
 	}
 }
