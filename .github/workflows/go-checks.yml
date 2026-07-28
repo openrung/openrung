@@ -45,13 +45,28 @@ jobs:
 
       - name: Component version sources
         run: |
-          for file in cmd/relay/VERSION cmd/relayhub/VERSION cmd/broker/VERSION desktop-volunteer/VERSION; do
+          for file in cmd/broker/VERSION cmd/client/VERSION cmd/relay/VERSION cmd/relayhub/VERSION cmd/wsssidecar/VERSION desktop/VERSION desktop-volunteer/VERSION; do
             version="$(tr -d '\r\n' < "$file")"
             if ! printf '%s\n' "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
               echo "invalid $file \"$version\" (want X.Y.Z)" >&2
               exit 1
             fi
             echo "$file -> $version"
+          done
+
+      # The two Wails apps keep an info.productVersion copy in wails.json only
+      # because Wails stamps it into the native package metadata. VERSION is
+      # canonical; reject drift at PR time rather than at release time.
+      - name: Wails packaging version copies
+        run: |
+          for app in desktop desktop-volunteer; do
+            version="$(tr -d '\r\n' < "$app/VERSION")"
+            copy="$(jq -r '.info.productVersion' "$app/wails.json")"
+            if [ "$copy" != "$version" ]; then
+              echo "$app/wails.json info.productVersion ($copy) disagrees with $app/VERSION ($version); VERSION is canonical" >&2
+              exit 1
+            fi
+            echo "$app/wails.json info.productVersion == $app/VERSION ($version)"
           done
 
       - name: Root module (vet + test)

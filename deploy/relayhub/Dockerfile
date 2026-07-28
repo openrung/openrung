@@ -34,10 +34,10 @@ ARG VCS_REVISION
 RUN set -eux; \
     ldflags="-s -w"; \
     if [ -n "$RELAYHUB_VERSION" ] && [ "$RELAYHUB_VERSION" != "source" ]; then \
-      ldflags="$ldflags -X main.version=$RELAYHUB_VERSION"; \
+      ldflags="$ldflags -X openrung/internal/buildinfo.version=$RELAYHUB_VERSION"; \
     fi; \
     if [ -n "$VCS_REVISION" ] && [ "$VCS_REVISION" != "unknown" ]; then \
-      ldflags="$ldflags -X main.revision=$VCS_REVISION"; \
+      ldflags="$ldflags -X openrung/internal/buildinfo.revision=$VCS_REVISION"; \
     fi; \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
       go build -trimpath -ldflags="$ldflags" -o /out/relayhub ./cmd/relayhub

@@ -2,30 +2,55 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+const versionPath = fileURLToPath(new URL('../VERSION', import.meta.url));
 const configPath = fileURLToPath(new URL('../wails.json', import.meta.url));
 const semanticVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const appVersionVariable = 'openrung/internal/client.appVersion';
 
-export function productVersionFromConfig(config, source = 'desktop/wails.json') {
-  const version = config?.info?.productVersion;
-  if (typeof version !== 'string' || !semanticVersion.test(version)) {
-    throw new Error(`${source} info.productVersion must be a semantic X.Y.Z version`);
+// desktop/VERSION is the canonical version source. wails.json keeps an
+// info.productVersion copy because Wails stamps it into the native package
+// metadata (Info.plist, the Windows exe resource); refuse to build when the
+// copy has drifted so the two can never disagree in a shipped artifact.
+export function appVersionFromSources(
+  versionFileContents,
+  config,
+  versionSource = 'desktop/VERSION',
+  configSource = 'desktop/wails.json',
+) {
+  const version = String(versionFileContents ?? '').trim();
+  if (!semanticVersion.test(version)) {
+    throw new Error(`${versionSource} must contain a semantic X.Y.Z version`);
+  }
+  const copy = config?.info?.productVersion;
+  if (copy !== version) {
+    throw new Error(
+      `${configSource} info.productVersion is ${JSON.stringify(copy)} but ${versionSource} is ${version}; ` +
+        `${versionSource} is canonical — update info.productVersion to match`,
+    );
   }
   return version;
 }
 
-export function readProductVersion(source = configPath) {
+export function readAppVersion(versionSource = versionPath, configSource = configPath) {
+  let versionFileContents;
+  try {
+    versionFileContents = readFileSync(versionSource, 'utf8');
+  } catch (error) {
+    throw new Error(`cannot read ${versionSource}: ${error.message}`, { cause: error });
+  }
   let config;
   try {
-    config = JSON.parse(readFileSync(source, 'utf8'));
+    config = JSON.parse(readFileSync(configSource, 'utf8'));
   } catch (error) {
-    throw new Error(`cannot read ${source}: ${error.message}`, { cause: error });
+    throw new Error(`cannot read ${configSource}: ${error.message}`, { cause: error });
   }
-  return productVersionFromConfig(config, source);
+  return appVersionFromSources(versionFileContents, config, versionSource, configSource);
 }
 
 export function versionedWailsBuildArgs(args, version) {
-  productVersionFromConfig({ info: { productVersion: version } }, 'build version');
+  if (typeof version !== 'string' || !semanticVersion.test(version)) {
+    throw new Error(`build version ${JSON.stringify(version)} must be a semantic X.Y.Z version`);
+  }
 
   const passthrough = [];
   const callerLdflags = [];
@@ -50,7 +75,7 @@ export function versionedWailsBuildArgs(args, version) {
   }
 
   // Keep caller flags, but append the source-of-truth assignment last so a
-  // caller cannot accidentally replace the version from wails.json.
+  // caller cannot accidentally replace the version from desktop/VERSION.
   const versionLdflag = `-X ${appVersionVariable}=${version}`;
   const ldflags = [...callerLdflags.filter((value) => value.trim() !== ''), versionLdflag].join(' ');
   return [...passthrough, '-ldflags', ldflags];
@@ -61,7 +86,7 @@ function displayArgument(argument) {
 }
 
 function main() {
-  const version = readProductVersion();
+  const version = readAppVersion();
   const args = versionedWailsBuildArgs(process.argv.slice(2), version);
   console.log(`==> wails build ${args.map(displayArgument).join(' ')}`);
 

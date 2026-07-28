@@ -2,11 +2,11 @@ import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 // Shared with the packaging scripts, so the frontend and the Go binary cannot
 // disagree about what counts as a valid version or where it comes from. Reads
-// and validates desktop/wails.json, throwing if info.productVersion is missing
-// or not a strict X.Y.Z.
-import { readProductVersion } from '../scripts/versioned-wails-build.mjs';
+// canonical desktop/VERSION, throwing if it is not a strict X.Y.Z or if the
+// wails.json info.productVersion packaging copy has drifted from it.
+import { readAppVersion } from '../scripts/versioned-wails-build.mjs';
 
-const appVersion: string = readProductVersion();
+const appVersion: string = readAppVersion();
 
 export default defineConfig({
   plugins: [react()],

@@ -77,7 +77,7 @@ recipients of the MPL-2.0 terms and where to obtain the source.
   to that channel.
 - **Version:** v26.3.27 (pinned in `deploy/relay/Dockerfile`
   (`ARG XRAY_VERSION`) and in
-  `.github/workflows/volunteer-desktop-release.yml`; SHA-256 verified
+  `.github/workflows/desktop-volunteer-release.yml`; SHA-256 verified
   against the release `.dgst` file at build/fetch).
 - **License (code):** Mozilla Public License 2.0 (**MPL-2.0**).
 - **Source for the exact version:**

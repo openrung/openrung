@@ -1,10 +1,13 @@
-name: volunteer-desktop-release
+name: desktop-volunteer-release
 
 # Builds the OpenRung Volunteer desktop app for macOS, Linux, and Windows on
 # their native runners (Wails cannot cross-compile — it links each OS's native
 # webview), with a pinned, SHA-256-verified Xray-core bundled into each. Run
-# manually (Actions → volunteer-desktop-release → Run) or on a volunteer-v*
-# tag. Artifacts appear on the run's summary page.
+# manually (Actions → desktop-volunteer-release → Run) or on a
+# desktop-volunteer-vX.Y.Z tag. Artifacts appear on the run's summary page.
+#
+# The 0.1.0 release lives on the retired volunteer-v0.1.0 tag; new tags always
+# carry the full component name.
 on:
   workflow_dispatch:
     inputs:
@@ -12,7 +15,7 @@ on:
         description: Xray-core version to bundle (no leading v — the upstream release tag adds one)
         default: "26.3.27"
   push:
-    tags: ["volunteer-v*"]
+    tags: ["desktop-volunteer-v[0-9]*"]
 
 env:
   # Xray-core release to bundle. Bump as needed; must exist as a GitHub
@@ -23,10 +26,13 @@ env:
 jobs:
   version:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Validate component version and release tag
+      - id: version
+        name: Validate component version and release tag
         shell: bash
         run: |
           version="$(tr -d '\r\n' < desktop-volunteer/VERSION)"
@@ -34,14 +40,22 @@ jobs:
             echo "invalid desktop-volunteer/VERSION \"$version\" (want X.Y.Z)" >&2
             exit 1
           fi
+          # wails.json carries a copy for the native package metadata; refuse
+          # to release when it has drifted from canonical VERSION.
+          config_copy="$(jq -r '.info.productVersion' desktop-volunteer/wails.json)"
+          if [[ "$config_copy" != "$version" ]]; then
+            echo "desktop-volunteer/wails.json info.productVersion ($config_copy) disagrees with desktop-volunteer/VERSION ($version); VERSION is canonical" >&2
+            exit 1
+          fi
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             tag="${GITHUB_REF#refs/tags/}"
-            expected="volunteer-v$version"
+            expected="desktop-volunteer-v$version"
             if [[ "$tag" != "$expected" ]]; then
               echo "release tag $tag does not match desktop-volunteer/VERSION $version (want $expected)" >&2
               exit 1
             fi
           fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "desktop-volunteer/VERSION -> $version"
 
   build:
@@ -164,12 +178,12 @@ jobs:
           if-no-files-found: error
 
   # Publish a GitHub Release with all three binaries attached. Runs only for
-  # `volunteer-v*` tag pushes (not manual dispatch, which stays artifact-only
-  # for testing). Requires all three build jobs to succeed — we don't ship a
-  # partial release.
+  # `desktop-volunteer-vX.Y.Z` tag pushes (not manual dispatch, which stays
+  # artifact-only for testing). Requires all three build jobs to succeed — we
+  # don't ship a partial release.
   release:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/volunteer-v')
+    needs: [version, build]
+    if: startsWith(github.ref, 'refs/tags/desktop-volunteer-v')
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the tag's GitHub Release + upload assets
@@ -183,7 +197,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: OpenRung Volunteer ${{ github.ref_name }}
+          name: OpenRung Volunteer Desktop v${{ needs.version.outputs.version }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |

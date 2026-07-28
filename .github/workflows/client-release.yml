@@ -1,0 +1,152 @@
+name: client-release
+
+# Cross-compiles the OpenRung client CLI (cmd/client) and publishes a GitHub
+# Release on client-vX.Y.Z tags. Run manually (Actions → client-release → Run)
+# for artifact-only test builds. Unlike the two Wails desktop apps this is
+# pure Go, so a single Linux runner cross-compiles every target.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["client-v[0-9]*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      base_version: ${{ steps.version.outputs.base_version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: version
+        name: Resolve client build version
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_version="$(tr -d '\r\n' < cmd/client/VERSION)"
+          if ! printf '%s\n' "$base_version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "invalid cmd/client/VERSION \"$base_version\" (want X.Y.Z)" >&2
+            exit 1
+          fi
+
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            expected_tag="client-v$base_version"
+            if [ "$GITHUB_REF_NAME" != "$expected_tag" ]; then
+              echo "client release tag $GITHUB_REF_NAME disagrees with cmd/client/VERSION ($base_version); expected $expected_tag" >&2
+              exit 1
+            fi
+            build_version="$base_version"
+          else
+            build_version="$base_version-dev+sha.${GITHUB_SHA:0:7}"
+          fi
+
+          # Peel in case someone hand-pushes an annotated tag: GITHUB_SHA is
+          # then the tag object's SHA, and the binaries must report the commit.
+          revision="$(git rev-parse "$GITHUB_SHA^{commit}")"
+
+          echo "base_version=$base_version" >> "$GITHUB_OUTPUT"
+          echo "build_version=$build_version" >> "$GITHUB_OUTPUT"
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+          echo "cmd/client/VERSION -> $base_version (building $build_version, revision $revision)"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Cross-compile all targets
+        shell: bash
+        env:
+          BUILD_VERSION: ${{ steps.version.outputs.build_version }}
+          REVISION: ${{ steps.version.outputs.revision }}
+        run: |
+          set -euo pipefail
+          # internal/client.appVersion is the telemetry identity (the symbol
+          # the desktop app also stamps; proven resolvable by
+          # desktop/scripts/version-injection.test.mjs). The buildinfo symbols
+          # feed the `openrung-client version` output (proven resolvable by
+          # internal/buildinfo/injection_test.go).
+          ldflags="-s -w"
+          ldflags="$ldflags -X openrung/internal/client.appVersion=$BUILD_VERSION"
+          ldflags="$ldflags -X openrung/internal/buildinfo.version=$BUILD_VERSION"
+          ldflags="$ldflags -X openrung/internal/buildinfo.revision=$REVISION"
+
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            goos="${target%/*}"
+            goarch="${target#*/}"
+            bin="openrung-client"
+            if [ "$goos" = "windows" ]; then
+              bin="openrung-client.exe"
+            fi
+            outdir="dist/openrung-client-$goos-$goarch"
+            mkdir -p "$outdir"
+            echo "==> $target"
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+              go build -trimpath -ldflags "$ldflags" -o "$outdir/$bin" ./cmd/client
+            cp LICENSE "$outdir/"
+            if [ "$goos" = "windows" ]; then
+              (cd dist && zip -qr "openrung-client-$goos-$goarch.zip" "openrung-client-$goos-$goarch")
+            else
+              tar -czf "dist/openrung-client-$goos-$goarch.tar.gz" -C dist "openrung-client-$goos-$goarch"
+            fi
+          done
+
+      - name: Smoke-test version injection
+        shell: bash
+        env:
+          BUILD_VERSION: ${{ steps.version.outputs.build_version }}
+          REVISION: ${{ steps.version.outputs.revision }}
+        run: |
+          set -euo pipefail
+          got="$(./dist/openrung-client-linux-amd64/openrung-client version)"
+          want="client/$BUILD_VERSION revision=$REVISION"
+          echo "openrung-client version -> $got"
+          if [ "$got" != "$want" ]; then
+            echo "version output mismatch: got \"$got\", want \"$want\"" >&2
+            exit 1
+          fi
+
+      - name: Checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum openrung-client-*.tar.gz openrung-client-*.zip > SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openrung-client-dist
+          path: |
+            dist/openrung-client-*.tar.gz
+            dist/openrung-client-*.zip
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+  # Publish a GitHub Release with every platform archive attached. Runs only
+  # for client-vX.Y.Z tag pushes (not manual dispatch, which stays
+  # artifact-only for testing).
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/client-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the tag's GitHub Release + upload assets
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: OpenRung Client CLI v${{ needs.build.outputs.base_version }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/**/openrung-client-*.tar.gz
+            artifacts/**/openrung-client-*.zip
+            artifacts/**/SHA256SUMS

@@ -60,14 +60,17 @@ artifact-specific release gates and the exact macOS blocker.
 
 ## Release
 
-CI (`.github/workflows/volunteer-desktop-release.yml`) builds all three
+CI (`.github/workflows/desktop-volunteer-release.yml`) builds all three
 platforms with a pinned Xray-core (v26.3.27, same pin as
 `deploy/relay/Dockerfile`), SHA-256-verified against the release `.dgst`
-on every platform. [`VERSION`](VERSION) is the single version source for both
+on every platform. [`VERSION`](VERSION) is the canonical version source for
 the Go relay runtime (`desktop-volunteer/X.Y.Z` as reported to the broker) and
-the About screen. Push the exactly matching `volunteer-vX.Y.Z` tag to publish
-a GitHub release with all three artifacts; CI rejects a mismatched tag. A
-manual `workflow_dispatch` run builds artifacts only.
+the About screen; `wails.json` carries an `info.productVersion` copy for the
+native package metadata, and CI rejects drift between the two. Push the
+exactly matching `desktop-volunteer-vX.Y.Z` tag to publish a GitHub release
+with all three artifacts; CI rejects a mismatched tag. A manual
+`workflow_dispatch` run builds artifacts only. (The 0.1.0 release predates
+this scheme and lives on the retired `volunteer-v0.1.0` tag.)
 
 CI compiles and packages but cannot validate a real UAC/polkit elevation path,
 host firewall, capability-supporting target filesystem, router, or cloud
