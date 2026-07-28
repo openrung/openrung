@@ -9,10 +9,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"openrung/desktop-volunteer/directsetup"
 	"openrung/desktop-volunteer/persist"
 	"openrung/internal/relay"
 	"openrung/internal/relayruntime"
@@ -64,24 +67,31 @@ type Settings struct {
 	ConnectionMode string `json:"connectionMode"`
 }
 
+// DirectSetupStatus is the platform's cached least-privilege TCP 443 setup
+// state. It is separate from relay reachability: in Automatic mode, only the
+// RelayHub nonce probe can confirm that the port is reachable from the
+// Internet. Direct-only is an explicit operator override without that probe.
+type DirectSetupStatus = directsetup.Status
+
 // State is the single event payload the frontend renders from.
 type State struct {
-	Phase             string   `json:"phase"`
-	Transport         string   `json:"transport"`
-	RelayLabel        string   `json:"relayLabel"`
-	RelayID           string   `json:"relayId"`
-	PublicEndpoint    string   `json:"publicEndpoint"`
-	LastError         *string  `json:"lastError"`
-	StartedAtMs       int64    `json:"startedAtMs"`
-	ActiveConnections int64    `json:"activeConnections"`
-	TotalConnections  uint64   `json:"totalConnections"`
-	BytesFromClients  uint64   `json:"bytesFromClients"`
-	BytesToClients    uint64   `json:"bytesToClients"`
-	LogLines          []string `json:"logLines"`
-	ConsentAccepted   bool     `json:"consentAccepted"`
-	Running           bool     `json:"running"`
-	XrayFound         bool     `json:"xrayFound"`
-	Settings          Settings `json:"settings"`
+	Phase             string            `json:"phase"`
+	Transport         string            `json:"transport"`
+	RelayLabel        string            `json:"relayLabel"`
+	RelayID           string            `json:"relayId"`
+	PublicEndpoint    string            `json:"publicEndpoint"`
+	LastError         *string           `json:"lastError"`
+	StartedAtMs       int64             `json:"startedAtMs"`
+	ActiveConnections int64             `json:"activeConnections"`
+	TotalConnections  uint64            `json:"totalConnections"`
+	BytesFromClients  uint64            `json:"bytesFromClients"`
+	BytesToClients    uint64            `json:"bytesToClients"`
+	LogLines          []string          `json:"logLines"`
+	ConsentAccepted   bool              `json:"consentAccepted"`
+	Running           bool              `json:"running"`
+	XrayFound         bool              `json:"xrayFound"`
+	Settings          Settings          `json:"settings"`
+	DirectSetup       DirectSetupStatus `json:"directSetup"`
 }
 
 // Service is the Wails-bound bridge struct. Emitter must be assigned during
@@ -108,12 +118,27 @@ type Service struct {
 	dirty    bool
 	store    *persist.Store
 	stopEmit chan struct{}
+
+	directSetup       directsetup.Controller
+	directSetupStatus DirectSetupStatus
+	directSetupOpMu   sync.Mutex
 }
 
 func New(componentVersion string) *Service {
+	return NewWithDirectSetup(componentVersion, directsetup.NewManager())
+}
+
+// NewWithDirectSetup allows tests and alternate packagers to inject the
+// platform setup boundary. Constructing the service never requests elevation.
+func NewWithDirectSetup(componentVersion string, setup directsetup.Controller) *Service {
+	if setup == nil {
+		setup = directsetup.NewManager()
+	}
 	return &Service{
-		ring:         newRingBuffer(logRingCapacity),
-		relayVersion: "desktop-volunteer/" + strings.TrimSpace(componentVersion),
+		ring:              newRingBuffer(logRingCapacity),
+		relayVersion:      "desktop-volunteer/" + strings.TrimSpace(componentVersion),
+		directSetup:       setup,
+		directSetupStatus: directsetup.InitialStatus(),
 	}
 }
 
@@ -137,6 +162,9 @@ func (s *Service) Startup(ctx context.Context) {
 	}
 	s.mu.Unlock()
 
+	// Read-only and non-elevating. This detects app updates/replacements that
+	// invalidated a Windows path-scoped rule or Linux file capability.
+	s.refreshDirectSetupStatus(ctx)
 	s.buildEngine()
 
 	s.stopEmit = make(chan struct{})
@@ -207,18 +235,26 @@ func (s *Service) engineConfigLocked() engine.Config {
 	if settings.HubAddress == DefaultHubAddress {
 		fingerprint = DefaultHubCertFingerprint
 	}
+	var automaticPortCandidates []int
+	if mode == engine.ModeAuto {
+		automaticPortCandidates = []int{directsetup.DirectPort}
+		if settings.ListenPort != directsetup.DirectPort {
+			automaticPortCandidates = append(automaticPortCandidates, settings.ListenPort)
+		}
+	}
 	return engine.Config{
-		BrokerURL:          settings.BrokerURL,
-		Label:              settings.Label,
-		XrayPath:           s.XrayPath,
-		ListenPort:         settings.ListenPort,
-		Mode:               mode,
-		HubAddr:            settings.HubAddress,
-		HubCertFingerprint: fingerprint,
-		MaxSessions:        settings.MaxSessions,
-		MaxMbps:            settings.MaxMbps,
-		Version:            s.relayVersion,
-		PunchCapable:       true,
+		BrokerURL:               settings.BrokerURL,
+		Label:                   settings.Label,
+		XrayPath:                s.XrayPath,
+		ListenPort:              settings.ListenPort,
+		AutomaticPortCandidates: automaticPortCandidates,
+		Mode:                    mode,
+		HubAddr:                 settings.HubAddress,
+		HubCertFingerprint:      fingerprint,
+		MaxSessions:             settings.MaxSessions,
+		MaxMbps:                 settings.MaxMbps,
+		Version:                 s.relayVersion,
+		PunchCapable:            true,
 	}
 }
 
@@ -256,12 +292,22 @@ func (s *Service) normalizedSettingsLocked() Settings {
 // Start begins volunteering. It refuses until the user has accepted the
 // consent explanation (the relay makes this computer a visible traffic exit).
 func (s *Service) Start() error {
+	// Serialize relay startup with setup inspection/mutation. Wails methods may
+	// be called concurrently; without this boundary, Start and Remove could
+	// both observe an idle engine and then race the capability/firewall change.
+	s.directSetupOpMu.Lock()
+	defer s.directSetupOpMu.Unlock()
+
 	s.mu.Lock()
 	consent := s.settings.ConsentAccepted
 	eng := s.engine
+	directSetupStatus := s.directSetupStatus
 	s.mu.Unlock()
 	if !consent {
 		return errors.New("consent required before volunteering")
+	}
+	if directSetupStatus.Reason == directsetup.ReasonRemovalRestartRequired {
+		return errors.New("quit and reopen OpenRung Volunteer to complete TCP 443 capability removal before volunteering again")
 	}
 	if eng == nil {
 		return errors.New("engine not initialized")
@@ -317,6 +363,79 @@ func (s *Service) GetSettings() Settings {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.normalizedSettingsLocked()
+}
+
+// GetDirectSetupStatus refreshes the local OS status. It is read-only and
+// never launches UAC, pkexec, sudo, or a privileged helper.
+func (s *Service) GetDirectSetupStatus() DirectSetupStatus {
+	status := s.refreshDirectSetupStatus(context.Background())
+	s.emitCurrent()
+	return status
+}
+
+// EnableDirectConnections is the sole UI-facing setup entry point. The
+// frontend calls it only after a clear user action; depending on the platform
+// it may show UAC or polkit authorization.
+func (s *Service) EnableDirectConnections() (DirectSetupStatus, error) {
+	s.directSetupOpMu.Lock()
+	defer s.directSetupOpMu.Unlock()
+
+	s.mu.Lock()
+	setup := s.directSetup
+	current := s.directSetupStatus
+	eng := s.engine
+	s.mu.Unlock()
+	if setup == nil {
+		status := directsetup.InitialStatus()
+		return status, errors.New("direct TCP 443 setup is not initialized")
+	}
+	if eng != nil && eng.Running() {
+		return current, errors.New("stop volunteering before changing local TCP 443 setup")
+	}
+
+	status, err := setup.Enable(context.Background())
+	s.mu.Lock()
+	s.directSetupStatus = status
+	s.mu.Unlock()
+	if err != nil {
+		s.appendLog("direct TCP 443 setup was not enabled: " + err.Error())
+	} else {
+		s.appendLog("direct TCP 443 setup: " + status.Message)
+	}
+	s.emitCurrent()
+	return status, err
+}
+
+// RemoveDirectConnections reverses only OpenRung's application-scoped local
+// setup. It does not alter router, NAT, cloud, or unrelated firewall rules.
+func (s *Service) RemoveDirectConnections() (DirectSetupStatus, error) {
+	s.directSetupOpMu.Lock()
+	defer s.directSetupOpMu.Unlock()
+
+	s.mu.Lock()
+	setup := s.directSetup
+	current := s.directSetupStatus
+	eng := s.engine
+	s.mu.Unlock()
+	if setup == nil {
+		status := directsetup.InitialStatus()
+		return status, errors.New("direct TCP 443 setup is not initialized")
+	}
+	if eng != nil && eng.Running() {
+		return current, errors.New("stop volunteering before changing local TCP 443 setup")
+	}
+
+	status, err := setup.Remove(context.Background())
+	s.mu.Lock()
+	s.directSetupStatus = status
+	s.mu.Unlock()
+	if err != nil {
+		s.appendLog("direct TCP 443 setup was not removed: " + err.Error())
+	} else {
+		s.appendLog("direct TCP 443 setup removal: " + status.Message)
+	}
+	s.emitCurrent()
+	return status, err
 }
 
 // SaveSettings validates, persists, and returns the normalized settings. New
@@ -399,6 +518,24 @@ func (s *Service) currentEngine() *engine.Engine {
 	return s.engine
 }
 
+func (s *Service) refreshDirectSetupStatus(ctx context.Context) DirectSetupStatus {
+	s.directSetupOpMu.Lock()
+	defer s.directSetupOpMu.Unlock()
+
+	s.mu.Lock()
+	setup := s.directSetup
+	current := s.directSetupStatus
+	s.mu.Unlock()
+	if setup == nil {
+		return current
+	}
+	status := setup.Status(ctx)
+	s.mu.Lock()
+	s.directSetupStatus = status
+	s.mu.Unlock()
+	return status
+}
+
 func (s *Service) persistSettingsLocked() {
 	if s.store == nil {
 		return
@@ -433,7 +570,7 @@ func (s *Service) snapshot() State {
 	}
 	endpoint := ""
 	if engStatus.PublicHost != "" {
-		endpoint = fmt.Sprintf("%s:%d", engStatus.PublicHost, engStatus.PublicPort)
+		endpoint = formatPublicEndpoint(engStatus.PublicHost, engStatus.PublicPort)
 	}
 
 	return State{
@@ -453,7 +590,12 @@ func (s *Service) snapshot() State {
 		Running:           s.engine != nil && s.engine.Running(),
 		XrayFound:         s.XrayFound,
 		Settings:          s.normalizedSettingsLocked(),
+		DirectSetup:       s.directSetupStatus,
 	}
+}
+
+func formatPublicEndpoint(host string, port int) string {
+	return net.JoinHostPort(host, strconv.Itoa(port))
 }
 
 func (s *Service) appendLog(line string) {
