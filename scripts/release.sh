@@ -95,8 +95,14 @@ esac
 # Lightweight, not annotated (same as the module *-tag workflows): for an
 # annotated tag push, GITHUB_SHA is the tag object's SHA, not the commit's,
 # and the release workflows would stamp that non-commit SHA into binaries and
-# image labels as the revision.
-git tag "$tag" "$sha"
+# image labels as the revision. --no-sign because a plain `git tag` honors
+# tag.gpgSign=true, which would silently create exactly such a tag object.
+git tag --no-sign "$tag" "$sha"
+if [ "$(git rev-parse "refs/tags/$tag")" != "$sha" ]; then
+  git tag -d "$tag" >/dev/null
+  echo "error: refs/tags/$tag did not resolve directly to $sha (an annotated or signed tag object was created); nothing was pushed" >&2
+  exit 1
+fi
 git push origin "refs/tags/$tag"
 
 echo "==> pushed $tag; the release workflow is now building"

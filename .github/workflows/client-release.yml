@@ -85,7 +85,10 @@ jobs:
             echo "==> $target"
             CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
               go build -trimpath -ldflags "$ldflags" -o "$outdir/$bin" ./cmd/client
-            cp LICENSE "$outdir/"
+            # GPL text plus the attribution the statically linked third-party
+            # set (yamux, gorilla/websocket, quic-go, golang.org/x/*) requires
+            # on every distribution channel.
+            cp LICENSE THIRD_PARTY_NOTICES.md "$outdir/"
             if [ "$goos" = "windows" ]; then
               (cd dist && zip -qr "openrung-client-$goos-$goarch.zip" "openrung-client-$goos-$goarch")
             else
