@@ -4,6 +4,7 @@
 // contract through a believable start/stop sequence with growing counters. It
 // never touches the network or the OS.
 import type {
+  DirectSetupStatus,
   VolunteerModule,
   VolunteerSettings,
   VolunteerState,
@@ -31,6 +32,18 @@ function defaultSettings(): VolunteerSettings {
   };
 }
 
+function defaultDirectSetup(): DirectSetupStatus {
+  return {
+    platform: 'mock',
+    state: 'needs_setup',
+    reason: 'setup_missing',
+    canEnable: true,
+    canRemove: false,
+    port: 443,
+    message: 'TCP 443 needs one-time local setup.',
+  };
+}
+
 export class MockVolunteerService implements VolunteerModule {
   private state: VolunteerState = {
     phase: 'idle',
@@ -48,6 +61,7 @@ export class MockVolunteerService implements VolunteerModule {
     consentAccepted: false,
     running: false,
     xrayFound: true,
+    directSetup: defaultDirectSetup(),
     settings: defaultSettings(),
   };
   private readonly listeners = new Set<(s: VolunteerState) => void>();
@@ -138,10 +152,23 @@ export class MockVolunteerService implements VolunteerModule {
       },
       'starting xray engine',
     );
-    this.later(() => this.emit({ phase: 'probing' }, 'probing public reachability'), 500);
+    this.later(
+      () =>
+        this.emit(
+          { phase: 'probing' },
+          this.state.settings.connectionMode === 'automatic'
+            ? 'checking direct reachability on TCP 443'
+            : `checking direct reachability on TCP ${this.state.settings.listenPort}`,
+        ),
+      500,
+    );
     this.later(() => this.emit({ phase: 'registering' }, 'registering with broker'), 1400);
     this.later(() => {
-      const endpoint = `203.0.113.20:${this.state.settings.listenPort}`;
+      const selectedPort =
+        this.state.settings.connectionMode === 'automatic'
+          ? 443
+          : this.state.settings.listenPort;
+      const endpoint = `203.0.113.20:${selectedPort}`;
       this.emit(
         {
           phase: 'online',
@@ -219,5 +246,31 @@ export class MockVolunteerService implements VolunteerModule {
 
   async running(): Promise<boolean> {
     return this.state.running;
+  }
+
+  async getDirectSetupStatus(): Promise<DirectSetupStatus> {
+    return this.state.directSetup;
+  }
+
+  async enableDirectConnections(): Promise<DirectSetupStatus> {
+    if (this.state.directSetup.state === 'ready') {
+      return this.state.directSetup;
+    }
+    const directSetup: DirectSetupStatus = {
+      ...this.state.directSetup,
+      state: 'ready',
+      reason: '',
+      canEnable: false,
+      canRemove: true,
+      message: 'Local TCP 443 setup is enabled for OpenRung Volunteer.',
+    };
+    this.emit({ directSetup }, 'local TCP 443 setup enabled');
+    return directSetup;
+  }
+
+  async removeDirectConnections(): Promise<DirectSetupStatus> {
+    const directSetup = defaultDirectSetup();
+    this.emit({ directSetup }, 'local TCP 443 setup removed');
+    return directSetup;
   }
 }

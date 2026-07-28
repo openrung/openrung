@@ -30,6 +30,15 @@ const INITIAL_VOLUNTEER_STATE: VolunteerState = {
   consentAccepted: false,
   running: false,
   xrayFound: true,
+  directSetup: {
+    platform: '',
+    state: 'unavailable',
+    reason: 'not_checked',
+    canEnable: false,
+    canRemove: false,
+    port: 443,
+    message: 'Local TCP 443 setup has not been checked.',
+  },
   settings: {
     label: '',
     maxSessions: 75,

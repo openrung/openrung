@@ -32,6 +32,9 @@ RES="${APP}/Contents/Resources"
 echo "==> bundling xray from ${XRAYBIN}"
 cp "${XRAYBIN}" "${RES}/xray"
 chmod +x "${RES}/xray"
+# This ad-hoc-signed artifact has no privileged helper. Include the precise
+# signing/notarization blocker and fallback behavior with the application.
+cp DIRECT_CONNECTIONS.md "${RES}/DIRECT_CONNECTIONS.md"
 
 # Warn if the bundled xray arch won't match the app (Intel vs Apple Silicon).
 APP_ARCH="$(lipo -archs "${APP}/Contents/MacOS/OpenRungVolunteer" 2>/dev/null || echo unknown)"

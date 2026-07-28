@@ -16,11 +16,23 @@ export type VolunteerTransport = '' | 'direct' | 'tunnel';
 
 export type ConnectionMode = 'automatic' | 'direct';
 
+export type DirectSetupState = 'ready' | 'needs_setup' | 'unavailable';
+
+export interface DirectSetupStatus {
+  platform: string;
+  state: DirectSetupState;
+  reason: string;
+  canEnable: boolean;
+  canRemove: boolean;
+  port: 443;
+  message: string;
+}
+
 export interface VolunteerSettings {
   label: string; // public relay name shown in the directory
   maxSessions: number; // advertised capacity
   maxMbps: number; // advertised speed target (NOT strictly enforced yet)
-  listenPort: number; // direct-mode port (advanced)
+  listenPort: number; // automatic-mode alternate, or the exact direct-only port
   brokerUrl: string; // advanced
   hubAddress: string; // advanced, host:port, empty = no hub
   connectionMode: ConnectionMode; // 'automatic' or 'direct' (never use the hub)
@@ -42,6 +54,7 @@ export interface VolunteerState {
   consentAccepted: boolean;
   running: boolean;
   xrayFound: boolean;
+  directSetup: DirectSetupStatus;
   settings: VolunteerSettings;
 }
 
@@ -56,4 +69,10 @@ export interface VolunteerModule {
   regenerateLabel(): Promise<string>;
   acceptConsent(): Promise<void>;
   running(): Promise<boolean>;
+  /** Read-only inspection; never prompts for elevation. */
+  getDirectSetupStatus(): Promise<DirectSetupStatus>;
+  /** May request elevation and must only be called after an explicit user action. */
+  enableDirectConnections(): Promise<DirectSetupStatus>;
+  /** Reverses application-managed setup after an explicit user action. */
+  removeDirectConnections(): Promise<DirectSetupStatus>;
 }
