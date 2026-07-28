@@ -14,24 +14,32 @@ import (
 )
 
 type fakeDirectSetup struct {
-	status      directsetup.Status
-	statusCalls int
-	enableCalls int
-	removeCalls int
-	enableErr   error
+	status                 directsetup.Status
+	statusCalls            int
+	enableCalls            int
+	removeCalls            int
+	enableErr              error
+	statusReceivedDeadline bool
 }
 
 type blockingDirectSetup struct {
-	staleStatus   directsetup.Status
-	removedStatus directsetup.Status
-	statusStarted chan struct{}
-	releaseStatus chan struct{}
-	removeCalled  chan struct{}
+	staleStatus    directsetup.Status
+	removedStatus  directsetup.Status
+	statusStarted  chan struct{}
+	releaseStatus  chan struct{}
+	statusTimedOut chan struct{}
+	removeCalled   chan struct{}
 }
 
-func (f *blockingDirectSetup) Status(context.Context) directsetup.Status {
+func (f *blockingDirectSetup) Status(ctx context.Context) directsetup.Status {
 	close(f.statusStarted)
-	<-f.releaseStatus
+	select {
+	case <-f.releaseStatus:
+	case <-ctx.Done():
+		if f.statusTimedOut != nil {
+			close(f.statusTimedOut)
+		}
+	}
 	return f.staleStatus
 }
 
@@ -44,8 +52,9 @@ func (f *blockingDirectSetup) Remove(context.Context) (directsetup.Status, error
 	return f.removedStatus, nil
 }
 
-func (f *fakeDirectSetup) Status(context.Context) directsetup.Status {
+func (f *fakeDirectSetup) Status(ctx context.Context) directsetup.Status {
 	f.statusCalls++
+	_, f.statusReceivedDeadline = ctx.Deadline()
 	return f.status
 }
 
@@ -320,6 +329,70 @@ func TestDirectSetupStatusIsCachedInEmittedState(t *testing.T) {
 	_ = s.GetState()
 	if fake.statusCalls != 1 {
 		t.Fatalf("cached state caused %d platform inspections, want 1", fake.statusCalls)
+	}
+}
+
+func TestDirectSetupStatusReceivesDeadline(t *testing.T) {
+	fake := &fakeDirectSetup{status: directsetup.Status{
+		Platform:  "test",
+		State:     directsetup.StateNeedsSetup,
+		CanEnable: true,
+		Port:      directsetup.DirectPort,
+	}}
+	s := NewWithDirectSetup(testComponentVersion, fake)
+
+	_ = s.GetDirectSetupStatus()
+	if !fake.statusReceivedDeadline {
+		t.Fatal("direct setup status inspection did not receive a deadline")
+	}
+}
+
+func TestDirectSetupInspectionTimeoutReleasesVolunteerStart(t *testing.T) {
+	fake := &blockingDirectSetup{
+		staleStatus: directsetup.Status{
+			Platform: "test",
+			State:    directsetup.StateUnavailable,
+			Reason:   directsetup.ReasonInspectionFailed,
+			Port:     directsetup.DirectPort,
+			Message:  "inspection timed out",
+		},
+		statusStarted:  make(chan struct{}),
+		releaseStatus:  make(chan struct{}),
+		statusTimedOut: make(chan struct{}),
+		removeCalled:   make(chan struct{}),
+	}
+	s := NewWithDirectSetup(testComponentVersion, fake)
+	s.setupInspectTimeout = 20 * time.Millisecond
+	s.settings.ConsentAccepted = true
+	s.XrayFound = false
+	s.buildEngine()
+
+	refreshDone := make(chan struct{})
+	go func() {
+		_ = s.GetDirectSetupStatus()
+		close(refreshDone)
+	}()
+	select {
+	case <-fake.statusStarted:
+	case <-time.After(time.Second):
+		t.Fatal("status refresh did not start")
+	}
+
+	if err := s.Start(); err == nil || !strings.Contains(err.Error(), "setup is being checked or changed") {
+		t.Fatalf("Start during setup inspection = %v, want immediate retryable setup-busy error", err)
+	}
+	select {
+	case <-fake.statusTimedOut:
+	case <-time.After(time.Second):
+		t.Fatal("status inspection did not observe its deadline")
+	}
+	select {
+	case <-refreshDone:
+	case <-time.After(time.Second):
+		t.Fatal("timed-out status refresh did not return")
+	}
+	if err := s.Start(); err == nil || !strings.Contains(err.Error(), "xray") {
+		t.Fatalf("Start after inspection timeout = %v, want normal xray preflight error", err)
 	}
 }
 

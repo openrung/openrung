@@ -12,9 +12,13 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
+	"time"
 )
 
-const DirectPort = 443
+const (
+	DirectPort               = 443
+	defaultInspectionTimeout = 45 * time.Second
+)
 
 // State is the user-facing state of the local TCP 443 setup.
 type State string
@@ -96,9 +100,10 @@ type Platform interface {
 // Manager provides idempotence and consistent error/status handling around a
 // platform implementation.
 type Manager struct {
-	platformName string
-	platform     Platform
-	mu           sync.Mutex
+	platformName      string
+	platform          Platform
+	inspectionTimeout time.Duration
+	mu                sync.Mutex
 }
 
 // NewManager constructs the native implementation. It performs no command and
@@ -110,7 +115,11 @@ func NewManager() *Manager {
 // NewManagerWithPlatform is primarily intended for focused tests and alternate
 // packaging integrations.
 func NewManagerWithPlatform(platformName string, platform Platform) *Manager {
-	return &Manager{platformName: platformName, platform: platform}
+	return &Manager{
+		platformName:      platformName,
+		platform:          platform,
+		inspectionTimeout: defaultInspectionTimeout,
+	}
 }
 
 func (m *Manager) Status(ctx context.Context) Status {
@@ -184,7 +193,9 @@ func (m *Manager) Remove(ctx context.Context) (Status, error) {
 }
 
 func (m *Manager) statusLocked(ctx context.Context) Status {
-	inspection, err := m.platform.Inspect(ctx)
+	inspectCtx, cancel := context.WithTimeout(ctx, m.inspectionTimeout)
+	defer cancel()
+	inspection, err := m.platform.Inspect(inspectCtx)
 	if err != nil {
 		return Status{
 			Platform: m.platformName,

@@ -46,8 +46,9 @@ const DefaultHubAddress = "43.201.124.63:9443"
 const DefaultHubCertFingerprint = "70c3a26b9ac7315d1975f417eb9eabbecc98ec0e2d5baadb6c224e87fd99c8b5"
 
 const (
-	defaultListenPort = 8443
-	logRingCapacity   = 200
+	defaultListenPort         = 8443
+	logRingCapacity           = 200
+	directSetupInspectTimeout = 45 * time.Second
 )
 
 // Connection modes exposed to the user.
@@ -122,6 +123,11 @@ type Service struct {
 	directSetup       directsetup.Controller
 	directSetupStatus DirectSetupStatus
 	directSetupOpMu   sync.Mutex
+
+	// Platform setup inspections are external processes. Keep the read-only
+	// deadline on the service so tests can exercise timeout behavior without
+	// touching the developer machine's firewall or capabilities.
+	setupInspectTimeout time.Duration
 }
 
 func New(componentVersion string) *Service {
@@ -135,10 +141,11 @@ func NewWithDirectSetup(componentVersion string, setup directsetup.Controller) *
 		setup = directsetup.NewManager()
 	}
 	return &Service{
-		ring:              newRingBuffer(logRingCapacity),
-		relayVersion:      "desktop-volunteer/" + strings.TrimSpace(componentVersion),
-		directSetup:       setup,
-		directSetupStatus: directsetup.InitialStatus(),
+		ring:                newRingBuffer(logRingCapacity),
+		relayVersion:        "desktop-volunteer/" + strings.TrimSpace(componentVersion),
+		directSetup:         setup,
+		directSetupStatus:   directsetup.InitialStatus(),
+		setupInspectTimeout: directSetupInspectTimeout,
 	}
 }
 
@@ -295,7 +302,12 @@ func (s *Service) Start() error {
 	// Serialize relay startup with setup inspection/mutation. Wails methods may
 	// be called concurrently; without this boundary, Start and Remove could
 	// both observe an idle engine and then race the capability/firewall change.
-	s.directSetupOpMu.Lock()
+	// Do not leave the Start binding wedged behind a slow platform command:
+	// callers receive an actionable error and can retry after the current
+	// inspection or explicit authorized change finishes.
+	if !s.directSetupOpMu.TryLock() {
+		return errors.New("local TCP 443 setup is being checked or changed; try starting again shortly")
+	}
 	defer s.directSetupOpMu.Unlock()
 
 	s.mu.Lock()
@@ -393,6 +405,11 @@ func (s *Service) EnableDirectConnections() (DirectSetupStatus, error) {
 		return current, errors.New("stop volunteering before changing local TCP 443 setup")
 	}
 
+	// The Manager independently bounds its read-only pre/post inspections.
+	// Do not time out the outer authorization operation: on Windows the
+	// unprivileged launcher cannot reliably cancel an already-elevated child,
+	// so returning early could release serialization while the firewall is
+	// still being changed.
 	status, err := setup.Enable(context.Background())
 	s.mu.Lock()
 	s.directSetupStatus = status
@@ -425,6 +442,8 @@ func (s *Service) RemoveDirectConnections() (DirectSetupStatus, error) {
 		return current, errors.New("stop volunteering before changing local TCP 443 setup")
 	}
 
+	// See EnableDirectConnections: inspection is bounded inside Manager, while
+	// the privileged mutation remains serialized until its child has exited.
 	status, err := setup.Remove(context.Background())
 	s.mu.Lock()
 	s.directSetupStatus = status
@@ -529,7 +548,9 @@ func (s *Service) refreshDirectSetupStatus(ctx context.Context) DirectSetupStatu
 	if setup == nil {
 		return current
 	}
-	status := setup.Status(ctx)
+	inspectCtx, cancel := context.WithTimeout(ctx, s.setupInspectTimeout)
+	defer cancel()
+	status := setup.Status(inspectCtx)
 	s.mu.Lock()
 	s.directSetupStatus = status
 	s.mu.Unlock()

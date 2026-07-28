@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fakePlatform struct {
@@ -16,6 +17,12 @@ type fakePlatform struct {
 	removeCalls int
 	onEnable    func(*fakePlatform)
 	onRemove    func(*fakePlatform)
+}
+
+type blockingInspectionPlatform struct {
+	receivedDeadline bool
+	enableCalls      int
+	removeCalls      int
 }
 
 func (p *fakePlatform) Inspect(context.Context) (Inspection, error) {
@@ -36,6 +43,22 @@ func (p *fakePlatform) Remove(context.Context) error {
 		p.onRemove(p)
 	}
 	return p.removeErr
+}
+
+func (p *blockingInspectionPlatform) Inspect(ctx context.Context) (Inspection, error) {
+	_, p.receivedDeadline = ctx.Deadline()
+	<-ctx.Done()
+	return Inspection{}, ctx.Err()
+}
+
+func (p *blockingInspectionPlatform) Enable(context.Context) error {
+	p.enableCalls++
+	return nil
+}
+
+func (p *blockingInspectionPlatform) Remove(context.Context) error {
+	p.removeCalls++
+	return nil
 }
 
 func TestStatusIsReadOnlyAndSetupIsExplicit(t *testing.T) {
@@ -249,5 +272,55 @@ func TestInspectionFailureIsUnavailableAndDoesNotElevate(t *testing.T) {
 	}
 	if platform.enableCalls != 0 {
 		t.Fatalf("inspection failure invoked Enable %d times", platform.enableCalls)
+	}
+}
+
+func TestInspectionTimeoutBoundsStatusEnableAndRemove(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(*Manager) Status
+	}{
+		{
+			name: "status",
+			run:  func(manager *Manager) Status { return manager.Status(context.Background()) },
+		},
+		{
+			name: "enable preflight",
+			run: func(manager *Manager) Status {
+				status, _ := manager.Enable(context.Background())
+				return status
+			},
+		},
+		{
+			name: "remove preflight",
+			run: func(manager *Manager) Status {
+				status, _ := manager.Remove(context.Background())
+				return status
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			platform := &blockingInspectionPlatform{}
+			manager := NewManagerWithPlatform("test", platform)
+			manager.inspectionTimeout = 20 * time.Millisecond
+
+			status := tt.run(manager)
+			if !platform.receivedDeadline {
+				t.Fatal("platform inspection did not receive a deadline")
+			}
+			if status.State != StateUnavailable || status.Reason != ReasonInspectionFailed ||
+				!strings.Contains(status.Message, context.DeadlineExceeded.Error()) {
+				t.Fatalf("status = %+v, want deadline-classified inspection failure", status)
+			}
+			if platform.enableCalls != 0 || platform.removeCalls != 0 {
+				t.Fatalf(
+					"timed-out inspection invoked mutation: enable=%d remove=%d",
+					platform.enableCalls,
+					platform.removeCalls,
+				)
+			}
+		})
 	}
 }

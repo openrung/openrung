@@ -410,12 +410,27 @@ func processHasBindCapability(files fileReader) bool {
 }
 
 func capabilityField(output string) string {
-	for _, field := range strings.Fields(strings.TrimSpace(output)) {
-		if strings.HasPrefix(field, "cap_") {
-			return strings.ToLower(field)
-		}
+	fields := strings.Fields(strings.TrimSpace(output))
+	if len(fields) == 0 {
+		return ""
 	}
-	return ""
+	// The path printed by getcap is not quoted and may itself contain
+	// whitespace or a capability-looking token. The capability expression is
+	// always the final field; accepting an earlier field could cause Remove to
+	// clear a broader administrator-managed grant.
+	capability := strings.ToLower(fields[len(fields)-1])
+	if !strings.HasPrefix(capability, "cap_") {
+		return ""
+	}
+	// Older libcap releases print file capabilities as
+	// "/path = cap_net_bind_service+ep", while newer releases use
+	// "/path cap_net_bind_service=ep". Canonicalize only the legacy operator;
+	// preserve every capability name so unexpected grants continue to fail
+	// closed.
+	if strings.HasSuffix(capability, "+ep") {
+		capability = strings.TrimSuffix(capability, "+ep") + "=ep"
+	}
+	return capability
 }
 
 func linuxFirewallGuidance() string {

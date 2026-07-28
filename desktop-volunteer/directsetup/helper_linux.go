@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"time"
 )
 
 const (
@@ -18,6 +19,11 @@ const (
 	linuxHelperExitSetupFailed           = 20
 	linuxHelperExitFilesystemUnsupported = 21
 	linuxHelperExitCapabilityMismatch    = 22
+
+	// Authorization has already completed before this helper starts. Bound
+	// the fixed getcap/setcap work independently so a wedged privileged child
+	// cannot outlive the GUI operation indefinitely.
+	linuxPrivilegedOperationTimeout = 30 * time.Second
 )
 
 type linuxPrivilegedOperation int
@@ -51,8 +57,10 @@ func handlePrivilegedCommand(args []string) (bool, int) {
 	if getcapPath == "" || setcapPath == "" {
 		return true, linuxHelperExitSetupFailed
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), linuxPrivilegedOperationTimeout)
+	defer cancel()
 	if err := runLinuxPrivilegedOperation(
-		context.Background(),
+		ctx,
 		operation,
 		executable,
 		getcapPath,

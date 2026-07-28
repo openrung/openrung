@@ -83,7 +83,7 @@ func TestLinuxEnableUsesFixedHelperArgumentsAndRequiresRestart(t *testing.T) {
 		{}, // initial getcap: no capability
 		{}, // pre-elevation recheck: no capability
 		{}, // pkexec setcap succeeds
-		{output: "/opt/OpenRung Volunteer/OpenRungVolunteer cap_net_bind_service=ep\n"},
+		{output: "/opt/OpenRung Volunteer/OpenRungVolunteer = cap_net_bind_service+ep\n"},
 	}}
 	platform := testLinuxPlatform(runner, fakeLinuxFiles{
 		linuxLowPortStartPath:  "1024\n",
@@ -183,6 +183,43 @@ func TestLinuxMismatchedCapabilitiesAreNotAccepted(t *testing.T) {
 	if status.State != StateUnavailable || status.Reason != ReasonCapabilityMismatch ||
 		status.CanRemove || status.CanEnable {
 		t.Fatalf("status = %+v, want fail-closed capability mismatch", status)
+	}
+}
+
+func TestLinuxCapabilityFieldNormalizesLegacyGetcapOutput(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   string
+	}{
+		{
+			name:   "modern exact capability",
+			output: "/app/OpenRungVolunteer cap_net_bind_service=ep\n",
+			want:   linuxBindCapability,
+		},
+		{
+			name:   "legacy exact capability",
+			output: "/app/OpenRungVolunteer = cap_net_bind_service+ep\n",
+			want:   linuxBindCapability,
+		},
+		{
+			name:   "legacy unexpected capabilities remain visible",
+			output: "/app/OpenRungVolunteer = cap_net_admin,cap_net_bind_service+ep\n",
+			want:   "cap_net_admin,cap_net_bind_service=ep",
+		},
+		{
+			name:   "capability-looking path token is not accepted",
+			output: "/opt/OpenRung cap_net_bind_service+ep cap_net_admin=ep\n",
+			want:   "cap_net_admin=ep",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := capabilityField(tt.output); got != tt.want {
+				t.Fatalf("capabilityField(%q) = %q, want %q", tt.output, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -334,7 +371,7 @@ func TestLinuxPrivilegedHelperRefusesCapabilityChangedDuringPrompt(t *testing.T)
 
 func TestLinuxPrivilegedHelperRemovesOnlyExactCapability(t *testing.T) {
 	runner := &fakeCommandRunner{results: []fakeCommandResult{
-		{output: "/opt/openrung/OpenRungVolunteer cap_net_bind_service=ep\n"},
+		{output: "/opt/openrung/OpenRungVolunteer = cap_net_bind_service+ep\n"},
 		{},
 	}}
 	err := runLinuxPrivilegedOperation(
@@ -376,8 +413,8 @@ func TestLinuxPrivilegedHelperMapsUnsupportedFilesystemToFixedExit(t *testing.T)
 
 func TestLinuxRemovalRequiresRestartBeforeVolunteeringAgain(t *testing.T) {
 	runner := &fakeCommandRunner{results: []fakeCommandResult{
-		{output: "/app/OpenRungVolunteer cap_net_bind_service=ep\n"},
-		{output: "/app/OpenRungVolunteer cap_net_bind_service=ep\n"},
+		{output: "/app/OpenRungVolunteer = cap_net_bind_service+ep\n"},
+		{output: "/app/OpenRungVolunteer = cap_net_bind_service+ep\n"},
 		{},
 	}}
 	platform := testLinuxPlatform(runner, fakeLinuxFiles{
