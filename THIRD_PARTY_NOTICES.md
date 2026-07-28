@@ -25,8 +25,8 @@ commit each release is built against.
 
 > Maintenance: regenerate the Go sections from tooling so the transitive set
 > stays accurate as dependencies drift:
-> `go-licenses report ./cmd/relay ./cmd/relayhub ./cmd/client` for the server
-> binaries and the client CLI;
+> `go-licenses report ./cmd/broker ./cmd/relay ./cmd/relayhub ./cmd/wsssidecar ./cmd/client`
+> for the server binaries and the client CLI;
 > for the desktop app, the union of
 > `GOOS={darwin,windows,linux} go list -deps -tags desktop,production .`
 > run inside `desktop/`, plus the runtime `dependencies` of
@@ -166,12 +166,13 @@ apply to the Docker image channel only.
 ### BSD-3-Clause
 
 Statically linked into the Go server binaries and the client CLI (union
-across the binaries):
+across the binaries; versions per the root `go.mod`):
 
-- `golang.org/x/crypto` v0.17.0 — Copyright (c) The Go Authors
-- `golang.org/x/net` — Copyright (c) The Go Authors
-- `golang.org/x/sync` v0.1.0 — Copyright (c) The Go Authors
-- `golang.org/x/text` v0.14.0 — Copyright (c) The Go Authors
+- `golang.org/x/crypto` v0.51.0 — Copyright (c) The Go Authors
+- `golang.org/x/net` v0.55.0 — Copyright (c) The Go Authors
+- `golang.org/x/sync` v0.20.0 — Copyright (c) The Go Authors
+- `golang.org/x/sys` v0.45.0 — Copyright (c) The Go Authors
+- `golang.org/x/text` v0.37.0 — Copyright (c) The Go Authors
 - Go standard library / runtime — Copyright (c) The Go Authors
   (source: https://github.com/golang/go)
 
