@@ -28,6 +28,9 @@ if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Path $stage | Out-Null
 Copy-Item $exe (Join-Path $stage 'OpenRungVolunteer.exe')
 Copy-Item $xray (Join-Path $stage 'xray.exe')   # resolver finds it next to the .exe
+# End-user setup/removal guidance travels with the portable ZIP. Packaging
+# never installs the firewall rule; only the explicit in-app UAC action does.
+Copy-Item 'DIRECT_CONNECTIONS.md' (Join-Path $stage 'DIRECT_CONNECTIONS.md')
 
 $xrVer = (& $xray version 2>$null | Select-Object -First 1)
 @"

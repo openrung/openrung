@@ -2,6 +2,8 @@
 // the live stats grid while the relay runs, and a collapsible console.
 import { useEffect, useState } from 'react';
 import { ConsolePanel } from '../components/ConsolePanel';
+import { connectionResult } from '../core/connectionResult';
+import { relayHubSetupNote } from '../core/directSetup';
 import { errorMessage } from '../core/errors';
 import { formatBytes, formatDuration } from '../core/format';
 import { isMock } from '../native/VolunteerService';
@@ -68,6 +70,9 @@ export function HomeScreen({ state, onStart, onStop }: Props) {
   const isRetrying = phase === 'retrying';
   const showSpinner = SPINNER_PHASES.has(phase);
   const powerDisabled = (!state.xrayFound && !state.running) || phase === 'stopping';
+  const routeResult = connectionResult(state);
+  const localSetupNote =
+    state.transport === 'tunnel' ? relayHubSetupNote(state.directSetup) : null;
 
   const toggle = async () => {
     setActionError(null);
@@ -139,14 +144,15 @@ export function HomeScreen({ state, onStart, onStop }: Props) {
         </div>
 
         {isOnline && (
-          <div className="vol-chip-row">
-            <span className="vol-chip is-name">{state.relayLabel}</span>
-            {state.transport !== '' && (
-              <span className="vol-chip">
-                {state.transport === 'direct' ? 'Direct connection' : 'Via relay hub'}
-              </span>
+          <>
+            <div className="vol-chip-row">
+              <span className="vol-chip is-name">{state.relayLabel}</span>
+              {routeResult != null && <span className="vol-chip">{routeResult}</span>}
+            </div>
+            {localSetupNote != null && (
+              <span className="vol-route-note">{localSetupNote}</span>
             )}
-          </div>
+          </>
         )}
 
         {state.running && (

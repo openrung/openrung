@@ -174,6 +174,7 @@ func TestTCPNetworkForHost(t *testing.T) {
 		host string
 		want string
 	}{
+		{host: "", want: "tcp"},
 		{host: "::", want: "tcp6"},
 		{host: "::1", want: "tcp6"},
 		{host: "[2406:da14::1]", want: "tcp6"},
@@ -196,6 +197,7 @@ func TestListenAddressesForHost(t *testing.T) {
 		host string
 		want []string
 	}{
+		{host: "", want: []string{":443"}},
 		{host: "::", want: []string{"[::]:443", "0.0.0.0:443"}},
 		{host: "dual", want: []string{"[::]:443", "0.0.0.0:443"}},
 		{host: "both", want: []string{"[::]:443", "0.0.0.0:443"}},

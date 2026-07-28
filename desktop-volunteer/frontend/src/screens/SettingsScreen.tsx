@@ -3,6 +3,13 @@
 // service applies settings at start), and SaveSettings rejections surface
 // inline exactly as the service words them.
 import { useEffect, useRef, useState } from 'react';
+import {
+  AUTOMATIC_FALLBACK,
+  LOCAL_SETUP_SCOPE,
+  automaticPortSummary,
+  directSetupActionFailure,
+  directSetupTitle,
+} from '../core/directSetup';
 import { errorMessage } from '../core/errors';
 import { VolunteerService } from '../native/VolunteerService';
 import type { ConnectionMode, VolunteerSettings, VolunteerState } from '../native/types';
@@ -29,6 +36,9 @@ export function SettingsScreen({ state }: Props) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>({ kind: 'idle' });
   const [busy, setBusy] = useState(false);
+  const [directSetup, setDirectSetup] = useState(state.directSetup);
+  const [setupBusy, setSetupBusy] = useState(false);
+  const [setupError, setSetupError] = useState<string | null>(null);
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(
@@ -39,6 +49,26 @@ export function SettingsScreen({ state }: Props) {
     },
     [],
   );
+
+  useEffect(() => setDirectSetup(state.directSetup), [state.directSetup]);
+
+  useEffect(() => {
+    let active = true;
+    void VolunteerService.getDirectSetupStatus()
+      .then(status => {
+        if (active) {
+          setDirectSetup(status);
+        }
+      })
+      .catch(err => {
+        if (active) {
+          setSetupError(`Could not refresh local TCP 443 setup status: ${errorMessage(err)}`);
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const locked = state.running;
   const patch = (p: Partial<VolunteerSettings>) => setForm(f => ({ ...f, ...p }));
@@ -70,6 +100,32 @@ export function SettingsScreen({ state }: Props) {
       setSaveStatus({ kind: 'error', message: errorMessage(err) });
     } finally {
       setBusy(false);
+    }
+  };
+
+  const enableDirect = async () => {
+    if (locked || setupBusy) return;
+    setSetupBusy(true);
+    setSetupError(null);
+    try {
+      setDirectSetup(await VolunteerService.enableDirectConnections());
+    } catch (err) {
+      setSetupError(directSetupActionFailure(err));
+    } finally {
+      setSetupBusy(false);
+    }
+  };
+
+  const removeDirect = async () => {
+    if (locked || setupBusy) return;
+    setSetupBusy(true);
+    setSetupError(null);
+    try {
+      setDirectSetup(await VolunteerService.removeDirectConnections());
+    } catch (err) {
+      setSetupError(directSetupActionFailure(err));
+    } finally {
+      setSetupBusy(false);
     }
   };
 
@@ -142,6 +198,46 @@ export function SettingsScreen({ state }: Props) {
         <span className="vol-help">Advertised to the network to steer load. Not a strict cap yet.</span>
       </div>
 
+      <span className="or-section-header">DIRECT CONNECTIONS</span>
+
+      <div className={`vol-direct-setup is-${directSetup.state}`}>
+        <div className="vol-direct-setup-head">
+          <div className="vol-direct-setup-copy">
+            <span className="vol-label">{directSetupTitle(directSetup)}</span>
+            <span className="vol-help">{directSetup.message}</span>
+          </div>
+          {directSetup.canEnable && (
+            <button
+              type="button"
+              className="vol-mini-button"
+              disabled={setupBusy || locked}
+              onClick={() => void enableDirect()}
+            >
+              {setupBusy ? 'Working\u2026' : 'Enable direct connections'}
+            </button>
+          )}
+          {directSetup.canRemove && (
+            <button
+              type="button"
+              className="vol-mini-button is-secondary"
+              disabled={setupBusy || locked}
+              onClick={() => void removeDirect()}
+            >
+              {setupBusy ? 'Working\u2026' : 'Remove local setup'}
+            </button>
+          )}
+        </div>
+        <span className="vol-help">{LOCAL_SETUP_SCOPE}</span>
+        {directSetup.state !== 'ready' && (
+          <span className="vol-direct-fallback">{AUTOMATIC_FALLBACK}</span>
+        )}
+        {setupError != null && (
+          <span role="alert" className="vol-save-status is-error">
+            {setupError}
+          </span>
+        )}
+      </div>
+
       <span className="or-section-header">ADVANCED</span>
 
       <button
@@ -149,7 +245,14 @@ export function SettingsScreen({ state }: Props) {
         className="vol-accordion-toggle"
         onClick={() => setAdvancedOpen(open => !open)}
       >
-        <span>Network options</span>
+        <span className="vol-accordion-copy">
+          <span>Network options</span>
+          <span className="vol-help">
+            {form.connectionMode === 'automatic'
+              ? automaticPortSummary(form.listenPort)
+              : `Direct only: TCP ${form.listenPort}`}
+          </span>
+        </span>
         <span className="or-setting-chevron">{advancedOpen ? '\u25BE' : '\u25B8'}</span>
       </button>
 
@@ -170,16 +273,21 @@ export function SettingsScreen({ state }: Props) {
               <option value="direct">Direct only</option>
             </select>
             <span className="vol-help">
-              Automatic serves directly when your computer is reachable, otherwise it routes
-              through the relay hub. Direct only never uses the hub, so it keeps working during a
-              hub outage {'—'} choose it only if your computer accepts incoming connections
-              (e.g. a public IPv6 address).
+              {form.listenPort === 443
+                ? 'Automatic checks direct TCP 443 once because the alternate matches the preferred port. '
+                : 'Automatic tries direct TCP 443 first, then the alternate port below. '}
+              It serves directly only after an external check confirms a port is reachable;
+              otherwise it uses RelayHub. Direct only uses only the configured port and never
+              falls back to RelayHub or performs its reachability check. Choose it only when this
+              computer already has a publicly reachable address and inbound TCP is configured.
             </span>
           </div>
 
           <div className="vol-field">
             <label className="vol-label" htmlFor="listen-port">
-              Listen port
+              {form.connectionMode === 'automatic'
+                ? 'Alternate direct port'
+                : 'Direct-only port'}
             </label>
             <input
               id="listen-port"
@@ -192,7 +300,11 @@ export function SettingsScreen({ state }: Props) {
               onChange={e => patch({ listenPort: parseNumber(e.target.value) })}
             />
             <span className="vol-help">
-              The port your relay accepts direct connections on.
+              {form.connectionMode === 'automatic'
+                ? form.listenPort === 443
+                  ? 'Automatic checks TCP 443 once because the alternate matches the preferred port.'
+                  : 'Automatic checks TCP 443 first, then this port (normally 8443). Existing 8443 settings remain the alternate.'
+                : 'Direct only listens on this exact port. It does not try TCP 443 first or use RelayHub.'}
             </span>
           </div>
 

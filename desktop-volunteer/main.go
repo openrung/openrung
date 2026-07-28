@@ -13,6 +13,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"openrung/desktop-volunteer/directsetup"
 	"openrung/desktop-volunteer/volunteerservice"
 )
 
@@ -20,6 +21,15 @@ import (
 var assets embed.FS
 
 func main() {
+	// Fixed privileged helper modes are handled before Wails initialization, so
+	// they never create an elevated GUI.
+	if handled, exitCode := directsetup.HandlePrivilegedCommand(os.Args[1:]); handled {
+		os.Exit(exitCode)
+	}
+	if err := directsetup.ValidateGUIStartup(); err != nil {
+		log.Fatal(err)
+	}
+
 	version, err := componentVersion()
 	if err != nil {
 		log.Fatal(err)

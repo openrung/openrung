@@ -3,7 +3,7 @@
 // the Vite build and vitest do not depend on files that only exist after
 // `wails dev`/`wails build`. When these globals are absent (a plain browser
 // preview or a unit test) the adapter falls back to the scripted mock.
-import type { VolunteerSettings, VolunteerState } from './types';
+import type { DirectSetupStatus, VolunteerSettings, VolunteerState } from './types';
 
 export interface WailsServiceBindings {
   GetState(): Promise<VolunteerState>;
@@ -14,6 +14,9 @@ export interface WailsServiceBindings {
   RegenerateLabel(): Promise<string>;
   AcceptConsent(): Promise<void>;
   Running(): Promise<boolean>;
+  GetDirectSetupStatus(): Promise<DirectSetupStatus>;
+  EnableDirectConnections(): Promise<DirectSetupStatus>;
+  RemoveDirectConnections(): Promise<DirectSetupStatus>;
 }
 
 export interface WailsRuntime {

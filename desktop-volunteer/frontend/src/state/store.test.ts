@@ -19,6 +19,15 @@ function sampleState(overrides: Partial<VolunteerState> = {}): VolunteerState {
     consentAccepted: true,
     running: false,
     xrayFound: true,
+    directSetup: {
+      platform: 'linux',
+      state: 'needs_setup',
+      reason: 'capability_missing',
+      canEnable: true,
+      canRemove: false,
+      port: 443,
+      message: 'TCP 443 needs one-time local setup.',
+    },
     settings: {
       label: 'amber-otter-123',
       maxSessions: 75,
@@ -45,6 +54,7 @@ describe('store', () => {
     expect(snap.volunteer.consentAccepted).toBe(false);
     expect(snap.volunteer.settings.maxSessions).toBe(75);
     expect(snap.volunteer.settings.maxMbps).toBe(100);
+    expect(snap.volunteer.directSetup.state).toBe('unavailable');
   });
 
   it('applyVolunteerState mirrors the payload and marks hydration', () => {

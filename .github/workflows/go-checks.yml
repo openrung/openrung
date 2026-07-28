@@ -4,9 +4,10 @@ name: go-checks
 # the compile/test gate for the module edges between the root module, the
 # nested brokerapi, punchcore, and wsscore modules, and the two Wails app
 # modules. The app modules are gated on their Go service subpackages only, not
-# `./...`, which would require frontend/dist to exist; their release workflows
-# package but never test, so this is the only thing standing behind their
-# suites.
+# `./...`, which would require frontend/dist to exist. These checks are the
+# normal PR gate for their Go suites; the Volunteer Desktop release workflow
+# also repeats the native direct-setup/service subset on each platform before
+# packaging.
 
 on:
   pull_request:
@@ -96,8 +97,8 @@ jobs:
       - name: desktop-volunteer module (vet + test)
         working-directory: desktop-volunteer
         run: |
-          go vet ./volunteerservice/...
-          go test ./volunteerservice/...
+          go vet ./directsetup/... ./volunteerservice/...
+          go test ./directsetup/... ./volunteerservice/...
           go test version.go version_test.go
 
   # A punchcore change that merges without a VERSION bump would never get a

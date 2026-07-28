@@ -34,6 +34,10 @@ rm -rf "${STAGE}"; mkdir -p "${STAGE}"
 cp "${BIN}" "${STAGE}/OpenRungVolunteer"
 cp "${XRAYBIN}" "${STAGE}/xray"              # resolver finds it next to the binary
 chmod +x "${STAGE}/OpenRungVolunteer" "${STAGE}/xray"
+# The tarball deliberately carries no file capability. After an administrator
+# places it in the documented root-owned path, only the explicit in-app pkexec
+# action may grant the exact GUI binary CAP_NET_BIND_SERVICE.
+cp DIRECT_CONNECTIONS.md "${STAGE}/DIRECT_CONNECTIONS.md"
 
 XR_VER="$("${XRAYBIN}" version 2>/dev/null | head -1 || echo 'unknown version')"
 cat > "${STAGE}/THIRD_PARTY_NOTICES.txt" <<EOF

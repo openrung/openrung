@@ -85,8 +85,14 @@ type Config struct {
 	Label string
 	// XrayPath locates the xray binary. Defaults to "xray" via PATH.
 	XrayPath string
-	// ListenPort is the direct-mode public and listen port. Defaults to 443.
+	// ListenPort is the direct-only public/listen port and the sole automatic
+	// candidate when AutomaticPortCandidates is empty. Defaults to 443.
 	ListenPort int
+	// AutomaticPortCandidates, when non-empty, is the ordered set of public
+	// ports auto mode probes. Duplicates are ignored after their first
+	// occurrence. It is ignored by direct and tunnel modes, so ListenPort
+	// retains its direct-only meaning and generic callers remain compatible.
+	AutomaticPortCandidates []int
 	// Mode is auto, direct, or tunnel. Auto and tunnel require HubAddr; auto
 	// without a hub degrades to direct. Defaults to auto.
 	Mode string
@@ -129,6 +135,9 @@ type Config struct {
 }
 
 func (c Config) withDefaults() Config {
+	if c.AutomaticPortCandidates != nil {
+		c.AutomaticPortCandidates = append([]int(nil), c.AutomaticPortCandidates...)
+	}
 	if c.Mode == "" {
 		c.Mode = ModeAuto
 	}
@@ -176,6 +185,13 @@ func (c Config) validate() error {
 	}
 	if c.ListenPort < 1 || c.ListenPort > 65535 {
 		return fmt.Errorf("listen port must be between 1 and 65535")
+	}
+	if c.Mode == ModeAuto {
+		for _, port := range c.AutomaticPortCandidates {
+			if port < 1 || port > 65535 {
+				return fmt.Errorf("automatic port candidate must be between 1 and 65535")
+			}
+		}
 	}
 	if c.MaxSessions < 1 {
 		return fmt.Errorf("max sessions must be at least 1")
@@ -249,13 +265,20 @@ type Engine struct {
 	bytesFrom   atomic.Uint64
 	bytesTo     atomic.Uint64
 	tunnelStats tunnel.TrafficStats
+
+	probeDirect func(context.Context, string, string, string, int, *http.Client) relayruntime.DirectProbeResult
 }
 
 func New(cfg Config, events Events) *Engine {
 	if events.Log == nil {
 		events.Log = io.Discard
 	}
-	return &Engine{cfg: cfg.withDefaults(), events: events, phase: PhaseIdle}
+	return &Engine{
+		cfg:         cfg.withDefaults(),
+		events:      events,
+		phase:       PhaseIdle,
+		probeDirect: relayruntime.ProbeDirectReachability,
+	}
 }
 
 // Start launches the supervised relay loop. It returns a config validation
@@ -451,27 +474,80 @@ var detectPublicIPv6 = relayruntime.DefaultPublicIPv6Address
 // outage/recovery, a port opening). A var so tests can shorten it.
 var autoReprobeInterval = 3 * time.Minute
 
-// autoResolve decides the transport for auto mode. Direct mode is chosen ONLY
-// when a probe positively confirms this relay host is reachable from the internet
-// — never speculatively. A probe error means the hub's HTTP API is unreachable,
-// so we cannot verify reachability; guessing "direct" there would advertise a
-// possibly-firewalled address (a public IPv6 does not imply inbound reachability
-// through a router/OS firewall) and, if wrong, leave a dead relay in the
-// directory. Since tunnel mode also needs the hub, there is nothing to gain by
-// guessing: we tunnel-and-retry, and the periodic re-probe (watchForModeChange)
-// promotes to direct the instant the hub confirms reachability. Both a probe
-// error and a definitive "not reachable" therefore map to tunnel. Returns
-// ("","") when ctx is cancelled.
-func (e *Engine) autoResolve(ctx context.Context, cfg Config) (mode, publicHost string) {
+const (
+	// Automatic probes use Go's generic TCP wildcard (":port"), which selects a
+	// dual-stack socket where the OS supports one and safely falls back to the
+	// available family on IPv4-only or IPv6-only hosts. A positively probed
+	// direct session must use that exact same wildcard strategy: requiring
+	// separate tcp6 and tcp4 listeners after a generic probe can otherwise
+	// positive-probe on IPv4 and then fail forever on a disabled IPv6 stack.
+	automaticDirectListenHost = ""
+	// Direct-only mode did not run a nonce probe. Preserve its historical
+	// explicit dual-family listener semantics.
+	directOnlyListenHost = "::"
+)
+
+// automaticPortCandidates returns auto mode's effective ordered list. An empty
+// explicit list deliberately preserves the historic generic behavior of probing
+// ListenPort only.
+func (c Config) automaticPortCandidates() []int {
+	ports := c.AutomaticPortCandidates
+	if len(ports) == 0 {
+		ports = []int{c.ListenPort}
+	}
+	result := make([]int, 0, len(ports))
+	seen := make(map[int]struct{}, len(ports))
+	for _, port := range ports {
+		if _, duplicate := seen[port]; duplicate {
+			continue
+		}
+		seen[port] = struct{}{}
+		result = append(result, port)
+	}
+	return result
+}
+
+// autoResolve decides the transport and selected public port for auto mode.
+// Direct mode is chosen ONLY when a probe positively confirms a candidate is
+// reachable from the internet — never speculatively. A probe API error means
+// reachability cannot be verified, so guessing "direct" could advertise a
+// firewalled address. Both an inconclusive API failure and exhausting all
+// candidates therefore map to tunnel. Returns ("","",0) when ctx is cancelled.
+func (e *Engine) autoResolve(ctx context.Context, cfg Config) (mode, publicHost string, selectedPort int) {
 	hubHTTP := relayruntime.DeriveHubHTTPBase(cfg.HubHTTPURL, cfg.HubAddr, !cfg.HubPlaintext)
-	reachable, observed, err := relayruntime.DetectDirectReachable(ctx, hubHTTP, cfg.Token, "::", cfg.ListenPort, e.probeClient(cfg))
-	if ctx.Err() != nil {
-		return "", ""
+	probe := e.probeDirect
+	if probe == nil {
+		probe = relayruntime.ProbeDirectReachability
 	}
-	if err == nil && reachable {
-		return ModeDirect, observed
+	for _, port := range cfg.automaticPortCandidates() {
+		result := probe(ctx, hubHTTP, cfg.Token, automaticDirectListenHost, port, e.probeClient(cfg))
+		if ctx.Err() != nil {
+			return "", "", 0
+		}
+		switch result.Outcome {
+		case relayruntime.DirectProbeReachable:
+			e.logf("automatic direct probe on TCP %d: positively reachable at %s",
+				port, net.JoinHostPort(result.ObservedHost, strconv.Itoa(port)))
+			return ModeDirect, result.ObservedHost, port
+		case relayruntime.DirectProbePermissionDenied:
+			e.logf("automatic direct probe on TCP %d: local permission denied (%v)", port, result.Err)
+		case relayruntime.DirectProbePortInUse:
+			e.logf("automatic direct probe on TCP %d: port already in use (%v)", port, result.Err)
+		case relayruntime.DirectProbeExternallyUnreachable:
+			e.logf("automatic direct probe on TCP %d: externally unreachable or firewalled", port)
+		case relayruntime.DirectProbeAPIUnavailable:
+			e.logf("automatic direct probe on TCP %d: RelayHub probe API unavailable (%v)", port, result.Err)
+			return ModeTunnel, "", 0
+		case relayruntime.DirectProbeBindFailed:
+			e.logf("automatic direct probe on TCP %d: local bind failed (%v)", port, result.Err)
+		case relayruntime.DirectProbeInternalFailure:
+			e.logf("automatic direct probe on TCP %d: internal probe failure (%v)", port, result.Err)
+			return ModeTunnel, "", 0
+		default:
+			e.logf("automatic direct probe on TCP %d: unknown probe failure (%v)", port, result.Err)
+		}
 	}
-	return ModeTunnel, ""
+	return ModeTunnel, "", 0
 }
 
 // watchForModeChange runs only in auto mode: it periodically re-resolves the
@@ -487,7 +563,7 @@ func (e *Engine) watchForModeChange(ctx context.Context, cfg Config, current str
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			m, _ := e.autoResolve(ctx, cfg)
+			m, _, _ := e.autoResolve(ctx, cfg)
 			if ctx.Err() != nil || m == "" || m == current {
 				continue
 			}
@@ -527,20 +603,24 @@ func (e *Engine) runSession(ctx context.Context, broker *relayruntime.BrokerClie
 
 	mode := cfg.Mode
 	publicHost := ""
+	directListenHost := directOnlyListenHost
 	if mode == ModeAuto {
 		if cfg.HubAddr == "" {
 			// No hub configured: direct is the only option.
 			mode = ModeDirect
 		} else {
 			e.setStatus(func() { e.phase = PhaseProbing })
-			mode, publicHost = e.autoResolve(ctx, cfg)
+			var selectedPort int
+			mode, publicHost, selectedPort = e.autoResolve(ctx, cfg)
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			if mode == ModeDirect {
+				cfg.ListenPort = selectedPort
+				directListenHost = automaticDirectListenHost
 				e.logf("directly reachable at %s — using direct mode", net.JoinHostPort(publicHost, strconv.Itoa(cfg.ListenPort)))
 			} else {
-				e.logf("not directly reachable, or the relay hub is unavailable — using tunnel mode via the relay hub")
+				e.logf("no automatic direct candidate was positively reachable — using tunnel mode via RelayHub")
 			}
 		}
 	}
@@ -548,7 +628,7 @@ func (e *Engine) runSession(ctx context.Context, broker *relayruntime.BrokerClie
 	if mode == ModeTunnel {
 		return e.runTunnelSession(ctx, cfg, label, identity)
 	}
-	return e.runDirectSession(ctx, broker, cfg, label, identity, publicHost)
+	return e.runDirectSession(ctx, broker, cfg, label, identity, publicHost, directListenHost)
 }
 
 func (e *Engine) currentConfig() Config {
@@ -672,7 +752,7 @@ func (e *Engine) startXray(ctx context.Context, cfg Config, identity Identity, l
 	return cmd, waitCh, nil
 }
 
-func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.BrokerClient, cfg Config, label string, identity Identity, publicHost string) error {
+func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.BrokerClient, cfg Config, label string, identity Identity, publicHost, listenHost string) error {
 	if publicHost == "" {
 		detected, err := detectPublicIPv6()
 		if err != nil {
@@ -695,7 +775,7 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 	defer stopProcess(xrayCmd, xrayErr)
 
 	observer := &relayruntime.ConnectionObserver{
-		ListenHost: "::",
+		ListenHost: listenHost,
 		ListenPort: cfg.ListenPort,
 		TargetHost: targetHost,
 		TargetPort: targetPort,
@@ -720,6 +800,7 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 	if err != nil {
 		return fmt.Errorf("listen on port %d: %w", cfg.ListenPort, err)
 	}
+	e.logf("listening for direct connections on TCP %d", cfg.ListenPort)
 
 	e.setStatus(func() { e.phase = PhaseRegistering })
 
@@ -755,7 +836,8 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 	if err != nil {
 		return err
 	}
-	e.logf("registered with the broker as %q (%s)", desc.Label, desc.ID)
+	e.logf("registered with the broker as %q (%s) at %s", desc.Label, desc.ID,
+		net.JoinHostPort(desc.PublicHost, strconv.Itoa(desc.PublicPort)))
 	e.setStatus(func() {
 		e.phase = PhaseOnline
 		e.transport = relay.TransportDirect
@@ -941,7 +1023,17 @@ func (e *Engine) runTunnelSession(ctx context.Context, cfg Config, label string,
 	// port doesn't leave a directly reachable relay tunnelling forever.
 	becameDirect := make(chan struct{}, 1)
 	if cfg.Mode == ModeAuto {
-		go e.watchForModeChange(sessionCtx, cfg, ModeTunnel, becameDirect)
+		watcherDone := make(chan struct{})
+		go func() {
+			defer close(watcherDone)
+			e.watchForModeChange(sessionCtx, cfg, ModeTunnel, becameDirect)
+		}()
+		// A session restart must not leave its reprobe goroutine observing
+		// stale configuration (or racing test/runtime interval changes).
+		defer func() {
+			cancel()
+			<-watcherDone
+		}()
 	}
 
 	select {

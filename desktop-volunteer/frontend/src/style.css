@@ -713,6 +713,56 @@ input {
   opacity: 0.7;
 }
 
+.vol-mini-button.is-secondary {
+  border-color: var(--or-border-dim, #294f35);
+  color: var(--or-relay-line, #a5f2b5);
+  background: transparent;
+}
+
+.vol-direct-setup {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 14px 16px;
+  border-radius: var(--or-radius-md, 16px);
+  background: var(--or-glass, rgba(7, 17, 11, 0.86));
+  border: 1px solid var(--or-glass-border, rgba(41, 79, 53, 0.9));
+}
+
+.vol-direct-setup.is-ready {
+  border-color: rgba(101, 245, 138, 0.65);
+}
+
+.vol-direct-setup.is-unavailable {
+  border-color: rgba(255, 160, 160, 0.4);
+}
+
+.vol-direct-setup-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.vol-direct-setup-copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.vol-direct-fallback,
+.vol-route-note {
+  color: var(--or-working, #eaf565);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.vol-route-note {
+  max-width: 620px;
+  text-align: center;
+}
+
 .vol-accordion-toggle {
   display: flex;
   align-items: center;
@@ -731,6 +781,12 @@ input {
 
 .vol-accordion-toggle:hover {
   background: rgba(101, 245, 138, 0.06);
+}
+
+.vol-accordion-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
 }
 
 .vol-save-row {

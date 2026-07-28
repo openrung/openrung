@@ -31,6 +31,9 @@ const realBridge: VolunteerModule = {
   regenerateLabel: () => wailsService()!.RegenerateLabel(),
   acceptConsent: () => wailsService()!.AcceptConsent(),
   running: () => wailsService()!.Running(),
+  getDirectSetupStatus: () => wailsService()!.GetDirectSetupStatus(),
+  enableDirectConnections: () => wailsService()!.EnableDirectConnections(),
+  removeDirectConnections: () => wailsService()!.RemoveDirectConnections(),
 };
 
 /** The active volunteer module: the Go bridge under Wails, else the mock. */
