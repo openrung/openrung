@@ -399,6 +399,27 @@ run_volunteer_up() {
     fi
 }
 
+run_volunteer_up_first_run() {
+    # First-run path: no env file, no prior container. OPENRUNG_NONINTERACTIVE
+    # keeps the name prompt off even when the suite runs in a real terminal
+    # (the prompt reads /dev/tty, which exists there), and OPENRUNG_PUBLIC_HOST
+    # skips public-IP detection.
+    run_scenario=$1
+    shift
+    if env "$@" \
+        OPENRUNG_NONINTERACTIVE=1 \
+        OPENRUNG_PUBLIC_HOST=8.8.8.8 \
+        PATH="$FAKE_BIN:$PATH" \
+        SIM_DIR="$SIM_DIR" \
+        DOCKER_LOG="$DOCKER_LOG" \
+        SIM_SCENARIO="$run_scenario" \
+        "$TEST_SHELL" "$RUN_SCRIPT" >"$OUTPUT" 2>&1; then
+        RUN_RC=0
+    else
+        RUN_RC=$?
+    fi
+}
+
 run_volunteer_up_with_host_foundation_token() {
     run_scenario=$1
     if OPENRUNG_FOUNDATION_TOKEN=host-foundation-secret \
@@ -531,6 +552,59 @@ test_successful_update_promotes_candidate() {
     else
         fail "successful candidate update: candidate was not promoted before the old container was removed"
     fi
+    # The suite's env files carry no label, so the closing line uses the
+    # generic wording; either way, thanking the volunteer must come last.
+    if tail -n 1 "$OUTPUT" | grep -q 'thank you for volunteering'; then
+        pass
+    else
+        fail "successful candidate update: the final line does not thank the volunteer"
+    fi
+}
+
+test_first_run_generates_label_and_promotes() {
+    reset_simulation
+    rm -f "$CONTAINERS/openrung-relay" "$ENV_FILE"
+    run_volunteer_up_first_run ok
+    if [ "$RUN_RC" -eq 0 ]; then
+        pass
+    else
+        fail "first run: expected success, got exit $RUN_RC"
+    fi
+    if grep -Eq '^OPENRUNG_LABEL=[a-z]+-[a-z]+$' "$ENV_FILE" \
+        && grep -q '^OPENRUNG_PUBLIC_HOST=8.8.8.8$' "$ENV_FILE" \
+        && grep -Eq '^OPENRUNG_IDENTITY_SEED=..*' "$ENV_FILE"; then
+        pass
+    else
+        fail "first run: env file is missing the generated label, public host, or identity seed"
+    fi
+    assert_candidate_is_live "first run"
+    if grep -q '^stop ' "$DOCKER_LOG" || grep -q '^rm ' "$DOCKER_LOG"; then
+        fail "first run: stopped or removed a container that did not exist"
+    else
+        pass
+    fi
+    first_run_label=$(sed -n 's/^OPENRUNG_LABEL=//p' "$ENV_FILE" | tail -1)
+    if tail -n 1 "$OUTPUT" | grep -q "thank you for running '$first_run_label'"; then
+        pass
+    else
+        fail "first run: the final line does not thank the volunteer by relay name"
+    fi
+}
+
+test_first_run_honors_explicit_label() {
+    reset_simulation
+    rm -f "$CONTAINERS/openrung-relay" "$ENV_FILE"
+    run_volunteer_up_first_run ok OPENRUNG_LABEL=my.relay_1
+    if [ "$RUN_RC" -eq 0 ] && grep -q '^OPENRUNG_LABEL=my.relay_1$' "$ENV_FILE"; then
+        pass
+    else
+        fail "explicit label: OPENRUNG_LABEL was not written verbatim (exit $RUN_RC)"
+    fi
+    if tail -n 1 "$OUTPUT" | grep -q "thank you for running 'my.relay_1'"; then
+        pass
+    else
+        fail "explicit label: the final line does not thank the volunteer by relay name"
+    fi
 }
 
 expect_public_ipv4() {
@@ -581,6 +655,8 @@ test_failed_candidate_start_restores_prior
 test_crash_looping_candidate_restores_prior
 test_unregistered_candidate_restores_prior
 test_successful_update_promotes_candidate
+test_first_run_generates_label_and_promotes
+test_first_run_honors_explicit_label
 test_special_ipv4_ranges
 
 if [ "$FAIL" -ne 0 ]; then

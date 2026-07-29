@@ -26,9 +26,18 @@
 #   OPENRUNG_PUBLIC_HOST  public IP/DNS clients use to reach this relay
 #                         (skips auto-detection; required on the first run when
 #                         detection is unavailable)
-#   OPENRUNG_LABEL        optional friendly name shown in the broker dashboard
+#   OPENRUNG_LABEL        relay name shown in the public relay directory
+#                         (skips the interactive prompt)
+#   OPENRUNG_NONINTERACTIVE  set to any value to never prompt (automation);
+#                         the generated default name is used
 # Overrides configure the FIRST run; once /etc/openrung/relay.env exists it is
 # authoritative and overrides are ignored (edit the file instead).
+#
+# On an interactive first run the script asks for a relay name, defaulting to
+# a generated adjective-noun name (the same style as the fleet). The prompt
+# reads /dev/tty, never stdin — stdin is the script itself under curl|sh —
+# and is skipped entirely when there is no controlling terminal, so cloud-init
+# and other automation can never hang on it.
 #
 # POSIX sh on purpose: this must run on whatever /bin/sh the volunteer's
 # distro ships (dash, busybox ash, bash).
@@ -47,6 +56,66 @@ set -eu
 
 die() { echo "volunteer-up: error: $*" >&2; exit 1; }
 log() { echo "volunteer-up: $*"; }
+
+# Default relay names: the same adjective-noun style the fleet provisioning
+# helpers use (lightsail-up.sh / hetzner-up.sh), so volunteer relays show up
+# in the dashboard alongside fleet names instead of as raw relay-ID hex. The
+# label is published in the relay directory: a generated name is also the
+# privacy-safe default — never derive one from the hostname or username.
+ADJECTIVES='happy grumpy glorious sleepy brave clever gentle jolly mighty nimble plucky quiet rapid shiny snappy spry sturdy sunny swift witty zesty breezy cosmic dapper eager fuzzy golden hardy lucky merry noble proud quirky rustic silly valiant'
+NOUNS='hippo walrus castle otter falcon badger lantern comet maple harbor meadow beacon pebble willow cactus cobra ferret gecko heron ibex jaguar koala lemur marmot narwhal ocelot panther quokka raven salmon tapir urchin viper wombat yak zebra'
+
+pick_word() { # number word... — prints word[number % count]
+    pw_i=$1
+    shift
+    pw_i=$((pw_i % $#))
+    while [ "$pw_i" -gt 0 ]; do
+        shift
+        pw_i=$((pw_i - 1))
+    done
+    printf '%s' "$1"
+}
+
+random_number() {
+    # POSIX sh has no $RANDOM; cksum is in POSIX (and busybox) and turns
+    # /dev/urandom bytes into a decimal. Naming needs no crypto strength.
+    head -c 8 /dev/urandom | cksum | tr -s ' ' | cut -d ' ' -f 1
+}
+
+random_label() {
+    # shellcheck disable=SC2086
+    printf '%s-%s' "$(pick_word "$(random_number)" $ADJECTIVES)" "$(pick_word "$(random_number)" $NOUNS)"
+}
+
+prompt_for_label() { # default — prints the label to use
+    pfl_label=$1
+    # No controlling terminal (cloud-init, CI, a detached session) or an
+    # explicit opt-out: keep the default without prompting. stdin is never
+    # consulted — under curl|sh it carries the script text.
+    if [ -n "${OPENRUNG_NONINTERACTIVE:-}" ] || ! ( exec </dev/tty ) 2>/dev/null; then
+        printf '%s' "$pfl_label"
+        return 0
+    fi
+    pfl_tries=0
+    while [ "$pfl_tries" -lt 3 ]; do
+        printf 'Name this relay — the name is public in the relay directory, so nothing personal.\nPress Enter to accept [%s]: ' "$pfl_label" >/dev/tty
+        if ! read -r pfl_answer </dev/tty; then pfl_answer=""; fi
+        if [ -z "$pfl_answer" ]; then
+            printf '%s' "$pfl_label"
+            return 0
+        fi
+        case "$pfl_answer" in
+            *[!A-Za-z0-9._-]*) printf 'Names may use only letters, digits, ".", "_", "-". Try again.\n' >/dev/tty ;;
+            *)
+                printf '%s' "$pfl_answer"
+                return 0
+                ;;
+        esac
+        pfl_tries=$((pfl_tries + 1))
+    done
+    printf 'Keeping the generated name %s.\n' "$pfl_label" >/dev/tty
+    printf '%s' "$pfl_label"
+}
 
 # Strict dotted-quad, publicly-routable IPv4. The detection services' responses
 # are untrusted input headed for the env file and the public relay directory: a
@@ -351,8 +420,14 @@ main() {
             case "$PUBLIC_HOST" in *[!A-Za-z0-9.:-]* | '') die "OPENRUNG_PUBLIC_HOST contains unexpected characters" ;; esac
         fi
 
+        LABEL="${OPENRUNG_LABEL:-}"
+        if [ -z "$LABEL" ]; then
+            LABEL="$(prompt_for_label "$(random_label)")"
+            [ -n "$LABEL" ] || die "could not choose a relay name"
+        fi
+
         umask 077
-        install -d -m 700 /etc/openrung
+        install -d -m 700 "${ENV_FILE%/*}"
         # Minted once per host: the broker derives the stable relay ID from
         # this seed (spec openrung-relay-identity-v1), so the relay keeps one
         # identity across restarts and updates. The seed IS the relay's Ed25519
@@ -364,14 +439,14 @@ main() {
             printf 'OPENRUNG_BROKER_URL=%s\n' "$BROKER_URL"
             printf 'OPENRUNG_PUBLIC_HOST=%s\n' "$PUBLIC_HOST"
             printf 'OPENRUNG_IDENTITY_SEED=%s\n' "$SEED"
-            if [ -n "${OPENRUNG_LABEL:-}" ]; then printf 'OPENRUNG_LABEL=%s\n' "$OPENRUNG_LABEL"; fi
+            printf 'OPENRUNG_LABEL=%s\n' "$LABEL"
             # The binary's default listen host is '::' (dual-stack, the fleet
             # posture). Pin the IPv4 wildcard only when the kernel has no IPv6
             # support at all, where a '::' bind cannot work.
             if [ ! -e /proc/net/if_inet6 ]; then printf 'OPENRUNG_LISTEN_HOST=0.0.0.0\n'; fi
         } >"$ENV_FILE.tmp"
         mv "$ENV_FILE.tmp" "$ENV_FILE"
-        log "wrote $ENV_FILE (root-owned, mode 0600) with public host ${PUBLIC_HOST}"
+        log "wrote $ENV_FILE (root-owned, mode 0600) with public host ${PUBLIC_HOST} and relay name '${LABEL}'"
     fi
 
     log "pulling $IMAGE"
@@ -468,6 +543,12 @@ main() {
     log "  logs:    docker logs -f $CONTAINER"
     log "  update:  re-run the same one-line command (identity in $ENV_FILE is preserved)"
     log "  remove:  docker rm -f $CONTAINER   # and delete $ENV_FILE to forget the relay identity"
+    final_label="$(sed -n 's/^OPENRUNG_LABEL=//p' "$ENV_FILE" | tail -1)" || final_label=""
+    if [ -n "$final_label" ]; then
+        log "thank you for running '${final_label}' — you are helping make the internet open again"
+    else
+        log "thank you for volunteering — you are helping make the internet open again"
+    fi
 }
 
 main "$@"
