@@ -105,8 +105,11 @@ set -eu
 exec > /var/log/openrung-init.log 2>&1
 export DEBIAN_FRONTEND=noninteractive
 # Linode images ship sshd with password auth enabled; the fleet is key-only.
+# The drop-in must sort BEFORE any 50-cloud-init.conf a future image might
+# write: sshd takes the FIRST value it encounters across lexically-ordered
+# includes, so 01- wins where a 99- file would silently lose.
 mkdir -p /etc/ssh/sshd_config.d
-printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n' > /etc/ssh/sshd_config.d/99-openrung.conf
+printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n' > /etc/ssh/sshd_config.d/01-openrung.conf
 systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
 # DPkg::Lock::Timeout waits for cloud-init's own apt activity to release the lock.
 apt-get -o DPkg::Lock::Timeout=300 update
@@ -139,16 +142,14 @@ docker run -d --name openrung-relay --restart unless-stopped \\
   ${IMAGE}
 EOF
 
-# root_pass is required by the API even with key-only SSH (password auth is
-# disabled by the boot script above); mint one and never store or print it.
-ROOT_PASS="$(openssl rand -base64 32)"
-
+# No root_pass: provisioning with authorized_keys alone leaves root's password
+# LOCKED (verified on a probe instance: `passwd -S root` reports L, shadow
+# field is `*`), strictly stronger than minting a throwaway password.
 CREATED="$(linode-cli linodes create \
   --label "$NAME" \
   --region "$REGION" \
   --type "$TYPE" \
   --image "$OS_IMAGE" \
-  --root_pass "$ROOT_PASS" \
   --authorized_keys "$SSH_PUBKEY" \
   --firewall_id "$FW_ID" \
   --tags openrung \
