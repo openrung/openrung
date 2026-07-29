@@ -23,11 +23,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Foundation deploy state matrix
+      - name: Relay deploy state matrices
         run: |
           bash -n deploy/relay/foundation-up.sh
           bash -n deploy/relay/foundation-up_test.sh
           bash deploy/relay/foundation-up_test.sh
+          sh -n deploy/relay/volunteer-up.sh
+          sh -n deploy/relay/volunteer-up_test.sh
+          OPENRUNG_TEST_SHELL=/bin/dash sh deploy/relay/volunteer-up_test.sh
+          OPENRUNG_TEST_SHELL=/bin/bash sh deploy/relay/volunteer-up_test.sh
+          docker run --rm -v "$PWD:/src:ro" -w /src alpine:3 sh deploy/relay/volunteer-up_test.sh
 
   go:
     runs-on: ubuntu-latest

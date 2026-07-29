@@ -242,8 +242,11 @@ broker's direct TLS origin — except that no `OPENRUNG_FOUNDATION_TOKEN` is
 installed, so the broker attests the relay volunteer-class. It auto-detects
 the public IPv4 address, mints a stable `OPENRUNG_IDENTITY_SEED` once, and
 verifies the relay registers before declaring success. Re-running the same
-line is the update path: the image is pulled and the container recreated
-while the env file (and with it the relay identity) is preserved.
+line is the update path: the image is pulled, the serving container is retained
+as a stopped backup, and a separately named candidate must register and remain
+running without restarts before it is promoted. A failed start, crash loop, or
+registration timeout automatically restores the previous container. The env
+file (and with it the relay identity) is preserved throughout.
 
 Overrides pass through `sudo env`, e.g.:
 
@@ -254,6 +257,10 @@ curl -fsSL https://raw.githubusercontent.com/openrung/openrung/main/deploy/relay
 To change settings later, edit `/etc/openrung/relay.env` and re-run the same
 command. A host set up this way is already in the canonical layout that
 `foundation-up.sh convert` expects, should it ever be promoted.
+
+After promotion, this volunteer-only helper refuses the Foundation credential
+in `/etc/openrung/relay.env` without pulling an image or touching the relay.
+Use `foundation-up.sh update` for every subsequent Foundation-managed update.
 
 ### Compose (recommended)
 
