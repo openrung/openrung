@@ -225,6 +225,36 @@ UUID for the client id, or let the first run generate them and copy from the log
 
 ## Run
 
+### One-line volunteer VPS bring-up
+
+For volunteers with any Linux VPS (public IPv4, inbound TCP 443 open), one
+line brings up a volunteer-class relay from the public image:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/openrung/openrung/main/deploy/relay/volunteer-up.sh | sudo sh
+```
+
+[`volunteer-up.sh`](volunteer-up.sh) applies the exact container posture of
+the Foundation fleet — host networking, `--cap-drop ALL --cap-add
+NET_BIND_SERVICE`, read-only rootfs with a `/tmp` tmpfs, settings in a
+root-owned mode-`0600` `/etc/openrung/relay.env`, registration against the
+broker's direct TLS origin — except that no `OPENRUNG_FOUNDATION_TOKEN` is
+installed, so the broker attests the relay volunteer-class. It auto-detects
+the public IPv4 address, mints a stable `OPENRUNG_IDENTITY_SEED` once, and
+verifies the relay registers before declaring success. Re-running the same
+line is the update path: the image is pulled and the container recreated
+while the env file (and with it the relay identity) is preserved.
+
+Overrides pass through `sudo env`, e.g.:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/openrung/openrung/main/deploy/relay/volunteer-up.sh | sudo env OPENRUNG_PUBLIC_HOST=203.0.113.7 OPENRUNG_LABEL=my-relay sh
+```
+
+To change settings later, edit `/etc/openrung/relay.env` and re-run the same
+command. A host set up this way is already in the canonical layout that
+`foundation-up.sh convert` expects, should it ever be promoted.
+
 ### Compose (recommended)
 
 [`docker-compose.yml`](docker-compose.yml) uses **host networking**, drops all
