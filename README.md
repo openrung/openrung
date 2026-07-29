@@ -78,8 +78,8 @@ their owning applications.
 
 ## Highlights
 
-- 🙌 **Simple volunteering** — one CLI plus an Xray binary; IPv6-first with
-  IPv4 and dual-stack options.
+- 🙌 **Simple volunteering** — one line on any Linux VPS, or one CLI plus an
+  Xray binary; IPv6-first with IPv4 and dual-stack options.
 - 🕳️ **Works behind CGNAT** — volunteer-run relays with no inbound port can join
   through a reverse-tunnel relay hub.
 - 📱 **Full-device mobile client** — the OpenRung app routes all device
@@ -96,11 +96,56 @@ their owning applications.
 
 ## Quick start
 
+### Volunteer: run a relay on your VPS
+
+The fastest way to help people reach the open internet is to turn a Linux VPS
+with a public IPv4 address into a volunteer relay. One command sets everything
+up (on Debian/Ubuntu it installs Docker for you):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/openrung/openrung/main/deploy/relay/volunteer-up.sh | sudo sh
+```
+
+The script pulls the official relay image, runs it with the same hardened
+container setup the Foundation fleet uses, auto-detects your server's public
+IP, mints a stable relay identity, registers with the public OpenRung broker,
+and confirms the relay is actually serving before it declares success. No
+account or token is needed.
+
+Afterwards:
+
+- **Allow inbound TCP 443** in your provider's firewall (and
+  `sudo ufw allow 443/tcp` if you use ufw) so clients can reach the relay.
+- **Update** by re-running the same command — your relay keeps its identity,
+  and a failed update rolls back to the running version automatically.
+- **Watch it**: `docker logs -f openrung-relay`
+- **Stop volunteering**: `docker rm -f openrung-relay` (also delete
+  `/etc/openrung/relay.env` to forget the relay's identity).
+
+> [!IMPORTANT]
+> **Before you volunteer:** relays currently act as direct exits, so the
+> websites a user visits can see your server's IP address — much like a Tor
+> exit node. Please read the [security and abuse notes](docs/security-abuse.md)
+> and make sure you are comfortable with that before relaying. Letting
+> volunteers act as entry relays in front of dedicated exit servers is on the
+> [roadmap](#roadmap).
+
+Prefer a home computer over a VPS? The one-click
+[desktop volunteer app](desktop-volunteer/) works behind home NAT. For
+configuration options and other setups, see
+[`deploy/relay/README.md`](deploy/relay/README.md).
+
+### Run the stack from source (development)
+
+Everything below runs the broker, relays, and clients from source for
+development and self-hosting. Volunteers don't need any of it — volunteer
+relays register with the public OpenRung broker automatically.
+
 You need Go 1.25+, and relay operators also need an
 [Xray-core](https://github.com/XTLS/Xray-core) binary that supports
 `xray x25519` and `xray run -config`.
 
-### Start the broker
+#### Start the broker
 
 The broker fails closed: it refuses to start unless you either set a shared
 registration token (`OPENRUNG_VOLUNTEER_TOKEN`, matched by hubs and
@@ -145,7 +190,7 @@ When the variable is unset, the dashboard and its data API return 404. In
 production, serve the broker over HTTPS so the administrator session cookie is
 protected in transit.
 
-### Run a relay
+#### Run a relay
 
 ```sh
 go run ./cmd/relay \
@@ -170,15 +215,7 @@ Useful to know:
   IPv4 and IPv6 discovery, advertise a DNS name with A and AAAA records, or
   run separate registrations.
 
-> [!IMPORTANT]
-> **Before you volunteer:** relays currently act as direct exits, so the
-> websites a user visits can see your IP address — much like a Tor exit node.
-> Please read the [security and abuse notes](docs/security-abuse.md) and make
-> sure you are comfortable with that before relaying. Letting volunteers act
-> as entry relays in front of dedicated exit servers is on the
-> [roadmap](#roadmap).
-
-### Volunteer-run relays behind CGNAT
+#### Volunteer-run relays behind CGNAT
 
 Volunteer-run relays with no inbound port (carrier-grade NAT) can join through
 a relay hub. Run the hub on a publicly reachable host where bandwidth is cheap:
@@ -202,7 +239,7 @@ All traffic for a CGNAT relay transits the hub, so keep the relay path opt-in
 metered cloud egress. See [`deploy/relayhub/README.md`](deploy/relayhub/README.md)
 for cost details and TLS setup.
 
-### Try a client
+#### Try a client
 
 List relay candidates and run the desktop CLI relay check:
 
