@@ -689,21 +689,37 @@ func buildTelemetryOverview(records []TelemetryRecord, appCounts map[string]int,
 	for relayID, speed := range speeds {
 		overview.SpeedTests = append(overview.SpeedTests, speedTestSummary{RelayID: relayID, Tests: speed.tests, AverageMbps: float64(speed.mbps) / float64(speed.tests) / 1000, AverageTTFBMS: float64(speed.ttfb) / float64(speed.tests)})
 	}
+	overview.SpeedTests = rankSpeedTests(overview.SpeedTests)
 	applyTelemetryRelayClasses(&overview, relayClasses)
-	sortSpeedTests(overview.SpeedTests)
 	return overview
 }
 
-// sortTopRelays and sortSpeedTests are shared by the in-memory aggregator and
-// the Postgres querier so both rank identically.
+// sortTopRelays and rankSpeedTests are shared by the in-memory aggregator and
+// the Postgres querier so both rank identically; the relay-ID tiebreaks make
+// truncation deterministic across backends when counts tie.
 func sortTopRelays(relays []relaySummary) {
 	sort.Slice(relays, func(i, j int) bool {
-		return relays[i].Successes+relays[i].Failures > relays[j].Successes+relays[j].Failures
+		if volumeI, volumeJ := relays[i].Successes+relays[i].Failures, relays[j].Successes+relays[j].Failures; volumeI != volumeJ {
+			return volumeI > volumeJ
+		}
+		return relays[i].RelayID < relays[j].RelayID
 	})
 }
 
-func sortSpeedTests(speedTests []speedTestSummary) {
-	sort.Slice(speedTests, func(i, j int) bool { return speedTests[i].AverageMbps > speedTests[j].AverageMbps })
+// rankSpeedTests returns the ten fastest relays. Like every other relay-keyed
+// overview panel, the cap keeps the response bounded even though anonymous
+// telemetry may name one fabricated relay ID per speed_test_completed event.
+func rankSpeedTests(speedTests []speedTestSummary) []speedTestSummary {
+	sort.Slice(speedTests, func(i, j int) bool {
+		if speedTests[i].AverageMbps != speedTests[j].AverageMbps {
+			return speedTests[i].AverageMbps > speedTests[j].AverageMbps
+		}
+		return speedTests[i].RelayID < speedTests[j].RelayID
+	})
+	if len(speedTests) > 10 {
+		speedTests = speedTests[:10]
+	}
+	return speedTests
 }
 
 // applyTelemetryRelayClasses decorates relay-keyed overview summaries from the

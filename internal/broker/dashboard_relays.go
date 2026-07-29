@@ -15,6 +15,15 @@ import (
 //go:embed relays.html
 var relaysHTML []byte
 
+// maxOfflineRelayRows caps how many telemetry-only (offline) relays one
+// response lists, keeping the page bounded even when the attested history is
+// wide — e.g. identity-churn periods minted dozens of IDs per relay per week.
+// The busiest rows survive; the totals still count every offline relay, and
+// the page notes how many rows the cap hid. Online rows are never capped:
+// they mirror the live registry, which expires every unrenewed lease within
+// minutes.
+const maxOfflineRelayRows = 200
+
 // relayDirectoryLister is the one slice of RelayStore the relays panel reads:
 // the currently registered descriptor set. Narrow so tests can fake it.
 type relayDirectoryLister interface {
@@ -22,10 +31,18 @@ type relayDirectoryLister interface {
 }
 
 // relayTelemetryStats is the telemetry half of the admin relays page: one row
-// per relay ID named by any event in the window, plus the overall distinct
-// count of clients currently active through any relay. That total cannot be
-// derived from the rows — one client holding sessions on two relays would be
-// counted twice by summing per-relay counts.
+// per broker-attested relay ID named by any event in the window, plus the
+// overall distinct count of clients currently active through such a relay.
+// That total cannot be derived from the rows — one client holding sessions on
+// two relays would be counted twice by summing per-relay counts.
+//
+// Attested means at least one of the window's records retained a non-empty
+// relay_node_class, which ingestion stamps only while the named relay holds a
+// live registration. The anonymous telemetry API accepts any relay_id string,
+// so without this gate a client could mint one row (and one "offline relay")
+// per fabricated ID — up to 200 per accepted request — and grow the response
+// without bound for the retention window. Registration is the trust anchor:
+// it is separately rate limited, logged, and the only way to obtain a stamp.
 type relayTelemetryStats struct {
 	Relays        []relayStatRow
 	ActiveClients int
@@ -161,10 +178,19 @@ func buildRelayTelemetryStats(records []TelemetryRecord, now time.Time, window t
 		if !session.terminal && session.lastHeartbeatAt.After(now.Add(-activeSessionTimeout)) {
 			row.ActiveSessions++
 			addMember(relayActiveClients, session.relayID, session.clientID)
-			activeClients[session.clientID] = struct{}{}
+			// The fleet-wide connected-clients count trusts attested relays
+			// only, or fabricated heartbeats would inflate it.
+			if row.NodeClass != "" {
+				activeClients[session.clientID] = struct{}{}
+			}
 		}
 	}
 	for id, row := range rows {
+		// Unattested IDs aggregate above (a session's latest relay-bearing
+		// event may name one) but are dropped here, on both backends alike.
+		if row.NodeClass == "" {
+			continue
+		}
 		row.Clients = len(relayClients[id])
 		row.ActiveClients = len(relayActiveClients[id])
 		row.TopFailureReason = topFailureReason(reasons[id])
@@ -337,19 +363,28 @@ func buildRelaysPanel(descriptors []relay.Descriptor, stats relayTelemetryStats,
 		response.Relays = append(response.Relays, row)
 	}
 
+	var offlineRows []relayPanelRow
 	for _, statRow := range stats.Relays {
 		if _, ok := online[statRow.RelayID]; ok {
 			continue
 		}
 		row := relayPanelRow{RelayID: statRow.RelayID, NodeClass: statRow.NodeClass}
 		applyRelayStatRow(&row, statRow)
+		// Totals cover every offline relay; the row cap below bounds only what
+		// the response lists.
 		response.Totals.OfflineRelays++
-		response.Relays = append(response.Relays, row)
+		response.Totals.ActiveSessions += row.ActiveSessions
+		offlineRows = append(offlineRows, row)
+	}
+	sortRelayPanelRows(offlineRows)
+	if len(offlineRows) > maxOfflineRelayRows {
+		offlineRows = offlineRows[:maxOfflineRelayRows]
 	}
 
 	for _, row := range response.Relays {
 		response.Totals.ActiveSessions += row.ActiveSessions
 	}
+	response.Relays = append(response.Relays, offlineRows...)
 	response.Totals.ConnectedClients = stats.ActiveClients
 	sortRelayPanelRows(response.Relays)
 	return response

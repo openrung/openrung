@@ -2,6 +2,7 @@ package broker
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -30,9 +31,11 @@ func TestBuildRelayTelemetryStats(t *testing.T) {
 		relayStatRecord(now.Add(-3*time.Minute), relay.NodeClassFoundation, "e4", "speed_test_completed", "c4", "s4", "relay-a", nil, map[string]int64{"download_mbps_milli": 55000, "time_to_first_byte_ms": 80}),
 		// s2 attempts relay-a but fails over to relay-b: the session counts for
 		// relay-b (latest relay-bearing event) and the failover is relay-b's
-		// success.
+		// success. Only this one relay-b record carries the attested class —
+		// the later failures land during a registration gap, and their events
+		// must still count toward the attested row.
 		relayStatRecord(now.Add(-9*time.Minute), relay.NodeClassFoundation, "e5", "connection_attempted", "c2", "s2", "relay-a", nil, nil),
-		relayStatRecord(now.Add(-8*time.Minute), "", "e6", "relay_failover", "c2", "s2", "relay-b", nil, nil),
+		relayStatRecord(now.Add(-8*time.Minute), relay.NodeClassVolunteer, "e6", "relay_failover", "c2", "s2", "relay-b", nil, nil),
 		// relay-b failures with a modal reason: alpha twice (once via
 		// failure_reason, once via error_type), beta once.
 		relayStatRecord(now.Add(-7*time.Minute), "", "e7", "relay_attempt_failed", "c3", "s3", "relay-b", map[string]string{"failure_reason": "alpha", "error_type": "zzz"}, nil),
@@ -41,6 +44,12 @@ func TestBuildRelayTelemetryStats(t *testing.T) {
 		// relay-c: nothing but an active heartbeat, class retained from the
 		// record.
 		relayStatRecord(now.Add(-2*time.Minute), relay.NodeClassVolunteer, "e10", "session_heartbeat", "c5", "s5", "relay-c", nil, nil),
+		// relay-fake was never registered, so no record carries an attested
+		// class: the anonymous telemetry API accepts any relay_id string, and
+		// fabricated ones must neither mint a row nor count their heartbeating
+		// client as connected.
+		relayStatRecord(now.Add(-3*time.Minute), "", "f1", "connection_succeeded", "c6", "s6", "relay-fake", nil, nil),
+		relayStatRecord(now.Add(-time.Minute), "", "f2", "session_heartbeat", "c6", "s6", "relay-fake", nil, nil),
 		// application_connection is never aggregated, even when it names a relay.
 		relayStatRecord(now.Add(-time.Minute), relay.NodeClassFoundation, "e11", telemetryAppConnectionEvent, "c9", "s9", "relay-a", nil, nil),
 	}
@@ -48,7 +57,12 @@ func TestBuildRelayTelemetryStats(t *testing.T) {
 	stats := buildRelayTelemetryStats(records, now, time.Hour)
 
 	if len(stats.Relays) != 3 {
-		t.Fatalf("expected 3 relays, got %d: %+v", len(stats.Relays), stats.Relays)
+		t.Fatalf("expected 3 relays (relay-fake filtered), got %d: %+v", len(stats.Relays), stats.Relays)
+	}
+	for _, row := range stats.Relays {
+		if row.RelayID == "relay-fake" {
+			t.Fatalf("unattested relay-fake minted a row: %+v", row)
+		}
 	}
 	// Busiest first: relay-a (1 active, 2 sessions), relay-c (1 active,
 	// 1 session), relay-b (0 active).
@@ -77,11 +91,14 @@ func TestBuildRelayTelemetryStats(t *testing.T) {
 	}
 
 	relayB := stats.Relays[2]
+	if relayB.NodeClass != relay.NodeClassVolunteer {
+		t.Errorf("relay-b node class = %q, want volunteer from its single stamped record", relayB.NodeClass)
+	}
 	if relayB.Successes != 1 {
 		t.Errorf("relay-b successes = %d, want 1 (the failover)", relayB.Successes)
 	}
 	if relayB.Failures != 3 || relayB.TopFailureReason != "alpha" {
-		t.Errorf("relay-b failures/top reason = %d/%q, want 3/alpha", relayB.Failures, relayB.TopFailureReason)
+		t.Errorf("relay-b failures/top reason = %d/%q, want 3/alpha (registration-gap events still count)", relayB.Failures, relayB.TopFailureReason)
 	}
 	if relayB.Sessions != 2 {
 		t.Errorf("relay-b sessions = %d, want 2 (s2 followed its failover here, s3 failed here)", relayB.Sessions)
@@ -95,7 +112,8 @@ func TestBuildRelayTelemetryStats(t *testing.T) {
 		t.Errorf("relay-c active/successes = %d/%d, want 1/0", relayC.ActiveSessions, relayC.Successes)
 	}
 
-	// c1 (active on relay-a) and c5 (active on relay-c), deduplicated.
+	// c1 (active on relay-a) and c5 (active on relay-c), deduplicated; c6 is
+	// active only on the unattested relay-fake and must not count.
 	if stats.ActiveClients != 2 {
 		t.Errorf("overall active clients = %d, want 2", stats.ActiveClients)
 	}
@@ -188,6 +206,79 @@ func TestBuildRelaysPanelMergesRegistryAndTelemetry(t *testing.T) {
 	}
 	if gone.Endpoint != "" || gone.RegisteredAt != nil || gone.LastHeartbeatAt != nil {
 		t.Errorf("offline row must not invent registry fields: %+v", gone)
+	}
+}
+
+// The response must stay bounded no matter how wide the attested history is:
+// offline rows cap at maxOfflineRelayRows (busiest kept) while the totals keep
+// counting every offline relay, including active sessions past the cap.
+func TestBuildRelaysPanelCapsOfflineRows(t *testing.T) {
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	descriptors := []relay.Descriptor{{
+		ID: "relay-online", NodeClass: relay.NodeClassFoundation,
+		PublicHost: "203.0.113.5", PublicPort: 443, MaxSessions: 100,
+	}}
+	overflow := maxOfflineRelayRows + 5
+	stats := relayTelemetryStats{ActiveClients: 1}
+	for index := range overflow {
+		stats.Relays = append(stats.Relays, relayStatRow{
+			RelayID:        fmt.Sprintf("relay-offline-%04d", index),
+			NodeClass:      relay.NodeClassVolunteer,
+			ActiveSessions: index,
+			LastSeenAt:     now.Add(-time.Minute),
+		})
+	}
+
+	panel := buildRelaysPanel(descriptors, stats, now, 24*time.Hour)
+
+	if panel.Totals.OfflineRelays != overflow {
+		t.Fatalf("offline total = %d, want %d (totals must not be capped)", panel.Totals.OfflineRelays, overflow)
+	}
+	// 0+1+…+(overflow-1), including the rows the cap hides.
+	if want := overflow * (overflow - 1) / 2; panel.Totals.ActiveSessions != want {
+		t.Fatalf("active sessions total = %d, want %d", panel.Totals.ActiveSessions, want)
+	}
+	if len(panel.Relays) != 1+maxOfflineRelayRows {
+		t.Fatalf("rows = %d, want 1 online + %d offline", len(panel.Relays), maxOfflineRelayRows)
+	}
+	kept := make(map[string]bool, len(panel.Relays))
+	for _, row := range panel.Relays {
+		kept[row.RelayID] = true
+	}
+	if !kept[fmt.Sprintf("relay-offline-%04d", overflow-1)] {
+		t.Errorf("busiest offline relay was dropped by the cap")
+	}
+	if kept["relay-offline-0000"] {
+		t.Errorf("quietest offline relay should be the one the cap hides")
+	}
+}
+
+// rankSpeedTests must truncate like every other relay-keyed panel — anonymous
+// telemetry can name a fresh relay ID per speed test — and break Mbps ties by
+// relay ID so both backends keep the same rows.
+func TestRankSpeedTestsCapsAndBreaksTies(t *testing.T) {
+	var speedTests []speedTestSummary
+	for index := range 12 {
+		speedTests = append(speedTests, speedTestSummary{
+			RelayID:     fmt.Sprintf("relay-%02d", index),
+			Tests:       1,
+			AverageMbps: float64(10 * index),
+		})
+	}
+	speedTests = append(speedTests, speedTestSummary{RelayID: "relay-tie-b", Tests: 1, AverageMbps: 110})
+	speedTests = append(speedTests, speedTestSummary{RelayID: "relay-tie-a", Tests: 1, AverageMbps: 110})
+
+	ranked := rankSpeedTests(speedTests)
+
+	if len(ranked) != 10 {
+		t.Fatalf("ranked length = %d, want 10", len(ranked))
+	}
+	if ranked[0].RelayID != "relay-11" {
+		t.Errorf("fastest relay = %q, want relay-11", ranked[0].RelayID)
+	}
+	// The 110 Mbps tie resolves lexicographically: relay-tie-a then relay-tie-b.
+	if ranked[1].RelayID != "relay-tie-a" || ranked[2].RelayID != "relay-tie-b" {
+		t.Errorf("tie order = %q, %q, want relay-tie-a then relay-tie-b", ranked[1].RelayID, ranked[2].RelayID)
 	}
 }
 

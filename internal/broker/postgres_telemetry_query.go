@@ -307,9 +307,13 @@ SELECT COUNT(*) FROM sessions`
 // sessions and clients), and the modal relay_attempt_failed reason.
 // relay_events covers every relay any event named, so the LEFT JOINs lose
 // nothing: a relay in relay_sessions or relay_top_reasons necessarily has
-// relay-bearing events. The trailing sentinel row (relay_id = ”) carries the
-// overall distinct count of clients active through any relay, which the
-// per-relay rows cannot express — one client may be active on several relays.
+// relay-bearing events. Only rows whose retained node_class is non-empty are
+// returned — ingestion stamps the class solely for relays holding a live
+// registration, so the filter is what keeps anonymous telemetry naming
+// fabricated relay IDs from minting one row each (see relayTelemetryStats).
+// The trailing sentinel row (relay_id = ”) carries the overall distinct
+// count of clients active through any attested relay, which the per-relay
+// rows cannot express — one client may be active on several relays.
 const telemetryRelayStatsQuery = `WITH ` + telemetryEventsCTE + `, ` + telemetrySessionsCTE + `,
 relay_events AS (
 	SELECT
@@ -363,12 +367,13 @@ SELECT
 FROM relay_events e
 LEFT JOIN relay_sessions s USING (relay_id)
 LEFT JOIN relay_top_reasons r USING (relay_id)
+WHERE e.node_class <> ''
 UNION ALL
 SELECT '', '', 0, 0, '', 0, 0, 0,
-	COUNT(DISTINCT client_id) FILTER (WHERE active)::bigint,
+	COUNT(DISTINCT sessions.client_id) FILTER (WHERE sessions.active)::bigint,
 	0, 0, 0, NULL
 FROM sessions
-WHERE relay_id <> ''`
+JOIN relay_events attested ON attested.relay_id = sessions.relay_id AND attested.node_class <> ''`
 
 // telemetryWindowArgs is the shared parameter list documented on the CTEs.
 // Queries that only touch the events CTE must take eventArgs — Postgres
@@ -582,7 +587,7 @@ func (s *PostgresTelemetrySink) queryTelemetryEventAggregates(ctx context.Contex
 	if err := rows.Err(); err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
-	sortSpeedTests(speedTests)
+	speedTests = rankSpeedTests(speedTests)
 	return trend, counts, relayFailureReasons, relayClasses, speedTests, nil
 }
 

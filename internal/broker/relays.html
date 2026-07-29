@@ -32,7 +32,7 @@
       <article class="panel"><h2>Relay versions</h2><div id="versions"></div></article>
       <article class="panel"><h2>Fleet mix</h2><div id="mix"></div></article>
     </section>
-    <section class="panel" style="margin-top:14px"><h2>Relays</h2><div class="scroll"><table><thead><tr><th>Relay</th><th>Status</th><th>Location</th><th>Endpoint</th><th>Transport</th><th>Version</th><th>Connected clients</th><th>Active sessions</th><th>Clients</th><th>Sessions</th><th>Success</th><th>Failed</th><th>Top failure</th><th>Speed</th><th>Last seen</th><th>Registered</th></tr></thead><tbody id="relays"></tbody></table></div></section>
+    <section class="panel" style="margin-top:14px"><h2>Relays</h2><div class="scroll"><table><thead><tr><th>Relay</th><th>Status</th><th>Location</th><th>Endpoint</th><th>Transport</th><th>Version</th><th>Connected clients</th><th>Active sessions</th><th>Clients</th><th>Sessions</th><th>Success</th><th>Failed</th><th>Top failure</th><th>Speed</th><th>Last seen</th><th>Registered</th></tr></thead><tbody id="relays"></tbody></table></div><div class="muted" id="truncation" style="margin-top:8px"></div></section>
     <div class="meta" id="meta"></div>
   </main>
   <script>
@@ -60,6 +60,10 @@
       $('countries').innerHTML=ranks(countRanks(online,x=>x.country||x.country_code),'No location data yet');
       $('versions').innerHTML=ranks(countRanks(online,x=>x.relay_version||'unknown'),'No online relays');
       $('mix').innerHTML=ranks([{name:'Direct',count:t.direct_relays},{name:'Tunnel (hub)',count:t.tunnel_relays},{name:'Punch capable',count:t.punch_capable_relays},{name:'WSS fronted',count:t.wss_capable_relays}].filter(x=>x.count),'No online relays');
+      // The API lists every online relay but caps offline rows at the busiest
+      // few hundred; the totals still count all of them, so say when rows hid.
+      const offlineShown=rows.filter(x=>!x.online).length,offlineHidden=Math.max(0,(t.offline_relays||0)-offlineShown);
+      $('truncation').textContent=offlineHidden?`Showing the busiest ${number(offlineShown)} of ${number(t.offline_relays)} offline relays seen in this window`:'';
       $('relays').innerHTML=rows.length?rows.map(x=>`<tr><td class="truncate" title="${esc(x.relay_id)}${nodeTitle(x.node_class)}">${relayName(esc(x.label||x.relay_id),x.node_class)}</td><td><span class="badge ${x.online?'active':'inactive'}">${x.online?'online':'offline'}</span></td><td>${locationCell(x)}</td><td class="truncate" title="${esc(x.endpoint||'')}">${esc(x.endpoint||'—')}</td><td>${transportCell(x)}</td><td>${esc(x.relay_version||'—')}</td><td>${number(x.active_clients)}</td><td>${activeSessionsCell(x)}</td><td>${number(x.clients)}</td><td>${number(x.sessions)}</td><td>${number(x.successes)}</td><td>${number(x.failures)}</td><td class="truncate" title="${esc(x.top_failure_reason||'')}">${esc(x.top_failure_reason||'—')}</td><td>${speedCell(x)}</td><td>${lastSeenCell(x)}</td><td>${esc(ago(x.registered_at))}</td></tr>`).join(''):'<tr><td colspan="16" class="empty">No relays registered and no relay telemetry in this window</td></tr>';
       $('meta').textContent=`Updated ${ago(data.generated_at)} · counts cover the selected window · refresh manually for the latest data`;
     }

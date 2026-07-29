@@ -51,7 +51,7 @@ func parityTelemetryRecords(now time.Time) []TelemetryRecord {
 		}
 	}
 
-	return []TelemetryRecord{
+	records := []TelemetryRecord{
 		// session-android: succeeded then still heartbeating (active). In the
 		// 1h window only the heartbeat survives, so its status degrades to
 		// "seen" with no attributes — a window-boundary case in itself.
@@ -138,6 +138,17 @@ func parityTelemetryRecords(now time.Time) []TelemetryRecord {
 		record(44, 44, "connection_failed", "client-failwin", "session-failwin", "", "192.0.2.70",
 			map[string]string{"failure_stage": ""}, nil),
 
+		// relay-ghost is telemetry-only and never carries a broker-attested
+		// class — the anonymous API accepts any relay_id string. It still
+		// feeds the overview's relay rankings (existing semantics), but the
+		// relays page must drop its row and keep its active client out of the
+		// connected-clients sentinel, identically on both backends.
+		record(20, 20, "connection_succeeded", "client-ghost", "session-ghost", "relay-ghost", "192.0.2.80", nil, nil),
+		record(19, 19, "speed_test_completed", "client-ghost", "session-ghost", "relay-ghost", "192.0.2.80",
+			nil, map[string]int64{"download_mbps_milli": 99000, "time_to_first_byte_ms": 10}),
+		record(2, 2, "session_heartbeat", "client-ghost", "session-ghost", "relay-ghost", "192.0.2.80",
+			nil, map[string]int64{"session_duration_ms": 60000}),
+
 		// session-relayfail: three relay_attempt_failed against relay-4 with
 		// distinct reasons (the first prefers failure_reason over error_type,
 		// the rest fall back to error_type). All tie at one, so relay-4's
@@ -166,6 +177,17 @@ func parityTelemetryRecords(now time.Time) []TelemetryRecord {
 		record(70, 70, "application_connection", "client-apponly", "session-apponly", "", "192.0.2.50",
 			map[string]string{"_app": "org.telegram.messenger"}, nil),
 	}
+	// The desktop heartbeat loses its class stamp, as if it was received while
+	// relay-2's registration had briefly lapsed. Relay-2 stays attested through
+	// its neighbouring stamped records — including the later connection_ended,
+	// which keeps the session's latest relay-bearing event stamped — and the
+	// unstamped event must still count toward relay-2's aggregates.
+	for i := range records {
+		if records[i].Event.Event == "session_heartbeat" && records[i].Event.SessionID == "session-desktop" {
+			records[i].RelayNodeClass = ""
+		}
+	}
+	return records
 }
 
 func withoutKey(values map[string]string, key string) map[string]string {
