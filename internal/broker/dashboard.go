@@ -42,9 +42,13 @@ type dashboardServer struct {
 	tokenHash     [32]byte
 	querier       TelemetryQuerier
 	relayDisplays func() map[string]relayDisplay
-	now           func() time.Time
-	mu            sync.Mutex
-	sessions      map[string]time.Time
+	// relayDirectory feeds the relays page the currently registered descriptor
+	// set; nil (only in tests that never exercise that page) renders every
+	// relay as offline.
+	relayDirectory relayDirectoryLister
+	now            func() time.Time
+	mu             sync.Mutex
+	sessions       map[string]time.Time
 }
 
 func newDashboardServer(token string, querier TelemetryQuerier) *dashboardServer {
@@ -60,9 +64,11 @@ func (d *dashboardServer) register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/telemetry/login", d.loginPage)
 	mux.HandleFunc("POST /admin/telemetry/login", d.login)
 	mux.HandleFunc("POST /admin/telemetry/logout", d.logout)
-	mux.HandleFunc("GET /admin/telemetry", d.requireAuth(d.dashboard))
+	mux.HandleFunc("GET /admin/telemetry", d.requireAuth(servePage(dashboardHTML)))
+	mux.HandleFunc("GET /admin/telemetry/relays", d.requireAuth(servePage(relaysHTML)))
 	mux.HandleFunc("GET /admin/api/telemetry/overview", d.requireAuth(d.overview))
 	mux.HandleFunc("GET /admin/api/telemetry/sessions", d.requireAuth(d.listSessions))
+	mux.HandleFunc("GET /admin/api/telemetry/relays", d.requireAuth(d.relaysPanel))
 }
 
 func (d *dashboardServer) loginPage(w http.ResponseWriter, r *http.Request) {
@@ -176,12 +182,16 @@ func requestIsHTTPS(r *http.Request) bool {
 	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
-func (d *dashboardServer) dashboard(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
-	_, _ = w.Write(dashboardHTML)
+// servePage returns a handler for one embedded dashboard page; every page
+// shares the same no-store and CSP posture.
+func servePage(html []byte) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+		_, _ = w.Write(html)
+	}
 }
 
 func (d *dashboardServer) overview(w http.ResponseWriter, r *http.Request) {

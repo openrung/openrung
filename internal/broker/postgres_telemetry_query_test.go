@@ -246,6 +246,32 @@ func TestPostgresTelemetryQuerierMatchesInMemorySessions(t *testing.T) {
 	}
 }
 
+func TestPostgresTelemetryQuerierMatchesInMemoryRelayStats(t *testing.T) {
+	now := time.Date(2026, 6, 24, 12, 30, 0, 0, time.UTC)
+	sink := newTestPostgresTelemetrySink(t, now)
+	records := parityTelemetryRecords(now)
+	if err := sink.WriteTelemetry(context.Background(), records); err != nil {
+		t.Fatalf("write telemetry: %v", err)
+	}
+	memoryStore := &dashboardTelemetryStore{}
+	if err := memoryStore.WriteTelemetry(context.Background(), records); err != nil {
+		t.Fatalf("write telemetry to in-memory store: %v", err)
+	}
+	memory := newTelemetryReaderQuerier(memoryStore)
+
+	for _, window := range []time.Duration{time.Hour, 24 * time.Hour, telemetryRetention} {
+		want, err := memory.TelemetryRelayStats(now, window)
+		if err != nil {
+			t.Fatalf("in-memory relay stats (%s): %v", window, err)
+		}
+		got, err := sink.TelemetryRelayStats(now, window)
+		if err != nil {
+			t.Fatalf("postgres relay stats (%s): %v", window, err)
+		}
+		assertSameJSON(t, fmt.Sprintf("relay stats window=%s", window), want, got)
+	}
+}
+
 func TestPostgresTelemetryQuerierMatchesInMemoryWhenEmpty(t *testing.T) {
 	now := time.Date(2026, 6, 24, 12, 30, 0, 0, time.UTC)
 	sink := newTestPostgresTelemetrySink(t, now)
@@ -273,6 +299,16 @@ func TestPostgresTelemetryQuerierMatchesInMemoryWhenEmpty(t *testing.T) {
 		t.Fatalf("expected zero totals, got in-memory %d, postgres %d", wantTotal, gotTotal)
 	}
 	assertSameJSON(t, "empty sessions", wantSessions, gotSessions)
+
+	wantRelayStats, err := memory.TelemetryRelayStats(now, time.Hour)
+	if err != nil {
+		t.Fatalf("in-memory empty relay stats: %v", err)
+	}
+	gotRelayStats, err := sink.TelemetryRelayStats(now, time.Hour)
+	if err != nil {
+		t.Fatalf("postgres empty relay stats: %v", err)
+	}
+	assertSameJSON(t, "empty relay stats", wantRelayStats, gotRelayStats)
 }
 
 // TestPostgresTelemetryFailureDiagnostics asserts the SQL path's failure fields

@@ -215,6 +215,34 @@ can reach the broker through a relay.
 Dashboard totals include active clients and active sessions. Active-session
 breakdowns are available by relay, country, city, ISP, and operating system.
 
+### Relays page
+
+The dashboard links to a dedicated relay-fleet page at `/admin/telemetry/relays`,
+backed by:
+
+```http
+GET /admin/api/telemetry/relays?window=24h
+```
+
+The response merges the live relay registry with the window's telemetry. Fleet
+totals count the currently registered relays overall and by class
+(`foundation_relays` / `volunteer_relays`), their advertised session capacity,
+transports (direct vs tunnel), and punch/WSS capabilities, alongside
+telemetry-derived numbers: relays seen in the window that are no longer
+registered (`offline_relays`), live sessions across the fleet, and the distinct
+count of clients currently connected through any relay.
+
+Each relay row carries the registry half for online relays — label, class,
+public endpoint, transport, exit location (city/country as resolved by the
+broker), relay software version, capacity, punch/WSS capability, registration
+and last-heartbeat times — merged with per-relay telemetry for the window:
+currently connected clients and active sessions, unique clients and sessions,
+successful and failed attempts with the modal failure reason, and average
+speed-test results. Relays that appear only in telemetry are listed as offline
+rows so a crashed or expired relay stays visible for the retention window; they
+keep the node class retained with their telemetry. Rows order online first,
+busiest first.
+
 ## Health
 
 ```http

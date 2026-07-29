@@ -11,6 +11,9 @@ type TelemetryQuerier interface {
 	// TelemetrySessions returns one page of the window's sessions, newest
 	// last-seen first, plus the total session count in the window.
 	TelemetrySessions(now time.Time, window time.Duration, offset, limit int) ([]sessionSummary, int, error)
+	// TelemetryRelayStats aggregates the window per relay for the relays page:
+	// one row for every relay ID any event named, busiest first.
+	TelemetryRelayStats(now time.Time, window time.Duration) (relayTelemetryStats, error)
 }
 
 // telemetryAppCounter is the optional capability a TelemetryReader exposes
@@ -52,4 +55,8 @@ func (q telemetryReaderQuerier) TelemetrySessions(now time.Time, window time.Dur
 	}
 	end := min(offset+limit, total)
 	return append([]sessionSummary{}, overview.Recent[offset:end]...), total, nil
+}
+
+func (q telemetryReaderQuerier) TelemetryRelayStats(now time.Time, window time.Duration) (relayTelemetryStats, error) {
+	return buildRelayTelemetryStats(q.reader.TelemetryRecords(now.Add(-window)), now, window), nil
 }
