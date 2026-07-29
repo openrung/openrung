@@ -244,17 +244,15 @@ func testPreparedRuntime(t *testing.T) preparedRuntime {
 }
 
 func TestVersionInfoAndReportedVersion(t *testing.T) {
-	originalVersion, originalRevision := version, revision
-	version, revision = " 1.2.3 ", " abcdef0 "
-	t.Cleanup(func() {
-		version, revision = originalVersion, originalRevision
-	})
-
-	if got := reportedRelayVersion(); got != "relay/1.2.3" {
-		t.Fatalf("reportedRelayVersion() = %q, want relay/1.2.3", got)
+	// Injection and fallback resolution are internal/buildinfo's tests; this
+	// guards the relay's wiring: its component name and embedded VERSION,
+	// including the relay_version identity reported to the broker and hub.
+	wantReported := "relay/" + strings.TrimSpace(baseVersion)
+	if got := reportedRelayVersion(); got != wantReported {
+		t.Fatalf("reportedRelayVersion() = %q, want %q", got, wantReported)
 	}
-	if got := versionInfo(); got != "relay/1.2.3 revision=abcdef0" {
-		t.Fatalf("versionInfo() = %q, want component, version, and revision", got)
+	if got := versionInfo(); !strings.HasPrefix(got, wantReported+" revision=") {
+		t.Fatalf("versionInfo() = %q, want prefix %q", got, wantReported+" revision=")
 	}
 }
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,14 +10,11 @@ import (
 )
 
 func TestVersionInfo(t *testing.T) {
-	originalVersion, originalRevision := version, revision
-	version, revision = " 1.2.3 ", " abcdef0 "
-	t.Cleanup(func() {
-		version, revision = originalVersion, originalRevision
-	})
-
-	if got := versionInfo(); got != "relayhub/1.2.3 revision=abcdef0" {
-		t.Fatalf("versionInfo() = %q, want component, version, and revision", got)
+	// Injection and fallback resolution are internal/buildinfo's tests; this
+	// guards the hub's wiring: its component name and embedded VERSION.
+	want := "relayhub/" + strings.TrimSpace(baseVersion) + " revision="
+	if got := versionInfo(); !strings.HasPrefix(got, want) {
+		t.Fatalf("versionInfo() = %q, want prefix %q", got, want)
 	}
 }
 

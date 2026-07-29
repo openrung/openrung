@@ -33,10 +33,10 @@ ARG VCS_REVISION
 RUN set -eux; \
     ldflags="-s -w"; \
     if [ -n "$BROKER_VERSION" ] && [ "$BROKER_VERSION" != "source" ]; then \
-      ldflags="$ldflags -X main.version=$BROKER_VERSION"; \
+      ldflags="$ldflags -X openrung/internal/buildinfo.version=$BROKER_VERSION"; \
     fi; \
     if [ -n "$VCS_REVISION" ] && [ "$VCS_REVISION" != "unknown" ]; then \
-      ldflags="$ldflags -X main.revision=$VCS_REVISION"; \
+      ldflags="$ldflags -X openrung/internal/buildinfo.revision=$VCS_REVISION"; \
     fi; \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
       go build -trimpath -ldflags="$ldflags" -o /out/broker ./cmd/broker

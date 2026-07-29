@@ -10,6 +10,9 @@ must surface it:
 - **`openrung-relay` / `openrung-relayhub` Docker images** — the file is
   copied to `/usr/local/share/openrung/THIRD_PARTY_NOTICES.md` in each image.
 - **Server binaries on the host** — ship this file alongside the binary.
+- **Client CLI release archives (`openrung-client-*.tar.gz` / `.zip`)** — the
+  file is copied into each archive alongside `LICENSE`
+  (`.github/workflows/client-release.yml`).
 - **Desktop app (Wails GUI)** — the in-app "Open-source licenses" screen
   renders these notices (`desktop/frontend/src/licenses/notices.ts` mirrors
   section 7 of this file plus `LICENSE`; a frontend test pins the bundled GPL
@@ -22,7 +25,8 @@ commit each release is built against.
 
 > Maintenance: regenerate the Go sections from tooling so the transitive set
 > stays accurate as dependencies drift:
-> `go-licenses report ./cmd/relay ./cmd/relayhub` for the server side;
+> `go-licenses report ./cmd/broker ./cmd/relay ./cmd/relayhub ./cmd/wsssidecar ./cmd/client`
+> for the server binaries and the client CLI;
 > for the desktop app, the union of
 > `GOOS={darwin,windows,linux} go list -deps -tags desktop,production .`
 > run inside `desktop/`, plus the runtime `dependencies` of
@@ -77,7 +81,7 @@ recipients of the MPL-2.0 terms and where to obtain the source.
   to that channel.
 - **Version:** v26.3.27 (pinned in `deploy/relay/Dockerfile`
   (`ARG XRAY_VERSION`) and in
-  `.github/workflows/volunteer-desktop-release.yml`; SHA-256 verified
+  `.github/workflows/desktop-volunteer-release.yml`; SHA-256 verified
   against the release `.dgst` file at build/fetch).
 - **License (code):** Mozilla Public License 2.0 (**MPL-2.0**).
 - **Source for the exact version:**
@@ -90,7 +94,7 @@ recipients of the MPL-2.0 terms and where to obtain the source.
 
 - **Component:** `github.com/hashicorp/yamux` v0.1.2 (reverse-tunnel and
   Reality-over-WSS stream multiplexing; statically linked into the relay,
-  relayhub, relay-local sidecar, and desktop binaries).
+  relayhub, relay-local sidecar, client CLI, and desktop binaries).
 - **License:** MPL-2.0.
 - **Source:** https://github.com/hashicorp/yamux/tree/v0.1.2
 
@@ -157,24 +161,27 @@ apply to the Docker image channel only.
 
 - `github.com/gorilla/websocket` v1.5.3 — Copyright (c) 2013 The
   Gorilla WebSocket Authors (statically linked into the relay-local WSS
-  sidecar and the desktop application)
+  sidecar, the client CLI, and the desktop application)
 
 ### BSD-3-Clause
 
-Statically linked into the Go server binaries:
+Statically linked into the Go server binaries and the client CLI (union
+across the binaries; versions per the root `go.mod`):
 
-- `golang.org/x/crypto` v0.17.0 — Copyright (c) The Go Authors
-- `golang.org/x/sync` v0.1.0 — Copyright (c) The Go Authors
-- `golang.org/x/text` v0.14.0 — Copyright (c) The Go Authors
+- `golang.org/x/crypto` v0.51.0 — Copyright (c) The Go Authors
+- `golang.org/x/net` v0.55.0 — Copyright (c) The Go Authors
+- `golang.org/x/sync` v0.20.0 — Copyright (c) The Go Authors
+- `golang.org/x/sys` v0.45.0 — Copyright (c) The Go Authors
+- `golang.org/x/text` v0.37.0 — Copyright (c) The Go Authors
 - Go standard library / runtime — Copyright (c) The Go Authors
   (source: https://github.com/golang/go)
 
 ### MIT
 
 - `github.com/quic-go/quic-go` v0.60.0 — Copyright (c) 2016 the quic-go authors
-  & Google, Inc. (statically linked into the server binaries via
-  `internal/punch`, the QUIC layer over the first-party `punchcore` module;
-  `punchcore` itself is stdlib-only and quic-go remains a root-module
+  & Google, Inc. (statically linked into the server binaries and the client
+  CLI via `internal/punch`, the QUIC layer over the first-party `punchcore`
+  module; `punchcore` itself is stdlib-only and quic-go remains a root-module
   dependency)
 - `github.com/jackc/pgx/v5` v5.6.0 — Copyright (c) 2013-2021 Jack Christensen
 - `github.com/jackc/pgpassfile` v1.0.0 — Copyright (c) 2019 Jack Christensen

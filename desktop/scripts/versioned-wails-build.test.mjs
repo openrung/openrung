@@ -5,34 +5,52 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import {
-  productVersionFromConfig,
-  readProductVersion,
+  appVersionFromSources,
+  readAppVersion,
   versionedWailsBuildArgs,
 } from './versioned-wails-build.mjs';
 
-test('reads the product version from wails.json', () => {
+test('reads the app version from VERSION with a matching wails.json copy', () => {
   const directory = mkdtempSync(join(tmpdir(), 'openrung-version-'));
-  const source = join(directory, 'wails.json');
+  const versionSource = join(directory, 'VERSION');
+  const configSource = join(directory, 'wails.json');
   try {
-    writeFileSync(source, JSON.stringify({ info: { productVersion: '4.5.6' } }));
-    assert.equal(readProductVersion(source), '4.5.6');
+    writeFileSync(versionSource, '4.5.6\n');
+    writeFileSync(configSource, JSON.stringify({ info: { productVersion: '4.5.6' } }));
+    assert.equal(readAppVersion(versionSource, configSource), '4.5.6');
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
 });
 
-test('accepts only canonical X.Y.Z product versions', () => {
-  assert.equal(productVersionFromConfig({ info: { productVersion: '0.1.3' } }), '0.1.3');
+test('the checked-in VERSION and wails.json agree', () => {
+  // Defaults read desktop/VERSION and desktop/wails.json; this is the PR-time
+  // drift gate for the real files, not fixtures.
+  assert.match(readAppVersion(), /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/);
+});
 
-  for (const productVersion of [undefined, 13, '', 'v0.1.3', '0.1', '0.1.3-beta.1', '01.2.3', ' 0.1.3']) {
+test('accepts only canonical X.Y.Z versions from VERSION', () => {
+  const config = { info: { productVersion: '0.1.4' } };
+  assert.equal(appVersionFromSources('0.1.4\n', config), '0.1.4');
+
+  for (const contents of [undefined, '', 'dev', 'v0.1.4', '0.1', '0.1.4-beta.1', '01.2.3']) {
     assert.throws(
-      () => productVersionFromConfig({ info: { productVersion } }),
-      /info\.productVersion must be a semantic X\.Y\.Z version/,
+      () => appVersionFromSources(contents, config),
+      /must contain a semantic X\.Y\.Z version/,
     );
   }
 });
 
-test('injects the product version while preserving other build arguments', () => {
+test('rejects drift between VERSION and the wails.json copy', () => {
+  assert.throws(
+    () => appVersionFromSources('0.1.4', { info: { productVersion: '0.1.3' } }),
+    /desktop\/VERSION is canonical/,
+  );
+  assert.throws(() => appVersionFromSources('0.1.4', { info: {} }), /desktop\/VERSION is canonical/);
+  assert.throws(() => appVersionFromSources('0.1.4', undefined), /desktop\/VERSION is canonical/);
+});
+
+test('injects the app version while preserving other build arguments', () => {
   assert.deepEqual(versionedWailsBuildArgs(['-tags', 'webkit2_41'], '0.1.3'), [
     '-tags',
     'webkit2_41',
@@ -41,7 +59,7 @@ test('injects the product version while preserving other build arguments', () =>
   ]);
 });
 
-test('merges separate and equals-form caller ldflags before the product version', () => {
+test('merges separate and equals-form caller ldflags before the app version', () => {
   assert.deepEqual(
     versionedWailsBuildArgs(
       ['-ldflags', '-s -w', '-debug', '-ldflags=-X openrung/internal/client.appVersion=custom'],
@@ -53,6 +71,15 @@ test('merges separate and equals-form caller ldflags before the product version'
       '-s -w -X openrung/internal/client.appVersion=custom -X openrung/internal/client.appVersion=0.1.3',
     ],
   );
+});
+
+test('rejects a non-semantic build version', () => {
+  for (const version of [undefined, '', 'dev', 'v0.1.3']) {
+    assert.throws(
+      () => versionedWailsBuildArgs([], version),
+      /must be a semantic X\.Y\.Z version/,
+    );
+  }
 });
 
 test('rejects a caller ldflags option without a value', () => {

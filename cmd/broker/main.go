@@ -17,17 +17,12 @@ import (
 	"time"
 
 	"openrung/internal/broker"
+	"openrung/internal/buildinfo"
 	"openrung/internal/wssbridge"
 )
 
 //go:embed VERSION
 var baseVersion string
-
-// version and revision are overridden by release builds using -ldflags.
-var (
-	version  string
-	revision = "unknown"
-)
 
 func main() {
 	if err := run(); err != nil {
@@ -165,7 +160,7 @@ func run() error {
 		close(shutdownDone)
 	}()
 
-	slog.Info("starting broker", "version", resolvedVersion(), "revision", resolvedRevision(), "addr", *addr, "lease_ttl", leaseTTL.String(), "telemetry_store", *telemetryStore, "telemetry_file", *telemetryFile, "relay_store", *relayStore, "relay_ranking", rankingMode, "dashboard_enabled", os.Getenv("OPENRUNG_DASHBOARD_TOKEN") != "", "foundation_registration_enabled", foundationToken != "", "wss_ticket_issuance_enabled", len(wssTicketSeed) != 0, "status_interval", statusInterval.String(), "geoip_enabled", geoResolver != nil)
+	slog.Info("starting broker", "version", buildinfo.Version(baseVersion), "revision", buildinfo.Revision(), "addr", *addr, "lease_ttl", leaseTTL.String(), "telemetry_store", *telemetryStore, "telemetry_file", *telemetryFile, "relay_store", *relayStore, "relay_ranking", rankingMode, "dashboard_enabled", os.Getenv("OPENRUNG_DASHBOARD_TOKEN") != "", "foundation_registration_enabled", foundationToken != "", "wss_ticket_issuance_enabled", len(wssTicketSeed) != 0, "status_interval", statusInterval.String(), "geoip_enabled", geoResolver != nil)
 	err = server.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {
 		<-shutdownDone
@@ -177,25 +172,8 @@ func run() error {
 	return err
 }
 
-func resolvedVersion() string {
-	if value := strings.TrimSpace(version); value != "" {
-		return value
-	}
-	if value := strings.TrimSpace(baseVersion); value != "" {
-		return value
-	}
-	return "dev"
-}
-
-func resolvedRevision() string {
-	if value := strings.TrimSpace(revision); value != "" {
-		return value
-	}
-	return "unknown"
-}
-
 func versionInfo() string {
-	return fmt.Sprintf("broker/%s revision=%s", resolvedVersion(), resolvedRevision())
+	return buildinfo.Info("broker", baseVersion)
 }
 
 // telemetryStorage is what both telemetry backends provide: the write path,

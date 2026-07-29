@@ -14,9 +14,10 @@ const desktopDirectory = fileURLToPath(new URL('..', import.meta.url));
 // still succeeds and the variable keeps its default. So renaming appVersion,
 // moving its package, or dropping the import from the desktop binary would
 // leave every release reporting "dev" to broker telemetry while the About
-// screen still showed the right number (the frontend reads wails.json
-// independently) and every other check stayed green. Link the probe with the
-// flags the packaging script really produces and read the value back.
+// screen still showed the right number (the frontend reads desktop/VERSION
+// independently, via readAppVersion in vite.config.ts) and every other check
+// stayed green. Link the probe with the flags the packaging script really
+// produces and read the value back.
 test('the packaging ldflags actually set the Go app version', () => {
   const probeVersion = '9.9.9';
   const args = versionedWailsBuildArgs([], probeVersion);

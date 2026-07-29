@@ -21,16 +21,12 @@ import (
 	"syscall"
 	"time"
 
+	"openrung/internal/buildinfo"
 	"openrung/internal/wssbridge"
 )
 
 //go:embed VERSION
 var baseVersion string
-
-var (
-	version  string
-	revision = "unknown"
-)
 
 var errVersionRequested = errors.New("version requested")
 
@@ -149,7 +145,7 @@ func serve(ctx context.Context, cfg config, logger *slog.Logger) error {
 	errCh := make(chan error, 1)
 	go func() { errCh <- server.Serve(listener) }()
 	logger.Info("starting WSS sidecar",
-		"version", resolvedVersion(), "revision", resolvedRevision(),
+		"version", buildinfo.Version(baseVersion), "revision", buildinfo.Revision(),
 		"max_sessions", cfg.MaxSessions,
 		"max_pending_handshakes", cfg.MaxPendingHandshakes,
 		"max_global_streams", cfg.MaxGlobalStreams,
@@ -467,23 +463,6 @@ func parseNonNegativeDuration(name, value string) (time.Duration, error) {
 	return parsed, nil
 }
 
-func resolvedVersion() string {
-	if value := strings.TrimSpace(version); value != "" {
-		return value
-	}
-	if value := strings.TrimSpace(baseVersion); value != "" {
-		return value
-	}
-	return "dev"
-}
-
-func resolvedRevision() string {
-	if value := strings.TrimSpace(revision); value != "" {
-		return value
-	}
-	return "unknown"
-}
-
 func versionInfo() string {
-	return fmt.Sprintf("wsssidecar/%s revision=%s", resolvedVersion(), resolvedRevision())
+	return buildinfo.Info("wsssidecar", baseVersion)
 }

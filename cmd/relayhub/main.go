@@ -18,18 +18,13 @@ import (
 
 	"github.com/openrung/openrung/punchcore"
 
+	"openrung/internal/buildinfo"
 	"openrung/internal/relayhub"
 	"openrung/internal/tunnel"
 )
 
 //go:embed VERSION
 var baseVersion string
-
-// version and revision are overridden by release builds using -ldflags.
-var (
-	version  string
-	revision = "unknown"
-)
 
 var errVersionRequested = errors.New("version requested")
 
@@ -152,8 +147,8 @@ func run() error {
 	}
 
 	slog.Info("starting relay hub",
-		"version", resolvedVersion(),
-		"revision", resolvedRevision(),
+		"version", buildinfo.Version(baseVersion),
+		"revision", buildinfo.Revision(),
 		"control_addr", cfg.ControlAddr,
 		"public_host", cfg.PublicHost,
 		"port_range", fmt.Sprintf("%d-%d", cfg.PortRangeStart, cfg.PortRangeEnd),
@@ -217,25 +212,8 @@ func parseConfig() (relayhub.Config, error) {
 	return cfg, nil
 }
 
-func resolvedVersion() string {
-	if value := strings.TrimSpace(version); value != "" {
-		return value
-	}
-	if value := strings.TrimSpace(baseVersion); value != "" {
-		return value
-	}
-	return "dev"
-}
-
-func resolvedRevision() string {
-	if value := strings.TrimSpace(revision); value != "" {
-		return value
-	}
-	return "unknown"
-}
-
 func versionInfo() string {
-	return fmt.Sprintf("relayhub/%s revision=%s", resolvedVersion(), resolvedRevision())
+	return buildinfo.Info("relayhub", baseVersion)
 }
 
 func controlListener(cfg relayhub.Config) (net.Listener, error) {

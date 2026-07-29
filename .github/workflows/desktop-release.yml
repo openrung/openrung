@@ -3,7 +3,10 @@ name: desktop-release
 # Builds the OpenRung desktop app for macOS, Linux, and Windows on their native
 # runners (Wails cannot cross-compile — it links each OS's native webview), with
 # sing-box bundled into each. Run manually (Actions → desktop-release → Run) or
-# on a version tag. Artifacts appear on the run's summary page.
+# on a desktop-vX.Y.Z tag. Artifacts appear on the run's summary page.
+#
+# Historical releases up to v0.1.3 live in the retired bare v* tag namespace;
+# new tags always carry the component prefix.
 on:
   workflow_dispatch:
     inputs:
@@ -11,11 +14,11 @@ on:
         description: sing-box version to bundle (no leading v)
         default: "1.14.0-alpha.35"
   push:
-    # v[0-9]*, not v*: the glob's * matches any run of non-/ characters, so a
-    # bare v* also matches volunteer-v0.1.0 and would publish a desktop release
-    # onto the volunteer app's tag. Requiring a digit after the v keeps the
-    # existing v0.1.x convention while matching desktop tags only.
-    tags: ["v[0-9]*"]
+    # desktop-v[0-9]*, not desktop-v*: the glob's * matches any run of non-/
+    # characters, so desktop-v* would also match desktop-volunteer-v0.1.1 and
+    # publish a desktop release onto the volunteer app's tag. Requiring a digit
+    # after the v keeps this workflow on desktop tags only.
+    tags: ["desktop-v[0-9]*"]
 
 env:
   # sing-box release to bundle. Bump as needed; must exist as a GitHub release.
@@ -34,25 +37,29 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if ! product_version="$(jq -er '.info.productVersion | select(type == "string")' desktop/wails.json)"; then
-            echo "desktop/wails.json info.productVersion must be a string" >&2
+          product_version="$(tr -d '\r\n' < desktop/VERSION)"
+          if ! printf '%s\n' "$product_version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "invalid desktop/VERSION \"$product_version\" (want X.Y.Z)" >&2
             exit 1
           fi
-          if ! printf '%s\n' "$product_version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
-            echo "invalid desktop/wails.json info.productVersion \"$product_version\" (want X.Y.Z)" >&2
+          # wails.json carries a copy for the native package metadata; refuse
+          # to release when it has drifted from canonical desktop/VERSION.
+          config_copy="$(jq -r '.info.productVersion' desktop/wails.json)"
+          if [ "$config_copy" != "$product_version" ]; then
+            echo "desktop/wails.json info.productVersion ($config_copy) disagrees with desktop/VERSION ($product_version); desktop/VERSION is canonical" >&2
             exit 1
           fi
 
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            expected_tag="v$product_version"
+            expected_tag="desktop-v$product_version"
             if [ "$GITHUB_REF_NAME" != "$expected_tag" ]; then
-              echo "desktop release tag $GITHUB_REF_NAME disagrees with desktop/wails.json info.productVersion ($product_version); expected $expected_tag" >&2
+              echo "desktop release tag $GITHUB_REF_NAME disagrees with desktop/VERSION ($product_version); expected $expected_tag" >&2
               exit 1
             fi
           fi
 
           echo "product_version=$product_version" >> "$GITHUB_OUTPUT"
-          echo "desktop/wails.json info.productVersion -> $product_version"
+          echo "desktop/VERSION -> $product_version"
 
   build:
     needs: version
@@ -132,12 +139,12 @@ jobs:
           if-no-files-found: error
 
   # Publish a GitHub Release with all three binaries attached. Runs only for
-  # desktop `vX.Y.Z` tag pushes (not manual dispatch, which stays artifact-only
+  # `desktop-vX.Y.Z` tag pushes (not manual dispatch, which stays artifact-only
   # for testing). Requires version validation and all three build jobs to
   # succeed — we don't ship a partial release.
   release:
     needs: [version, build]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the tag's GitHub Release + upload assets

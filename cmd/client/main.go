@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	_ "embed"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,11 +16,15 @@ import (
 
 	"github.com/openrung/openrung/punchcore"
 
+	"openrung/internal/buildinfo"
 	"openrung/internal/client"
 	"openrung/internal/clienttelemetry"
 	"openrung/internal/punch"
 	"openrung/internal/relay"
 )
+
+//go:embed VERSION
+var baseVersion string
 
 // defaultPunchPort is the hub punch coordinator port assumed when -punch-url is
 // not given (the relay's public host is the hub for tunnel relays).
@@ -44,12 +49,19 @@ func run(args []string) error {
 		return runConfig(args[1:])
 	case "connect":
 		return runConnect(args[1:])
+	case "-version", "--version", "version":
+		fmt.Println(versionInfo())
+		return nil
 	case "-h", "--help", "help":
 		printUsage()
 		return nil
 	default:
 		return usageError()
 	}
+}
+
+func versionInfo() string {
+	return buildinfo.Info("client", baseVersion)
 }
 
 func runCheck(args []string) error {
@@ -453,6 +465,7 @@ Commands:
   check    Fetch relay candidates and print the selected usable relay.
   config   Generate a sing-box TUN client config for the selected relay.
   connect  Generate a config and run sing-box to route traffic through OpenRung.
+  version  Print the client version and exit.
 
 Common flags:
   -mtu            Override the generated TUN MTU, e.g. -mtu 1280 for IPv6 path tests.

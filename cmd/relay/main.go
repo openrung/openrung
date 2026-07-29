@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"openrung/internal/buildinfo"
 	"openrung/internal/relay"
 	"openrung/internal/relayruntime"
 	"openrung/internal/tunnel"
@@ -29,12 +30,6 @@ import (
 
 //go:embed VERSION
 var baseVersion string
-
-// version and revision are overridden by release builds using -ldflags.
-var (
-	version  string
-	revision = "unknown"
-)
 
 func main() {
 	var cfg cliConfig
@@ -452,7 +447,7 @@ func run(cfg cliConfig) error {
 		cfg.TunnelMode = cfg.Mode == "tunnel"
 	}
 	if !cfg.PrintConfigOnly {
-		slog.Info("starting relay", "version", resolvedVersion(), "revision", resolvedRevision())
+		slog.Info("starting relay", "version", buildinfo.Version(baseVersion), "revision", buildinfo.Revision())
 	}
 
 	if cfg.TunnelMode {
@@ -911,29 +906,14 @@ func register(ctx context.Context, broker *relayruntime.BrokerClient, cfg cliCon
 	return desc, nil
 }
 
-func resolvedVersion() string {
-	if value := strings.TrimSpace(version); value != "" {
-		return value
-	}
-	if value := strings.TrimSpace(baseVersion); value != "" {
-		return value
-	}
-	return "dev"
-}
-
-func resolvedRevision() string {
-	if value := strings.TrimSpace(revision); value != "" {
-		return value
-	}
-	return "unknown"
-}
-
+// reportedRelayVersion is the relay_version identity sent to the broker and
+// hub, not just display output.
 func reportedRelayVersion() string {
-	return "relay/" + resolvedVersion()
+	return "relay/" + buildinfo.Version(baseVersion)
 }
 
 func versionInfo() string {
-	return fmt.Sprintf("%s revision=%s", reportedRelayVersion(), resolvedRevision())
+	return fmt.Sprintf("%s revision=%s", reportedRelayVersion(), buildinfo.Revision())
 }
 
 func heartbeat(ctx context.Context, broker *relayruntime.BrokerClient, id, leaseToken string) error {
