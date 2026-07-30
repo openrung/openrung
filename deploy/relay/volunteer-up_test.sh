@@ -388,7 +388,28 @@ write_env() {
 
 run_volunteer_up() {
     run_scenario=$1
-    if PATH="$FAKE_BIN:$PATH" \
+    shift
+    if env "$@" \
+        PATH="$FAKE_BIN:$PATH" \
+        SIM_DIR="$SIM_DIR" \
+        DOCKER_LOG="$DOCKER_LOG" \
+        SIM_SCENARIO="$run_scenario" \
+        "$TEST_SHELL" "$RUN_SCRIPT" >"$OUTPUT" 2>&1; then
+        RUN_RC=0
+    else
+        RUN_RC=$?
+    fi
+}
+
+run_volunteer_up_first_run() {
+    # First-run path: no env file, no prior container. OPENRUNG_PUBLIC_HOST
+    # skips public-IP detection; the script never prompts, so no terminal
+    # handling is needed.
+    run_scenario=$1
+    shift
+    if env "$@" \
+        OPENRUNG_PUBLIC_HOST=8.8.8.8 \
+        PATH="$FAKE_BIN:$PATH" \
         SIM_DIR="$SIM_DIR" \
         DOCKER_LOG="$DOCKER_LOG" \
         SIM_SCENARIO="$run_scenario" \
@@ -531,6 +552,118 @@ test_successful_update_promotes_candidate() {
     else
         fail "successful candidate update: candidate was not promoted before the old container was removed"
     fi
+    # The suite's env files carry no label — exactly the legacy shape — so a
+    # successful update must backfill a pinned generated name (otherwise the
+    # relay binary draws a fresh random name every restart), keep the identity
+    # line untouched, and close with the banner plus the by-name thanks last.
+    backfilled_label=$(sed -n 's/^OPENRUNG_LABEL=//p' "$ENV_FILE" | tail -1)
+    if [ -n "$backfilled_label" ] \
+        && grep -Eq '^OPENRUNG_LABEL=[a-z]+-[a-z]+$' "$ENV_FILE" \
+        && grep -q '^OPENRUNG_IDENTITY_SEED=test-identity-seed$' "$ENV_FILE" \
+        && tail -n 1 "$OUTPUT" | grep -q "thank you for running '$backfilled_label', together we will make the internet open again" \
+        && grep -qF '| (_) | |_) |' "$OUTPUT"; then
+        pass
+    else
+        fail "successful candidate update: unnamed env was not backfilled with a pinned name, or banner/final line is wrong"
+    fi
+}
+
+test_update_pins_override_label_and_respects_existing() {
+    reset_simulation
+    write_env
+    boundary_label=$(printf '%063d' 0 | tr '0' 'b')
+    run_volunteer_up ok "OPENRUNG_LABEL=$boundary_label"
+    if [ "$RUN_RC" -eq 0 ] \
+        && grep -qxF "OPENRUNG_LABEL=$boundary_label" "$ENV_FILE" \
+        && tail -n 1 "$OUTPUT" | grep -q "thank you for running '$boundary_label'"; then
+        pass
+    else
+        fail "backfill override: a 63-character OPENRUNG_LABEL was not pinned verbatim into the unnamed env (exit $RUN_RC)"
+    fi
+    # A named env file is authoritative: a later override is noted and ignored,
+    # and no duplicate label line is appended.
+    reset_simulation
+    run_volunteer_up ok OPENRUNG_LABEL=other-name
+    if [ "$RUN_RC" -eq 0 ] \
+        && grep -qxF "OPENRUNG_LABEL=$boundary_label" "$ENV_FILE" \
+        && ! grep -q '^OPENRUNG_LABEL=other-name$' "$ENV_FILE" \
+        && [ "$(grep -c '^OPENRUNG_LABEL=' "$ENV_FILE")" -eq 1 ] \
+        && grep -q 'does not change an existing name' "$OUTPUT"; then
+        pass
+    else
+        fail "named env: OPENRUNG_LABEL override was not ignored with a note (exit $RUN_RC)"
+    fi
+}
+
+test_overlong_label_is_refused_before_mutation() {
+    # relay.NormalizeLabel caps labels at 63 characters and the relay exits on
+    # longer ones; the helper must refuse before persisting anything, or the
+    # bad label would crash-loop every later run.
+    reset_simulation
+    write_env
+    overlong_label=$(printf '%064d' 0 | tr '0' 'c')
+    run_volunteer_up ok "OPENRUNG_LABEL=$overlong_label"
+    assert_nonzero "$RUN_RC" "64-character label"
+    assert_no_mutating_docker_calls "64-character label"
+    assert_prior_is_live "64-character label"
+    if grep -q '63' "$OUTPUT"; then
+        pass
+    else
+        fail "64-character label: refusal does not mention the 63-character limit"
+    fi
+}
+
+test_first_run_generates_label_and_promotes() {
+    reset_simulation
+    rm -f "$CONTAINERS/openrung-relay" "$ENV_FILE"
+    run_volunteer_up_first_run ok
+    if [ "$RUN_RC" -eq 0 ]; then
+        pass
+    else
+        fail "first run: expected success, got exit $RUN_RC"
+    fi
+    if grep -Eq '^OPENRUNG_LABEL=[a-z]+-[a-z]+$' "$ENV_FILE" \
+        && grep -q '^OPENRUNG_PUBLIC_HOST=8.8.8.8$' "$ENV_FILE" \
+        && grep -Eq '^OPENRUNG_IDENTITY_SEED=..*' "$ENV_FILE"; then
+        pass
+    else
+        fail "first run: env file is missing the generated label, public host, or identity seed"
+    fi
+    assert_candidate_is_live "first run"
+    if grep -q '^stop ' "$DOCKER_LOG" || grep -q '^rm ' "$DOCKER_LOG"; then
+        fail "first run: stopped or removed a container that did not exist"
+    else
+        pass
+    fi
+    first_run_label=$(sed -n 's/^OPENRUNG_LABEL=//p' "$ENV_FILE" | tail -1)
+    if tail -n 1 "$OUTPUT" | grep -q "thank you for running '$first_run_label', together we will make the internet open again"; then
+        pass
+    else
+        fail "first run: the final line does not thank the volunteer by relay name"
+    fi
+    # The openrung banner precedes the thank-you (fixed strings: the art is
+    # full of regex metacharacters).
+    if grep -qF '| (_) | |_) |' "$OUTPUT"; then
+        pass
+    else
+        fail "first run: the openrung ASCII banner is missing"
+    fi
+}
+
+test_first_run_honors_explicit_label() {
+    reset_simulation
+    rm -f "$CONTAINERS/openrung-relay" "$ENV_FILE"
+    run_volunteer_up_first_run ok OPENRUNG_LABEL=my.relay_1
+    if [ "$RUN_RC" -eq 0 ] && grep -q '^OPENRUNG_LABEL=my.relay_1$' "$ENV_FILE"; then
+        pass
+    else
+        fail "explicit label: OPENRUNG_LABEL was not written verbatim (exit $RUN_RC)"
+    fi
+    if tail -n 1 "$OUTPUT" | grep -q "thank you for running 'my.relay_1', together we will make the internet open again"; then
+        pass
+    else
+        fail "explicit label: the final line does not thank the volunteer by relay name"
+    fi
 }
 
 expect_public_ipv4() {
@@ -581,6 +714,10 @@ test_failed_candidate_start_restores_prior
 test_crash_looping_candidate_restores_prior
 test_unregistered_candidate_restores_prior
 test_successful_update_promotes_candidate
+test_update_pins_override_label_and_respects_existing
+test_overlong_label_is_refused_before_mutation
+test_first_run_generates_label_and_promotes
+test_first_run_honors_explicit_label
 test_special_ipv4_ranges
 
 if [ "$FAIL" -ne 0 ]; then

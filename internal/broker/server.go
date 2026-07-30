@@ -123,6 +123,7 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 	if cfg.DashboardToken != "" && querier != nil {
 		dashboard := newDashboardServer(cfg.DashboardToken, querier)
 		dashboard.relayDisplays = relayDisplayResolver(store)
+		dashboard.relayDirectory = store
 		dashboard.register(mux)
 	}
 

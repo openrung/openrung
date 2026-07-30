@@ -18,17 +18,25 @@
 # (OPENRUNG_IDENTITY_SEED, minted once on first run) survives. To change other
 # settings, edit /etc/openrung/relay.env and re-run.
 #
-# Overridable via env — pass through sudo, e.g.
-#   curl -fsSL .../volunteer-up.sh | sudo env OPENRUNG_PUBLIC_HOST=203.0.113.7 sh
+# Overridable via env — pass through sudo, e.g. to name your relay:
+#   curl -fsSL .../volunteer-up.sh | sudo env OPENRUNG_LABEL=my-relay sh
 #   OPENRUNG_IMAGE        image to run (default ghcr.io/openrung/openrung-relay:main)
 #   OPENRUNG_BROKER_URL   broker to register with (default the broker's direct
 #                         TLS origin — the CDN front challenges datacenter IPs)
 #   OPENRUNG_PUBLIC_HOST  public IP/DNS clients use to reach this relay
 #                         (skips auto-detection; required on the first run when
 #                         detection is unavailable)
-#   OPENRUNG_LABEL        optional friendly name shown in the broker dashboard
+#   OPENRUNG_LABEL        relay name shown in the public relay directory
+#                         (letters, digits, '.', '_', '-'; at most 63
+#                         characters — the relay's own label rules); when
+#                         unset, the first run generates a random
+#                         adjective-noun name in the fleet style. A re-run
+#                         against an env file that has no name pins one the
+#                         same way, so relays set up before naming existed
+#                         stop changing their dashboard name on every restart.
 # Overrides configure the FIRST run; once /etc/openrung/relay.env exists it is
-# authoritative and overrides are ignored (edit the file instead).
+# authoritative and overrides are ignored (edit the file instead). The script
+# never prompts — it is safe under cloud-init and any other automation.
 #
 # POSIX sh on purpose: this must run on whatever /bin/sh the volunteer's
 # distro ships (dash, busybox ash, bash).
@@ -47,6 +55,47 @@ set -eu
 
 die() { echo "volunteer-up: error: $*" >&2; exit 1; }
 log() { echo "volunteer-up: $*"; }
+
+# Default relay names: the same adjective-noun style the fleet provisioning
+# helpers use (lightsail-up.sh / hetzner-up.sh), so volunteer relays show up
+# in the dashboard alongside fleet names instead of as raw relay-ID hex. The
+# label is published in the relay directory: a generated name is also the
+# privacy-safe default — never derive one from the hostname or username.
+ADJECTIVES='happy grumpy glorious sleepy brave clever gentle jolly mighty nimble plucky quiet rapid shiny snappy spry sturdy sunny swift witty zesty breezy cosmic dapper eager fuzzy golden hardy lucky merry noble proud quirky rustic silly valiant'
+NOUNS='hippo walrus castle otter falcon badger lantern comet maple harbor meadow beacon pebble willow cactus cobra ferret gecko heron ibex jaguar koala lemur marmot narwhal ocelot panther quokka raven salmon tapir urchin viper wombat yak zebra'
+
+pick_word() { # number word... — prints word[number % count]
+    pw_i=$1
+    shift
+    pw_i=$((pw_i % $#))
+    while [ "$pw_i" -gt 0 ]; do
+        shift
+        pw_i=$((pw_i - 1))
+    done
+    printf '%s' "$1"
+}
+
+random_number() {
+    # POSIX sh has no $RANDOM; cksum is in POSIX (and busybox) and turns
+    # /dev/urandom bytes into a decimal. Naming needs no crypto strength.
+    head -c 8 /dev/urandom | cksum | tr -s ' ' | cut -d ' ' -f 1
+}
+
+random_label() {
+    # shellcheck disable=SC2086
+    printf '%s-%s' "$(pick_word "$(random_number)" $ADJECTIVES)" "$(pick_word "$(random_number)" $NOUNS)"
+}
+
+# Mirrors the relay binary's own label rules (relay.NormalizeLabel,
+# internal/relay/types.go): slug charset, at most 63 characters. The label is
+# ASCII-only after the charset check, so ${#...} counts characters exactly.
+# Enforcing the limit here matters because the relay exits at startup on an
+# invalid label: a bad value persisted into relay.env would crash-loop every
+# later run until someone edits the file by hand.
+validate_label() { # label
+    case "$1" in '' | *[!A-Za-z0-9._-]*) return 1 ;; esac
+    [ "${#1}" -le 63 ]
+}
 
 # Strict dotted-quad, publicly-routable IPv4. The detection services' responses
 # are untrusted input headed for the env file and the public relay directory: a
@@ -262,7 +311,8 @@ main() {
     case "$BROKER_URL" in *[![:graph:]]* | '') die "OPENRUNG_BROKER_URL is empty or contains whitespace/control characters" ;; esac
     case "$IMAGE" in *[!A-Za-z0-9:/@._-]* | '') die "OPENRUNG_IMAGE contains unexpected characters" ;; esac
     if [ -n "${OPENRUNG_LABEL:-}" ]; then
-        case "$OPENRUNG_LABEL" in *[!A-Za-z0-9._-]*) die "OPENRUNG_LABEL may use only letters, digits, '.', '_', '-'" ;; esac
+        validate_label "$OPENRUNG_LABEL" \
+            || die "OPENRUNG_LABEL may use only letters, digits, '.', '_', '-', and at most 63 characters (the relay refuses longer labels at startup)"
     fi
 
     # The Foundation conversion workflow deliberately uses this same canonical
@@ -333,7 +383,28 @@ main() {
 
     if [ -f "$ENV_FILE" ]; then
         log "reusing existing $ENV_FILE (stable relay identity preserved)"
-        if [ -n "${OPENRUNG_BROKER_URL:-}" ] || [ -n "${OPENRUNG_PUBLIC_HOST:-}" ] || [ -n "${OPENRUNG_LABEL:-}" ]; then
+        # Env files written before naming existed carry no label, and the
+        # relay binary then generates a fresh random name on every restart
+        # (cmd/relay/main.go) — the dashboard name churns. Pin one: the
+        # OPENRUNG_LABEL override when given, else a generated name. Appending
+        # is authoritative under docker's last-duplicate-wins --env-file
+        # semantics and never rewrites the identity lines above it.
+        effective_label="$(sed -n 's/^OPENRUNG_LABEL=//p' "$ENV_FILE" | tail -1)" || effective_label=""
+        if [ -z "$effective_label" ]; then
+            LABEL="${OPENRUNG_LABEL:-}"
+            if [ -z "$LABEL" ]; then
+                LABEL="$(random_label)"
+                [ -n "$LABEL" ] || die "could not generate a relay name"
+            fi
+            umask 077
+            { cat "$ENV_FILE" && printf 'OPENRUNG_LABEL=%s\n' "$LABEL"; } >"$ENV_FILE.tmp" \
+                || die "could not stage the relay name into $ENV_FILE.tmp"
+            mv "$ENV_FILE.tmp" "$ENV_FILE"
+            log "pinned relay name '${LABEL}' into $ENV_FILE (this relay was unnamed; its dashboard name changed on every restart)"
+        elif [ -n "${OPENRUNG_LABEL:-}" ]; then
+            log "note: OPENRUNG_LABEL does not change an existing name — edit $ENV_FILE and re-run instead"
+        fi
+        if [ -n "${OPENRUNG_BROKER_URL:-}" ] || [ -n "${OPENRUNG_PUBLIC_HOST:-}" ]; then
             log "note: OPENRUNG_* overrides do not change an existing $ENV_FILE — edit that file and re-run instead"
         fi
         # Diagnostics below must name the broker the relay actually uses: the
@@ -351,8 +422,14 @@ main() {
             case "$PUBLIC_HOST" in *[!A-Za-z0-9.:-]* | '') die "OPENRUNG_PUBLIC_HOST contains unexpected characters" ;; esac
         fi
 
+        LABEL="${OPENRUNG_LABEL:-}"
+        if [ -z "$LABEL" ]; then
+            LABEL="$(random_label)"
+            [ -n "$LABEL" ] || die "could not generate a relay name"
+        fi
+
         umask 077
-        install -d -m 700 /etc/openrung
+        install -d -m 700 "${ENV_FILE%/*}"
         # Minted once per host: the broker derives the stable relay ID from
         # this seed (spec openrung-relay-identity-v1), so the relay keeps one
         # identity across restarts and updates. The seed IS the relay's Ed25519
@@ -364,14 +441,14 @@ main() {
             printf 'OPENRUNG_BROKER_URL=%s\n' "$BROKER_URL"
             printf 'OPENRUNG_PUBLIC_HOST=%s\n' "$PUBLIC_HOST"
             printf 'OPENRUNG_IDENTITY_SEED=%s\n' "$SEED"
-            if [ -n "${OPENRUNG_LABEL:-}" ]; then printf 'OPENRUNG_LABEL=%s\n' "$OPENRUNG_LABEL"; fi
+            printf 'OPENRUNG_LABEL=%s\n' "$LABEL"
             # The binary's default listen host is '::' (dual-stack, the fleet
             # posture). Pin the IPv4 wildcard only when the kernel has no IPv6
             # support at all, where a '::' bind cannot work.
             if [ ! -e /proc/net/if_inet6 ]; then printf 'OPENRUNG_LISTEN_HOST=0.0.0.0\n'; fi
         } >"$ENV_FILE.tmp"
         mv "$ENV_FILE.tmp" "$ENV_FILE"
-        log "wrote $ENV_FILE (root-owned, mode 0600) with public host ${PUBLIC_HOST}"
+        log "wrote $ENV_FILE (root-owned, mode 0600) with public host ${PUBLIC_HOST} and relay name '${LABEL}'"
     fi
 
     log "pulling $IMAGE"
@@ -468,6 +545,33 @@ main() {
     log "  logs:    docker logs -f $CONTAINER"
     log "  update:  re-run the same one-line command (identity in $ENV_FILE is preserved)"
     log "  remove:  docker rm -f $CONTAINER   # and delete $ENV_FILE to forget the relay identity"
+    final_label="$(sed -n 's/^OPENRUNG_LABEL=//p' "$ENV_FILE" | tail -1)" || final_label=""
+    # Quoted heredoc: the art's backslashes and backtick stay literal. figlet
+    # "standard", 47 columns — fits any 80-column terminal.
+    cat <<'ART'
+
+  ___  _ __   ___ _ __  _ __ _   _ _ __   __ _
+ / _ \| '_ \ / _ \ '_ \| '__| | | | '_ \ / _` |
+| (_) | |_) |  __/ | | | |  | |_| | | | | (_| |
+ \___/| .__/ \___|_| |_|_|   \__,_|_| |_|\__, |
+      |_|                                |___/
+
+ART
+    # Bold only when stdout is a terminal, so piped output stays plain text.
+    if [ -t 1 ]; then
+        thanks_bold=$(printf '\033[1m')
+        thanks_reset=$(printf '\033[0m')
+    else
+        thanks_bold=''
+        thanks_reset=''
+    fi
+    if [ -n "$final_label" ]; then
+        printf "%sthank you for running '%s', together we will make the internet open again%s\n" \
+            "$thanks_bold" "$final_label" "$thanks_reset"
+    else
+        printf '%sthank you for volunteering, together we will make the internet open again%s\n' \
+            "$thanks_bold" "$thanks_reset"
+    fi
 }
 
 main "$@"
