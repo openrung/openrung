@@ -544,10 +544,31 @@ main() {
     log "  update:  re-run the same one-line command (identity in $ENV_FILE is preserved)"
     log "  remove:  docker rm -f $CONTAINER   # and delete $ENV_FILE to forget the relay identity"
     final_label="$(sed -n 's/^OPENRUNG_LABEL=//p' "$ENV_FILE" | tail -1)" || final_label=""
-    if [ -n "$final_label" ]; then
-        log "thank you for running '${final_label}' — you are helping make the internet open again"
+    # Quoted heredoc: the art's backslashes and backtick stay literal. figlet
+    # "standard", 47 columns — fits any 80-column terminal.
+    cat <<'ART'
+
+  ___  _ __   ___ _ __  _ __ _   _ _ __   __ _
+ / _ \| '_ \ / _ \ '_ \| '__| | | | '_ \ / _` |
+| (_) | |_) |  __/ | | | |  | |_| | | | | (_| |
+ \___/| .__/ \___|_| |_|_|   \__,_|_| |_|\__, |
+      |_|                                |___/
+
+ART
+    # Bold only when stdout is a terminal, so piped output stays plain text.
+    if [ -t 1 ]; then
+        thanks_bold=$(printf '\033[1m')
+        thanks_reset=$(printf '\033[0m')
     else
-        log "thank you for volunteering — you are helping make the internet open again"
+        thanks_bold=''
+        thanks_reset=''
+    fi
+    if [ -n "$final_label" ]; then
+        printf "%sthank you for running '%s', together we will make the internet open again%s\n" \
+            "$thanks_bold" "$final_label" "$thanks_reset"
+    else
+        printf '%sthank you for volunteering, together we will make the internet open again%s\n' \
+            "$thanks_bold" "$thanks_reset"
     fi
 }
 

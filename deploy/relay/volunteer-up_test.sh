@@ -553,11 +553,12 @@ test_successful_update_promotes_candidate() {
         fail "successful candidate update: candidate was not promoted before the old container was removed"
     fi
     # The suite's env files carry no label, so the closing line uses the
-    # generic wording; either way, thanking the volunteer must come last.
-    if tail -n 1 "$OUTPUT" | grep -q 'thank you for volunteering'; then
+    # generic wording; either way, the banner shows and thanks come last.
+    if tail -n 1 "$OUTPUT" | grep -q 'thank you for volunteering, together we will make the internet open again' \
+        && grep -qF '| (_) | |_) |' "$OUTPUT"; then
         pass
     else
-        fail "successful candidate update: the final line does not thank the volunteer"
+        fail "successful candidate update: banner or final thank-you line is wrong"
     fi
 }
 
@@ -584,10 +585,17 @@ test_first_run_generates_label_and_promotes() {
         pass
     fi
     first_run_label=$(sed -n 's/^OPENRUNG_LABEL=//p' "$ENV_FILE" | tail -1)
-    if tail -n 1 "$OUTPUT" | grep -q "thank you for running '$first_run_label'"; then
+    if tail -n 1 "$OUTPUT" | grep -q "thank you for running '$first_run_label', together we will make the internet open again"; then
         pass
     else
         fail "first run: the final line does not thank the volunteer by relay name"
+    fi
+    # The openrung banner precedes the thank-you (fixed strings: the art is
+    # full of regex metacharacters).
+    if grep -qF '| (_) | |_) |' "$OUTPUT"; then
+        pass
+    else
+        fail "first run: the openrung ASCII banner is missing"
     fi
 }
 
@@ -600,7 +608,7 @@ test_first_run_honors_explicit_label() {
     else
         fail "explicit label: OPENRUNG_LABEL was not written verbatim (exit $RUN_RC)"
     fi
-    if tail -n 1 "$OUTPUT" | grep -q "thank you for running 'my.relay_1'"; then
+    if tail -n 1 "$OUTPUT" | grep -q "thank you for running 'my.relay_1', together we will make the internet open again"; then
         pass
     else
         fail "explicit label: the final line does not thank the volunteer by relay name"
