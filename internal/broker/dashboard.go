@@ -42,9 +42,13 @@ type dashboardServer struct {
 	tokenHash     [32]byte
 	querier       TelemetryQuerier
 	relayDisplays func() map[string]relayDisplay
-	now           func() time.Time
-	mu            sync.Mutex
-	sessions      map[string]time.Time
+	// relayDirectory feeds the relays page the currently registered descriptor
+	// set; nil (only in tests that never exercise that page) renders every
+	// relay as offline.
+	relayDirectory relayDirectoryLister
+	now            func() time.Time
+	mu             sync.Mutex
+	sessions       map[string]time.Time
 }
 
 func newDashboardServer(token string, querier TelemetryQuerier) *dashboardServer {
@@ -60,9 +64,11 @@ func (d *dashboardServer) register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/telemetry/login", d.loginPage)
 	mux.HandleFunc("POST /admin/telemetry/login", d.login)
 	mux.HandleFunc("POST /admin/telemetry/logout", d.logout)
-	mux.HandleFunc("GET /admin/telemetry", d.requireAuth(d.dashboard))
+	mux.HandleFunc("GET /admin/telemetry", d.requireAuth(servePage(dashboardHTML)))
+	mux.HandleFunc("GET /admin/telemetry/relays", d.requireAuth(servePage(relaysHTML)))
 	mux.HandleFunc("GET /admin/api/telemetry/overview", d.requireAuth(d.overview))
 	mux.HandleFunc("GET /admin/api/telemetry/sessions", d.requireAuth(d.listSessions))
+	mux.HandleFunc("GET /admin/api/telemetry/relays", d.requireAuth(d.relaysPanel))
 }
 
 func (d *dashboardServer) loginPage(w http.ResponseWriter, r *http.Request) {
@@ -176,12 +182,16 @@ func requestIsHTTPS(r *http.Request) bool {
 	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
-func (d *dashboardServer) dashboard(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
-	_, _ = w.Write(dashboardHTML)
+// servePage returns a handler for one embedded dashboard page; every page
+// shares the same no-store and CSP posture.
+func servePage(html []byte) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+		_, _ = w.Write(html)
+	}
 }
 
 func (d *dashboardServer) overview(w http.ResponseWriter, r *http.Request) {
@@ -679,21 +689,37 @@ func buildTelemetryOverview(records []TelemetryRecord, appCounts map[string]int,
 	for relayID, speed := range speeds {
 		overview.SpeedTests = append(overview.SpeedTests, speedTestSummary{RelayID: relayID, Tests: speed.tests, AverageMbps: float64(speed.mbps) / float64(speed.tests) / 1000, AverageTTFBMS: float64(speed.ttfb) / float64(speed.tests)})
 	}
+	overview.SpeedTests = rankSpeedTests(overview.SpeedTests)
 	applyTelemetryRelayClasses(&overview, relayClasses)
-	sortSpeedTests(overview.SpeedTests)
 	return overview
 }
 
-// sortTopRelays and sortSpeedTests are shared by the in-memory aggregator and
-// the Postgres querier so both rank identically.
+// sortTopRelays and rankSpeedTests are shared by the in-memory aggregator and
+// the Postgres querier so both rank identically; the relay-ID tiebreaks make
+// truncation deterministic across backends when counts tie.
 func sortTopRelays(relays []relaySummary) {
 	sort.Slice(relays, func(i, j int) bool {
-		return relays[i].Successes+relays[i].Failures > relays[j].Successes+relays[j].Failures
+		if volumeI, volumeJ := relays[i].Successes+relays[i].Failures, relays[j].Successes+relays[j].Failures; volumeI != volumeJ {
+			return volumeI > volumeJ
+		}
+		return relays[i].RelayID < relays[j].RelayID
 	})
 }
 
-func sortSpeedTests(speedTests []speedTestSummary) {
-	sort.Slice(speedTests, func(i, j int) bool { return speedTests[i].AverageMbps > speedTests[j].AverageMbps })
+// rankSpeedTests returns the ten fastest relays. Like every other relay-keyed
+// overview panel, the cap keeps the response bounded even though anonymous
+// telemetry may name one fabricated relay ID per speed_test_completed event.
+func rankSpeedTests(speedTests []speedTestSummary) []speedTestSummary {
+	sort.Slice(speedTests, func(i, j int) bool {
+		if speedTests[i].AverageMbps != speedTests[j].AverageMbps {
+			return speedTests[i].AverageMbps > speedTests[j].AverageMbps
+		}
+		return speedTests[i].RelayID < speedTests[j].RelayID
+	})
+	if len(speedTests) > 10 {
+		speedTests = speedTests[:10]
+	}
+	return speedTests
 }
 
 // applyTelemetryRelayClasses decorates relay-keyed overview summaries from the

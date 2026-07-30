@@ -301,6 +301,85 @@ LIMIT $5 OFFSET $6`
 const telemetrySessionCountQuery = `WITH ` + telemetryEventsCTE + `, ` + telemetrySessionsCTE + `
 SELECT COUNT(*) FROM sessions`
 
+// telemetryRelayStatsQuery aggregates the window per relay for the relays
+// page: event-grain counts (successes, failures, speed-test sums, last seen,
+// retained class), session-grain counts (sessions, distinct clients, active
+// sessions and clients), and the modal relay_attempt_failed reason.
+// relay_events covers every relay any event named, so the LEFT JOINs lose
+// nothing: a relay in relay_sessions or relay_top_reasons necessarily has
+// relay-bearing events. Only rows whose retained node_class is non-empty are
+// returned — ingestion stamps the class solely for relays holding a live
+// registration, so the filter is what keeps anonymous telemetry naming
+// fabricated relay IDs from minting one row each (see relayTelemetryStats).
+// The trailing sentinel row (relay_id = ”) carries the overall distinct
+// count of clients active through any attested relay, which the per-relay
+// rows cannot express — one client may be active on several relays.
+const telemetryRelayStatsQuery = `WITH ` + telemetryEventsCTE + `, ` + telemetrySessionsCTE + `,
+relay_events AS (
+	SELECT
+		relay_id,
+		COUNT(*) FILTER (WHERE event IN ('connection_succeeded', 'relay_failover'))::bigint AS successes,
+		COUNT(*) FILTER (WHERE event = 'relay_attempt_failed')::bigint AS failures,
+		COUNT(*) FILTER (WHERE event = 'speed_test_completed')::bigint AS speed_tests,
+		COALESCE(SUM(download_mbps_milli) FILTER (WHERE event = 'speed_test_completed'), 0)::bigint AS mbps_milli_sum,
+		COALESCE(SUM(ttfb_ms) FILTER (WHERE event = 'speed_test_completed'), 0)::bigint AS ttfb_ms_sum,
+		MAX(received_at) AS last_seen_at,
+		COALESCE((array_agg(relay_node_class ORDER BY received_at DESC, occurred_at DESC) FILTER (WHERE relay_node_class <> ''))[1], '') AS node_class
+	FROM events
+	WHERE relay_id <> ''
+	GROUP BY relay_id
+),
+relay_sessions AS (
+	SELECT
+		relay_id,
+		COUNT(*)::bigint AS sessions,
+		COUNT(DISTINCT client_id)::bigint AS clients,
+		COUNT(*) FILTER (WHERE active)::bigint AS active_sessions,
+		COUNT(DISTINCT client_id) FILTER (WHERE active)::bigint AS active_clients
+	FROM sessions
+	WHERE relay_id <> ''
+	GROUP BY relay_id
+),
+-- The modal relay_attempt_failed reason per relay; the (occurrences DESC,
+-- reason) order makes DISTINCT ON resolve count ties to the lexicographically
+-- smallest reason, matching topFailureReason in Go.
+relay_top_reasons AS (
+	SELECT DISTINCT ON (relay_id) relay_id, reason
+	FROM (
+		SELECT relay_id,
+			CASE WHEN btrim(COALESCE(failure_reason, '')) <> '' THEN failure_reason ELSE 'unknown' END AS reason,
+			COUNT(*) AS occurrences
+		FROM events
+		WHERE event = 'relay_attempt_failed' AND relay_id <> ''
+		GROUP BY 1, 2
+	) reasons
+	ORDER BY relay_id, occurrences DESC, reason
+)
+SELECT
+	e.relay_id, e.node_class, e.successes, e.failures,
+	COALESCE(r.reason, '') AS top_failure_reason,
+	COALESCE(s.sessions, 0) AS sessions,
+	COALESCE(s.clients, 0) AS clients,
+	COALESCE(s.active_sessions, 0) AS active_sessions,
+	COALESCE(s.active_clients, 0) AS active_clients,
+	e.speed_tests, e.mbps_milli_sum, e.ttfb_ms_sum,
+	e.last_seen_at
+FROM relay_events e
+LEFT JOIN relay_sessions s USING (relay_id)
+LEFT JOIN relay_top_reasons r USING (relay_id)
+-- $5 is the broker's own set of currently registered relay IDs: a live
+-- registration attests an ID exactly like an in-window stamp does, so an
+-- online relay keeps its telemetry even when every window event was received
+-- during a lease gap. Telemetry-only (offline) IDs still need the stamp.
+WHERE e.node_class <> '' OR e.relay_id = ANY($5)
+UNION ALL
+SELECT '', '', 0, 0, '', 0, 0, 0,
+	COUNT(DISTINCT sessions.client_id) FILTER (WHERE sessions.active)::bigint,
+	0, 0, 0, NULL
+FROM sessions
+JOIN relay_events trusted ON trusted.relay_id = sessions.relay_id
+	AND (trusted.node_class <> '' OR trusted.relay_id = ANY($5))`
+
 // telemetryWindowArgs is the shared parameter list documented on the CTEs.
 // Queries that only touch the events CTE must take eventArgs — Postgres
 // rejects bound parameters a statement never references.
@@ -400,6 +479,60 @@ func (s *PostgresTelemetrySink) TelemetrySessions(now time.Time, window time.Dur
 	return page, total, nil
 }
 
+// TelemetryRelayStats implements TelemetryQuerier with one statement: the
+// events and sessions CTEs each materialize once and only per-relay rows (plus
+// the sentinel totals row) travel back to Go.
+func (s *PostgresTelemetrySink) TelemetryRelayStats(now time.Time, window time.Duration, registeredIDs []string) (relayTelemetryStats, error) {
+	if err := s.flush(); err != nil {
+		slog.Error("could not flush telemetry before read", "error", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), postgresTelemetryQueryTimeout)
+	defer cancel()
+	_, sessionArgs := telemetryWindowArgs(now, window)
+	if registeredIDs == nil {
+		// pgx encodes a nil slice as NULL, and `= ANY(NULL)` matches nothing
+		// only by accident of three-valued logic; be explicit.
+		registeredIDs = []string{}
+	}
+
+	rows, err := s.pool.Query(ctx, telemetryRelayStatsQuery, append(append([]any{}, sessionArgs...), registeredIDs)...)
+	if err != nil {
+		return relayTelemetryStats{}, fmt.Errorf("query telemetry relay stats: %w", err)
+	}
+	defer rows.Close()
+
+	stats := relayTelemetryStats{}
+	for rows.Next() {
+		var row relayStatRow
+		var successes, failures, sessions, clients, activeSessions, activeClients, speedTests, mbpsMilliSum, ttfbMSSum int64
+		var lastSeenAt *time.Time
+		if err := rows.Scan(&row.RelayID, &row.NodeClass, &successes, &failures, &row.TopFailureReason,
+			&sessions, &clients, &activeSessions, &activeClients,
+			&speedTests, &mbpsMilliSum, &ttfbMSSum, &lastSeenAt); err != nil {
+			return relayTelemetryStats{}, fmt.Errorf("scan telemetry relay stats: %w", err)
+		}
+		if row.RelayID == "" {
+			// The sentinel row carries only the overall active-client count.
+			stats.ActiveClients = int(activeClients)
+			continue
+		}
+		row.Successes, row.Failures = int(successes), int(failures)
+		row.Sessions, row.Clients = int(sessions), int(clients)
+		row.ActiveSessions, row.ActiveClients = int(activeSessions), int(activeClients)
+		row.SpeedTests = int(speedTests)
+		applyRelaySpeedAverages(&row, mbpsMilliSum, ttfbMSSum)
+		if lastSeenAt != nil {
+			row.LastSeenAt = lastSeenAt.UTC()
+		}
+		stats.Relays = append(stats.Relays, row)
+	}
+	if err := rows.Err(); err != nil {
+		return relayTelemetryStats{}, err
+	}
+	sortRelayStatRows(stats.Relays)
+	return stats, nil
+}
+
 // queryTelemetryEventAggregates runs the single event-grain statement and
 // demultiplexes its kind-tagged rows back into the shapes the overview builder
 // expects: the hourly trend (pre-filled with empty buckets so gaps render as
@@ -464,7 +597,7 @@ func (s *PostgresTelemetrySink) queryTelemetryEventAggregates(ctx context.Contex
 	if err := rows.Err(); err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
-	sortSpeedTests(speedTests)
+	speedTests = rankSpeedTests(speedTests)
 	return trend, counts, relayFailureReasons, relayClasses, speedTests, nil
 }
 
