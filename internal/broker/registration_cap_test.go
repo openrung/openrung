@@ -198,6 +198,61 @@ func TestRegisterCapFoundationDoesNotConsumeAnonymousBudget(t *testing.T) {
 	}
 }
 
+// TestRegisterCapChargesConcurrentSameIdentityOnce pins the budget cost of a
+// first registration that races itself: `limit` simultaneous registrations
+// proving the SAME previously unseen key all reserve a unit (the newIdentity
+// check runs before the store call), but they mint one relay between them —
+// the commit-race losers must hand their units back, or one identity would
+// drain the address's whole budget and 429 the next distinct relay.
+func TestRegisterCapChargesConcurrentSameIdentityOnce(t *testing.T) {
+	const limit = 4
+	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed(), MaxNewRelayIDsPerIPPerDay: limit})
+	priv := testIdentityKey(t)
+
+	// Exactly `limit` concurrent duplicates: every reservation fits, so each
+	// request must come back 201 regardless of commit order.
+	bodies := make([][]byte, limit)
+	for i := range bodies {
+		request := validRegisterRequest()
+		withIdentity(priv)(&request)
+		body, err := json.Marshal(request)
+		if err != nil {
+			t.Fatalf("marshal register request: %v", err)
+		}
+		bodies[i] = body
+	}
+	var created atomic.Int64
+	var wg sync.WaitGroup
+	for i := 0; i < limit; i++ {
+		wg.Add(1)
+		go func(body []byte) {
+			defer wg.Done()
+			recorder := httptest.NewRecorder()
+			server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/relays/register", bytes.NewReader(body)))
+			if recorder.Code == http.StatusCreated {
+				created.Add(1)
+			}
+		}(bodies[i])
+	}
+	wg.Wait()
+	if got := created.Load(); got != limit {
+		t.Fatalf("same-identity duplicates: %d of %d got 201", got, limit)
+	}
+
+	// The race must have consumed exactly one unit: limit-1 further distinct
+	// identities fit, and the one after that is over budget.
+	for i := 0; i < limit-1; i++ {
+		recorder := registerVia(t, server, func(r *relay.RegisterRequest) { r.PublicPort = 41000 + i }, nil)
+		if recorder.Code != http.StatusCreated {
+			t.Fatalf("distinct identity %d after duplicate race: expected 201, got %d: %s", i, recorder.Code, recorder.Body.String())
+		}
+	}
+	recorder := registerVia(t, server, func(r *relay.RegisterRequest) { r.PublicPort = 41100 }, nil)
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("registration past the budget: expected 429, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 // TestRegisterCapHoldsUnderConcurrency pins the atomicity of the budget: N
 // simultaneous registrations from one source must not finish with more than
 // the limit created (a check-then-record scheme let all of them pass the

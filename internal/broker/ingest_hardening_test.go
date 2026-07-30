@@ -64,6 +64,37 @@ func TestRelayIDLedger(t *testing.T) {
 	}
 }
 
+func TestRelayLedgerRememberIfNew(t *testing.T) {
+	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	ledger := newRelayIDLedger(time.Hour, 2)
+
+	if !ledger.rememberIfNew("relay_a", relay.NodeClassVolunteer, now) {
+		t.Fatal("first sighting must report new")
+	}
+	if ledger.rememberIfNew("relay_a", relay.NodeClassVolunteer, now.Add(time.Minute)) {
+		t.Fatal("covered identity reported new again")
+	}
+	// The duplicate sighting must still refresh coverage and class.
+	if class, known := ledger.lookup("relay_a", now.Add(61*time.Minute)); !known || class != relay.NodeClassVolunteer {
+		t.Fatalf("lookup after refresh = (%q, %v), want covered volunteer", class, known)
+	}
+
+	// An entry that expired re-establishes as new.
+	if !ledger.rememberIfNew("relay_a", relay.NodeClassVolunteer, now.Add(3*time.Hour)) {
+		t.Fatal("expired identity must report new again")
+	}
+
+	// At capacity the newcomer cannot be recorded, but must still report new
+	// so the registration cap keeps the reserved unit (fail closed).
+	ledger.remember("relay_b", relay.NodeClassVolunteer, now.Add(3*time.Hour))
+	if !ledger.rememberIfNew("relay_c", relay.NodeClassVolunteer, now.Add(3*time.Hour)) {
+		t.Fatal("uninsertable newcomer must still report new")
+	}
+	if _, known := ledger.lookup("relay_c", now.Add(3*time.Hour)); known {
+		t.Fatal("full ledger unexpectedly recorded the newcomer")
+	}
+}
+
 func TestGateUnknownRelayTelemetry(t *testing.T) {
 	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 	ledger := newRelayIDLedger(relayLedgerTTL, relayLedgerMaxEntries)

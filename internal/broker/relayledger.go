@@ -61,18 +61,35 @@ func newRelayIDLedger(ttl time.Duration, maxEntries int) *relayIDLedger {
 // keeps its coverage and the newcomer (most likely the attacker's own mint)
 // loses only post-expiry telemetry attribution.
 func (l *relayIDLedger) remember(id, nodeClass string, now time.Time) {
+	l.rememberIfNew(id, nodeClass, now)
+}
+
+// rememberIfNew is remember plus a verdict: whether id was NOT already
+// covered, i.e. this sighting is the one that (re)established the identity.
+// Registration uses the verdict to charge the per-IP budget exactly once per
+// identity: concurrent first registrations of the same key all pass the
+// pre-store newIdentity check and all reserve a unit, but only the request
+// whose ledger commit lands first keeps its reservation — the duplicates
+// release theirs. When the ledger is at capacity and cannot record the
+// newcomer at all it still reports true, so the reserved unit stays consumed
+// and the cap fails closed under exactly the cardinality pressure that fills
+// the ledger.
+func (l *relayIDLedger) rememberIfNew(id, nodeClass string, now time.Time) bool {
 	if id == "" {
-		return
+		return false
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if _, ok := l.seen[id]; !ok && len(l.seen) >= l.maxEntries {
+	entry, exists := l.seen[id]
+	covered := exists && now.Sub(entry.seenAt) <= l.ttl
+	if !exists && len(l.seen) >= l.maxEntries {
 		l.sweepLocked(now)
 		if len(l.seen) >= l.maxEntries {
-			return
+			return true
 		}
 	}
 	l.seen[id] = relayLedgerEntry{seenAt: now, nodeClass: nodeClass}
+	return !covered
 }
 
 // lookup returns the class last attested for id and whether id completed a

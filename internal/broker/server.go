@@ -200,7 +200,7 @@ func registerHandler(store RelayStore, cfg Config, clientIP *clientIPResolver, l
 		// pass the check and finish over the limit — and handed back on every
 		// failure path, so only registrations the store accepts consume it (a
 		// relay crash-looping on a rejected request cannot exhaust its own cap).
-		registered := false
+		keepReservation := false
 		if newIdentity && maxClass != relay.NodeClassFoundation {
 			release, allowed := newIDCap.reserve(clientIP.clientIP(r), now)
 			if !allowed {
@@ -209,7 +209,7 @@ func registerHandler(store RelayStore, cfg Config, clientIP *clientIPResolver, l
 				return
 			}
 			defer func() {
-				if !registered {
+				if !keepReservation {
 					release()
 				}
 			}()
@@ -238,8 +238,13 @@ func registerHandler(store RelayStore, cfg Config, clientIP *clientIPResolver, l
 			writeError(w, http.StatusServiceUnavailable, "could not register relay")
 			return
 		}
-		registered = true
-		ledger.remember(desc.ID, desc.NodeClass, now)
+		// Commit the identity to the ledger, and keep the reserved unit only if
+		// this request was the commit that established it: concurrent first
+		// registrations of the same stable identity all reserve (they check
+		// newIdentity before the store call), but they mint one relay between
+		// them — the losers of the commit race hand their units back so one
+		// identity can never drain more than one unit of an address's budget.
+		keepReservation = ledger.rememberIfNew(desc.ID, desc.NodeClass, now)
 		resolveRelayGeo(r.Context(), store, cfg.GeoIP, &desc)
 		slog.Info("relay registered", "relay_id", desc.ID, "node_class", desc.NodeClass, "public", desc.PublicHost, "port", desc.PublicPort, "city", desc.City, "country", desc.Country, "max_sessions", desc.MaxSessions, "version", desc.RelayVersion)
 
