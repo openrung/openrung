@@ -241,7 +241,15 @@ root-owned mode-`0600` `/etc/openrung/relay.env`, registration against the
 broker's direct TLS origin — except that no `OPENRUNG_FOUNDATION_TOKEN` is
 installed, so the broker attests the relay volunteer-class. It auto-detects
 the public IPv4 address, mints a stable `OPENRUNG_IDENTITY_SEED` once, and
-verifies the relay registers before declaring success. Re-running the same
+verifies the relay registers before declaring success. The first run also
+names the relay with a generated adjective-noun name in the fleet style (the
+name is public in the relay directory); to choose your own, pass
+`OPENRUNG_LABEL` in the one-line command as shown below (letters, digits,
+`.`, `_`, `-`; at most 63 characters — the relay's own label rules). The
+script never prompts, so cloud-init and CI can run it as-is. Re-running
+against a relay set up before naming existed pins a name into its env file
+the same way — such relays otherwise draw a fresh random name from the relay
+binary on every restart. Re-running the same
 line is the update path: the image is pulled, the serving container is retained
 as a stopped backup, and a separately named candidate must register and remain
 running without restarts before it is promoted. A failed start, crash loop, or
