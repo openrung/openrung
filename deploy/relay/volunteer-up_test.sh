@@ -400,14 +400,12 @@ run_volunteer_up() {
 }
 
 run_volunteer_up_first_run() {
-    # First-run path: no env file, no prior container. OPENRUNG_NONINTERACTIVE
-    # keeps the name prompt off even when the suite runs in a real terminal
-    # (the prompt reads /dev/tty, which exists there), and OPENRUNG_PUBLIC_HOST
-    # skips public-IP detection.
+    # First-run path: no env file, no prior container. OPENRUNG_PUBLIC_HOST
+    # skips public-IP detection; the script never prompts, so no terminal
+    # handling is needed.
     run_scenario=$1
     shift
     if env "$@" \
-        OPENRUNG_NONINTERACTIVE=1 \
         OPENRUNG_PUBLIC_HOST=8.8.8.8 \
         PATH="$FAKE_BIN:$PATH" \
         SIM_DIR="$SIM_DIR" \

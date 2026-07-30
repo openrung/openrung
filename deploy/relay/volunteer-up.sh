@@ -18,26 +18,20 @@
 # (OPENRUNG_IDENTITY_SEED, minted once on first run) survives. To change other
 # settings, edit /etc/openrung/relay.env and re-run.
 #
-# Overridable via env — pass through sudo, e.g.
-#   curl -fsSL .../volunteer-up.sh | sudo env OPENRUNG_PUBLIC_HOST=203.0.113.7 sh
+# Overridable via env — pass through sudo, e.g. to name your relay:
+#   curl -fsSL .../volunteer-up.sh | sudo env OPENRUNG_LABEL=my-relay sh
 #   OPENRUNG_IMAGE        image to run (default ghcr.io/openrung/openrung-relay:main)
 #   OPENRUNG_BROKER_URL   broker to register with (default the broker's direct
 #                         TLS origin — the CDN front challenges datacenter IPs)
 #   OPENRUNG_PUBLIC_HOST  public IP/DNS clients use to reach this relay
 #                         (skips auto-detection; required on the first run when
 #                         detection is unavailable)
-#   OPENRUNG_LABEL        relay name shown in the public relay directory
-#                         (skips the interactive prompt)
-#   OPENRUNG_NONINTERACTIVE  set to any value to never prompt (automation);
-#                         the generated default name is used
+#   OPENRUNG_LABEL        relay name shown in the public relay directory; when
+#                         unset, the first run generates a random
+#                         adjective-noun name in the fleet style
 # Overrides configure the FIRST run; once /etc/openrung/relay.env exists it is
-# authoritative and overrides are ignored (edit the file instead).
-#
-# On an interactive first run the script asks for a relay name, defaulting to
-# a generated adjective-noun name (the same style as the fleet). The prompt
-# reads /dev/tty, never stdin — stdin is the script itself under curl|sh —
-# and is skipped entirely when there is no controlling terminal, so cloud-init
-# and other automation can never hang on it.
+# authoritative and overrides are ignored (edit the file instead). The script
+# never prompts — it is safe under cloud-init and any other automation.
 #
 # POSIX sh on purpose: this must run on whatever /bin/sh the volunteer's
 # distro ships (dash, busybox ash, bash).
@@ -85,36 +79,6 @@ random_number() {
 random_label() {
     # shellcheck disable=SC2086
     printf '%s-%s' "$(pick_word "$(random_number)" $ADJECTIVES)" "$(pick_word "$(random_number)" $NOUNS)"
-}
-
-prompt_for_label() { # default — prints the label to use
-    pfl_label=$1
-    # No controlling terminal (cloud-init, CI, a detached session) or an
-    # explicit opt-out: keep the default without prompting. stdin is never
-    # consulted — under curl|sh it carries the script text.
-    if [ -n "${OPENRUNG_NONINTERACTIVE:-}" ] || ! ( exec </dev/tty ) 2>/dev/null; then
-        printf '%s' "$pfl_label"
-        return 0
-    fi
-    pfl_tries=0
-    while [ "$pfl_tries" -lt 3 ]; do
-        printf 'Name this relay — the name is public in the relay directory, so nothing personal.\nPress Enter to accept [%s]: ' "$pfl_label" >/dev/tty
-        if ! read -r pfl_answer </dev/tty; then pfl_answer=""; fi
-        if [ -z "$pfl_answer" ]; then
-            printf '%s' "$pfl_label"
-            return 0
-        fi
-        case "$pfl_answer" in
-            *[!A-Za-z0-9._-]*) printf 'Names may use only letters, digits, ".", "_", "-". Try again.\n' >/dev/tty ;;
-            *)
-                printf '%s' "$pfl_answer"
-                return 0
-                ;;
-        esac
-        pfl_tries=$((pfl_tries + 1))
-    done
-    printf 'Keeping the generated name %s.\n' "$pfl_label" >/dev/tty
-    printf '%s' "$pfl_label"
 }
 
 # Strict dotted-quad, publicly-routable IPv4. The detection services' responses
@@ -422,8 +386,8 @@ main() {
 
         LABEL="${OPENRUNG_LABEL:-}"
         if [ -z "$LABEL" ]; then
-            LABEL="$(prompt_for_label "$(random_label)")"
-            [ -n "$LABEL" ] || die "could not choose a relay name"
+            LABEL="$(random_label)"
+            [ -n "$LABEL" ] || die "could not generate a relay name"
         fi
 
         umask 077
