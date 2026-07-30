@@ -16,52 +16,59 @@ func TestRelayIDLedger(t *testing.T) {
 	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 	ledger := newRelayIDLedger(time.Hour, 3)
 
-	if ledger.knows("relay_a", now) {
+	knows := func(id string, at time.Time) bool {
+		_, known := ledger.lookup(id, at)
+		return known
+	}
+
+	if knows("relay_a", now) {
 		t.Fatal("empty ledger unexpectedly knows an ID")
 	}
-	ledger.remember("relay_a", now)
-	if !ledger.knows("relay_a", now) {
-		t.Fatal("ledger forgot a fresh ID")
+	ledger.remember("relay_a", relay.NodeClassVolunteer, now)
+	if class, known := ledger.lookup("relay_a", now); !known || class != relay.NodeClassVolunteer {
+		t.Fatalf("lookup = (%q, %v), want retained volunteer class", class, known)
 	}
-	if !ledger.knows("relay_a", now.Add(time.Hour)) {
+	if !knows("relay_a", now.Add(time.Hour)) {
 		t.Fatal("ledger dropped an ID at exactly the TTL")
 	}
-	if ledger.knows("relay_a", now.Add(time.Hour+time.Second)) {
+	if knows("relay_a", now.Add(time.Hour+time.Second)) {
 		t.Fatal("ledger kept an ID past the TTL")
 	}
 
-	// A heartbeat-style refresh must extend coverage.
-	ledger.remember("relay_a", now)
-	ledger.remember("relay_a", now.Add(time.Hour))
-	if !ledger.knows("relay_a", now.Add(90*time.Minute)) {
-		t.Fatal("refresh did not extend the ID's coverage")
+	// A heartbeat-style refresh must extend coverage, and a re-registration
+	// under a new class (volunteer converted to foundation) must retain the
+	// latest attested class.
+	ledger.remember("relay_a", relay.NodeClassVolunteer, now)
+	ledger.remember("relay_a", relay.NodeClassFoundation, now.Add(time.Hour))
+	if class, known := ledger.lookup("relay_a", now.Add(90*time.Minute)); !known || class != relay.NodeClassFoundation {
+		t.Fatalf("refreshed lookup = (%q, %v), want retained foundation class", class, known)
 	}
 
 	// At capacity with live entries the newcomer is skipped, never an eviction
 	// of a still-covered relay.
-	ledger.remember("relay_b", now.Add(time.Hour))
-	ledger.remember("relay_c", now.Add(time.Hour))
-	ledger.remember("relay_d", now.Add(time.Hour))
-	if ledger.knows("relay_d", now.Add(time.Hour)) {
+	ledger.remember("relay_b", relay.NodeClassVolunteer, now.Add(time.Hour))
+	ledger.remember("relay_c", relay.NodeClassVolunteer, now.Add(time.Hour))
+	ledger.remember("relay_d", relay.NodeClassVolunteer, now.Add(time.Hour))
+	if knows("relay_d", now.Add(time.Hour)) {
 		t.Fatal("full ledger accepted a newcomer by evicting a live entry")
 	}
-	if !ledger.knows("relay_b", now.Add(time.Hour)) {
+	if !knows("relay_b", now.Add(time.Hour)) {
 		t.Fatal("full ledger lost a live entry")
 	}
 
 	// Once entries expire, capacity frees up for newcomers again.
 	later := now.Add(3 * time.Hour)
-	ledger.remember("relay_e", later)
-	if !ledger.knows("relay_e", later) {
+	ledger.remember("relay_e", relay.NodeClassVolunteer, later)
+	if !knows("relay_e", later) {
 		t.Fatal("ledger did not sweep expired entries to admit a newcomer")
 	}
 }
 
-func TestDiscardUnknownRelayTelemetry(t *testing.T) {
+func TestGateUnknownRelayTelemetry(t *testing.T) {
 	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 	ledger := newRelayIDLedger(relayLedgerTTL, relayLedgerMaxEntries)
 	deadRelay := "relay_" + strings.Repeat("d", 32)
-	ledger.remember(deadRelay, now.Add(-time.Hour)) // registered, lease since expired
+	ledger.remember(deadRelay, relay.NodeClassVolunteer, now.Add(-time.Hour)) // registered, lease since expired
 
 	record := func(relayID, class string) TelemetryRecord {
 		return TelemetryRecord{
@@ -73,12 +80,12 @@ func TestDiscardUnknownRelayTelemetry(t *testing.T) {
 	records := []TelemetryRecord{
 		record("", ""), // no relay reference: kept
 		record("relay_"+strings.Repeat("a", 32), "volunteer"), // attested active: kept
-		record(deadRelay, ""),                        // recently leased: kept
+		record(deadRelay, ""),                        // recently leased: kept, class stamped
 		record("relay_"+strings.Repeat("f", 32), ""), // well-formed but never leased: dropped
 		record("Free Tibet VPN — best relay", ""),    // arbitrary string: dropped
 	}
 
-	kept, dropped := discardUnknownRelayTelemetry(records, ledger, now)
+	kept, dropped := gateUnknownRelayTelemetry(records, ledger, now)
 	if dropped != 2 {
 		t.Fatalf("dropped = %d, want 2", dropped)
 	}
@@ -96,9 +103,17 @@ func TestDiscardUnknownRelayTelemetry(t *testing.T) {
 			t.Fatalf("expected record %q to survive gating", want)
 		}
 	}
+	// The just-expired relay's record must carry the class the broker attested
+	// at its last lease, or the class-filtered dashboard panels would hide the
+	// relay exactly when its death is the thing worth investigating.
+	for _, r := range kept {
+		if r.Event.RelayID == deadRelay && r.RelayNodeClass != relay.NodeClassVolunteer {
+			t.Fatalf("ledger-approved record class = %q, want retained %q", r.RelayNodeClass, relay.NodeClassVolunteer)
+		}
+	}
 
 	// A nil ledger (handler unit tests) disables the gate outright.
-	all, dropped := discardUnknownRelayTelemetry(records[3:4], nil, now)
+	all, dropped := gateUnknownRelayTelemetry(records[3:4], nil, now)
 	if dropped != 0 || len(all) != 1 {
 		t.Fatalf("nil ledger dropped records: kept=%d dropped=%d", len(all), dropped)
 	}

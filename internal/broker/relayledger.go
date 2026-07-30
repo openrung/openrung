@@ -12,7 +12,7 @@ const (
 	// from a client that reconnected after days offline).
 	relayLedgerTTL = telemetryRetention
 
-	// relayLedgerMaxEntries bounds ledger memory (~60 B per entry). It is far
+	// relayLedgerMaxEntries bounds ledger memory (~80 B per entry). It is far
 	// above any plausible fleet, and with registrations capped per IP an
 	// attacker needs hundreds of IP-days to approach it.
 	relayLedgerMaxEntries = 16384
@@ -20,13 +20,16 @@ const (
 
 // relayIDLedger remembers every relay ID that completed a registration or
 // heartbeat recently — a superset of the currently-active fleet that keeps
-// covering a relay for relayLedgerTTL after its short lease expires.
+// covering a relay for relayLedgerTTL after its short lease expires — along
+// with the node class the broker attested at that lease.
 //
 // Telemetry ingestion consults it for events whose relay_id failed live
 // attestation: an ID the broker never leased within the retention window
 // cannot appear in any client's signed relay list, so such events are
 // fabricated and are discarded before they reach storage, dashboards, or
-// ranking. Registration uses it the other way around: a request re-proving a
+// ranking. Events that do match get the retained class stamped on, so a relay
+// stays attributable on the dashboards after its descriptor expires.
+// Registration uses the ledger the other way around: a request re-proving a
 // known identity is a reconnect, not a new relay, and stays outside the
 // per-IP new-identity cap.
 //
@@ -39,19 +42,25 @@ type relayIDLedger struct {
 	maxEntries int
 
 	mu   sync.Mutex
-	seen map[string]time.Time
+	seen map[string]relayLedgerEntry
+}
+
+type relayLedgerEntry struct {
+	seenAt    time.Time
+	nodeClass string
 }
 
 func newRelayIDLedger(ttl time.Duration, maxEntries int) *relayIDLedger {
-	return &relayIDLedger{ttl: ttl, maxEntries: maxEntries, seen: make(map[string]time.Time)}
+	return &relayIDLedger{ttl: ttl, maxEntries: maxEntries, seen: make(map[string]relayLedgerEntry)}
 }
 
-// remember records that id holds (or held) a broker lease at now. At capacity
-// it first drops expired entries; if the ledger is still full the new entry is
-// skipped rather than evicting an older one — under cardinality pressure the
-// long-lived fleet keeps its coverage and the newcomer (most likely the
-// attacker's own mint) loses only post-expiry telemetry attribution.
-func (l *relayIDLedger) remember(id string, now time.Time) {
+// remember records that id holds (or held) a broker lease at now, with the
+// class the broker attested for it. At capacity it first drops expired
+// entries; if the ledger is still full the new entry is skipped rather than
+// evicting an older one — under cardinality pressure the long-lived fleet
+// keeps its coverage and the newcomer (most likely the attacker's own mint)
+// loses only post-expiry telemetry attribution.
+func (l *relayIDLedger) remember(id, nodeClass string, now time.Time) {
 	if id == "" {
 		return
 	}
@@ -63,28 +72,29 @@ func (l *relayIDLedger) remember(id string, now time.Time) {
 			return
 		}
 	}
-	l.seen[id] = now
+	l.seen[id] = relayLedgerEntry{seenAt: now, nodeClass: nodeClass}
 }
 
-// knows reports whether id completed a registration or heartbeat within the
-// TTL. Expired entries are dropped on sight.
-func (l *relayIDLedger) knows(id string, now time.Time) bool {
+// lookup returns the class last attested for id and whether id completed a
+// registration or heartbeat within the TTL. Expired entries are dropped on
+// sight.
+func (l *relayIDLedger) lookup(id string, now time.Time) (nodeClass string, known bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	seenAt, ok := l.seen[id]
+	entry, ok := l.seen[id]
 	if !ok {
-		return false
+		return "", false
 	}
-	if now.Sub(seenAt) > l.ttl {
+	if now.Sub(entry.seenAt) > l.ttl {
 		delete(l.seen, id)
-		return false
+		return "", false
 	}
-	return true
+	return entry.nodeClass, true
 }
 
 func (l *relayIDLedger) sweepLocked(now time.Time) {
-	for id, seenAt := range l.seen {
-		if now.Sub(seenAt) > l.ttl {
+	for id, entry := range l.seen {
+		if now.Sub(entry.seenAt) > l.ttl {
 			delete(l.seen, id)
 		}
 	}

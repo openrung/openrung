@@ -84,7 +84,10 @@ appeared in any signed relay list, so the event is fabricated, and storing it
 would hand dashboards and relay ranking an unbounded attacker-controlled key
 space. The response's `accepted` count reflects only stored events. Failure
 reports about a relay that recently went offline are unaffected: its ID stays
-known for the full retention window after its last registration or heartbeat.
+known for the full retention window after its last registration or heartbeat,
+and such events are stored with the node class the broker attested at that
+last lease, so the relay keeps its dashboard attribution after its descriptor
+expires.
 
 Package attribution is collected on Android 10 and newer. Aggregating Android clients
 skip DNS, collapse repeated flows per application, and omit destination details.

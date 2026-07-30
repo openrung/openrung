@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"openrung/internal/relay"
 )
@@ -187,15 +188,31 @@ func registerHandler(store RelayStore, cfg Config, clientIP *clientIPResolver, l
 		// the expired-proof message the hub matches on) untouched. Legacy
 		// requests without identity fields mint a random ID, so each successful
 		// one is by definition a new identity. Foundation credentials are
-		// operator infrastructure and bypass the cap entirely.
+		// operator infrastructure: they neither hit the cap nor consume any of
+		// the address's anonymous budget.
 		newIdentity := true
 		if identityKey, err := relay.VerifyIdentity(req, now); err == nil && identityKey != nil {
-			newIdentity = !ledger.knows(relay.DeriveRelayID(identityKey), now)
+			_, known := ledger.lookup(relay.DeriveRelayID(identityKey), now)
+			newIdentity = !known
 		}
-		if newIdentity && maxClass != relay.NodeClassFoundation && !newIDCap.allows(clientIP.clientIP(r), now) {
-			w.Header().Set("Retry-After", strconv.Itoa(newRelayCapRetryAfterSeconds))
-			writeError(w, http.StatusTooManyRequests, "too many new relay registrations from this address, retry later")
-			return
+		// The budget unit is reserved atomically up front — a check here with a
+		// recording after the store call would let concurrent registrations all
+		// pass the check and finish over the limit — and handed back on every
+		// failure path, so only registrations the store accepts consume it (a
+		// relay crash-looping on a rejected request cannot exhaust its own cap).
+		registered := false
+		if newIdentity && maxClass != relay.NodeClassFoundation {
+			release, allowed := newIDCap.reserve(clientIP.clientIP(r), now)
+			if !allowed {
+				w.Header().Set("Retry-After", strconv.Itoa(newRelayCapRetryAfterSeconds))
+				writeError(w, http.StatusTooManyRequests, "too many new relay registrations from this address, retry later")
+				return
+			}
+			defer func() {
+				if !registered {
+					release()
+				}
+			}()
 		}
 
 		desc, err := store.Register(req, now, cfg.RelayLeaseTTL)
@@ -221,12 +238,8 @@ func registerHandler(store RelayStore, cfg Config, clientIP *clientIPResolver, l
 			writeError(w, http.StatusServiceUnavailable, "could not register relay")
 			return
 		}
-		// Budget is consumed only for a registration the store accepted, so a
-		// relay crash-looping on a rejected request cannot exhaust its own cap.
-		if newIdentity {
-			newIDCap.record(clientIP.clientIP(r), now)
-		}
-		ledger.remember(desc.ID, now)
+		registered = true
+		ledger.remember(desc.ID, desc.NodeClass, now)
 		resolveRelayGeo(r.Context(), store, cfg.GeoIP, &desc)
 		slog.Info("relay registered", "relay_id", desc.ID, "node_class", desc.NodeClass, "public", desc.PublicHost, "port", desc.PublicPort, "city", desc.City, "country", desc.Country, "max_sessions", desc.MaxSessions, "version", desc.RelayVersion)
 
@@ -283,7 +296,7 @@ func heartbeatHandler(store RelayStore, cfg Config, ledger *relayIDLedger) http.
 		// Refresh the ledger on every renewal: a long-lived relay that only ever
 		// heartbeats must keep its post-expiry telemetry coverage no matter how
 		// long ago it last registered.
-		ledger.remember(id, now)
+		ledger.remember(id, desc.NodeClass, now)
 
 		// Backfill relays whose registration-time lookup failed (or that
 		// registered before the broker resolved locations at all).
@@ -420,7 +433,7 @@ func seedRelayLedger(ledger *relayIDLedger, store RelayStore) {
 		return
 	}
 	for _, desc := range descriptors {
-		ledger.remember(desc.ID, now)
+		ledger.remember(desc.ID, desc.NodeClass, now)
 	}
 }
 
@@ -505,14 +518,16 @@ func validEndpointHost(host string) bool {
 // registerTextValid vets the free-form registration fields that are not
 // already constrained to a safe charset by their own validation. Unlike
 // telemetry attributes (where multi-line error detail is plausible), no
-// registration field legitimately contains any control character.
+// registration field legitimately contains any control character —
+// unicode.IsControl covers the whole Cc category, C1 (U+0080–U+009F, e.g.
+// CSI) included, not just C0 and DEL.
 func registerTextValid(req relay.RegisterRequest) bool {
 	for _, value := range []string{req.ClientID, req.RealityPublicKey, req.ShortID, req.RelayVersion, req.PunchEndpoint} {
 		if !storableText(value) {
 			return false
 		}
 		for _, r := range value {
-			if r < 0x20 || r == 0x7f {
+			if unicode.IsControl(r) {
 				return false
 			}
 		}

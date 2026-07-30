@@ -744,7 +744,7 @@ func telemetryHandler(sink TelemetrySink, relayMetrics RelayStore, clientIP *cli
 			writeError(w, http.StatusServiceUnavailable, "could not resolve telemetry relay classes")
 			return
 		}
-		records, unknownRelayEvents := discardUnknownRelayTelemetry(records, ledger, now)
+		records, unknownRelayEvents := gateUnknownRelayTelemetry(records, ledger, now)
 		if unknownRelayEvents > 0 {
 			slog.Warn("discarded telemetry events referencing unknown relays", "events", unknownRelayEvents, "source_ip", sourceIP)
 		}
@@ -802,25 +802,39 @@ func attestTelemetryRelayNodeClasses(ctx context.Context, store RelayStore, reco
 	return nil
 }
 
-// discardUnknownRelayTelemetry drops records that reference a relay ID the
+// gateUnknownRelayTelemetry drops records that reference a relay ID the
 // broker cannot vouch for: one that is malformed (relay IDs are always
 // broker-minted, so a client can only ever echo a well-formed one), or that
 // neither holds an active lease (RelayNodeClass was stamped by attestation)
 // nor held one within the ledger's window. Such IDs cannot have appeared in
 // any signed relay list a client saw, so the events are fabricated — storing
 // them would hand every dashboard GROUP BY and the relay ranking an unbounded
-// attacker-controlled key space. Records without a relay reference always
-// pass; a nil ledger disables the gate (handler tests, not production wiring).
-func discardUnknownRelayTelemetry(records []TelemetryRecord, ledger *relayIDLedger, now time.Time) ([]TelemetryRecord, int) {
+// attacker-controlled key space.
+//
+// Records the ledger vouches for get the class it retained from the relay's
+// last lease stamped on, exactly like live attestation would have: without
+// it, a relay's post-expiry events would read as unattested and the relay
+// would vanish from the class-filtered dashboard panels right when its death
+// is the thing worth investigating.
+//
+// Records without a relay reference always pass; a nil ledger disables the
+// gate (handler tests, not production wiring).
+func gateUnknownRelayTelemetry(records []TelemetryRecord, ledger *relayIDLedger, now time.Time) ([]TelemetryRecord, int) {
 	if ledger == nil {
 		return records, 0
 	}
 	kept := records[:0]
 	for _, record := range records {
 		id := record.Event.RelayID
-		if id != "" && record.RelayNodeClass == "" &&
-			(!relay.WellFormedRelayID(id) || !ledger.knows(id, now)) {
-			continue
+		if id != "" && record.RelayNodeClass == "" {
+			if !relay.WellFormedRelayID(id) {
+				continue
+			}
+			class, known := ledger.lookup(id, now)
+			if !known {
+				continue
+			}
+			record.RelayNodeClass = class
 		}
 		kept = append(kept, record)
 	}

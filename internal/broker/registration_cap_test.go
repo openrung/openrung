@@ -7,51 +7,69 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"openrung/internal/relay"
 )
 
+// reserveOK reserves one unit and fails the test on refusal.
+func reserveOK(t *testing.T, cap *newRelayCap, source string, now time.Time) func() {
+	t.Helper()
+	release, ok := cap.reserve(source, now)
+	if !ok {
+		t.Fatalf("reserve(%s, %s) refused", source, now)
+	}
+	return release
+}
+
 func TestNewRelayCap(t *testing.T) {
 	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 	cap := newNewRelayCap(2, 24*time.Hour, []string{"198.51.100.0/24"})
 
-	if !cap.allows("203.0.113.7", now) {
-		t.Fatal("fresh source refused")
-	}
-	cap.record("203.0.113.7", now)
-	cap.record("203.0.113.7", now)
-	if cap.allows("203.0.113.7", now) {
+	reserveOK(t, cap, "203.0.113.7", now)
+	reserveOK(t, cap, "203.0.113.7", now.Add(20*time.Hour))
+	if _, ok := cap.reserve("203.0.113.7", now.Add(20*time.Hour)); ok {
 		t.Fatal("source allowed past its budget")
 	}
-	if !cap.allows("203.0.113.8", now) {
-		t.Fatal("budget leaked across sources")
+	reserveOK(t, cap, "203.0.113.8", now.Add(20*time.Hour))
+
+	// The window slides: 25 h in, only the first reservation has aged out, so
+	// exactly one unit is free — a fixed window resetting at hour 24 would
+	// wrongly hand back both and allow 2× the limit in a trailing interval.
+	reserveOK(t, cap, "203.0.113.7", now.Add(25*time.Hour))
+	if _, ok := cap.reserve("203.0.113.7", now.Add(25*time.Hour)); ok {
+		t.Fatal("sliding window handed back a unit still inside the trailing 24 h")
 	}
 
-	// The window is fixed from the bucket's first entry; once it passes, the
-	// budget refills.
-	if !cap.allows("203.0.113.7", now.Add(24*time.Hour)) {
-		t.Fatal("budget did not refill after the window")
+	// A released unit (failed registration) returns to the budget.
+	release := reserveOK(t, cap, "203.0.113.9", now)
+	if _, ok := cap.reserve("203.0.113.9", now); !ok {
+		t.Fatal("second unit refused under limit")
+	}
+	if _, ok := cap.reserve("203.0.113.9", now); ok {
+		t.Fatal("budget not exhausted")
+	}
+	release()
+	release() // idempotent
+	if _, ok := cap.reserve("203.0.113.9", now); !ok {
+		t.Fatal("released unit was not returned to the budget")
 	}
 
 	// Exempt CIDRs are never counted or capped.
 	for i := 0; i < 10; i++ {
-		if !cap.allows("198.51.100.42", now) {
-			t.Fatal("exempt source refused")
-		}
-		cap.record("198.51.100.42", now)
+		reserveOK(t, cap, "198.51.100.42", now)
 	}
 
 	// IPv6 sources share one bucket per /64 — a single host holds a whole /64.
-	cap.record("2001:db8:1:2::1", now)
-	cap.record("2001:db8:1:2::ffff", now)
-	if cap.allows("2001:db8:1:2:dead:beef::1", now) {
+	reserveOK(t, cap, "2001:db8:1:2::1", now)
+	reserveOK(t, cap, "2001:db8:1:2::ffff", now)
+	if _, ok := cap.reserve("2001:db8:1:2:dead:beef::1", now); ok {
 		t.Fatal("IPv6 rotation within one /64 escaped the cap")
 	}
-	if !cap.allows("2001:db8:1:3::1", now) {
-		t.Fatal("distinct /64 was capped by a neighbour")
-	}
+	reserveOK(t, cap, "2001:db8:1:3::1", now)
 
 	// Zero picks the default; negative disables entirely.
 	if got := newNewRelayCap(0, 24*time.Hour, nil).limit; got != defaultMaxNewRelayIDsPerDay {
@@ -59,10 +77,7 @@ func TestNewRelayCap(t *testing.T) {
 	}
 	off := newNewRelayCap(-1, 24*time.Hour, nil)
 	for i := 0; i < 3; i++ {
-		off.record("203.0.113.7", now)
-	}
-	if !off.allows("203.0.113.7", now) {
-		t.Fatal("disabled cap still capped")
+		reserveOK(t, off, "203.0.113.7", now)
 	}
 }
 
@@ -157,6 +172,72 @@ func TestRegisterCapSparesKnownIdentitiesAndFoundation(t *testing.T) {
 	}
 }
 
+// TestRegisterCapFoundationDoesNotConsumeAnonymousBudget pins the other half
+// of the foundation bypass: a foundation registration must not spend the
+// address's anonymous budget either, or one foundation relay would 429 the
+// volunteer registering from the same NAT.
+func TestRegisterCapFoundationDoesNotConsumeAnonymousBudget(t *testing.T) {
+	server := NewServer(NewStore(), Config{
+		SigningSeed:               testSigningSeed(),
+		FoundationToken:           "foundation-token",
+		MaxNewRelayIDsPerIPPerDay: 1,
+	})
+
+	foundation := registerVia(t, server, func(r *relay.RegisterRequest) { r.PublicPort = 40100 }, func(r *http.Request) {
+		r.Header.Set("Authorization", "Bearer foundation-token")
+	})
+	if foundation.Code != http.StatusCreated {
+		t.Fatalf("foundation registration: expected 201, got %d: %s", foundation.Code, foundation.Body.String())
+	}
+
+	if recorder := registerVia(t, server, nil, nil); recorder.Code != http.StatusCreated {
+		t.Fatalf("anonymous registration after foundation: expected 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if recorder := registerVia(t, server, func(r *relay.RegisterRequest) { r.PublicPort = 40101 }, nil); recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("second anonymous registration: expected 429, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+// TestRegisterCapHoldsUnderConcurrency pins the atomicity of the budget: N
+// simultaneous registrations from one source must not finish with more than
+// the limit created (a check-then-record scheme let all of them pass the
+// check first and blow through the cap).
+func TestRegisterCapHoldsUnderConcurrency(t *testing.T) {
+	const limit = 4
+	const attempts = 80
+	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed(), MaxNewRelayIDsPerIPPerDay: limit})
+
+	bodies := make([][]byte, attempts)
+	for i := range bodies {
+		request := validRegisterRequest()
+		request.PublicPort = 30000 + i
+		body, err := json.Marshal(request)
+		if err != nil {
+			t.Fatalf("marshal register request: %v", err)
+		}
+		bodies[i] = body
+	}
+
+	var created atomic.Int64
+	var wg sync.WaitGroup
+	for i := 0; i < attempts; i++ {
+		wg.Add(1)
+		go func(body []byte) {
+			defer wg.Done()
+			recorder := httptest.NewRecorder()
+			server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/relays/register", bytes.NewReader(body)))
+			if recorder.Code == http.StatusCreated {
+				created.Add(1)
+			}
+		}(bodies[i])
+	}
+	wg.Wait()
+
+	if got := created.Load(); got != limit {
+		t.Fatalf("concurrent registrations created %d relays, want exactly %d", got, limit)
+	}
+}
+
 func TestRegisterCapExemptCIDRAndFailedAttempts(t *testing.T) {
 	// Rejected requests must not consume budget: a relay crash-looping on a
 	// validation error may retry far past any cap before its operator fixes it.
@@ -191,10 +272,11 @@ func TestValidateRegisterRequestFieldHardening(t *testing.T) {
 		"oversized public_host": func(r *relay.RegisterRequest) {
 			r.PublicHost = strings.Repeat("a", 60) + "." + strings.Repeat("b", 200) + ".com"
 		},
-		"junk server_name":              func(r *relay.RegisterRequest) { r.ServerName = "not a hostname\n" },
-		"NUL in client_id":              func(r *relay.RegisterRequest) { r.ClientID = "abc\x00def" },
-		"control char in relay_version": func(r *relay.RegisterRequest) { r.RelayVersion = "v1.0\x1b[31m" },
-		"oversized short_id":            func(r *relay.RegisterRequest) { r.ShortID = strings.Repeat("a", 200) },
+		"junk server_name":                 func(r *relay.RegisterRequest) { r.ServerName = "not a hostname\n" },
+		"NUL in client_id":                 func(r *relay.RegisterRequest) { r.ClientID = "abc\x00def" },
+		"C0 control char in relay_version": func(r *relay.RegisterRequest) { r.RelayVersion = "v1.0\x1b[31m" },
+		"C1 control char in relay_version": func(r *relay.RegisterRequest) { r.RelayVersion = "v1.0\u009b31m" },
+		"oversized short_id":               func(r *relay.RegisterRequest) { r.ShortID = strings.Repeat("a", 200) },
 		"junk tunnel exit_host": func(r *relay.RegisterRequest) {
 			r.Transport = relay.TransportTunnel
 			r.ExitHost = "definitely not\ta host"
