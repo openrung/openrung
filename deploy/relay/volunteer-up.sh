@@ -26,9 +26,14 @@
 #   OPENRUNG_PUBLIC_HOST  public IP/DNS clients use to reach this relay
 #                         (skips auto-detection; required on the first run when
 #                         detection is unavailable)
-#   OPENRUNG_LABEL        relay name shown in the public relay directory; when
+#   OPENRUNG_LABEL        relay name shown in the public relay directory
+#                         (letters, digits, '.', '_', '-'; at most 63
+#                         characters — the relay's own label rules); when
 #                         unset, the first run generates a random
-#                         adjective-noun name in the fleet style
+#                         adjective-noun name in the fleet style. A re-run
+#                         against an env file that has no name pins one the
+#                         same way, so relays set up before naming existed
+#                         stop changing their dashboard name on every restart.
 # Overrides configure the FIRST run; once /etc/openrung/relay.env exists it is
 # authoritative and overrides are ignored (edit the file instead). The script
 # never prompts — it is safe under cloud-init and any other automation.
@@ -79,6 +84,17 @@ random_number() {
 random_label() {
     # shellcheck disable=SC2086
     printf '%s-%s' "$(pick_word "$(random_number)" $ADJECTIVES)" "$(pick_word "$(random_number)" $NOUNS)"
+}
+
+# Mirrors the relay binary's own label rules (relay.NormalizeLabel,
+# internal/relay/types.go): slug charset, at most 63 characters. The label is
+# ASCII-only after the charset check, so ${#...} counts characters exactly.
+# Enforcing the limit here matters because the relay exits at startup on an
+# invalid label: a bad value persisted into relay.env would crash-loop every
+# later run until someone edits the file by hand.
+validate_label() { # label
+    case "$1" in '' | *[!A-Za-z0-9._-]*) return 1 ;; esac
+    [ "${#1}" -le 63 ]
 }
 
 # Strict dotted-quad, publicly-routable IPv4. The detection services' responses
@@ -295,7 +311,8 @@ main() {
     case "$BROKER_URL" in *[![:graph:]]* | '') die "OPENRUNG_BROKER_URL is empty or contains whitespace/control characters" ;; esac
     case "$IMAGE" in *[!A-Za-z0-9:/@._-]* | '') die "OPENRUNG_IMAGE contains unexpected characters" ;; esac
     if [ -n "${OPENRUNG_LABEL:-}" ]; then
-        case "$OPENRUNG_LABEL" in *[!A-Za-z0-9._-]*) die "OPENRUNG_LABEL may use only letters, digits, '.', '_', '-'" ;; esac
+        validate_label "$OPENRUNG_LABEL" \
+            || die "OPENRUNG_LABEL may use only letters, digits, '.', '_', '-', and at most 63 characters (the relay refuses longer labels at startup)"
     fi
 
     # The Foundation conversion workflow deliberately uses this same canonical
@@ -366,7 +383,28 @@ main() {
 
     if [ -f "$ENV_FILE" ]; then
         log "reusing existing $ENV_FILE (stable relay identity preserved)"
-        if [ -n "${OPENRUNG_BROKER_URL:-}" ] || [ -n "${OPENRUNG_PUBLIC_HOST:-}" ] || [ -n "${OPENRUNG_LABEL:-}" ]; then
+        # Env files written before naming existed carry no label, and the
+        # relay binary then generates a fresh random name on every restart
+        # (cmd/relay/main.go) — the dashboard name churns. Pin one: the
+        # OPENRUNG_LABEL override when given, else a generated name. Appending
+        # is authoritative under docker's last-duplicate-wins --env-file
+        # semantics and never rewrites the identity lines above it.
+        effective_label="$(sed -n 's/^OPENRUNG_LABEL=//p' "$ENV_FILE" | tail -1)" || effective_label=""
+        if [ -z "$effective_label" ]; then
+            LABEL="${OPENRUNG_LABEL:-}"
+            if [ -z "$LABEL" ]; then
+                LABEL="$(random_label)"
+                [ -n "$LABEL" ] || die "could not generate a relay name"
+            fi
+            umask 077
+            { cat "$ENV_FILE" && printf 'OPENRUNG_LABEL=%s\n' "$LABEL"; } >"$ENV_FILE.tmp" \
+                || die "could not stage the relay name into $ENV_FILE.tmp"
+            mv "$ENV_FILE.tmp" "$ENV_FILE"
+            log "pinned relay name '${LABEL}' into $ENV_FILE (this relay was unnamed; its dashboard name changed on every restart)"
+        elif [ -n "${OPENRUNG_LABEL:-}" ]; then
+            log "note: OPENRUNG_LABEL does not change an existing name — edit $ENV_FILE and re-run instead"
+        fi
+        if [ -n "${OPENRUNG_BROKER_URL:-}" ] || [ -n "${OPENRUNG_PUBLIC_HOST:-}" ]; then
             log "note: OPENRUNG_* overrides do not change an existing $ENV_FILE — edit that file and re-run instead"
         fi
         # Diagnostics below must name the broker the relay actually uses: the
