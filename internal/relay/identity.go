@@ -190,6 +190,24 @@ func DeriveRelayID(publicKey ed25519.PublicKey) string {
 	return "relay_" + hex.EncodeToString(sum[:16])
 }
 
+// WellFormedRelayID reports whether id has the shape shared by every relay ID
+// the broker has ever minted: "relay_" + 32 lowercase hex characters, whether
+// randomly generated (legacy) or derived from an identity key (DeriveRelayID).
+// Anything else in a relay_id field cannot name a real relay, so telemetry
+// ingestion uses this to discard fabricated references without a store lookup.
+func WellFormedRelayID(id string) bool {
+	const prefix = "relay_"
+	if len(id) != len(prefix)+32 || !strings.HasPrefix(id, prefix) {
+		return false
+	}
+	for _, c := range []byte(id[len(prefix):]) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // ParseIdentitySeed decodes a base64 32-byte Ed25519 seed (the same encoding
 // the broker uses for its relay-list signing key) into a private key.
 func ParseIdentitySeed(encoded string) (ed25519.PrivateKey, error) {

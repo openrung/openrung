@@ -15,6 +15,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
+
+	"openrung/internal/relay"
 )
 
 const (
@@ -706,7 +709,7 @@ func (s *JSONLTelemetrySink) compactLocked() error {
 	return nil
 }
 
-func telemetryHandler(sink TelemetrySink, relayMetrics RelayStore, clientIP *clientIPResolver) http.HandlerFunc {
+func telemetryHandler(sink TelemetrySink, relayMetrics RelayStore, clientIP *clientIPResolver, ledger *relayIDLedger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if sink == nil {
 			writeError(w, http.StatusServiceUnavailable, "telemetry is not configured")
@@ -739,6 +742,14 @@ func telemetryHandler(sink TelemetrySink, relayMetrics RelayStore, clientIP *cli
 		if err := attestTelemetryRelayNodeClasses(r.Context(), relayMetrics, records, now); err != nil {
 			slog.Error("could not attest telemetry relay classes", "records", len(records), "error", err)
 			writeError(w, http.StatusServiceUnavailable, "could not resolve telemetry relay classes")
+			return
+		}
+		records, unknownRelayEvents := gateUnknownRelayTelemetry(records, ledger, now)
+		if unknownRelayEvents > 0 {
+			slog.Warn("discarded telemetry events referencing unknown relays", "events", unknownRelayEvents, "source_ip", sourceIP)
+		}
+		if len(records) == 0 {
+			writeJSON(w, http.StatusAccepted, map[string]int{"accepted": 0})
 			return
 		}
 		if err := sink.WriteTelemetry(r.Context(), records); err != nil {
@@ -791,6 +802,64 @@ func attestTelemetryRelayNodeClasses(ctx context.Context, store RelayStore, reco
 	return nil
 }
 
+// gateUnknownRelayTelemetry drops records that reference a relay ID the
+// broker cannot vouch for: one that is malformed (relay IDs are always
+// broker-minted, so a client can only ever echo a well-formed one), or that
+// neither holds an active lease (RelayNodeClass was stamped by attestation)
+// nor held one within the ledger's window. Such IDs cannot have appeared in
+// any signed relay list a client saw, so the events are fabricated — storing
+// them would hand every dashboard GROUP BY and the relay ranking an unbounded
+// attacker-controlled key space.
+//
+// Records the ledger vouches for get the class it retained from the relay's
+// last lease stamped on, exactly like live attestation would have: without
+// it, a relay's post-expiry events would read as unattested and the relay
+// would vanish from the class-filtered dashboard panels right when its death
+// is the thing worth investigating.
+//
+// Records without a relay reference always pass; a nil ledger disables the
+// gate (handler tests, not production wiring).
+func gateUnknownRelayTelemetry(records []TelemetryRecord, ledger *relayIDLedger, now time.Time) ([]TelemetryRecord, int) {
+	if ledger == nil {
+		return records, 0
+	}
+	kept := records[:0]
+	for _, record := range records {
+		id := record.Event.RelayID
+		if id != "" && record.RelayNodeClass == "" {
+			if !relay.WellFormedRelayID(id) {
+				continue
+			}
+			class, known := ledger.lookup(id, now)
+			if !known {
+				continue
+			}
+			record.RelayNodeClass = class
+		}
+		kept = append(kept, record)
+	}
+	return kept, len(records) - len(kept)
+}
+
+// storableText reports whether a client-supplied string is storable by every
+// sink. Postgres rejects text and jsonb values that contain NUL or are not
+// valid UTF-8 — and because inserts are batched asynchronously, one such value
+// would fail its whole batch on every retry until the poisoned records age out
+// of the pending buffer, an outage a single hostile event could cause.
+func storableText(s string) bool {
+	return utf8.ValidString(s) && !strings.ContainsRune(s, 0)
+}
+
+// storableHeaderValue keeps an optional, informational header value only when
+// it is storable; a hostile value degrades to empty rather than blocking the
+// record it decorates.
+func storableHeaderValue(s string) string {
+	if !storableText(s) {
+		return ""
+	}
+	return s
+}
+
 func validateTelemetryEvent(event TelemetryEvent, now time.Time) error {
 	switch {
 	case event.SchemaVersion != 1:
@@ -818,14 +887,28 @@ func validateTelemetryEvent(event TelemetryEvent, now time.Time) error {
 	case len(event.Attributes) > 32 || len(event.Measurements) > 32:
 		return errors.New("telemetry maps may contain at most 32 entries")
 	}
+	for _, value := range []string{
+		event.EventID, event.Event, event.ClientID, event.SessionID,
+		event.RelayID, event.Application, event.DestinationIP, event.Protocol,
+	} {
+		if !storableText(value) {
+			return errors.New("telemetry fields must be valid UTF-8 without NUL characters")
+		}
+	}
 	for key, value := range event.Attributes {
 		if len(key) > maxTelemetryKeyBytes || len(value) > maxTelemetryValueBytes {
 			return errors.New("attribute keys are limited to 64 characters and values to 256")
+		}
+		if !storableText(key) || !storableText(value) {
+			return errors.New("telemetry fields must be valid UTF-8 without NUL characters")
 		}
 	}
 	for key := range event.Measurements {
 		if len(key) > maxTelemetryKeyBytes {
 			return errors.New("measurement keys are limited to 64 characters")
+		}
+		if !storableText(key) {
+			return errors.New("telemetry fields must be valid UTF-8 without NUL characters")
 		}
 	}
 	return nil
@@ -872,6 +955,14 @@ func recordClientSeen(r *http.Request, sink TelemetrySink, clientIP *clientIPRes
 	if sink == nil || clientID == "" || sessionID == "" || len(clientID) > 128 || len(sessionID) > 128 {
 		return
 	}
+	// These strings come from raw HTTP headers, which — unlike the JSON body,
+	// whose decoder replaces invalid UTF-8 — may legally carry arbitrary
+	// non-UTF-8 bytes (obs-text). An unstorable value would poison the shared
+	// async Postgres batch, so this path must enforce the same floor
+	// validateTelemetryEvent gives body events.
+	if !storableText(clientID) || !storableText(sessionID) {
+		return
+	}
 	now := time.Now().UTC()
 	if dedup != nil && !dedup.shouldRecord(clientID, sessionID, now) {
 		return
@@ -884,8 +975,8 @@ func recordClientSeen(r *http.Request, sink TelemetrySink, clientIP *clientIPRes
 		ClientID:      clientID,
 		SessionID:     sessionID,
 		Attributes: map[string]string{
-			"app_version": r.Header.Get("X-OpenRung-App-Version"),
-			"android_api": r.Header.Get("X-OpenRung-Android-API"),
+			"app_version": storableHeaderValue(r.Header.Get("X-OpenRung-App-Version")),
+			"android_api": storableHeaderValue(r.Header.Get("X-OpenRung-Android-API")),
 		},
 	}
 	if err := sink.WriteTelemetry(r.Context(), []TelemetryRecord{{

@@ -90,6 +90,13 @@ func wssTicketHandler(store RelayStore, issuer *wssTicketIssuer) http.HandlerFun
 			writeError(w, http.StatusBadRequest, "relay_id and front_id are required")
 			return
 		}
+		// Real relay IDs are broker-minted and well-formed; refusing everything
+		// else here keeps arbitrary bytes (e.g. invalid UTF-8 a Postgres store
+		// cannot compare against) out of the lookup entirely.
+		if !relay.WellFormedRelayID(request.RelayID) {
+			writeError(w, http.StatusNotFound, "relay or WSS front not found")
+			return
+		}
 
 		now := issuer.now().UTC().Truncate(time.Second)
 		desc, err := store.RelayByID(request.RelayID, now)
