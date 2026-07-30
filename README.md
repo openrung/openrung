@@ -82,6 +82,8 @@ their owning applications.
   Xray binary; IPv6-first with IPv4 and dual-stack options.
 - 🕳️ **Works behind CGNAT** — volunteer-run relays with no inbound port can join
   through a reverse-tunnel relay hub.
+- ⚡ **Direct paths when possible** — compatible clients and tunneled relays
+  attempt NAT hole punching first, with the relay hub as the fallback.
 - 📱 **Full-device mobile client** — the OpenRung app routes all device
   traffic in VPN mode (developed in a separate React Native repository).
 - 🛡️ **Direct-first censorship fallback** — the desktop client can carry the
@@ -108,9 +110,19 @@ curl -fsSL https://raw.githubusercontent.com/openrung/openrung/main/deploy/relay
 
 The script pulls the official relay image, runs it with the same hardened
 container setup the Foundation fleet uses, auto-detects your server's public
-IP, mints a stable relay identity, registers with the public OpenRung broker,
-and confirms the relay is actually serving before it declares success. No
-account or token is needed.
+IP, mints a stable relay identity and a public adjective-noun relay name,
+registers with the public OpenRung broker, and confirms the relay is actually
+serving before it declares success. No account or token is needed.
+
+To choose the public relay name on the first run (letters, digits, `.`, `_`,
+and `-`; at most 63 characters), pass `OPENRUNG_LABEL` through `sudo`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/openrung/openrung/main/deploy/relay/volunteer-up.sh | sudo env OPENRUNG_LABEL=my-relay sh
+```
+
+Once `/etc/openrung/relay.env` exists, it is authoritative. Edit that file and
+re-run the installer to change an existing relay's name or other settings.
 
 Afterwards:
 
@@ -141,9 +153,10 @@ Everything below runs the broker, relays, and clients from source for
 development and self-hosting. Volunteers don't need any of it — volunteer
 relays register with the public OpenRung broker automatically.
 
-You need Go 1.25+, and relay operators also need an
+You need Go 1.25+. Running a relay also requires an
 [Xray-core](https://github.com/XTLS/Xray-core) binary that supports
-`xray x25519` and `xray run -config`.
+`xray x25519` and `xray run -config`; connecting with the desktop CLI requires
+sing-box 1.14 or newer.
 
 #### Start the broker
 
@@ -195,17 +208,20 @@ protected in transit.
 ```sh
 go run ./cmd/relay \
   -broker http://localhost:8080 \
-  -public-port 443 \
-  -listen-port 443 \
+  -public-host 127.0.0.1 \
+  -public-port 8443 \
+  -listen-host 127.0.0.1 \
+  -listen-port 8443 \
   -xray /path/to/xray
 ```
 
 Useful to know:
 
-- The relay listens on IPv6 (`::`) by default and advertises the first
-  global IPv6 address it finds. Pass `-public-host` (and `-listen-host` if
-  needed) to use a DNS name, an IPv4 address, or a specific IPv6 address, or
-  `-listen-host dual` to listen on both stacks in one process.
+- With connection logging enabled (the default), `-listen-host ::` opens both
+  the IPv6 and IPv4 wildcard listeners. When `-public-host` is omitted, the
+  relay advertises the first global IPv6 address it finds. Set `-public-host`
+  to advertise a DNS name, IPv4 address, or specific IPv6 address, and set
+  `-listen-host` when the local bind address should differ.
 - A global IPv6 address still needs inbound firewall/router rules that allow
   clients to reach the relay port.
 - Client connection events print in color by default — green on open, red on
@@ -218,12 +234,15 @@ Useful to know:
 #### Volunteer-run relays behind CGNAT
 
 Volunteer-run relays with no inbound port (carrier-grade NAT) can join through
-a relay hub. Run the hub on a publicly reachable host where bandwidth is cheap:
+a relay hub. For local development, start an anonymous hub bound to loopback:
 
 ```sh
+OPENRUNG_ALLOW_ANONYMOUS_VOLUNTEERS=true \
 go run ./cmd/relayhub \
   -broker http://localhost:8080 \
-  -public-host hub.example.com \
+  -control-addr 127.0.0.1:9443 \
+  -public-host 127.0.0.1 \
+  -public-bind-host 127.0.0.1 \
   -port-range 20000-20100
 ```
 
@@ -231,17 +250,27 @@ Then run the relay in tunnel mode — it binds Xray to loopback and dials the hu
 instead of exposing a port (no `-public-host` needed):
 
 ```sh
-go run ./cmd/relay -tunnel -hub hub.example.com:9443 -xray /path/to/xray
+go run ./cmd/relay \
+  -tunnel \
+  -hub 127.0.0.1:9443 \
+  -hub-tls=false \
+  -xray /path/to/xray
 ```
 
-All traffic for a CGNAT relay transits the hub, so keep the relay path opt-in
-(public-IP relays should stay in direct mode) and run hubs off
-metered cloud egress. See [`deploy/relayhub/README.md`](deploy/relayhub/README.md)
-for cost details and TLS setup.
+These loopback commands deliberately use an anonymous, plaintext hub for local
+development only. A public hub should require the shared registration token
+and TLS described in [`deploy/relayhub/README.md`](deploy/relayhub/README.md).
+
+When NAT punching is unavailable or fails, all traffic for a CGNAT relay
+transits the hub. Keep the relay path opt-in (public-IP relays should stay in
+direct mode) and run public hubs away from metered cloud egress. See
+[`deploy/relayhub/README.md`](deploy/relayhub/README.md) for cost details and
+TLS setup.
 
 #### Try a client
 
-List relay candidates and run the desktop CLI relay check:
+Inspect the raw relay directory response and confirm that the desktop CLI can
+select a usable relay:
 
 ```sh
 curl http://localhost:8080/api/v1/relays
@@ -250,9 +279,8 @@ go run ./cmd/client check -broker http://localhost:8080
 
 For the zero-privilege desktop proxy app and macOS full-device CLI routing, see
 [`docs/desktop-client.md`](docs/desktop-client.md).
-The WSS fallback implemented here is desktop-only. Android and iOS are
-developed in separate repositories and are not restored or updated by this
-change; the original native clients have been retired from this repository.
+WSS fallback is currently desktop-only. Android and iOS are developed in
+separate repositories and do not currently ship this fallback.
 
 ## Repository layout
 
@@ -309,11 +337,10 @@ docs/                Architecture, API, client, and operations docs.
   relays instead of direct exits.
 - **Abuse and rate controls** — exit policies, rate limits, and abuse
   reporting ahead of a broad public rollout.
-- **NAT hole punching** — direct client↔relay paths for volunteer-run relays
-  behind CGNAT, without a hub in the middle (core protocol in the `punchcore`
-  module,
-  `github.com/openrung/openrung/punchcore`; shipped in the desktop and Android
-  clients, iOS still planned).
+- **NAT hole-punch coverage** — direct client↔relay paths for volunteer-run
+  relays behind CGNAT are implemented in the desktop and Android clients using
+  `github.com/openrung/openrung/punchcore`; iOS support and broader production
+  rollout are still planned.
 - **Dual-stack relay discovery** — multiple public endpoints per relay.
 
 Have an opinion on what should come first?
@@ -362,7 +389,8 @@ OpenRung builds on excellent open source work:
 
 - [Xray-core](https://github.com/XTLS/Xray-core) — VLESS + REALITY + Vision
   relay transport
-- [sing-box](https://github.com/SagerNet/sing-box) — mobile tunnel engine
+- [sing-box](https://github.com/SagerNet/sing-box) — client tunnel and proxy
+  engine
 - [MapLibre](https://maplibre.org/) — maps in the mobile app
 - Tor's [Snowflake](https://snowflake.torproject.org/) — inspiration for
   volunteer-powered circumvention
