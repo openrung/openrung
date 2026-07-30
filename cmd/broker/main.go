@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -106,6 +107,14 @@ func run() error {
 		slog.Error("could not initialize telemetry storage", "error", err)
 		return err
 	}
+	// Long-window cap on new relay identities per source IP; the empty default
+	// applies broker.Config's built-in limit. Exempt the relay hub's addresses
+	// so a wave of first-time tunnel volunteers is never throttled.
+	maxNewRelayIDs, err := parseNewRelayIDCap(os.Getenv("OPENRUNG_MAX_NEW_RELAY_IDS_PER_IP_PER_DAY"))
+	if err != nil {
+		return err
+	}
+
 	cfg := broker.Config{
 		RegistrationToken: registrationToken,
 		FoundationToken:   foundationToken,
@@ -113,10 +122,12 @@ func run() error {
 		TelemetrySink:     telemetrySink,
 		DashboardToken:    os.Getenv("OPENRUNG_DASHBOARD_TOKEN"),
 		// Cloudflare's published ranges are trusted by default; add more (e.g. an upstream LB) here.
-		TrustedProxyCIDRs:    splitAndTrim(os.Getenv("OPENRUNG_TRUSTED_PROXY_CIDRS")),
-		GeoIP:                geoResolver,
-		SigningSeed:          signingSeed,
-		WSSTicketSigningSeed: wssTicketSeed,
+		TrustedProxyCIDRs:          splitAndTrim(os.Getenv("OPENRUNG_TRUSTED_PROXY_CIDRS")),
+		MaxNewRelayIDsPerIPPerDay:  maxNewRelayIDs,
+		RegistrationCapExemptCIDRs: splitAndTrim(os.Getenv("OPENRUNG_REGISTRATION_CAP_EXEMPT_CIDRS")),
+		GeoIP:                      geoResolver,
+		SigningSeed:                signingSeed,
+		WSSTicketSigningSeed:       wssTicketSeed,
 	}
 	// The Postgres store aggregates dashboard queries in SQL; the JSONL sink's
 	// dashboard is aggregated in Go from its in-memory record set.
@@ -222,6 +233,25 @@ func newGeoIPResolver(endpoint string) broker.GeoIPResolver {
 	default:
 		return broker.NewHTTPGeoIPResolver(endpoint)
 	}
+}
+
+// parseNewRelayIDCap maps OPENRUNG_MAX_NEW_RELAY_IDS_PER_IP_PER_DAY onto
+// broker.Config's convention: empty keeps the built-in default, "off" (or any
+// negative number) disables the cap, and a positive integer overrides it.
+// Anything else refuses to start rather than silently running unguarded.
+func parseNewRelayIDCap(value string) (int, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return 0, nil
+	}
+	if value == "off" {
+		return -1, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed == 0 {
+		return 0, errors.New("OPENRUNG_MAX_NEW_RELAY_IDS_PER_IP_PER_DAY must be a non-zero integer or 'off'")
+	}
+	return parsed, nil
 }
 
 func envDefault(key, fallback string) string {

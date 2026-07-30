@@ -72,7 +72,19 @@ The endpoint accepts at most 200 events and 512 KiB per request. Events dated
 more than one hour into the future are rejected (retention and dashboards key
 off the server's receipt time, so client clocks cannot extend either), and
 free-form fields are length-capped: attribute/measurement keys at 64
-characters, attribute values and `application_package` at 256. Package
+characters, attribute values and `application_package` at 256. Every string
+field must be valid UTF-8 without NUL characters — values a Postgres store
+could not hold — or the batch is rejected with `400`.
+
+Events that carry a `relay_id` are checked against the broker's own record of
+minted relay identities. An event referencing a relay ID that is neither
+currently registered nor was registered at any point in the telemetry
+retention window (7 days) is silently discarded — such an ID cannot have
+appeared in any signed relay list, so the event is fabricated, and storing it
+would hand dashboards and relay ranking an unbounded attacker-controlled key
+space. The response's `accepted` count reflects only stored events. Failure
+reports about a relay that recently went offline are unaffected: its ID stays
+known for the full retention window after its last registration or heartbeat. Package
 attribution is collected on Android 10 and newer. Aggregating Android clients
 skip DNS, collapse repeated flows per application, and omit destination details.
 Legacy schema-version-1 clients may still send one event per flow and include
@@ -252,6 +264,31 @@ Content-Type: application/json
 
 This is the only supported relay registration route. It registers both
 `volunteer`-class and `foundation`-class relays.
+
+Endpoint and free-form fields are validated: `public_host`, `server_name`, and
+(for tunnel transport) `exit_host` must be syntactically valid DNS hostnames
+or IP literals, and the remaining string fields are length-capped and must not
+contain control characters. These values are served verbatim to every client
+in the signed relay list, so free-form strings are not storable as relay
+endpoints.
+
+Beyond the short-window per-IP rate limit, the broker caps how many **new**
+relay identities one source IP (IPv6: one /64) may successfully register per
+rolling 24 hours — by default 64, tunable with
+`OPENRUNG_MAX_NEW_RELAY_IDS_PER_IP_PER_DAY` (a positive integer, or `off` to
+disable). Re-registrations that re-prove an already-known identity never
+count, so stable-identity relays and tunnel relays reconnecting through the
+hub are unaffected, and the budget is only consumed by registrations the
+broker accepts, so a relay crash-looping on a rejected request cannot exhaust
+it. Requests over the cap receive `429` with a `Retry-After` header, which the
+relay runtime honors with backoff. Sources listed in
+`OPENRUNG_REGISTRATION_CAP_EXEMPT_CIDRS` (comma-separated CIDRs) are exempt —
+set this to the relay hub's egress addresses so a wave of first-time tunnel
+volunteers is never throttled — and requests presenting the foundation token
+bypass the cap. Without this cap, an anonymous-registration broker would let a
+single address mint thousands of attested relay identities per hour, each of
+which becomes a public directory row and a telemetry subject the dashboards
+must aggregate.
 
 Request:
 

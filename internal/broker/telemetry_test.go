@@ -43,7 +43,7 @@ func TestTelemetryHandlerStoresSourceIPAndEvents(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/telemetry/events", bytes.NewReader(payload))
 	req.RemoteAddr = "203.0.113.42:54321"
 	recorder := httptest.NewRecorder()
-	telemetryHandler(sink, nil, newClientIPResolver(nil)).ServeHTTP(recorder, req)
+	telemetryHandler(sink, nil, newClientIPResolver(nil), nil).ServeHTTP(recorder, req)
 
 	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("expected 202, got %d: %s", recorder.Code, recorder.Body.String())
@@ -81,7 +81,7 @@ func TestTelemetryHandlerStoresBrokerAttestedRelayNodeClass(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/telemetry/events", bytes.NewReader(payload))
 	recorder := httptest.NewRecorder()
-	telemetryHandler(sink, store, newClientIPResolver(nil)).ServeHTTP(recorder, req)
+	telemetryHandler(sink, store, newClientIPResolver(nil), nil).ServeHTTP(recorder, req)
 
 	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("expected 202, got %d: %s", recorder.Code, recorder.Body.String())
@@ -123,7 +123,7 @@ func TestTelemetryHandlerRejectsMissingIdentity(t *testing.T) {
 	payload := []byte(`{"events":[{"schema_version":1,"event_id":"event-1","event":"connection_attempted","occurred_at":"2026-06-20T12:00:00Z","client_id":"","session_id":"session-1"}]}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/telemetry/events", bytes.NewReader(payload))
 	recorder := httptest.NewRecorder()
-	telemetryHandler(sink, nil, newClientIPResolver(nil)).ServeHTTP(recorder, req)
+	telemetryHandler(sink, nil, newClientIPResolver(nil), nil).ServeHTTP(recorder, req)
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", recorder.Code)
@@ -148,7 +148,7 @@ func TestTelemetryHandlerRejectsMalformedConnectionCount(t *testing.T) {
 			))
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/telemetry/events", bytes.NewReader(payload))
 			recorder := httptest.NewRecorder()
-			telemetryHandler(sink, nil, newClientIPResolver(nil)).ServeHTTP(recorder, req)
+			telemetryHandler(sink, nil, newClientIPResolver(nil), nil).ServeHTTP(recorder, req)
 
 			if recorder.Code != http.StatusBadRequest {
 				t.Fatalf("expected 400, got %d: %s", recorder.Code, recorder.Body.String())
@@ -397,7 +397,7 @@ func TestTelemetryHandlerRejectsFutureEvent(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/telemetry/events", bytes.NewReader(payload))
 	recorder := httptest.NewRecorder()
-	telemetryHandler(sink, nil, newClientIPResolver(nil)).ServeHTTP(recorder, req)
+	telemetryHandler(sink, nil, newClientIPResolver(nil), nil).ServeHTTP(recorder, req)
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for future-dated event, got %d: %s", recorder.Code, recorder.Body.String())
@@ -423,7 +423,7 @@ func TestTelemetryHandlerRejectsOversizedAttributeValue(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/telemetry/events", bytes.NewReader(payload))
 	recorder := httptest.NewRecorder()
-	telemetryHandler(sink, nil, newClientIPResolver(nil)).ServeHTTP(recorder, req)
+	telemetryHandler(sink, nil, newClientIPResolver(nil), nil).ServeHTTP(recorder, req)
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for oversized attribute, got %d: %s", recorder.Code, recorder.Body.String())
