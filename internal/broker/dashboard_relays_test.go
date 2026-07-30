@@ -50,24 +50,37 @@ func TestBuildRelayTelemetryStats(t *testing.T) {
 		// client as connected.
 		relayStatRecord(now.Add(-3*time.Minute), "", "f1", "connection_succeeded", "c6", "s6", "relay-fake", nil, nil),
 		relayStatRecord(now.Add(-time.Minute), "", "f2", "session_heartbeat", "c6", "s6", "relay-fake", nil, nil),
+		// relay-newreg is currently registered but none of its window records
+		// carry a stamp — they all landed during a lease gap. The registered-ID
+		// set passed below must keep its row and count its active client.
+		relayStatRecord(now.Add(-4*time.Minute), "", "g1", "connection_succeeded", "c7", "s7", "relay-newreg", nil, nil),
+		relayStatRecord(now.Add(-time.Minute), "", "g2", "session_heartbeat", "c7", "s7", "relay-newreg", nil, nil),
 		// application_connection is never aggregated, even when it names a relay.
 		relayStatRecord(now.Add(-time.Minute), relay.NodeClassFoundation, "e11", telemetryAppConnectionEvent, "c9", "s9", "relay-a", nil, nil),
 	}
 
-	stats := buildRelayTelemetryStats(records, now, time.Hour)
+	stats := buildRelayTelemetryStats(records, now, time.Hour, []string{"relay-newreg"})
 
-	if len(stats.Relays) != 3 {
-		t.Fatalf("expected 3 relays (relay-fake filtered), got %d: %+v", len(stats.Relays), stats.Relays)
+	if len(stats.Relays) != 4 {
+		t.Fatalf("expected 4 relays (relay-fake filtered, relay-newreg kept), got %d: %+v", len(stats.Relays), stats.Relays)
 	}
 	for _, row := range stats.Relays {
 		if row.RelayID == "relay-fake" {
 			t.Fatalf("unattested relay-fake minted a row: %+v", row)
 		}
 	}
-	// Busiest first: relay-a (1 active, 2 sessions), relay-c (1 active,
-	// 1 session), relay-b (0 active).
-	if stats.Relays[0].RelayID != "relay-a" || stats.Relays[1].RelayID != "relay-c" || stats.Relays[2].RelayID != "relay-b" {
-		t.Fatalf("unexpected order: %q, %q, %q", stats.Relays[0].RelayID, stats.Relays[1].RelayID, stats.Relays[2].RelayID)
+	// Busiest first: relay-a (1 active, 2 sessions), relay-newreg (1 active,
+	// 1 session, 1 attempt), relay-c (1 active, 1 session), relay-b (0 active).
+	if stats.Relays[0].RelayID != "relay-a" || stats.Relays[1].RelayID != "relay-newreg" || stats.Relays[2].RelayID != "relay-c" || stats.Relays[3].RelayID != "relay-b" {
+		t.Fatalf("unexpected order: %q, %q, %q, %q", stats.Relays[0].RelayID, stats.Relays[1].RelayID, stats.Relays[2].RelayID, stats.Relays[3].RelayID)
+	}
+
+	newreg := stats.Relays[1]
+	if newreg.NodeClass != "" {
+		t.Errorf("relay-newreg node class = %q, want empty (trusted via registration, not a stamp)", newreg.NodeClass)
+	}
+	if newreg.Successes != 1 || newreg.ActiveSessions != 1 || newreg.ActiveClients != 1 {
+		t.Errorf("relay-newreg telemetry = %+v, want its gap-received events counted", newreg)
 	}
 
 	relayA := stats.Relays[0]
@@ -90,7 +103,7 @@ func TestBuildRelayTelemetryStats(t *testing.T) {
 		t.Errorf("relay-a last seen = %s, want the heartbeat a minute ago", relayA.LastSeenAt)
 	}
 
-	relayB := stats.Relays[2]
+	relayB := stats.Relays[3]
 	if relayB.NodeClass != relay.NodeClassVolunteer {
 		t.Errorf("relay-b node class = %q, want volunteer from its single stamped record", relayB.NodeClass)
 	}
@@ -104,7 +117,7 @@ func TestBuildRelayTelemetryStats(t *testing.T) {
 		t.Errorf("relay-b sessions = %d, want 2 (s2 followed its failover here, s3 failed here)", relayB.Sessions)
 	}
 
-	relayC := stats.Relays[1]
+	relayC := stats.Relays[2]
 	if relayC.NodeClass != relay.NodeClassVolunteer {
 		t.Errorf("relay-c node class = %q, want retained volunteer", relayC.NodeClass)
 	}
@@ -112,10 +125,11 @@ func TestBuildRelayTelemetryStats(t *testing.T) {
 		t.Errorf("relay-c active/successes = %d/%d, want 1/0", relayC.ActiveSessions, relayC.Successes)
 	}
 
-	// c1 (active on relay-a) and c5 (active on relay-c), deduplicated; c6 is
-	// active only on the unattested relay-fake and must not count.
-	if stats.ActiveClients != 2 {
-		t.Errorf("overall active clients = %d, want 2", stats.ActiveClients)
+	// c1 (relay-a), c5 (relay-c), and c7 (the registered relay-newreg),
+	// deduplicated; c6 is active only on the unattested relay-fake and must
+	// not count.
+	if stats.ActiveClients != 3 {
+		t.Errorf("overall active clients = %d, want 3", stats.ActiveClients)
 	}
 }
 
@@ -296,12 +310,23 @@ func TestDashboardRelaysEndpointAndPage(t *testing.T) {
 	if err := store.UpdateGeo(registered.ID, registered.LeaseToken, relay.GeoLocation{City: "Tokyo", Country: "Japan", CountryCode: "JP"}); err != nil {
 		t.Fatalf("update geo: %v", err)
 	}
+	// A second registered relay whose only window telemetry is unstamped, as
+	// if received during a lease gap: its live registration must keep the row.
+	gapRelay, err := store.Register(relay.RegisterRequest{
+		Label: "nagoya-gap", NodeClass: relay.NodeClassVolunteer,
+		PublicHost: "198.51.100.9", PublicPort: 443, MaxSessions: 50, MaxMbps: 100,
+	}, now, time.Hour)
+	if err != nil {
+		t.Fatalf("register gap relay: %v", err)
+	}
 
 	telemetry := &dashboardTelemetryStore{}
 	if err := telemetry.WriteTelemetry(t.Context(), []TelemetryRecord{
 		relayStatRecord(now.Add(-10*time.Minute), relay.NodeClassFoundation, "e1", "connection_succeeded", "c1", "s1", registered.ID, nil, nil),
 		relayStatRecord(now.Add(-30*time.Second), relay.NodeClassFoundation, "e2", "session_heartbeat", "c1", "s1", registered.ID, nil, nil),
 		relayStatRecord(now.Add(-15*time.Minute), relay.NodeClassVolunteer, "e3", "relay_attempt_failed", "c2", "s2", "relay_offline", map[string]string{"error_type": "timeout"}, nil),
+		relayStatRecord(now.Add(-5*time.Minute), "", "e4", "connection_succeeded", "c3", "s3", gapRelay.ID, nil, nil),
+		relayStatRecord(now.Add(-4*time.Minute), "", "e5", "connection_succeeded", "c4", "s4", "relay_bogus", nil, nil),
 	}); err != nil {
 		t.Fatalf("write telemetry: %v", err)
 	}
@@ -352,14 +377,14 @@ func TestDashboardRelaysEndpointAndPage(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &panel); err != nil {
 		t.Fatalf("decode relays response: %v", err)
 	}
-	if panel.Totals.OnlineRelays != 1 || panel.Totals.FoundationRelays != 1 || panel.Totals.OfflineRelays != 1 {
-		t.Fatalf("totals = %+v, want 1 online foundation and 1 offline", panel.Totals)
+	if panel.Totals.OnlineRelays != 2 || panel.Totals.FoundationRelays != 1 || panel.Totals.VolunteerRelays != 1 || panel.Totals.OfflineRelays != 1 {
+		t.Fatalf("totals = %+v, want 2 online (1 foundation, 1 volunteer) and 1 offline", panel.Totals)
 	}
 	if panel.Totals.ActiveSessions != 1 || panel.Totals.ConnectedClients != 1 {
 		t.Errorf("active sessions/connected clients = %d/%d, want 1/1", panel.Totals.ActiveSessions, panel.Totals.ConnectedClients)
 	}
-	if len(panel.Relays) != 2 {
-		t.Fatalf("expected 2 rows, got %d", len(panel.Relays))
+	if len(panel.Relays) != 3 {
+		t.Fatalf("expected 3 rows (relay_bogus filtered), got %d: %+v", len(panel.Relays), panel.Relays)
 	}
 	online := panel.Relays[0]
 	if online.RelayID != registered.ID || !online.Online || online.Label != "tokyo-1" || online.City != "Tokyo" || online.RelayVersion != "0.1.4" {
@@ -368,7 +393,13 @@ func TestDashboardRelaysEndpointAndPage(t *testing.T) {
 	if online.Successes != 1 || online.ActiveSessions != 1 || online.ActiveClients != 1 {
 		t.Errorf("online row telemetry wrong: %+v", online)
 	}
-	offline := panel.Relays[1]
+	// The gap relay's unstamped telemetry survives because it is registered;
+	// its class comes from the live descriptor.
+	gap := panel.Relays[1]
+	if gap.RelayID != gapRelay.ID || !gap.Online || gap.NodeClass != relay.NodeClassVolunteer || gap.Successes != 1 || gap.Sessions != 1 {
+		t.Errorf("gap relay row wrong: %+v", gap)
+	}
+	offline := panel.Relays[2]
 	if offline.RelayID != "relay_offline" || offline.Online || offline.NodeClass != relay.NodeClassVolunteer || offline.Failures != 1 || offline.TopFailureReason != "timeout" {
 		t.Errorf("offline row wrong: %+v", offline)
 	}

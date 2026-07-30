@@ -36,13 +36,17 @@ type relayDirectoryLister interface {
 // That total cannot be derived from the rows — one client holding sessions on
 // two relays would be counted twice by summing per-relay counts.
 //
-// Attested means at least one of the window's records retained a non-empty
-// relay_node_class, which ingestion stamps only while the named relay holds a
-// live registration. The anonymous telemetry API accepts any relay_id string,
-// so without this gate a client could mint one row (and one "offline relay")
-// per fabricated ID — up to 200 per accepted request — and grow the response
-// without bound for the retention window. Registration is the trust anchor:
-// it is separately rate limited, logged, and the only way to obtain a stamp.
+// Attested means the broker itself vouches for the ID, in either of two ways:
+// at least one of the window's records retained a non-empty relay_node_class
+// (ingestion stamps it only while the named relay holds a live registration),
+// or the ID is currently registered — so an online relay keeps its telemetry
+// even when every window event was received during a lease gap. The anonymous
+// telemetry API accepts any relay_id string, so without this gate a client
+// could mint one row (and one "offline relay") per fabricated ID — up to 200
+// per accepted request — and grow the response without bound for the
+// retention window. Registration is the trust anchor either way: it is
+// separately rate limited, logged, and the only source of stamps and of
+// current registrations alike.
 type relayTelemetryStats struct {
 	Relays        []relayStatRow
 	ActiveClients int
@@ -73,9 +77,23 @@ type relayStatRow struct {
 
 // buildRelayTelemetryStats aggregates stored records per relay. It mirrors
 // telemetryRelayStatsQuery; TestPostgresTelemetryQuerierMatchesInMemoryRelayStats
-// holds the two implementations together.
-func buildRelayTelemetryStats(records []TelemetryRecord, now time.Time, window time.Duration) relayTelemetryStats {
+// holds the two implementations together. registeredIDs comes from the
+// broker's own registry, never from telemetry.
+func buildRelayTelemetryStats(records []TelemetryRecord, now time.Time, window time.Duration, registeredIDs []string) relayTelemetryStats {
 	start := now.Add(-window)
+	registered := make(map[string]struct{}, len(registeredIDs))
+	for _, id := range registeredIDs {
+		registered[id] = struct{}{}
+	}
+	// trusted reports whether a row may be returned: attested by an in-window
+	// class stamp, or by holding a live registration right now.
+	trusted := func(row *relayStatRow) bool {
+		if row.NodeClass != "" {
+			return true
+		}
+		_, ok := registered[row.RelayID]
+		return ok
+	}
 	type sessionState struct {
 		clientID        string
 		relayID         string
@@ -178,17 +196,18 @@ func buildRelayTelemetryStats(records []TelemetryRecord, now time.Time, window t
 		if !session.terminal && session.lastHeartbeatAt.After(now.Add(-activeSessionTimeout)) {
 			row.ActiveSessions++
 			addMember(relayActiveClients, session.relayID, session.clientID)
-			// The fleet-wide connected-clients count trusts attested relays
-			// only, or fabricated heartbeats would inflate it.
-			if row.NodeClass != "" {
+			// The fleet-wide connected-clients count trusts stamped or
+			// currently registered relays only, or fabricated heartbeats
+			// would inflate it.
+			if trusted(row) {
 				activeClients[session.clientID] = struct{}{}
 			}
 		}
 	}
 	for id, row := range rows {
-		// Unattested IDs aggregate above (a session's latest relay-bearing
+		// Untrusted IDs aggregate above (a session's latest relay-bearing
 		// event may name one) but are dropped here, on both backends alike.
-		if row.NodeClass == "" {
+		if !trusted(row) {
 			continue
 		}
 		row.Clients = len(relayClients[id])
@@ -446,20 +465,28 @@ func (d *dashboardServer) relaysPanel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := d.now().UTC()
-	stats, err := d.querier.TelemetryRelayStats(now, window)
-	if err != nil {
-		slog.Error("could not build relay telemetry stats", "error", err)
-		writeError(w, http.StatusInternalServerError, "could not build relay stats")
-		return
-	}
+	// The registry is read first and its IDs feed the aggregation, so the
+	// same descriptor set both vouches for gap-stamped rows and drives the
+	// merge — a relay cannot be trusted by one and missed by the other.
 	var descriptors []relay.Descriptor
 	if d.relayDirectory != nil {
+		var err error
 		descriptors, err = d.relayDirectory.List(now, 0)
 		if err != nil {
 			slog.Error("could not list relays for dashboard", "error", err)
 			writeError(w, http.StatusInternalServerError, "could not list relays")
 			return
 		}
+	}
+	registeredIDs := make([]string, 0, len(descriptors))
+	for _, desc := range descriptors {
+		registeredIDs = append(registeredIDs, desc.ID)
+	}
+	stats, err := d.querier.TelemetryRelayStats(now, window, registeredIDs)
+	if err != nil {
+		slog.Error("could not build relay telemetry stats", "error", err)
+		writeError(w, http.StatusInternalServerError, "could not build relay stats")
+		return
 	}
 	writeJSON(w, http.StatusOK, buildRelaysPanel(descriptors, stats, now, window))
 }

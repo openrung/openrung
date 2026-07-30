@@ -243,14 +243,17 @@ rows so a crashed or expired relay stays visible for the retention window; they
 keep the node class retained with their telemetry. Rows order online first,
 busiest first.
 
-Telemetry-only rows require broker attestation: an ID counts only if at least
-one of its window events was stamped with the relay's node class at ingestion,
-which happens solely while the named relay holds a live registration. The
-anonymous telemetry API accepts arbitrary `relay_id` strings, so unattested
-IDs are aggregated nowhere on this page — they can neither mint offline rows
-nor inflate the connected-clients count. As a second bound, the response lists
-at most 200 offline rows (the busiest); the totals still count every attested
-offline relay, and the page notes when rows were hidden.
+Rows require broker attestation, which comes in two equally trusted forms: a
+currently registered relay ID (its telemetry always counts, even when every
+window event was received during a lease gap), or — for telemetry-only
+offline IDs — at least one window event stamped with the relay's node class
+at ingestion, which happens solely while the named relay holds a live
+registration. The anonymous telemetry API accepts arbitrary `relay_id`
+strings, so unattested IDs are aggregated nowhere on this page — they can
+neither mint offline rows nor inflate the connected-clients count. As a
+second bound, the response lists at most 200 offline rows (the busiest); the
+totals still count every attested offline relay, and the page notes when rows
+were hidden.
 
 ## Health
 

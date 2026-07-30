@@ -367,13 +367,18 @@ SELECT
 FROM relay_events e
 LEFT JOIN relay_sessions s USING (relay_id)
 LEFT JOIN relay_top_reasons r USING (relay_id)
-WHERE e.node_class <> ''
+-- $5 is the broker's own set of currently registered relay IDs: a live
+-- registration attests an ID exactly like an in-window stamp does, so an
+-- online relay keeps its telemetry even when every window event was received
+-- during a lease gap. Telemetry-only (offline) IDs still need the stamp.
+WHERE e.node_class <> '' OR e.relay_id = ANY($5)
 UNION ALL
 SELECT '', '', 0, 0, '', 0, 0, 0,
 	COUNT(DISTINCT sessions.client_id) FILTER (WHERE sessions.active)::bigint,
 	0, 0, 0, NULL
 FROM sessions
-JOIN relay_events attested ON attested.relay_id = sessions.relay_id AND attested.node_class <> ''`
+JOIN relay_events trusted ON trusted.relay_id = sessions.relay_id
+	AND (trusted.node_class <> '' OR trusted.relay_id = ANY($5))`
 
 // telemetryWindowArgs is the shared parameter list documented on the CTEs.
 // Queries that only touch the events CTE must take eventArgs — Postgres
@@ -477,15 +482,20 @@ func (s *PostgresTelemetrySink) TelemetrySessions(now time.Time, window time.Dur
 // TelemetryRelayStats implements TelemetryQuerier with one statement: the
 // events and sessions CTEs each materialize once and only per-relay rows (plus
 // the sentinel totals row) travel back to Go.
-func (s *PostgresTelemetrySink) TelemetryRelayStats(now time.Time, window time.Duration) (relayTelemetryStats, error) {
+func (s *PostgresTelemetrySink) TelemetryRelayStats(now time.Time, window time.Duration, registeredIDs []string) (relayTelemetryStats, error) {
 	if err := s.flush(); err != nil {
 		slog.Error("could not flush telemetry before read", "error", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), postgresTelemetryQueryTimeout)
 	defer cancel()
 	_, sessionArgs := telemetryWindowArgs(now, window)
+	if registeredIDs == nil {
+		// pgx encodes a nil slice as NULL, and `= ANY(NULL)` matches nothing
+		// only by accident of three-valued logic; be explicit.
+		registeredIDs = []string{}
+	}
 
-	rows, err := s.pool.Query(ctx, telemetryRelayStatsQuery, sessionArgs...)
+	rows, err := s.pool.Query(ctx, telemetryRelayStatsQuery, append(append([]any{}, sessionArgs...), registeredIDs)...)
 	if err != nil {
 		return relayTelemetryStats{}, fmt.Errorf("query telemetry relay stats: %w", err)
 	}
