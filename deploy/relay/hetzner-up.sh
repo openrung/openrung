@@ -15,7 +15,7 @@
 #
 # Overridable via env: OPENRUNG_LOCATION, OPENRUNG_SERVER_TYPE, OPENRUNG_OS_IMAGE,
 # OPENRUNG_IMAGE, OPENRUNG_BROKER_URL, OPENRUNG_SSH_KEY_NAME,
-# OPENRUNG_FIREWALL_NAME.
+# OPENRUNG_FIREWALL_NAME, OPENRUNG_SHAPE_RATE.
 #
 # This helper provisions anonymous volunteer-class relays only. It cannot safely
 # accept any registration bearer: Hetzner retains cloud-init user-data. Provision
@@ -37,6 +37,10 @@ SSH_KEY_NAME="${OPENRUNG_SSH_KEY_NAME:-openrung}"
 # This helper provisions volunteer-class nodes, and the live fleet already shares
 # this firewall resource. Keep its semantic class name to avoid orphaning it.
 FIREWALL_NAME="${OPENRUNG_FIREWALL_NAME:-openrung-volunteer}"
+# Egress CAKE shaping rate ('off' disables). CAX11 can push well past this,
+# but the rate must sit at or below true deliverable egress under real load so
+# the queue forms on the box, where CAKE manages it, not upstream.
+SHAPE_RATE="${OPENRUNG_SHAPE_RATE:-1000mbit}"
 
 if [ "${OPENRUNG_VOLUNTEER_TOKEN+x}" = x ] || [ "${OPENRUNG_FOUNDATION_TOKEN+x}" = x ]; then
   echo "error: this helper provisions anonymous volunteer-class relays only; OPENRUNG_VOLUNTEER_TOKEN / OPENRUNG_FOUNDATION_TOKEN must be unset because Hetzner retains cloud-init user-data. A Foundation relay also needs a TLS broker, which this plaintext-origin helper does not use — install its credential post-boot over an authenticated channel instead." >&2
@@ -108,6 +112,38 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get -o DPkg::Lock::Timeout=300 update
 apt-get -o DPkg::Lock::Timeout=300 install -y docker.io curl
 systemctl enable --now docker
+# Per-client fairness + bufferbloat control: shape egress with CAKE in
+# dual-dsthost mode, so under contention every destination host (= client IP)
+# gets an equal share of the link, while a lone client may still use the full
+# rate (CAKE is work-conserving). besteffort collapses the DSCP tiers — tunnel
+# traffic is all one class. Installed as a boot unit so the qdisc survives
+# reboots. Best-effort: a shaping failure must never block relay bring-up.
+cat > /usr/local/sbin/openrung-shape <<'SHAPESCRIPT'
+#!/bin/sh
+set -eu
+RATE="${SHAPE_RATE}"
+case "\$RATE" in ""|off|none) exit 0 ;; esac
+DEV="\$(ip -o route get 1.1.1.1 | sed -n 's/.* dev \([^ ]*\).*/\1/p')"
+[ -n "\$DEV" ] || { echo "openrung-shape: no default-route device found" >&2; exit 1; }
+exec tc qdisc replace dev "\$DEV" root cake bandwidth "\$RATE" dual-dsthost besteffort
+SHAPESCRIPT
+chmod 0755 /usr/local/sbin/openrung-shape
+cat > /etc/systemd/system/openrung-shape.service <<'SHAPEUNIT'
+[Unit]
+Description=OpenRung egress fairness shaping (CAKE dual-dsthost)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/openrung-shape
+
+[Install]
+WantedBy=multi-user.target
+SHAPEUNIT
+systemctl daemon-reload
+systemctl enable --now openrung-shape.service || echo "warning: egress shaping unit failed; relay continues unshaped" >&2
 # Public IPv4 from the Hetzner metadata service; clients reach the relay here.
 PUBLIC_IP="\$(curl -fsS http://169.254.169.254/hetzner/v1/metadata/public-ipv4)"
 docker pull ${IMAGE}

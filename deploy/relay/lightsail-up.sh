@@ -9,7 +9,7 @@
 # relay shows up in the broker dashboard under the same friendly name as the box.
 #
 # Overridable via env: OPENRUNG_REGION, OPENRUNG_AZ, OPENRUNG_BUNDLE,
-# OPENRUNG_BLUEPRINT, OPENRUNG_IMAGE, OPENRUNG_BROKER_URL.
+# OPENRUNG_BLUEPRINT, OPENRUNG_IMAGE, OPENRUNG_BROKER_URL, OPENRUNG_SHAPE_RATE.
 #
 # This helper deliberately provisions only unauthenticated volunteer-class
 # relays. Lightsail retains user-data and the bootstrap log, so registration
@@ -25,6 +25,11 @@ BUNDLE="${OPENRUNG_BUNDLE:-micro_3_0}"          # 1GB RAM / 2 vCPU / 40GB / 2TB
 BLUEPRINT="${OPENRUNG_BLUEPRINT:-ubuntu_24_04}"
 IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-relay:main}"
 BROKER_URL="${OPENRUNG_BROKER_URL:-http://54.238.185.205:8080}"
+# Egress CAKE shaping rate ('off' disables). Sized for the default micro
+# bundles; raise it when launching a bigger bundle. Must sit at or below the
+# instance's true deliverable egress: fairness only works when the queue forms
+# on the box, where CAKE manages it, not in the provider's switch.
+SHAPE_RATE="${OPENRUNG_SHAPE_RATE:-400mbit}"
 
 if [ "${OPENRUNG_VOLUNTEER_TOKEN+x}" = x ] || [ "${OPENRUNG_FOUNDATION_TOKEN+x}" = x ] || [ "${OPENRUNG_NODE_CLASS+x}" = x ]; then
   echo "error: this helper does not accept registration tokens (including the foundation token) or node-class overrides because Lightsail user-data persists; configure them post-boot in a root-owned env file" >&2
@@ -74,6 +79,38 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get -o DPkg::Lock::Timeout=300 update
 apt-get -o DPkg::Lock::Timeout=300 install -y docker.io
 systemctl enable --now docker
+# Per-client fairness + bufferbloat control: shape egress with CAKE in
+# dual-dsthost mode, so under contention every destination host (= client IP)
+# gets an equal share of the link, while a lone client may still use the full
+# rate (CAKE is work-conserving). besteffort collapses the DSCP tiers — tunnel
+# traffic is all one class. Installed as a boot unit so the qdisc survives
+# reboots. Best-effort: a shaping failure must never block relay bring-up.
+cat > /usr/local/sbin/openrung-shape <<'SHAPESCRIPT'
+#!/bin/sh
+set -eu
+RATE="${SHAPE_RATE}"
+case "\$RATE" in ""|off|none) exit 0 ;; esac
+DEV="\$(ip -o route get 1.1.1.1 | sed -n 's/.* dev \([^ ]*\).*/\1/p')"
+[ -n "\$DEV" ] || { echo "openrung-shape: no default-route device found" >&2; exit 1; }
+exec tc qdisc replace dev "\$DEV" root cake bandwidth "\$RATE" dual-dsthost besteffort
+SHAPESCRIPT
+chmod 0755 /usr/local/sbin/openrung-shape
+cat > /etc/systemd/system/openrung-shape.service <<'SHAPEUNIT'
+[Unit]
+Description=OpenRung egress fairness shaping (CAKE dual-dsthost)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/openrung-shape
+
+[Install]
+WantedBy=multi-user.target
+SHAPEUNIT
+systemctl daemon-reload
+systemctl enable --now openrung-shape.service || echo "warning: egress shaping unit failed; relay continues unshaped" >&2
 docker pull ${IMAGE}
 docker rm -f openrung-relay 2>/dev/null || true
 # Minted once per instance: the broker derives the relay ID from this seed
