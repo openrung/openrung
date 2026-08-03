@@ -12,6 +12,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -24,6 +25,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/openrung/openrung/brokerapi"
@@ -39,6 +41,16 @@ const (
 	// on the Host header rather than serving our origin to anything that
 	// reaches the same address.
 	unroutableHost = "frontcheck-unroutable.invalid"
+
+	// maxRelayListAge bounds how far a served list's server_time may sit behind
+	// this machine's clock. A front that caches the relay list serves a body
+	// that still verifies — the signature covers a 30-minute not_after window,
+	// and brokerapi allows 5 minutes of skew on top — so nothing else in this
+	// tool would notice. A Cloudflare edge once served this deployment a stale
+	// /api/v1/relays for about four hours, which is why the route in front of
+	// the origin must have caching disabled and why this is checked directly
+	// rather than inferred from comparing two fetches.
+	maxRelayListAge = 5 * time.Minute
 )
 
 type checkResult struct {
@@ -106,11 +118,23 @@ func main() {
 		fmt.Fprintf(os.Stderr, "frontcheck: %v\n", err)
 		os.Exit(2)
 	}
+	// EnforceSecureBrokerURL also admits plain http to loopback, which is valid
+	// for development but has no TLS for any check here to describe.
+	if !strings.EqualFold(parsed.Scheme, "https") {
+		fmt.Fprintf(os.Stderr, "frontcheck: %s is not https; a broker front is reached over TLS\n", *brokerURL)
+		os.Exit(2)
+	}
+	// A precondition rather than a check, because a proxy invalidates the whole
+	// run rather than failing one part of it.
+	if proxy, proxyErr := candidateProxy(parsed); proxyErr != nil || proxy != nil {
+		reportProxyRefusal(parsed, proxy, proxyErr)
+		os.Exit(2)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	checker := &frontChecker{brokerURL: *brokerURL, host: parsed.Hostname(), limit: *limit}
+	checker := &frontChecker{brokerURL: *brokerURL, endpoint: parsed, limit: *limit}
 	results := checker.run(ctx)
 	results.print(os.Stdout)
 
@@ -124,17 +148,66 @@ func main() {
 	fmt.Println("can be withdrawn without notice, so a passing run describes today only.")
 }
 
+// candidateProxy reports the proxy net/http would select for this candidate, if
+// any. It asks the same function the shipping transport is configured with
+// rather than reading the environment directly, so NO_PROXY exemptions and the
+// CGI special case are honoured exactly as they will be at request time.
+func candidateProxy(endpoint *url.URL) (*url.URL, error) {
+	return http.ProxyFromEnvironment(&http.Request{
+		Method: http.MethodGet,
+		URL:    endpoint,
+		Header: make(http.Header),
+	})
+}
+
+// reportProxyRefusal explains why a proxied environment cannot produce a
+// meaningful result. This is not conservatism: net/http tunnels an HTTPS
+// request through CONNECT and then performs its own handshake, so
+// DialTLSContext — the only place SNI is suppressed — never runs. Every fetch
+// in this tool would then travel an SNI-bearing path while the report claimed
+// to describe a suppressed one, which is precisely the false pass the gate
+// exists to prevent.
+func reportProxyRefusal(endpoint, proxy *url.URL, err error) {
+	fmt.Fprintf(os.Stderr, "frontcheck: refusing to run — a proxy is configured for %s\n", endpoint.Host)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  proxy selection failed: %v\n", err)
+	} else {
+		fmt.Fprintf(os.Stderr, "  net/http would send this request through %s\n", proxy)
+	}
+	fmt.Fprintln(os.Stderr, "  Go tunnels proxied HTTPS with CONNECT and then runs its own SNI-bearing")
+	fmt.Fprintln(os.Stderr, "  handshake, so the transport's no-SNI dialer never runs and no check here")
+	fmt.Fprintln(os.Stderr, "  would describe how clients actually reach this front.")
+	// net/http reads only HTTP(S)_PROXY and NO_PROXY — naming ALL_PROXY here
+	// would send an operator to unset a variable it never consulted.
+	fmt.Fprintln(os.Stderr, "  Unset HTTPS_PROXY (or add the host to NO_PROXY) and re-run.")
+}
+
 type frontChecker struct {
 	brokerURL string
-	host      string
-	limit     int
+	// endpoint is the validated candidate with its port and base path intact,
+	// so the handshake and the routing probe test exactly what the signed fetch
+	// tests rather than a synthesized root URL on :443.
+	endpoint *url.URL
+	limit    int
 
 	// suppressSNI mirrors what the shipping transport does for this host,
 	// established by the first check and read by every later one.
 	suppressSNI bool
 }
 
-func (c *frontChecker) address() string { return net.JoinHostPort(c.host, "443") }
+func (c *frontChecker) host() string { return c.endpoint.Hostname() }
+
+// address is what the shipping transport dials. Defaulting to 443 is only sound
+// because main() has already refused anything but https; net/http would default
+// an http candidate to 80, and this would then measure a different endpoint than
+// the one the signed fetch used.
+func (c *frontChecker) address() string {
+	port := c.endpoint.Port()
+	if port == "" {
+		port = "443"
+	}
+	return net.JoinHostPort(c.endpoint.Hostname(), port)
+}
 
 func (c *frontChecker) run(ctx context.Context) *report {
 	results := &report{}
@@ -146,7 +219,7 @@ func (c *frontChecker) run(ctx context.Context) *report {
 		rule, suppressed := brokerapi.NoSNIFront(c.brokerURL)
 		c.suppressSNI = suppressed
 		if !suppressed {
-			return []string{"ordinary SNI-bearing TLS: certificate must be valid for " + c.host}, nil
+			return []string{"ordinary SNI-bearing TLS: certificate must be valid for " + c.host()}, nil
 		}
 		return []string{"SNI suppressed — " + rule}, nil
 	})
@@ -163,7 +236,8 @@ func (c *frontChecker) run(ctx context.Context) *report {
 	// most.
 	var shippedRelays []byte
 	results.run("signed relay list fetches and verifies over the shipping path", func() ([]string, error) {
-		list, details, err := c.fetchRelayList(ctx, brokerapi.NewClient(nil, brokerapi.Options{}))
+		shippingClient, observed := observedShippingClient()
+		list, details, err := c.fetchRelayList(ctx, brokerapi.NewClient(shippingClient, brokerapi.Options{}), observed)
 		shippedRelays = list
 		return details, err
 	})
@@ -177,7 +251,7 @@ func (c *frontChecker) run(ctx context.Context) *report {
 		results.skip(controlCheck, "front already uses SNI-bearing TLS; check 3 is the same path")
 	} else {
 		results.run(controlCheck, func() ([]string, error) {
-			list, details, err := c.fetchRelayList(ctx, brokerapi.NewClient(sniBearingClient(), brokerapi.Options{}))
+			list, details, err := c.fetchRelayList(ctx, brokerapi.NewClient(sniBearingClient(), brokerapi.Options{}), nil)
 			if err != nil {
 				return details, err
 			}
@@ -185,9 +259,7 @@ func (c *frontChecker) run(ctx context.Context) *report {
 				return details, errors.New("the no-SNI fetch produced nothing to compare against")
 			}
 			if !sameRelayPayload(shippedRelays, list) {
-				return details, errors.New(
-					"the no-SNI and SNI paths returned different relay lists — they are not reaching the same origin",
-				)
+				return details, errors.New(describeRelayDifference(shippedRelays, list))
 			}
 			return append(details, "matches the no-SNI response"), nil
 		})
@@ -226,17 +298,17 @@ func (c *frontChecker) describeHandshake(ctx context.Context) ([]string, error) 
 	}
 	// Report the endpoint-name gap explicitly rather than letting a passing run
 	// imply the connection is bound to this endpoint.
-	nameErr := leaf.VerifyHostname(c.host)
+	nameErr := leaf.VerifyHostname(c.host())
 	switch {
 	case nameErr == nil:
-		details = append(details, fmt.Sprintf("certificate is valid for %s", c.host))
+		details = append(details, fmt.Sprintf("certificate is valid for %s", c.host()))
 	case c.suppressSNI:
 		details = append(details, fmt.Sprintf(
 			"NOTE: this certificate is not valid for %s, so TLS does not bind the connection to this endpoint; "+
-				"authenticity rests on the Ed25519 relay-list signature checked below", c.host,
+				"authenticity rests on the Ed25519 relay-list signature checked below", c.host(),
 		))
 	default:
-		return details, fmt.Errorf("certificate is not valid for %s: %w", c.host, nameErr)
+		return details, fmt.Errorf("certificate is not valid for %s: %w", c.host(), nameErr)
 	}
 	return details, nil
 }
@@ -250,7 +322,7 @@ func (c *frontChecker) dial(ctx context.Context) (*tls.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", c.address(), err)
 	}
-	serverName := c.host
+	serverName := c.host()
 	if c.suppressSNI {
 		serverName = ""
 	}
@@ -271,7 +343,11 @@ func (c *frontChecker) dial(ctx context.Context) (*tls.Conn, error) {
 	return conn, nil
 }
 
-func (c *frontChecker) fetchRelayList(ctx context.Context, client *brokerapi.Client) ([]byte, []string, error) {
+func (c *frontChecker) fetchRelayList(
+	ctx context.Context,
+	client *brokerapi.Client,
+	observed *observedTLS,
+) ([]byte, []string, error) {
 	defer client.CloseIdleConnections()
 	requestCtx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
@@ -286,9 +362,101 @@ func (c *frontChecker) fetchRelayList(ctx context.Context, client *brokerapi.Cli
 		)
 	}
 	payload := list.JSON()
-	return payload, []string{
+	details := []string{
 		fmt.Sprintf("%d bytes, signature verified under pinned key %s", len(payload), list.KeyID),
-	}, nil
+	}
+
+	age, err := relayListAge(payload, time.Now())
+	if err != nil {
+		return nil, details, err
+	}
+	if age > maxRelayListAge {
+		return nil, details, fmt.Errorf(
+			"the served list is %s old (server_time is that far behind this machine's clock, limit %s) — "+
+				"either this front is caching the relay list, which its route must not do, or this machine's clock is wrong",
+			age.Round(time.Second), maxRelayListAge,
+		)
+	}
+	details = append(details, fmt.Sprintf("server_time is %s old, so it was signed for this request", age.Round(time.Second)))
+
+	// Measure, rather than infer, that the fetch took the path the first check
+	// reported. Without this, a PASS would rest on the absence of a proxy
+	// instead of on the connection that actually carried the signed list.
+	if observed != nil {
+		state, ok := observed.state()
+		switch {
+		case !ok:
+			return nil, details, errors.New("the request completed without a TLS connection to inspect")
+		case c.suppressSNI && state.ServerName != "":
+			return nil, details, fmt.Errorf(
+				"the signed list arrived over a connection whose ClientHello carried server name %q — "+
+					"this fetch did not take the no-SNI path",
+				state.ServerName,
+			)
+		case !c.suppressSNI && !strings.EqualFold(state.ServerName, c.host()):
+			return nil, details, fmt.Errorf(
+				"the signed list arrived with ClientHello server name %q, want %q",
+				state.ServerName, c.host(),
+			)
+		}
+		details = append(details, fmt.Sprintf("carried over TLS with ClientHello server name %q", state.ServerName))
+	}
+	return payload, details, nil
+}
+
+// relayListAge reports how far the signed body's server_time sits behind now. A
+// clock ahead of the broker yields a negative age, which is not staleness.
+func relayListAge(payload []byte, now time.Time) (time.Duration, error) {
+	var body struct {
+		ServerTime *time.Time `json:"server_time"`
+	}
+	if err := json.Unmarshal(payload, &body); err != nil {
+		return 0, fmt.Errorf("signed body is not JSON: %w", err)
+	}
+	if body.ServerTime == nil {
+		return 0, errors.New("signed body carries no server_time, so its freshness cannot be established")
+	}
+	return now.Sub(*body.ServerTime), nil
+}
+
+// observedTLS records the TLS state of the connection net/http actually used.
+// It wraps the transport rather than replacing it, so the no-SNI dialer
+// underneath stays in play — brokerapi.NewClient uses a caller's Transport
+// verbatim, so replacing it would silently opt out of the very behaviour under
+// test.
+type observedTLS struct {
+	inner http.RoundTripper
+	mu    sync.Mutex
+	seen  *tls.ConnectionState
+}
+
+func (o *observedTLS) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := o.inner.RoundTrip(req)
+	if err == nil && resp.TLS != nil {
+		state := *resp.TLS
+		o.mu.Lock()
+		o.seen = &state
+		o.mu.Unlock()
+	}
+	return resp, err
+}
+
+func (o *observedTLS) state() (tls.ConnectionState, bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.seen == nil {
+		return tls.ConnectionState{}, false
+	}
+	return *o.seen, true
+}
+
+// observedShippingClient returns the client real clients use, with its TLS state
+// exposed for inspection.
+func observedShippingClient() (*http.Client, *observedTLS) {
+	client := brokerapi.NewHTTPClient(0)
+	observer := &observedTLS{inner: client.Transport}
+	client.Transport = observer
+	return client, observer
 }
 
 // probeUnroutableHost sends a Host no endpoint can claim over a no-SNI
@@ -301,17 +469,16 @@ func (c *frontChecker) probeUnroutableHost(ctx context.Context) ([]string, error
 	}
 	defer conn.Close()
 
-	relayPath, err := brokerapi.RelayListURL("https://"+unroutableHost+"/", c.limit)
-	if err != nil {
-		return nil, err
-	}
-	parsedPath, err := url.Parse(relayPath)
+	// The probe has to request the SAME path the signed fetch uses. Against a
+	// candidate with a base path, a 404 for some other path would prove nothing
+	// about whether the real route honours the Host header.
+	probe, err := c.unroutableProbeURL()
 	if err != nil {
 		return nil, err
 	}
 	request := fmt.Sprintf(
 		"GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: frontcheck\r\nConnection: close\r\n\r\n",
-		parsedPath.RequestURI(), unroutableHost,
+		probe.RequestURI(), probe.Host,
 	)
 	_ = conn.SetDeadline(time.Now().Add(requestTimeout))
 	if _, err := conn.Write([]byte(request)); err != nil {
@@ -325,11 +492,30 @@ func (c *frontChecker) probeUnroutableHost(ctx context.Context) ([]string, error
 	defer resp.Body.Close()
 	if resp.Header.Get(brokerapi.RelaySignatureHeader) != "" {
 		return nil, fmt.Errorf(
-			"the edge served a signed relay list for Host %q — routing is not driven by the endpoint name",
-			unroutableHost,
+			"the edge served a signed relay list for Host %q at %s — routing is not driven by the endpoint name",
+			probe.Host, probe.RequestURI(),
 		)
 	}
-	return []string{fmt.Sprintf("Host %q got HTTP %s and no relay signature", unroutableHost, resp.Status)}, nil
+	return []string{fmt.Sprintf(
+		"Host %q at %s got HTTP %s and no relay signature",
+		probe.Host, probe.RequestURI(), resp.Status,
+	)}, nil
+}
+
+// unroutableProbeURL keeps the candidate's port and base path and swaps only the
+// host, so the request differs from a real one in exactly the dimension under
+// test.
+func (c *frontChecker) unroutableProbeURL() (*url.URL, error) {
+	base := *c.endpoint
+	base.Host = unroutableHost
+	if port := c.endpoint.Port(); port != "" {
+		base.Host = net.JoinHostPort(unroutableHost, port)
+	}
+	relayURL, err := brokerapi.RelayListURL(base.String(), c.limit)
+	if err != nil {
+		return nil, err
+	}
+	return url.Parse(relayURL)
 }
 
 // sniBearingClient is an ordinary-TLS client, used only for the control check.
@@ -341,35 +527,130 @@ func sniBearingClient() *http.Client {
 	return &http.Client{Transport: transport, Timeout: requestTimeout}
 }
 
-// sameRelayPayload compares the signed bytes. Relay lists carry a freshness
-// bound and can legitimately change between two fetches, so a mismatch is only
-// reported when the two paths disagree about the signing key or the relays
-// themselves, not when the envelope was merely re-signed.
+// volatileEnvelopeFields are re-stamped on every signing and say nothing about
+// which origin answered.
+var volatileEnvelopeFields = []string{"server_time", "not_after"}
+
+// volatileRelayFields move on the fleet's own heartbeat clock rather than in
+// response to which front was asked, so comparing them measures elapsed time,
+// not origin.
+//
+// Measured 2026-08-03 over 20 fetches two seconds apart: leaving these in
+// mismatched 31% of adjacent pairs, which would have made this gate unusable.
+// Excluding them left only a genuine relay-set change. registered_at never
+// moved in that sample but is excluded too — it changes on re-registration,
+// which client_id, reality_public_key, and short_id already catch.
+//
+// Everything else is compared, including every connection-critical relay field,
+// because a front serving a different or stale signed configuration is exactly
+// what this exists to catch.
+var volatileRelayFields = []string{"last_heartbeat_at", "expires_at", "registered_at"}
+
+// sameRelayPayload reports whether two fetches describe the same relay
+// configuration. It compares whole descriptors rather than a chosen subset, so
+// a field added to the wire schema later is covered without editing this code.
+//
 // A body that does not parse is never equal to anything, including another
 // unparseable body: two identical CDN error pages must not read as agreement.
+//
+// A genuine fleet change between the two fetches — a relay entering or leaving
+// in the seconds between them — still reports as a mismatch. Measured at about
+// one run in twenty, self-correcting on a re-run, and the safe direction for an
+// acceptance gate to err in; describeRelayDifference says which case it was.
 func sameRelayPayload(first, second []byte) bool {
-	left, leftOK := relayIdentitySet(first)
-	right, rightOK := relayIdentitySet(second)
+	left, leftOK := canonicalRelayConfiguration(first)
+	right, rightOK := canonicalRelayConfiguration(second)
 	return leftOK && rightOK && left == right
 }
 
-func relayIdentitySet(payload []byte) (string, bool) {
+// describeRelayDifference explains a mismatch, because the two causes call for
+// opposite responses: a changed relay set is usually the fleet moving under the
+// check and clears on a re-run, while the same relays carrying a different
+// configuration means the two paths really did reach different origins.
+func describeRelayDifference(first, second []byte) string {
+	left, leftOK := relayIdentifiers(first)
+	right, rightOK := relayIdentifiers(second)
+	if !leftOK || !rightOK {
+		return "one path did not return a relay list at all"
+	}
+	if !slices.Equal(left, right) {
+		return fmt.Sprintf(
+			"the two fetches returned different relay sets (%v vs %v) — most likely the fleet changed "+
+				"between them rather than the fronts disagreeing; re-run to confirm",
+			left, right,
+		)
+	}
+	return "the same relays were returned with a different configuration — the two paths are not reaching the same origin"
+}
+
+// relayIdentifiers returns the sorted relay ids, used only to characterize a
+// mismatch that canonicalRelayConfiguration has already found.
+func relayIdentifiers(payload []byte) ([]string, bool) {
 	var body struct {
-		KeyID  string `json:"key_id"`
-		Relays []struct {
-			ID         string `json:"id"`
-			PublicHost string `json:"public_host"`
+		Relays *[]struct {
+			ID string `json:"id"`
 		} `json:"relays"`
 	}
-	if err := json.Unmarshal(payload, &body); err != nil {
+	if err := json.Unmarshal(payload, &body); err != nil || body.Relays == nil {
+		return nil, false
+	}
+	ids := make([]string, 0, len(*body.Relays))
+	for _, relay := range *body.Relays {
+		ids = append(ids, relay.ID)
+	}
+	slices.Sort(ids)
+	return ids, true
+}
+
+// canonicalRelayConfiguration renders a relay list into a stable string.
+// encoding/json sorts map keys, so re-marshalling the decoded body is enough to
+// make field order irrelevant at every level.
+func canonicalRelayConfiguration(payload []byte) (string, bool) {
+	// UseNumber keeps numeric fields as their original literals, so a
+	// coordinate or bandwidth figure can never differ through float64
+	// round-tripping rather than through the origin.
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	var body map[string]any
+	if err := decoder.Decode(&body); err != nil {
 		return "", false
 	}
-	entries := make([]string, 0, len(body.Relays))
-	for _, relay := range body.Relays {
-		entries = append(entries, relay.ID+"@"+relay.PublicHost)
+	relays, ok := body["relays"].([]any)
+	if !ok {
+		// Not a relay list at all: an error page, or a body with no relays
+		// array. Never comparable.
+		return "", false
 	}
-	slices.Sort(entries)
-	return body.KeyID + "|" + strings.Join(entries, ","), true
+	for _, field := range volatileEnvelopeFields {
+		delete(body, field)
+	}
+	// Relay order is per-request ranking, not identity — broker-side ranking
+	// sorts on live metrics and is not order-stable — so the descriptors are
+	// compared as a set. A change to WHICH relays are selected per request would
+	// need this check revisited, not just re-sorted.
+	delete(body, "relays")
+	encoded := make([]string, 0, len(relays))
+	for _, relay := range relays {
+		descriptor, ok := relay.(map[string]any)
+		if !ok {
+			return "", false
+		}
+		for _, field := range volatileRelayFields {
+			delete(descriptor, field)
+		}
+		blob, err := json.Marshal(descriptor)
+		if err != nil {
+			return "", false
+		}
+		encoded = append(encoded, string(blob))
+	}
+	slices.Sort(encoded)
+
+	envelope, err := json.Marshal(body)
+	if err != nil {
+		return "", false
+	}
+	return string(envelope) + "|" + strings.Join(encoded, "|"), true
 }
 
 // oneLine keeps the report readable when a front answers with a CDN error page:

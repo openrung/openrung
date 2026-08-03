@@ -101,9 +101,33 @@ go run ./cmd/frontcheck -url https://<endpoint>.z01.azurefd.net/
 
 It checks, read-only, that the shipping transport suppresses SNI for the host;
 that the no-SNI handshake satisfies the pinned rule (reporting the certificate
-in full); that a signed relay list arrives and verifies under the pinned keys;
-that an ordinary SNI dial returns the same list, proving both paths reach the
-same origin; and that an unroutable `Host` is not served our origin.
+in full); that a signed relay list arrives and verifies under the pinned keys,
+**over a connection whose ClientHello is confirmed to have carried no server
+name**; that the served list was signed for this request rather than replayed
+from a cache; that an ordinary SNI dial returns the same relay configuration,
+proving both paths reach the same origin; and that an unroutable `Host` is not
+served our origin.
+
+Two of those deserve emphasis, because both catch failures nothing else here
+would. The SNI observation is a measurement of the connection that actually
+carried the signed list, not an inference from configuration. And the freshness
+bound catches a front that caches the relay list: a cached body still verifies,
+since the signature covers a 30-minute window plus five minutes of skew, so a
+route with caching left on would otherwise pass every other check. A Cloudflare
+edge once served this deployment a stale `/api/v1/relays` for about four hours.
+
+If the run fails only on the relay-configuration comparison and reports
+*different relay sets*, the fleet most likely changed between the two fetches —
+re-run. A mismatch reported as *the same relays with a different configuration*
+is the serious one.
+
+**Run it from an unproxied shell.** It refuses to start when `HTTPS_PROXY` or
+`ALL_PROXY` selects a proxy for the candidate, because Go tunnels proxied HTTPS
+with `CONNECT` and then performs its own SNI-bearing handshake — the no-SNI
+dialer never runs, so a run behind a proxy would report on a path clients do not
+take. `NO_PROXY` exemptions are honoured. This is also worth remembering about
+the shipping client: a user behind a proxy sends the front's name in the
+ClientHello, which no front-side change can prevent.
 
 Every check must pass. Record the printed certificate details in the pull
 request that advertises the endpoint.
