@@ -160,8 +160,12 @@ waved through: `cert_expired` is a device-clock tell worth roughly one bit, and
 `dns_bogon` is semi-stable for anyone behind a split-horizon resolver or a
 captive portal.
 
-TCP-phase tokens describe the **final address attempt** of a dial that may have
-tried several resolved addresses.
+TCP-phase tokens describe the error Go selects to represent a dial that may
+have tried several resolved addresses: `net.Dialer` reports the **first**
+attempted address's failure (the first primary-family failure under dual-stack
+Happy Eyeballs), not the last attempt's. The bogon flag is deliberately
+broader — it is observed per attempt, so any poisoned address in the resolved
+set marks the dial even when it was not the attempt whose error is reported.
 
 The socket errnos behind `connection_refused`, `network_unreachable`, and the
 reset tokens are matched through a build-tagged table (`failure_posix.go`,
