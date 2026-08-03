@@ -24,11 +24,14 @@ Cloudflare Worker front. Set up 2026-07-13.
   It is an `A` record → `54.238.185.205`. Orange-clouding (proxying) it would
   reintroduce Cloudflare's datacenter challenge on the origin and loop the
   Cloudflare Worker's subrequest back into the edge. Both CDN fronts depend on
-  this record resolving straight to the broker IP.
-- **Keep `:8080` open.** Volunteer-run relays (Hetzner + Lightsail, see
-  `deploy/relay/hetzner-up.sh`) register directly against
-  `http://54.238.185.205:8080`, and the Cloudflare Worker front fetches the
-  origin on `:8080`. Do not firewall it off as part of this change.
+  this record resolving straight to the broker IP, and so does every relay and
+  relay hub — the provisioning helpers now register against this hostname.
+- **Keep `:8080` open.** The Cloudflare Worker front still fetches the origin on
+  `:8080`. Relays and hubs provisioned before the helpers switched their default
+  to `https://broker-origin.openrung.org` also keep the baked-in
+  `http://54.238.185.205:8080` in their container environment until each one is
+  recreated, so closing the port would strand them. Do not firewall it off as
+  part of this change.
 - **The CloudFront behavior must use `Managed-AllViewerExceptHostHeader`, not
   `Managed-AllViewer`** — see the CloudFront gotcha below. This is the load-bearing
   requirement; get it wrong and the origin handshake fails with a 502.

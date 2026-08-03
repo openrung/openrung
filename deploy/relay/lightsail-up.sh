@@ -24,7 +24,13 @@ AZ="${OPENRUNG_AZ:-${REGION}a}"
 BUNDLE="${OPENRUNG_BUNDLE:-micro_3_0}"          # 1GB RAM / 2 vCPU / 40GB / 2TB
 BLUEPRINT="${OPENRUNG_BLUEPRINT:-ubuntu_24_04}"
 IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-relay:main}"
-BROKER_URL="${OPENRUNG_BROKER_URL:-http://54.238.185.205:8080}"
+# Register against the broker ORIGIN, not a CDN front. The origin is a DNS-only
+# (grey-cloud) record straight to the broker box, so a datacenter IP reaches it
+# without the Cloudflare front's Managed Challenge, and it terminates TLS itself
+# (deploy/broker/origin-tls.md) — registration no longer crosses the public
+# internet in cleartext, and the broker keys rate limits on the relay's real IP
+# rather than a shared edge address.
+BROKER_URL="${OPENRUNG_BROKER_URL:-https://broker-origin.openrung.org}"
 # Egress CAKE shaping rate ('off' disables). Sized for the default micro
 # bundles; raise it when launching a bigger bundle. Must sit at or below the
 # instance's true deliverable egress: fairness only works when the queue forms

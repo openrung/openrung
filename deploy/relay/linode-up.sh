@@ -32,9 +32,11 @@ IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-relay:main}"
 # Register against the broker ORIGIN, not the Cloudflare front (broker.openrung.org).
 # That hostname is a Worker front for *client* discovery; its edge serves a Managed
 # Challenge to datacenter IP ranges (incl. Linode), which a relay's HTTP client
-# cannot solve (403). The origin is plaintext HTTP and takes registrations directly,
-# exactly like the Lightsail fleet (see lightsail-up.sh).
-BROKER_URL="${OPENRUNG_BROKER_URL:-http://54.238.185.205:8080}"
+# cannot solve (403). The origin is DNS-only (grey-cloud), so a datacenter IP
+# reaches it directly, and it terminates TLS itself (deploy/broker/origin-tls.md)
+# — registration no longer crosses the public internet in cleartext. Same default
+# as the Lightsail fleet (see lightsail-up.sh).
+BROKER_URL="${OPENRUNG_BROKER_URL:-https://broker-origin.openrung.org}"
 FIREWALL_NAME="${OPENRUNG_FIREWALL_NAME:-openrung-relay}"
 # Egress CAKE shaping rate ('off' disables). g6-standard-1 has a 2 Gbps line,
 # but xray on its single shared vCPU tops out near 1 Gbps — the rate must sit
