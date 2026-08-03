@@ -74,21 +74,71 @@ authenticated while losing the ordinary verification it gets by keeping SNI.
 
 ## Provisioning
 
-Requires an Azure subscription. The Microsoft for Nonprofits grant has not been
-applied for yet; account creation and payment details are the maintainer's to
-enter.
+```bash
+bash deploy/broker/azure-front-door-up.sh
+```
+
+The script is idempotent and encodes the settings below, including the two that
+are load-bearing rather than stylistic (no custom domain, caching off). It
+checks the origin first and asserts caching is actually off afterwards.
+
+### Known blocker: sponsorship subscriptions cannot create a profile
+
+Attempted 2026-08-04 on subscription `2ac42581-…` (offer `Sponsored_2016-01-01`,
+the nonprofit grant). Profile creation fails:
+
+```
+ERROR: (BadRequest) The number of profiles created exceeds quota.
+       Please contact support to increase quota.
+```
+
+This is **not** a real count. The subscription has zero profiles, and
+`POST …/providers/Microsoft.Cdn/checkResourceUsage` reports `afdprofile`
+`currentValue: 0, limit: 500`. The same request fails identically through raw
+REST, so it is a resource-provider gate rather than a CLI artifact — the
+sponsorship offer appears to enforce a limit that the usage API does not report.
+
+Lifting it needs a **free** quota request, which must go through the Azure
+portal: the Support REST API refuses on anything below a paid support plan
+(`InvalidSupportPlan … your support plan type is Developer`). Portal path is
+Help + support → Create a support request → issue type *Service and subscription
+limits (quotas)* → quota type *CDN*.
+
+### Cost, before committing to this front
+
+Retail pricing (queried 2026-08-04, `prices.azure.com`):
+
+| | |
+| --- | --- |
+| Standard base fee | **$35.00 / month** |
+| Standard data transfer out | **$0.17 / GB** |
+| Standard requests | $0.01125 / 10K |
+
+The base fee alone is $420/year, roughly a fifth of the $2,000 grant, and egress
+is billed well above the $0.087/GB VM rate the earlier estimate assumed. Worth
+weighing against Fastly Fast Forward, which is free, has a Tor precedent, and
+carries no VPN clause in its AUP.
+
+### Settings
 
 1. Create a Front Door **Standard** profile (Premium's WAF is not needed; a
    profile allows 3000 concurrent connections and caps connections at 2 hours).
 2. Add an endpoint. Azure assigns `<name>-<hash>.z01.azurefd.net`. Do **not**
    add a custom domain — see above.
-3. Origin group: the broker origin `54.238.185.205:443`, HTTPS only, origin host
-   header set to the origin's own TLS name. Front the origin directly, never
-   another CDN front.
+3. Origin group: the broker origin, HTTPS only, with both the host name and the
+   origin host header set to `broker-origin.openrung.org`. That name is what
+   Caddy on the origin holds a certificate for, and the edge uses the host
+   header as SNI to the origin — a bare IP fails certificate validation. Front
+   the origin directly, never another CDN front.
 4. Route: match `/*`, forward to the origin group, **caching disabled**. The
    relay list must not be cached — a stale signed list is a live outage, and
-   `/api/v1/relays` already sets `no-store` at the origin.
-5. Leave health probes at their defaults.
+   `/api/v1/relays` already sets `no-store` at the origin. In the CLI there is
+   no `--enable-caching false`; caching is off precisely when the route carries
+   no `--cache-configuration`, which is why the script omits it and then asserts
+   `cacheConfiguration` is empty afterwards.
+5. Health probe: `GET /healthz` over HTTPS. The default probe path is `/`, where
+   a failure would mean only that the root has no handler rather than that the
+   broker is unhealthy.
 
 Budget alerts only email; they do not stop spending. Set one, and keep the
 runbook for deallocating if credit is exhausted.
