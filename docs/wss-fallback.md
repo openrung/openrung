@@ -50,7 +50,9 @@ CloudFront selects the distribution from the encrypted HTTP `Host` header.
 The client still verifies CloudFront's default certificate against the exact
 signed URL hostname. This removes one cleartext hostname signal, but ordinary
 DNS resolution can still expose the distribution hostname; custom CNAME and
-non-CloudFront fronts retain normal SNI.
+non-CloudFront fronts retain normal SNI. The control plane applies the same
+technique to the CloudFront broker front (see `brokerapi/cloudfront_tls.go`),
+with the same DNS caveat.
 
 The client and sidecar require WebSocket subprotocol
 `openrung-wss-bridge-v1`, disable WebSocket compression, and accept binary
@@ -323,8 +325,9 @@ building blocks only: Android still has to wire the hook to
 `VpnService.protect`, and both platforms must add their own ticket,
 direct-first, lifecycle, and UI integration before publishing a separate
 mobile release. The reusable `brokerapi` module lets those repositories adopt
-the same ECH-capable broker client without reimplementing it, but its tag is
-also only an adoption building block until a mobile binding is integrated and
+the same SNI-concealing broker client — ECH for the Cloudflare front, SNI-less
+TLS for the CloudFront front — without reimplementing it, but its tag is also
+only an adoption building block until a mobile binding is integrated and
 released.
 
 ## Rollout and rollback contract

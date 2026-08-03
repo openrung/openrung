@@ -63,7 +63,13 @@ cleartext exception, and the broker TLS transport. For the Cloudflare front
 that transport opportunistically uses a compiled-in ECH configuration,
 refreshes it from authenticated retry configurations, and quickly retries with
 ordinary TLS when ECH is blocked. It never bootstraps ECH through DNS and never
-applies ECH to the CloudFront front.
+applies ECH to the CloudFront front. That front omits the TLS server name
+instead, letting the encrypted HTTP `Host` header select the distribution while
+the same certificate verification runs against its exact hostname. On a direct
+connection the CloudFront front therefore never puts its hostname in a
+cleartext ClientHello, while the Cloudflare front conceals its own only as long
+as ECH survives — the ordinary-TLS fallback sends it. A configured proxy
+tunnels both fronts outside this transport and keeps sending the name.
 
 The desktop client still tries direct Reality first. When a genuine network
 failure blocks a direct-mode Foundation relay, that relay may advertise its own

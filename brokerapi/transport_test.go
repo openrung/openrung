@@ -25,7 +25,13 @@ import (
 	"time"
 )
 
-const testECHPublicName = "cloudflare-ech.com"
+const (
+	testECHPublicName = "cloudflare-ech.com"
+
+	// A broker front that is neither the ECH host nor a CloudFront
+	// distribution, so it exercises the ordinary SNI-bearing dial.
+	testCustomBrokerHost = "broker.example.org"
+)
 
 func TestCloudflareBrokerAddress(t *testing.T) {
 	for _, tc := range []struct {
@@ -38,7 +44,7 @@ func TestCloudflareBrokerAddress(t *testing.T) {
 		{"broker.openrung.org:8443", false},
 		{"sub.broker.openrung.org:443", false},
 		{"broker.openrung.org.example:443", false},
-		{"d2r7mdpyevvs1m.cloudfront.net:443", false},
+		{cloudFrontBrokerHost + ":443", false},
 		{"127.0.0.1:443", false},
 		{"not-an-address", false},
 	} {
@@ -256,15 +262,17 @@ func TestBrokerECHDialerPreservesCertificateVerification(t *testing.T) {
 	}
 }
 
-func TestBrokerECHDialerLeavesCloudFrontPlain(t *testing.T) {
+// CloudFront cannot receive this deployment's ECH config. It gets the no-SNI
+// path instead (see cloudfront_tls_test.go), never an ECH attempt.
+func TestBrokerECHDialerLeavesCloudFrontOutsideECH(t *testing.T) {
 	certificate, roots := testBrokerCertificate(t)
 	serverConfig := testBrokerServerConfig(certificate)
 	networkDial, results, calls := testTLSPipeDialer(serverConfig)
 	dialer := testBrokerECHDialer(networkDial, roots, newECHConfigState(embeddedCloudflareECHConfigList))
 
-	conn, err := dialer.dialTLSContext(t.Context(), "tcp", "d2r7mdpyevvs1m.cloudfront.net:443")
+	conn, err := dialer.dialTLSContext(t.Context(), "tcp", cloudFrontBrokerHost+":443")
 	if err != nil {
-		t.Fatalf("CloudFront plain TLS dial: %v", err)
+		t.Fatalf("CloudFront TLS dial: %v", err)
 	}
 	closeTLSConn(conn)
 	result := readTLSServerResults(t, results, 1)[0]
@@ -272,7 +280,7 @@ func TestBrokerECHDialerLeavesCloudFrontPlain(t *testing.T) {
 		t.Fatalf("CloudFront handshake = err %v, ECHAccepted %t", result.err, result.state.ECHAccepted)
 	}
 	if got := calls.Load(); got != 1 {
-		t.Fatalf("CloudFront TLS connection attempts = %d, want one plain attempt", got)
+		t.Fatalf("CloudFront TLS connection attempts = %d, want one attempt", got)
 	}
 }
 
@@ -284,7 +292,7 @@ func TestBrokerECHDialerDoesNotForceHTTP2ALPN(t *testing.T) {
 	dialer := testBrokerECHDialer(networkDial, roots, newECHConfigState(embeddedCloudflareECHConfigList))
 	dialer.baseTLSConfig.NextProtos = nil
 
-	conn, err := dialer.dialTLSContext(t.Context(), "tcp", "d2r7mdpyevvs1m.cloudfront.net:443")
+	conn, err := dialer.dialTLSContext(t.Context(), "tcp", testCustomBrokerHost+":443")
 	if err != nil {
 		t.Fatalf("plain TLS dial without ALPN: %v", err)
 	}
@@ -583,18 +591,22 @@ func testBrokerECHDialer(
 
 func testBrokerCertificate(t *testing.T) (tls.Certificate, *x509.CertPool) {
 	t.Helper()
+	return testCertificate(t, cloudflareBrokerHost, testECHPublicName, cloudFrontBrokerHost, testCustomBrokerHost)
+}
+
+// testCertificate mints a self-signed server certificate for the given names
+// and the pool that trusts it. Names are passed verbatim so a test can use the
+// wildcard shape CloudFront actually serves.
+func testCertificate(t *testing.T, dnsNames ...string) (tls.Certificate, *x509.CertPool) {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("generate certificate key: %v", err)
 	}
 	template := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "OpenRung ECH test"},
-		DNSNames: []string{
-			cloudflareBrokerHost,
-			testECHPublicName,
-			"d2r7mdpyevvs1m.cloudfront.net",
-		},
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "OpenRung ECH test"},
+		DNSNames:              dnsNames,
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(time.Hour),
 		KeyUsage:              x509.KeyUsageDigitalSignature,
