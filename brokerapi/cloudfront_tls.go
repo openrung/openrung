@@ -4,6 +4,7 @@ package brokerapi
 
 import (
 	"context"
+	"crypto/fips140"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -11,6 +12,17 @@ import (
 	"strings"
 	"time"
 )
+
+// errNoSNIInFIPSMode refuses the no-SNI path rather than run it under a weaker
+// certificate policy than the rest of the process. crypto/tls filters verified
+// chains through a FIPS 140-3 policy that has no exported equivalent, so the
+// hook that replaces its verification cannot enforce it.
+//
+// This covers the GODEBUG=fips140 setting, which is what turns that filtering
+// on. A Go+BoringCrypto build that imports crypto/tls/fipsonly forces the same
+// requirement through an internal call that nothing outside crypto/tls can
+// observe; this repository does not produce such builds.
+var errNoSNIInFIPSMode = errors.New("no-SNI TLS is unavailable in FIPS 140-3 mode")
 
 // cloudFrontDistributionAddress recognizes only the one-label distribution
 // names covered by CloudFront's default *.cloudfront.net certificate, on the
@@ -41,6 +53,11 @@ func cloudFrontDistributionAddress(address string) (string, bool) {
 // the exact name this hides, and discovery already races an independent front
 // when one stops answering.
 func (d *echDialer) dialNoSNITLS(ctx context.Context, network, address, verificationName string) (net.Conn, error) {
+	// Before the socket, so a policy this path cannot honor costs no
+	// connection. Discovery still reaches the other front.
+	if fips140.Enabled() {
+		return nil, errNoSNIInFIPSMode
+	}
 	plainConn, err := d.networkDial(ctx, network, address)
 	if err != nil {
 		return nil, err
@@ -58,9 +75,9 @@ func (d *echDialer) dialNoSNITLS(ctx context.Context, network, address, verifica
 // ALPN, clock — and differs from an ordinary broker dial only in where the
 // hostname is asserted. crypto/tls fills ConnectionState.VerifiedChains only
 // on the path this replaces, so it stays empty here; the chains this builds
-// reach caller-supplied hooks instead. One stock step has no exported
-// equivalent: under GODEBUG=fips140 crypto/tls also filters verified chains for
-// FIPS-allowed key types, which this cannot reproduce.
+// reach caller-supplied hooks instead. The one stock step it cannot reproduce
+// is FIPS chain filtering, which is why dialNoSNITLS refuses to run at all in
+// that mode.
 func verifiedNoSNIConfig(base *tls.Config, verificationName string) *tls.Config {
 	config := &tls.Config{}
 	if base != nil {

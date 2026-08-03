@@ -41,6 +41,13 @@ connection pooling and keep-alive are unaffected. And `Response.TLS` on that
 leg reports an empty `ServerName` and no `VerifiedChains`, because the
 verification runs in the transport's own hook rather than in crypto/tls.
 
+In FIPS 140-3 mode (`GODEBUG=fips140=on`) this front is refused rather than
+dialed, before any connection is opened. crypto/tls filters verified chains
+through a FIPS policy with no exported equivalent, so the replacement hook
+cannot honor it, and running under a weaker certificate policy than the rest of
+the process is not a trade this module makes. Discovery still reaches the
+Cloudflare front.
+
 This removes the cleartext TLS signal from direct connections, not every
 hostname signal. DNS resolution of the distribution name still carries it. So
 does any configured proxy, and more completely than the `CONNECT` line alone

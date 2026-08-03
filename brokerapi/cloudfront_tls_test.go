@@ -3,9 +3,11 @@
 package brokerapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/fips140"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
@@ -17,6 +19,8 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"os"
+	"os/exec"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -742,5 +746,67 @@ func TestBrokerCloudFrontDialBoundsBlackholedHandshake(t *testing.T) {
 	}
 	if elapsed > time.Second {
 		t.Fatalf("blackholed no-SNI handshake took %v, want the transport's handshake budget", elapsed)
+	}
+}
+
+// The FIPS setting is fixed at process start, so the assertion runs in a
+// re-executed copy of this test binary rather than in the parent.
+const fipsModeChildEnv = "OPENRUNG_TEST_FIPS_CHILD"
+
+func TestBrokerCloudFrontDialRefusesFIPSMode(t *testing.T) {
+	if os.Getenv(fipsModeChildEnv) != "1" {
+		command := exec.Command(os.Args[0], "-test.run=^"+t.Name()+"$", "-test.v")
+		command.Env = append(os.Environ(), fipsModeChildEnv+"=1", "GODEBUG=fips140=on")
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("FIPS-mode child process: %v\n%s", err, output)
+		}
+		// A child that matched no test also exits zero.
+		if !bytes.Contains(output, []byte("PASS: "+t.Name())) {
+			t.Fatalf("FIPS-mode child ran no assertions:\n%s", output)
+		}
+		return
+	}
+
+	// Without this the whole test would pass vacuously on a toolchain that
+	// ignores the setting.
+	if !fips140.Enabled() {
+		t.Fatal("GODEBUG=fips140=on did not enable FIPS mode in the child process")
+	}
+
+	var dials atomic.Int64
+	dialer := testBrokerECHDialer(
+		func(context.Context, string, string) (net.Conn, error) {
+			dials.Add(1)
+			return nil, errors.New("the no-SNI path opened a connection in FIPS mode")
+		},
+		x509.NewCertPool(),
+		newECHConfigState(embeddedCloudflareECHConfigList),
+	)
+
+	conn, err := dialer.dialTLSContext(t.Context(), "tcp", testCloudFrontHost+":443")
+	if conn != nil {
+		closeTLSConn(conn)
+		t.Fatal("the no-SNI path returned a connection under a chain policy it cannot enforce")
+	}
+	if !errors.Is(err, errNoSNIInFIPSMode) {
+		t.Fatalf("no-SNI dial in FIPS mode = %v, want %v", err, errNoSNIInFIPSMode)
+	}
+	if got := dials.Load(); got != 0 {
+		t.Fatalf("network dials = %d, want none before the refusal", got)
+	}
+
+	// Refusing must be confined to this path: crypto/tls enforces the same
+	// policy itself wherever an ordinary SNI-bearing dial is used.
+	certificate, roots := testCertificate(t, testCustomBrokerHost)
+	networkDial, results, _ := testTLSPipeDialer(testBrokerServerConfig(certificate))
+	plainDialer := testBrokerECHDialer(networkDial, roots, newECHConfigState(embeddedCloudflareECHConfigList))
+	plainConn, err := plainDialer.dialTLSContext(t.Context(), "tcp", testCustomBrokerHost+":443")
+	if err != nil {
+		t.Fatalf("ordinary TLS dial in FIPS mode: %v", err)
+	}
+	defer closeTLSConn(plainConn)
+	if result := readTLSServerResults(t, results, 1)[0]; result.err != nil {
+		t.Fatalf("server handshake in FIPS mode: %v", result.err)
 	}
 }

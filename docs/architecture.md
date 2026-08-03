@@ -320,8 +320,10 @@ against the transport's own roots and clock — only its input moves from the
 TLS server name to the dialed host. A suppressed server name is never combined
 with an ECH config, and there is no plain-SNI fallback: retrying with the name
 would hand a censor what the omission hides, so the front fails closed and
-front racing covers reachability. Custom broker URLs remain fully standard, and
-DNS resolution of the distribution name still exposes it.
+front racing covers reachability. The one certificate check that cannot move
+out of crypto/tls is FIPS chain filtering, so in FIPS 140-3 mode this front is
+refused instead of dialed. Custom broker URLs remain fully standard, and DNS
+resolution of the distribution name still exposes it.
 
 Relay registration/heartbeat clients and the relay data path remain outside
 `brokerapi`.
