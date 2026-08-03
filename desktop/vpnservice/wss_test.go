@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/openrung/openrung/wsscore"
+
 	"openrung/desktop/config"
 	"openrung/internal/client"
 	"openrung/internal/relay"
@@ -33,6 +35,15 @@ type fakeWSSBridge struct {
 	startOnce  sync.Once
 	exitOnce   sync.Once
 	closeCalls atomic.Int32
+	end        atomic.Int32
+}
+
+func (b *fakeWSSBridge) SessionEnd() wsscore.SessionEnd {
+	return wsscore.SessionEnd(b.end.Load())
+}
+
+func (b *fakeWSSBridge) setSessionEnd(end wsscore.SessionEnd) {
+	b.end.Store(int32(end))
 }
 
 func newFakeWSSBridge() *fakeWSSBridge {
@@ -521,6 +532,64 @@ func TestWSSTicketURLMismatchFailsClosed(t *testing.T) {
 	failures := sink.named("transport_failed")
 	if len(failures) != 1 || failures[0].Attributes["failure_stage"] != "ticket_binding" {
 		t.Fatalf("ticket binding telemetry = %+v", failures)
+	}
+}
+
+// TestWSSOrderlySessionEndIsNotReportedAsTransportFailure covers the relay
+// closing a promoted session in an orderly way. The tunnel still has to be
+// rebuilt, but nothing failed: reporting it as transport_failed made every
+// idle-timeout close look like a censored front.
+func TestWSSOrderlySessionEndIsNotReportedAsTransportFailure(t *testing.T) {
+	sink := newTelemetrySink(t)
+	fixture := relayWithWSS("relay-a", "JP", "Tokyo", "Japan", "127.0.0.10")
+	s, _ := newLadderService(t, func() []relay.Descriptor { return []relay.Descriptor{fixture} })
+	s.networkRetryDelay = time.Millisecond
+	s.dialRelay = func(context.Context, string, int) (int64, error) {
+		return 0, errors.New("direct path blocked")
+	}
+	s.requestWSSTicket = func(_ context.Context, _ string, _ relay.WSSSessionTicketRequest, _, _ string) (relay.WSSSessionTicketResponse, error) {
+		return successfulWSSTicket(fixture.WSSFronts[0], "single-use-ticket"), nil
+	}
+	first, second := newFakeWSSBridge(), newFakeWSSBridge()
+	var bridgeCalls atomic.Int32
+	s.dialWSS = func(context.Context, string, string) (wssBridge, error) {
+		if bridgeCalls.Add(1) == 1 {
+			return first, nil
+		}
+		return second, nil
+	}
+
+	if err := s.Connect(sink.srv.URL, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForStatus(t, s, StatusConnected)
+	waitWSSSignal(t, first.started, "first WSS session")
+
+	// The relay closed the session in an orderly way; Serve returns nil, exactly
+	// as it does when the path is lost.
+	first.setSessionEnd(wsscore.SessionEndRemote)
+	first.fatal <- nil
+	waitWSSSignal(t, second.started, "replacement WSS session")
+	waitForStatus(t, s, StatusConnected)
+
+	// Recovery records into the telemetry outbox and does not flush it — only
+	// promote's initial pass and disconnect do — so the sink is read after
+	// teardown rather than racing the delivery.
+	_ = s.Disconnect()
+	waitForStatus(t, s, StatusDisconnected)
+	waitIdle(t, s)
+
+	if failures := sink.named("transport_failed"); len(failures) != 0 {
+		t.Fatalf("orderly session end was reported as path loss: %+v", failures)
+	}
+	ended := sink.named("transport_session_ended")
+	if len(ended) != 1 || ended[0].Attributes["transport"] != accessTransportWSS {
+		t.Fatalf("orderly session end telemetry = %+v", ended)
+	}
+	for _, attempt := range sink.named("relay_attempt_failed") {
+		if len(attempt.Measurements) == 0 {
+			t.Fatalf("orderly session end damaged relay health: %+v", attempt)
+		}
 	}
 }
 

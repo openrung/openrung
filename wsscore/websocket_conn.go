@@ -27,6 +27,9 @@ type WebSocketConn struct {
 	pingOnce  sync.Once
 	closeOnce sync.Once
 	closed    chan struct{}
+
+	remoteMu        sync.Mutex
+	remoteCloseCode int
 }
 
 func NewWebSocketConn(ws *websocket.Conn, readLimit int64) (*WebSocketConn, error) {
@@ -54,6 +57,7 @@ func (c *WebSocketConn) Read(p []byte) (int, error) {
 		if c.reader == nil {
 			messageType, reader, err := c.ws.NextReader()
 			if err != nil {
+				c.recordRemoteClose(err)
 				c.abort()
 				return 0, err
 			}
@@ -75,10 +79,40 @@ func (c *WebSocketConn) Read(p []byte) (int, error) {
 			continue
 		}
 		if err != nil {
+			c.recordRemoteClose(err)
 			c.abort()
 		}
 		return n, err
 	}
+}
+
+// recordRemoteClose keeps the first WebSocket close code the peer sent. A
+// protocol-level close frame is what separates an orderly peer shutdown from a
+// broken path: a censored or dropped connection yields an abnormal-closure code
+// because no close frame ever arrives.
+func (c *WebSocketConn) recordRemoteClose(err error) {
+	var closeErr *websocket.CloseError
+	if !errors.As(err, &closeErr) {
+		return
+	}
+	c.remoteMu.Lock()
+	defer c.remoteMu.Unlock()
+	if c.remoteCloseCode == 0 {
+		c.remoteCloseCode = closeErr.Code
+	}
+}
+
+// RemoteCloseCode reports the WebSocket close code observed from the peer, or
+// zero when the transport has not ended in an observed close. Codes are the
+// peer's claim, not proof; callers must not grant a peer more trust because of
+// one.
+func (c *WebSocketConn) RemoteCloseCode() int {
+	if c == nil {
+		return 0
+	}
+	c.remoteMu.Lock()
+	defer c.remoteMu.Unlock()
+	return c.remoteCloseCode
 }
 
 func (c *WebSocketConn) Write(p []byte) (int, error) {

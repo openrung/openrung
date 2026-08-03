@@ -505,6 +505,15 @@ func (h *sidecarHandler) serveSession(parent context.Context, ws *websocket.Conn
 			_ = stream.Close()
 			continue
 		}
+		// The guard exists to evict a session that never carries a stream, which
+		// is what parking a consumed ticket looks like. Once a session has carried
+		// one it is in use, and a client is entitled to hold it quiet: a phone
+		// with the VPN on sends nothing for hours, and evicting it would break the
+		// tunnel for no gain against an attacker, who need only open one cheap
+		// stream to reset the same window. Session lifetime, the per-source
+		// session cap, and the ticket's non-replenishing stream budget still bound
+		// an in-use session.
+		idle.Disarm()
 		h.stats.acceptedStreams.Add(1)
 		h.stats.currentStreams.Add(1)
 		wg.Add(1)

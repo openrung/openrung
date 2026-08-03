@@ -64,6 +64,9 @@ type Client struct {
 	activeMu  sync.Mutex
 	active    map[net.Conn]struct{}
 	closeOnce sync.Once
+
+	endMu sync.Mutex
+	end   SessionEnd
 }
 
 func DialClient(ctx context.Context, opts ClientOptions) (*Client, error) {
@@ -173,10 +176,19 @@ func DialClient(ctx context.Context, opts ClientOptions) (*Client, error) {
 		slots: make(chan struct{}, lifecycle.MaxConcurrentStreams), streamIdle: lifecycle.StreamIdleTimeout,
 		ctx: lifetimeCtx, cancel: cancel, active: make(map[net.Conn]struct{}),
 	}
-	client.idle, err = NewIdleGuard(lifecycle.NoStreamIdleTimeout, func() { _ = client.Close() })
-	if err != nil {
-		_ = client.Close()
-		return nil, err
+	// The no-stream idle guard is opt-in for a client. A client session belongs
+	// to the caller, which knows whether it still wants the transport; a VPN
+	// deliberately holds an idle tunnel open while its user is not browsing, and
+	// a guard armed at dial time would close that tunnel out from under it.
+	// Sessions remain bounded by SessionLifetime and by the caller's own Close.
+	if lifecycle.NoStreamIdleTimeout > 0 {
+		client.idle, err = NewIdleGuard(lifecycle.NoStreamIdleTimeout, func() {
+			client.closeWith(SessionEndIdle)
+		})
+		if err != nil {
+			_ = client.Close()
+			return nil, err
+		}
 	}
 	if err := streamConn.StartPings(lifetimeCtx, pingInterval, pingWriteTimeout); err != nil {
 		_ = client.Close()
@@ -185,9 +197,11 @@ func DialClient(ctx context.Context, opts ClientOptions) (*Client, error) {
 	go func() {
 		select {
 		case <-lifetimeCtx.Done():
-			_ = client.Close()
+			client.closeWith(SessionEndLifetime)
 		case <-session.CloseChan():
-			_ = client.Close()
+			// yamux tears the session down after the transport read fails, so the
+			// peer's close code (if it sent one) is already recorded here.
+			client.closeWith(sessionEndForCloseCode(streamConn.RemoteCloseCode()))
 		}
 	}()
 	keepListener = true
@@ -284,6 +298,47 @@ func newNetworkDialer(timeout time.Duration, protector SocketProtector) *net.Dia
 	return dialer
 }
 
+// SessionEnd reports why the session stopped, or SessionEndNone while it is
+// still running. Callers must consult it instead of inferring loss from Serve
+// returning: Serve returns a nil error for every orderly end, including the
+// client's own idle shutdown.
+func (c *Client) SessionEnd() SessionEnd {
+	if c == nil {
+		return SessionEndNone
+	}
+	c.endMu.Lock()
+	defer c.endMu.Unlock()
+	return c.end
+}
+
+// RemoteCloseCode reports the WebSocket close code the peer sent, or zero when
+// none was observed.
+func (c *Client) RemoteCloseCode() int {
+	if c == nil {
+		return 0
+	}
+	return c.conn.RemoteCloseCode()
+}
+
+// closeWith records why the session ended and then closes it. The first reason
+// recorded wins, so the cause that actually initiated teardown survives the
+// cascade of closes that follows it.
+func (c *Client) closeWith(reason SessionEnd) {
+	if c == nil {
+		return
+	}
+	c.markEnd(reason)
+	_ = c.Close()
+}
+
+func (c *Client) markEnd(reason SessionEnd) {
+	c.endMu.Lock()
+	defer c.endMu.Unlock()
+	if c.end == SessionEndNone {
+		c.end = reason
+	}
+}
+
 func (c *Client) Endpoint() (host string, port int) {
 	if c == nil || c.listener == nil {
 		return "", 0
@@ -334,7 +389,7 @@ func (c *Client) Serve(ctx context.Context) error {
 			_ = local.Close()
 			continue
 		}
-		if !c.idle.Start() {
+		if c.idle != nil && !c.idle.Start() {
 			<-c.slots
 			_ = local.Close()
 			continue
@@ -369,6 +424,10 @@ func (c *Client) Close() error {
 	}
 	var closeErr error
 	c.closeOnce.Do(func() {
+		// Every internal teardown path records its cause before reaching here, so
+		// an unattributed close is the caller's own. Recording before the listener
+		// closes keeps Serve's return ordered after the reason is known.
+		c.markEnd(SessionEndLocal)
 		if c.cancel != nil {
 			c.cancel()
 		}
