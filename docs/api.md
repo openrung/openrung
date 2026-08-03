@@ -168,6 +168,81 @@ egress, only a few speed tests may run concurrently in addition to the per-IP
 rate limit; a busy broker answers `429` with `Retry-After`, and the app should
 retry the measurement later rather than treat it as a failure.
 
+### WSS handshake failure taxonomy
+
+A `transport_failed` event with `transport=wss` and `failure_stage=wss_handshake`
+carries a `failure_reason` from wsscore's closed classification set. wsscore
+classifies the dial at the one point where the typed error and the CDN response
+status both still exist, then destroys everything else, so the token is the only
+failure information any client can report. The full registry, with the meaning
+and the quasi-identifier notes for each token, is
+[`wsscore/README.md`](../wsscore/README.md).
+
+| Group | Values |
+| --- | --- |
+| HTTP answer from the edge or sidecar | `ws_upgrade`, `http_401`, `http_403`, `http_421`, `rate_limited`, `http_502`, `http_503`, `http_other` |
+| WebSocket negotiation | `ws_subprotocol` |
+| Name resolution | `dns_bogon`, `dns_failure` |
+| Local intent | `cancelled` |
+| Socket outcome | `connection_refused`, `network_unreachable`, `connection_reset`, `tls_reset`, `response_reset` |
+| TLS outcome | `tls_not_tls`, `cert_expired`, `cert_verify`, `tls_alert`, `tls_handshake` |
+| Timeout, by handshake phase | `tcp_timeout`, `tls_timeout`, `response_timeout`, `handshake_timeout` |
+| Nothing matched | `unclassified` |
+
+The set is closed and frozen. Clients project the native reason through an
+explicit literal allowlist and degrade any unrecognized value to
+`wss_transport_failed`, so an unexpected string can never reach telemetry.
+`unknown` on a wss handshake row identifies a pre-taxonomy client build, and the
+`unclassified` share is the taxonomy's own coverage meter — the two are
+deliberately different tokens.
+
+`failure_detail` is intentionally absent from these rows. The token is the
+detail, and free text would re-leak what the classifier just destroyed:
+underlying error strings embed the CloudFront distribution hostname, resolved
+edge addresses, and certificate subjects.
+
+`connect_trigger` accompanies `transport_failed` and `connection_succeeded` **on
+the mobile clients only** with a closed three-value set naming which path
+started the connect cycle. The desktop client does not emit it today: desktop
+rows (those carrying an `os` attribute rather than mobile's `os_name`) have no
+`connect_trigger`, so a query must not assume its presence outside the mobile
+cohort.
+
+| Value | Meaning |
+| --- | --- |
+| `initial` | A user- or service-initiated connect. |
+| `recovery` | The WSS monitor re-running the ladder after a session ended. |
+| `network_epoch` | A connectivity-change reconnect. |
+
+#### Reading these rows
+
+Aggregate before reading: per country, ASN, front, and app-version **shares** —
+never per-`client_id` sequences. `client_id` is a permanent installation
+identifier, and every one of these rows already pairs it with a client IP, geo,
+and a censorship interaction, so a per-client trace is a surveillance artifact
+rather than an analysis. Any future dashboard panel over these tokens must
+enforce a minimum cell count (k-anonymity floor) before it ships.
+
+Two rules keep the numbers honest:
+
+- **Never compare failure rates across `app_version`.** Older builds re-run the
+  entire connect ladder every time an idle WSS session expires, so their
+  denominator is inflated by reconnects that cluster exactly where a benign
+  timeout is most likely. Compare failure-mode shares *within* an app-version
+  cohort, and use `connect_trigger` to separate first connects from recovery
+  reconnects — that attribute is the durable control for this confound (mobile
+  rows only; desktop rows do not carry it).
+- Expect a one-time distribution shift when the taxonomy ships: failures that
+  raced a concurrent close used to be recorded as `cancelled` (or as `unknown`
+  on Android). Attribution is now error-first, so those rows re-materialize with
+  their causal token. This is a recording-semantics change, not a network
+  change.
+
+There is no `sni_mode` attribute, by design. Whether a dial omitted SNI is
+derivable operator-side by joining the already-transmitted `front_id` against
+the signed relay list — which therefore has to be archived daily for any
+retrospective analysis to survive front rotation.
+
 ## Telemetry dashboard
 
 Set `OPENRUNG_DASHBOARD_TOKEN` on the broker to enable the administrator

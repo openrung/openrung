@@ -31,6 +31,7 @@ func noSNITLSDialContext(
 	networkDial func(context.Context, string, string) (net.Conn, error),
 	baseConfig *tls.Config,
 	verificationName string,
+	phases *dialPhases,
 ) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
 		plainConn, err := networkDial(ctx, network, address)
@@ -38,10 +39,16 @@ func noSNITLSDialContext(
 			return nil, err
 		}
 		tlsConn := tls.Client(plainConn, verifiedNoSNIConfig(baseConfig, verificationName))
+		// Gorilla's httptrace TLS hooks never fire on this path (it treats the
+		// returned connection as already-TLS), so the phase booleans that let
+		// the classifier split TCP from TLS failures are marked here. Errors
+		// still propagate raw internally; classification stays central.
+		phases.tlsStarted.Store(true)
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
 			_ = plainConn.Close()
 			return nil, err
 		}
+		phases.tlsDone.Store(true)
 		return tlsConn, nil
 	}
 }

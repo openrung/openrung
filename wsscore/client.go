@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"strings"
 	"sync"
 	"syscall"
@@ -127,37 +128,67 @@ func DialClient(ctx context.Context, opts ClientOptions) (*Client, error) {
 	dialer.Proxy = nil
 	dialer.Jar = nil
 	dialer.TLSClientConfig = tlsConfig
+	phases := &dialPhases{}
 	if dialer.NetDialContext == nil {
-		networkDialer := newNetworkDialer(handshakeTimeout, opts.SocketProtector)
+		networkDialer := newNetworkDialer(handshakeTimeout, opts.SocketProtector, phases)
 		dialer.NetDialContext = networkDialer.DialContext
+	}
+	// Mark TCP completion on whichever network dial is in use (module default
+	// or caller supplied) so timeout and reset tokens can name the failing
+	// handshake phase in both TLS modes.
+	netDial := dialer.NetDialContext
+	dialer.NetDialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := netDial(ctx, network, address)
+		if err == nil {
+			phases.tcpConnected.Store(true)
+		}
+		return conn, err
 	}
 	if omitSNI {
 		// Gorilla otherwise fills an empty TLS ServerName from the URL host.
 		// Complete TLS here so the distribution name remains confined to the
 		// encrypted HTTP Host header while the protected/custom TCP dial path is
 		// preserved.
-		dialer.NetDialTLSContext = noSNITLSDialContext(dialer.NetDialContext, tlsConfig, verificationName)
+		dialer.NetDialTLSContext = noSNITLSDialContext(dialer.NetDialContext, tlsConfig, verificationName, phases)
 	}
 
 	header := make(http.Header)
 	header.Set(TicketAuthorizationHeader, TicketBearerPrefix+opts.Ticket)
-	ws, resp, err := dialer.DialContext(ctx, opts.URL, header)
+	// Ordinary-SNI dials get their TLS phase marks from httptrace (gorilla
+	// runs its own TLS only when NetDialTLSContext is unset); the no-SNI dial
+	// marks the same booleans inside noSNITLSDialContext. The first-response
+	// mark fires in both modes. GotConn is deliberately not registered — its
+	// GotConnInfo.Conn exposes the resolved edge address. WithClientTrace
+	// composes with any caller-installed trace.
+	dialCtx := httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		TLSHandshakeStart: func() { phases.tlsStarted.Store(true) },
+		TLSHandshakeDone: func(_ tls.ConnectionState, err error) {
+			if err == nil {
+				phases.tlsDone.Store(true)
+			}
+		},
+		GotFirstResponseByte: func() { phases.gotFirstResponseByte.Store(true) },
+	})
+	ws, resp, err := dialer.DialContext(dialCtx, opts.URL, header)
 	if err != nil {
+		// Classify while the typed error chain, the CDN status, and the phase
+		// booleans all still exist, then destroy everything but the token.
+		reason := classifyDialFailure(dialCtx, err, resp, phases)
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
 		}
 		if errors.Is(err, ErrSocketProtectionFailed) {
 			return nil, ErrSocketProtectionFailed
 		}
-		return nil, errors.New("WSS handshake failed")
+		return nil, newDialError(reason)
 	}
 	if resp != nil && len(resp.Header.Values("Sec-WebSocket-Extensions")) != 0 {
 		_ = ws.Close()
-		return nil, errors.New("WSS extensions were unexpectedly negotiated")
+		return nil, newDialErrorWithMessage(ReasonWSSubprotocol, "WSS extensions were unexpectedly negotiated")
 	}
 	if ws.Subprotocol() != Subprotocol {
 		_ = ws.Close()
-		return nil, errors.New("WSS subprotocol was not negotiated")
+		return nil, newDialErrorWithMessage(ReasonWSSubprotocol, "WSS subprotocol was not negotiated")
 	}
 	streamConn, err := NewWebSocketConn(ws, readLimit)
 	if err != nil {
@@ -290,11 +321,15 @@ func socketControl(protector SocketProtector) func(context.Context, string, stri
 	}
 }
 
-func newNetworkDialer(timeout time.Duration, protector SocketProtector) *net.Dialer {
+func newNetworkDialer(timeout time.Duration, protector SocketProtector, phases *dialPhases) *net.Dialer {
 	dialer := &net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}
+	var protectorControl func(context.Context, string, string, syscall.RawConn) error
 	if protector != nil {
-		dialer.ControlContext = socketControl(protector)
+		protectorControl = socketControl(protector)
 	}
+	// The bogon observation always runs; protection semantics are delegated
+	// unchanged (bogonAwareControl never vetoes or alters the dial).
+	dialer.ControlContext = bogonAwareControl(phases, protectorControl)
 	return dialer
 }
 

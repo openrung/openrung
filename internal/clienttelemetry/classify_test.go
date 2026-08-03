@@ -15,6 +15,9 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/gorilla/websocket"
+	"github.com/openrung/openrung/wsscore"
+
 	"openrung/internal/client"
 )
 
@@ -100,6 +103,81 @@ func TestClassifyError(t *testing.T) {
 			t.Fatalf("process_exited: got %q", got)
 		}
 	})
+}
+
+// TestClassifyErrorUsesWSSTaxonomy drives a real failed WSS dial so the
+// classifier sees the same DialError the desktop transport produces, wrapped
+// the way desktop/vpnservice wraps it. Without the wsscore branch every one of
+// these would land in "unknown": DialError carries no chain to walk, by design.
+func TestClassifyErrorUsesWSSTaxonomy(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closedTarget := listener.Addr().String()
+	_ = listener.Close()
+
+	client, dialErr := wsscore.DialClient(t.Context(), wsscore.ClientOptions{
+		URL:    "wss://d111111abcdef8.cloudfront.net" + wsscore.BridgePath,
+		Ticket: "classify-ticket", CloudFrontNoSNI: true, PingInterval: -1,
+		WebSocketDialer: &websocket.Dialer{
+			TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12},
+			NetDialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, closedTarget)
+			},
+		},
+	})
+	if client != nil {
+		_ = client.Close()
+		t.Fatal("DialClient connected to a closed port")
+	}
+	if dialErr == nil {
+		t.Fatal("DialClient returned no error for a closed port")
+	}
+
+	wrapped := fmt.Errorf("connect WSS front: %w", dialErr)
+	if got := ClassifyError(wrapped); got != "connection_refused" {
+		t.Fatalf("ClassifyError(wss dial) = %q, want %q", got, "connection_refused")
+	}
+	if detail := ErrorDetail(wrapped); strings.Contains(detail, "cloudfront") || strings.Contains(detail, "127.0.0.1") {
+		t.Fatalf("failure detail %q leaked the front or an address", detail)
+	}
+}
+
+// TestWSSFailureReasonAllowlist pins the allowlist to wsscore's current token
+// set. Passing every constant through proves the allowlist is complete, and —
+// because the allowlist is literals, not the constants — a renamed or changed
+// token value in wsscore fails here instead of flowing into telemetry, which is
+// the consumer-side decision point the frozen-set contract requires.
+func TestWSSFailureReasonAllowlist(t *testing.T) {
+	tokens := []string{
+		wsscore.ReasonWSUpgrade, wsscore.ReasonHTTP401, wsscore.ReasonHTTP403,
+		wsscore.ReasonHTTP421, wsscore.ReasonRateLimited, wsscore.ReasonHTTP502,
+		wsscore.ReasonHTTP503, wsscore.ReasonHTTPOther,
+		wsscore.ReasonWSSubprotocol,
+		wsscore.ReasonDNSBogon, wsscore.ReasonDNSFailure,
+		wsscore.ReasonCancelled,
+		wsscore.ReasonConnectionRefused, wsscore.ReasonNetworkUnreachable,
+		wsscore.ReasonConnectionReset, wsscore.ReasonTLSReset, wsscore.ReasonResponseReset,
+		wsscore.ReasonTLSNotTLS, wsscore.ReasonCertExpired, wsscore.ReasonCertVerify,
+		wsscore.ReasonTLSAlert, wsscore.ReasonTLSHandshake,
+		wsscore.ReasonTCPTimeout, wsscore.ReasonTLSTimeout,
+		wsscore.ReasonResponseTimeout, wsscore.ReasonHandshakeTimeout,
+		wsscore.ReasonUnclassified,
+	}
+	for _, token := range tokens {
+		if got := wssFailureReason(token); got != token {
+			t.Errorf("wssFailureReason(%q) = %q, want the token unchanged", token, got)
+		}
+	}
+	// Anything outside the frozen set degrades to the generic transport-failure
+	// reason — never verbatim. "unknown" is deliberately among these: it is not
+	// a wsscore token and must stay reserved for pre-taxonomy builds.
+	for _, unrecognized := range []string{"", "future_token", "unknown", "d111111abcdef8.cloudfront.net"} {
+		if got := wssFailureReason(unrecognized); got != "wss_transport_failed" {
+			t.Errorf("wssFailureReason(%q) = %q, want %q", unrecognized, got, "wss_transport_failed")
+		}
+	}
 }
 
 func TestErrorDetail(t *testing.T) {
