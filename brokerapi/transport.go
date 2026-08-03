@@ -86,6 +86,12 @@ func (d *echDialer) dialTLSContext(ctx context.Context, network, address string)
 	if err != nil {
 		return nil, err
 	}
+	// CloudFront cannot receive this deployment's ECH config, but it does serve
+	// its default certificate to a ClientHello that carries no server name and
+	// selects the distribution from the encrypted HTTP Host header instead.
+	if distribution, native := cloudFrontDistributionAddress(address); native {
+		return d.dialNoSNITLS(ctx, network, address, distribution)
+	}
 	if !isCloudflareBrokerAddress(address) {
 		return d.dialTLS(ctx, network, address, host, nil, d.tlsHandshakeLimit)
 	}
@@ -144,7 +150,18 @@ func (d *echDialer) dialTLS(
 	if len(configList) != 0 && config.MinVersion != 0 && config.MinVersion < tls.VersionTLS13 {
 		config.MinVersion = tls.VersionTLS13
 	}
+	return handshake(ctx, plainConn, config, handshakeLimit)
+}
 
+// handshake owns the one TLS client handshake shape shared by the ECH, plain,
+// and no-SNI dials: the connection is closed on failure so a caller never has
+// to unwind a half-open socket.
+func handshake(
+	ctx context.Context,
+	plainConn net.Conn,
+	config *tls.Config,
+	handshakeLimit time.Duration,
+) (net.Conn, error) {
 	tlsConn := tls.Client(plainConn, config)
 	handshakeCtx := ctx
 	if handshakeLimit > 0 {
@@ -190,10 +207,13 @@ var (
 	)
 )
 
-// NewHTTPClient returns an HTTP client whose direct connection to the
-// Cloudflare front opportunistically uses the embedded ECH config. CloudFront,
-// custom brokers, loopback, and proxy CONNECT paths retain standard TLS.
-// Returned clients share connection pools and authenticated retry-config state.
+// NewHTTPClient returns an HTTP client that keeps a built-in front's hostname
+// out of the ClientHello on direct connections: the Cloudflare front
+// opportunistically uses the embedded ECH config and falls back to ordinary
+// TLS, which does send the name, while a native CloudFront distribution omits
+// SNI unconditionally. Custom brokers, loopback, and proxy CONNECT paths retain
+// standard TLS. Returned clients share connection pools and authenticated
+// retry-config state.
 func NewHTTPClient(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Transport:     defaultTransport,

@@ -13,14 +13,17 @@ import (
 
 const (
 	cloudflareBrokerHost = "broker.openrung.org"
+	cloudFrontBrokerHost = "d2r7mdpyevvs1m.cloudfront.net"
 
 	// DefaultBrokerURL is the Cloudflare broker front. Direct connections to
 	// its standard HTTPS port opportunistically use the embedded ECH config.
 	DefaultBrokerURL = "https://" + cloudflareBrokerHost + "/"
 
-	// CloudFrontBrokerURL is the independent AWS front. CloudFront does not
-	// support this deployment's ECH config, so it always uses ordinary TLS.
-	CloudFrontBrokerURL = "https://d2r7mdpyevvs1m.cloudfront.net/"
+	// CloudFrontBrokerURL is the independent AWS front. CloudFront cannot
+	// receive this deployment's ECH config, so direct connections to it omit
+	// SNI instead and let the encrypted HTTP Host header select the
+	// distribution.
+	CloudFrontBrokerURL = "https://" + cloudFrontBrokerHost + "/"
 
 	DefaultRelayLimit       = 5
 	DefaultDiscoveryStagger = 2500 * time.Millisecond

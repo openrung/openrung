@@ -134,5 +134,9 @@ Logs: `wrangler tail openrung-broker-proxy`.
   CloudFront second front means a single SNI rule no longer takes discovery offline, and the
   relay list is now Ed25519-signed, so a fetched directory is trustworthy regardless of the
   channel that carried it — which unlocks future non-TLS / out-of-band channels (signed static
-  mirrors, a pinned direct-IP fallback). Encrypted Client Hello (ECH) to hide the SNI remains
-  open.
+  mirrors, a pinned direct-IP fallback). Hiding the name itself has since shipped too, per front:
+  `brokerapi` attempts Encrypted Client Hello on this front with a compiled-in config, and dials
+  the CloudFront front without SNI at all. ECH is opportunistic, so a network that drops it still
+  sees `broker.openrung.org` on the ordinary-TLS fallback; the CloudFront front is the one that
+  never names itself. Relay registration and heartbeats do not use that transport and still send
+  the broker SNI in the clear.

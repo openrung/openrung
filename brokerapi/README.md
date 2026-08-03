@@ -5,6 +5,7 @@ broker requests. It is a standalone module so the CLI, desktop app, and future
 gomobile bindings all use one implementation of:
 
 - opportunistic Encrypted Client Hello for the Cloudflare broker front;
+- verified SNI-less TLS for the CloudFront broker front;
 - relay-list signature and freshness verification;
 - secure broker URL enforcement;
 - identity, application, platform, and no-store request headers;
@@ -17,8 +18,43 @@ DNS. A certificate-authenticated Cloudflare retry config is adopted in memory
 after a successful handshake. ECH is opportunistic: if it fails or is dropped,
 the transport quickly retries with ordinary TLS and normal hostname and
 certificate verification. ECH is attempted only for direct connections to
-`broker.openrung.org:443`; CloudFront, custom brokers, loopback development,
-and proxy CONNECT paths use the standard TLS behavior.
+`broker.openrung.org:443`; custom brokers, loopback development, and proxy
+CONNECT paths use the standard TLS behavior.
+
+CloudFront cannot receive this deployment's ECH config, so its front conceals
+the hostname a different way: a direct connection to a native
+`*.cloudfront.net` distribution on port 443 sends no ClientHello server name at
+all, and CloudFront selects the distribution from the encrypted HTTP `Host`
+header. The certificate is still verified in full — chain, validity, server
+authentication, and the exact distribution hostname — against the same trust
+roots and clock the transport uses everywhere else; only the place the hostname
+is asserted changes. An ECH config list is never combined with a suppressed
+server name, and there is no plain-SNI fallback: a retry would hand an on-path
+censor the exact name this hides, so the front fails closed and discovery
+races the independent Cloudflare front instead. Custom CNAME fronts keep
+ordinary SNI, because the default certificate CloudFront serves without it
+cannot be verified against a CNAME.
+
+Two consequences are worth knowing. CloudFront returns no ALPN when the
+ClientHello omits SNI, so that leg negotiates HTTP/1.1 rather than HTTP/2;
+connection pooling and keep-alive are unaffected. And `Response.TLS` on that
+leg reports an empty `ServerName` and no `VerifiedChains`, because the
+verification runs in the transport's own hook rather than in crypto/tls.
+
+In FIPS 140-3 mode (`GODEBUG=fips140=on`) this front is refused rather than
+dialed, before any connection is opened. crypto/tls filters verified chains
+through a FIPS policy with no exported equivalent, so the replacement hook
+cannot honor it, and running under a weaker certificate policy than the rest of
+the process is not a trade this module makes. Discovery still reaches the
+Cloudflare front.
+
+This removes the cleartext TLS signal from direct connections, not every
+hostname signal. DNS resolution of the distribution name still carries it. So
+does any configured proxy, and more completely than the `CONNECT` line alone
+suggests: `net/http` performs the tunnelled handshake itself rather than
+through this transport, so a proxied broker request sends an ordinary
+SNI-bearing ClientHello. Certificate verification is unaffected there; only the
+concealment is.
 
 Relay-list responses from every non-loopback broker must carry a valid
 Ed25519 signature from the compiled production key set. Loopback HTTP is the
@@ -60,9 +96,11 @@ must not remain on any pre-tunnel broker path that needs ECH.
 The separately maintained mobile app also fetches the signed update manifest
 from the Cloudflare broker front. That manifest has its own signing keys,
 rollback rules, and multi-origin policy and is not implemented by this initial
-module extraction. The mobile integration must move that request behind the
-same Go ECH transport (or stop using the Cloudflare broker URL) before claiming
-complete broker-SNI concealment.
+module extraction. The mobile integration must move that request behind this
+transport (or stop using the Cloudflare broker URL) before claiming complete
+broker-SNI concealment. Note that even then the claim holds only where ECH
+survives: the Cloudflare front's ordinary-TLS fallback still sends its hostname,
+and only the CloudFront front is unconditionally SNI-less.
 
 `RequestWSSTicket` owns one hardened POST and response validation. Overall
 deadline, broker-front failover, and the single bounded Retry-After round remain

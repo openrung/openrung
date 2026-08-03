@@ -66,6 +66,14 @@ CloudFront no-SNI path so it cannot silently add a different public SNI. The
 in-repository desktop client enables this option; external module consumers
 must opt in deliberately when they upgrade.
 
+`brokerapi/cloudfront_tls.go` applies the same technique to the control plane
+in a separate copy — `brokerapi` carries no dependencies, so it cannot import
+this module. That copy is default-on rather than opt-in, matches dialed
+addresses rather than signed URLs, and additionally disables session
+resumption, because it runs on a shared pooled transport. The two are expected
+to stay aligned on what they verify, so a change to the recognition rule or the
+verification hook should be considered for both.
+
 ## Compatibility tests
 
 `testdata/golden.json` and `golden_test.go` pin the protocol constants, front

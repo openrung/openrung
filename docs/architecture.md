@@ -311,6 +311,20 @@ connection so networks that drop Cloudflare ECH retain the existing behavior.
 CloudFront and custom broker URLs do not receive ECH, and every fallback keeps
 normal hostname and certificate verification.
 
+CloudFront cannot serve this deployment's ECH config, so connections to a
+native `*.cloudfront.net` distribution omit the ClientHello server name and let
+the encrypted HTTP `Host` header select the distribution, exactly as the WSS
+data path already does. Certificate verification is unchanged in strength —
+chain, validity, server authentication, and the exact distribution hostname,
+against the transport's own roots and clock — only its input moves from the
+TLS server name to the dialed host. A suppressed server name is never combined
+with an ECH config, and there is no plain-SNI fallback: retrying with the name
+would hand a censor what the omission hides, so the front fails closed and
+front racing covers reachability. The one certificate check that cannot move
+out of crypto/tls is FIPS chain filtering, so in FIPS 140-3 mode this front is
+refused instead of dialed. Custom broker URLs remain fully standard, and DNS
+resolution of the distribution name still exposes it.
+
 Relay registration/heartbeat clients and the relay data path remain outside
 `brokerapi`.
 
@@ -347,10 +361,13 @@ itself update either separately released app.
 
 The mobile app's update-manifest checker is a separate signed-content client
 with its own keys, rollback protection, and GitHub fallback. Its current
-Cloudflare-broker candidate must also move behind the Go ECH transport—or be
+Cloudflare-broker candidate must also move behind the Go broker transport—or be
 removed—during mobile integration. Until then, that request still exposes the
-broker SNI, so integrating relay discovery and telemetry alone is not complete
-mobile broker-SNI concealment.
+broker SNI unconditionally, so integrating relay discovery and telemetry alone
+is not complete mobile broker-SNI concealment. Moving it is necessary but not
+sufficient: only the CloudFront front is unconditionally SNI-less, while the
+Cloudflare front's ordinary-TLS fallback still sends its hostname wherever ECH
+is blocked.
 
 The reusable `wsscore` module makes a future transport integration possible but
 does not restore or ship WSS fallback on either platform. Android must still
