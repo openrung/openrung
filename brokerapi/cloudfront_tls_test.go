@@ -423,7 +423,7 @@ func TestNoSNIConfigPreservesTransportPolicy(t *testing.T) {
 		EncryptedClientHelloConfigList:      embeddedCloudflareECHConfigList,
 		EncryptedClientHelloRejectionVerify: func(tls.ConnectionState) error { return nil },
 	}
-	config := verifiedNoSNIConfig(base, testCloudFrontHost)
+	config := verifiedNoSNIConfig(base, cloudFrontVerification(testCloudFrontHost))
 
 	if config.ServerName != "" || !config.InsecureSkipVerify || config.VerifyConnection == nil {
 		t.Fatalf(
@@ -465,17 +465,28 @@ func TestNoSNIConfigRefusesEmptyVerificationName(t *testing.T) {
 	certificate := authority.issue(t, testCloudFrontWildcard)
 	state := tls.ConnectionState{PeerCertificates: testPeerCertificates(t, certificate)}
 
-	if err := verifiedNoSNIConfig(&tls.Config{RootCAs: authority.roots}, testCloudFrontHost).
+	if err := verifiedNoSNIConfig(&tls.Config{RootCAs: authority.roots}, cloudFrontVerification(testCloudFrontHost)).
 		VerifyConnection(state); err != nil {
 		t.Fatalf("the same state does not verify under a real name: %v", err)
 	}
-	err := verifiedNoSNIConfig(&tls.Config{RootCAs: authority.roots}, "").VerifyConnection(state)
-	if err == nil {
-		t.Fatal("an empty verification name verified a certificate against no hostname at all")
-	}
-	var verificationErr *tls.CertificateVerificationError
-	if errors.As(err, &verificationErr) {
-		t.Fatalf("empty name was rejected by certificate verification, not by the guard: %v", err)
+	// A rule that asserts nothing, and a contradictory one that asserts two
+	// different identities, must both be rejected by the guard rather than by
+	// certificate verification — an empty x509 DNSName silently accepts any
+	// certificate the roots ever signed.
+	for name, verification := range map[string]noSNIVerification{
+		"no rule":    {},
+		"both rules": {hostname: testCloudFrontHost, requiredSAN: testCloudFrontWildcard},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := verifiedNoSNIConfig(&tls.Config{RootCAs: authority.roots}, verification).VerifyConnection(state)
+			if err == nil {
+				t.Fatal("verified a certificate against no asserted identity at all")
+			}
+			var verificationErr *tls.CertificateVerificationError
+			if errors.As(err, &verificationErr) {
+				t.Fatalf("rejected by certificate verification, not by the guard: %v", err)
+			}
+		})
 	}
 }
 
@@ -656,7 +667,7 @@ func TestBrokerCloudFrontConstantsStayLinked(t *testing.T) {
 // the config it hands the no-SNI path must be safe as built.
 func TestDefaultTransportBaseYieldsSafeNoSNIConfig(t *testing.T) {
 	base := http.DefaultTransport.(*http.Transport).Clone().TLSClientConfig
-	config := verifiedNoSNIConfig(base, cloudFrontBrokerHost)
+	config := verifiedNoSNIConfig(base, cloudFrontVerification(cloudFrontBrokerHost))
 
 	if config.InsecureSkipVerify != true || config.VerifyConnection == nil {
 		t.Fatal("the mandatory verification hook is not installed")
@@ -678,7 +689,7 @@ func TestDefaultTransportBaseYieldsSafeNoSNIConfig(t *testing.T) {
 }
 
 func TestNoSNIConfigIsNilSafe(t *testing.T) {
-	config := verifiedNoSNIConfig(nil, cloudFrontBrokerHost)
+	config := verifiedNoSNIConfig(nil, cloudFrontVerification(cloudFrontBrokerHost))
 	if config == nil || config.VerifyConnection == nil || !config.InsecureSkipVerify {
 		t.Fatal("a nil base config did not produce a usable no-SNI config")
 	}
@@ -695,7 +706,7 @@ func TestNoSNIConfigVerifiesResumedConnections(t *testing.T) {
 			peerHookRan = true
 			return nil
 		},
-	}, cloudFrontBrokerHost)
+	}, cloudFrontVerification(cloudFrontBrokerHost))
 
 	chain := testPeerCertificates(t, authority.issue(t, testCloudFrontWildcard))
 	if err := config.VerifyConnection(tls.ConnectionState{DidResume: true, PeerCertificates: chain}); err != nil {

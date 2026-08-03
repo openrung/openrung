@@ -86,11 +86,16 @@ func (d *echDialer) dialTLSContext(ctx context.Context, network, address string)
 	if err != nil {
 		return nil, err
 	}
-	// CloudFront cannot receive this deployment's ECH config, but it does serve
-	// its default certificate to a ClientHello that carries no server name and
-	// selects the distribution from the encrypted HTTP Host header instead.
+	// Neither of these fronts can receive this deployment's ECH config, but both
+	// serve a default certificate to a ClientHello that carries no server name
+	// and select the endpoint from the encrypted HTTP Host header instead. They
+	// differ in what that certificate proves: see cloudFrontVerification and
+	// azureFrontDoorVerification.
 	if distribution, native := cloudFrontDistributionAddress(address); native {
-		return d.dialNoSNITLS(ctx, network, address, distribution)
+		return d.dialNoSNITLS(ctx, network, address, cloudFrontVerification(distribution))
+	}
+	if azureFrontDoorAddress(address) {
+		return d.dialNoSNITLS(ctx, network, address, azureFrontDoorVerification())
 	}
 	if !isCloudflareBrokerAddress(address) {
 		return d.dialTLS(ctx, network, address, host, nil, d.tlsHandshakeLimit)
@@ -210,10 +215,10 @@ var (
 // NewHTTPClient returns an HTTP client that keeps a built-in front's hostname
 // out of the ClientHello on direct connections: the Cloudflare front
 // opportunistically uses the embedded ECH config and falls back to ordinary
-// TLS, which does send the name, while a native CloudFront distribution omits
-// SNI unconditionally. Custom brokers, loopback, and proxy CONNECT paths retain
-// standard TLS. Returned clients share connection pools and authenticated
-// retry-config state.
+// TLS, which does send the name, while a native CloudFront distribution and an
+// Azure Front Door endpoint omit SNI unconditionally. Custom brokers, loopback,
+// and proxy CONNECT paths retain standard TLS. Returned clients share
+// connection pools and authenticated retry-config state.
 func NewHTTPClient(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Transport:     defaultTransport,
