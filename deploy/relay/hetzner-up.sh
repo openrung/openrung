@@ -30,9 +30,13 @@ IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-relay:main}"  # multi-arch: p
 # Register against the broker ORIGIN, not the Cloudflare front (broker.openrung.org).
 # That hostname is a Worker front for *client* discovery; its edge serves a Managed
 # Challenge to datacenter IP ranges (incl. Hetzner), which a relay's HTTP client
-# cannot solve (403). The origin is plaintext HTTP and takes registrations directly,
-# exactly like the Lightsail fleet (see lightsail-up.sh).
-BROKER_URL="${OPENRUNG_BROKER_URL:-http://54.238.185.205:8080}"
+# cannot solve (403). The origin is DNS-only (grey-cloud), so a datacenter IP
+# reaches it directly, and it terminates TLS itself (deploy/broker/origin-tls.md)
+# — registration no longer crosses the public internet in cleartext. Same default
+# as the Lightsail fleet (see lightsail-up.sh). The origin record is IPv4-only;
+# this helper reads the instance's public IPv4 from metadata below, so every host
+# it provisions can reach it.
+BROKER_URL="${OPENRUNG_BROKER_URL:-https://broker-origin.openrung.org}"
 SSH_KEY_NAME="${OPENRUNG_SSH_KEY_NAME:-openrung}"
 # This helper provisions volunteer-class nodes, and the live fleet already shares
 # this firewall resource. Keep its semantic class name to avoid orphaning it.

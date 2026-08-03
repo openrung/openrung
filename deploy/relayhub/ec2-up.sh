@@ -30,7 +30,12 @@ set -euo pipefail
 REGION="${OPENRUNG_REGION:-ap-northeast-2}"          # Seoul
 ITYPE="${OPENRUNG_EC2_TYPE:-t4g.micro}"              # ARM Graviton (cheapest)
 IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-relayhub:main}"
-BROKER_URL="${OPENRUNG_BROKER_URL:-http://54.238.185.205:8080}"
+# The hub registers every tunnelled relay on its behalf, so this is the fleet's
+# highest-volume registration path. Point it at the broker's TLS origin — a
+# DNS-only (grey-cloud) record straight to the broker box, so a datacenter IP
+# reaches it without the Cloudflare front's Managed Challenge while the
+# registrations stop crossing the public internet in cleartext.
+BROKER_URL="${OPENRUNG_BROKER_URL:-https://broker-origin.openrung.org}"
 CONTROL_PORT="${OPENRUNG_HUB_CONTROL_PORT:-9443}"
 HTTP_PORT="${OPENRUNG_HUB_HTTP_PORT:-9444}"
 PORT_RANGE="${OPENRUNG_HUB_PORT_RANGE:-20000-20100}"

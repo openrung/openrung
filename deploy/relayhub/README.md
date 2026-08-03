@@ -66,35 +66,6 @@ The hub never replaces a connected relay's `relay_version`. Its own application
 version is operational build identity, while compatibility with relays is
 governed by the tunnel/punch protocol versions and negotiated capability flags.
 
-## Deploy to AWS Lightsail (1 GB)
-
-`lightsail-up.sh` provisions a hub on a `micro_3_0` instance (1 GB RAM / 2 vCPU / 40 GB /
-**2 TB transfer/mo**). Lightsail's bundled transfer makes the 1 GB tier a reasonable
-cheap-bandwidth host for an MVP — the EC2-egress warning above does not bite within the bundle.
-
-Prerequisites: an authenticated `aws` CLI (`aws configure`) with Lightsail permissions, and the
-hub image published to GHCR and made **public** (see note below).
-
-```sh
-./deploy/relayhub/lightsail-up.sh myhub
-```
-
-This allocates a static IP, generates a self-signed TLS cert for that IP, installs Docker, pulls
-`ghcr.io/openrung/openrung-relayhub:main`, runs the hub (host networking, certs mounted read-only),
-and opens the control port (9443) plus the tunnel port range (20000-20100) in the firewall. It
-prints the exact env to point a CGNAT relay at the hub:
-
-```sh
-OPENRUNG_TUNNEL=true OPENRUNG_HUB_ADDR=<static-ip>:9443 OPENRUNG_HUB_INSECURE=true
-```
-
-`OPENRUNG_HUB_INSECURE=true` is needed because the cert is self-signed; drop it once you switch to
-a CA-issued cert. Override defaults via env, e.g. `OPENRUNG_REGION`, `OPENRUNG_BROKER_URL`,
-`OPENRUNG_HUB_PORT_RANGE`, `OPENRUNG_VOLUNTEER_TOKEN`.
-
-> Lightsail can only run punch in single-IP degraded mode (one public IPv4 per instance). For the
-> **two-IP** setup that gives real NAT classification, use `ec2-up.sh` instead (below).
-
 ## Deploy to AWS EC2 (two public IPs — full NAT punch)
 
 `ec2-up.sh` provisions a hub on EC2 with a secondary private IP + **two Elastic IPs**, so the punch
@@ -110,7 +81,9 @@ with punch enabled.
 Defaults: `ap-northeast-2`, `t4g.micro` (ARM). Override via `OPENRUNG_REGION`, `OPENRUNG_EC2_TYPE`,
 `OPENRUNG_EC2_SUBNET`, etc. Verify with `curl -k https://<eip1>:9444/api/v1/punch/config` (returns
 the two advertised reflector EIPs). Note EC2 egress is metered and each in-use public IPv4 is billed
-hourly — run it where that is acceptable, or fall back to Lightsail single-IP degraded mode.
+hourly — this helper exists because two same-family public IPs are easy to get on EC2, not because
+EC2 is the right place to move bytes. Read the bandwidth warning above before using it for anything
+beyond a punch-capable hub, and prefer a cheap-bandwidth host for hubs carrying real tunnel traffic.
 
 > **GHCR package visibility:** the first time the `relayhub-image` workflow publishes, the GHCR
 > package defaults to **private**, and the instance pulls anonymously. Make it public once: GitHub →
@@ -174,7 +147,7 @@ are set.
 
 - **Bind vs advertise (important on NAT'd hosts).** `OPENRUNG_HUB_REFLECTOR_ADDRS`
   is the reflector's **bind** list — addresses that exist on the host's NIC. On
-  AWS (EC2/Lightsail) the public IP is 1:1-NAT'd and is **not** on the NIC, so
+  AWS and other 1:1-NAT'd clouds the public IP is **not** on the NIC, so
   binding it fails (`cannot assign requested address`). Bind the on-NIC private IP
   (or a wildcard `:19302`) and set `OPENRUNG_HUB_REFLECTOR_ADVERTISE` to the public
   IP(s) that peers should probe — positionally matched to the bind list.
@@ -183,10 +156,11 @@ are set.
   vantage points**, each a distinct on-NIC bind socket. With a single IP the hub
   still works but classifies every peer as "unknown" and attempts-then-falls-back,
   wasting up to the punch budget on unpunchable NATs.
-  - **Lightsail** gives only one public IPv4 per instance, so it can only do
-    single-IP degraded mode: bind a wildcard, advertise the static IP, e.g.
-    `OPENRUNG_HUB_REFLECTOR_ADDRS=:19302` +
-    `OPENRUNG_HUB_REFLECTOR_ADVERTISE=<static-ip>:19302`.
+  - **Single-IPv4 hosts** — Hetzner and most VPS providers ship one public IPv4
+    per server — can only do single-IP degraded mode: bind a wildcard, advertise
+    the public IP, e.g. `OPENRUNG_HUB_REFLECTOR_ADDRS=:19302` +
+    `OPENRUNG_HUB_REFLECTOR_ADVERTISE=<public-ip>:19302`. Degraded punch is still
+    punch; it just never skips a symmetric NAT early.
   - **EC2** is the way to get two same-family public IPs on one box: add a second
     private IP to the ENI + a second Elastic IP, then bind the two private IPs and
     advertise the two EIPs, e.g.
