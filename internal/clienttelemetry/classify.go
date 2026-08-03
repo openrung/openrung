@@ -57,7 +57,7 @@ func ClassifyError(err error) string {
 	// information-free DialError and return "unknown".
 	var dialErr *wsscore.DialError
 	if errors.As(err, &dialErr) {
-		return dialErr.Reason()
+		return wssFailureReason(dialErr.Reason())
 	}
 
 	// Relay-selection sentinels (internal/client), distinct so the dashboard can
@@ -140,6 +140,32 @@ func ClassifyError(err error) string {
 	}
 
 	return "unknown"
+}
+
+// wssFailureReason projects wsscore's dial-failure token through the explicit
+// literal allowlist the taxonomy contract requires of every consumer
+// (wsscore/README.md): anything unrecognized degrades to the generic
+// "wss_transport_failed" instead of reaching telemetry verbatim. The literals
+// are deliberate — referencing the wsscore constants would let a future token
+// addition or value change flow into the telemetry channel without a decision
+// here, and the frozen set makes every such change a privacy-review event.
+// "unknown" stays reserved for pre-taxonomy builds, and "unclassified" for the
+// taxonomy's own coverage residual, so the degraded value is neither.
+func wssFailureReason(reason string) string {
+	switch reason {
+	case "ws_upgrade", "http_401", "http_403", "http_421", "rate_limited",
+		"http_502", "http_503", "http_other",
+		"ws_subprotocol",
+		"dns_bogon", "dns_failure",
+		"cancelled",
+		"connection_refused", "network_unreachable",
+		"connection_reset", "tls_reset", "response_reset",
+		"tls_not_tls", "cert_expired", "cert_verify", "tls_alert", "tls_handshake",
+		"tcp_timeout", "tls_timeout", "response_timeout", "handshake_timeout",
+		"unclassified":
+		return reason
+	}
+	return "wss_transport_failed"
 }
 
 // ErrorDetail returns err.Error() truncated to at most detailMaxBytes, on a

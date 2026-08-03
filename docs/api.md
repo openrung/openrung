@@ -201,8 +201,12 @@ detail, and free text would re-leak what the classifier just destroyed:
 underlying error strings embed the CloudFront distribution hostname, resolved
 edge addresses, and certificate subjects.
 
-`connect_trigger` accompanies `transport_failed` and `connection_succeeded` with
-a closed three-value set naming which path started the connect cycle:
+`connect_trigger` accompanies `transport_failed` and `connection_succeeded` **on
+the mobile clients only** with a closed three-value set naming which path
+started the connect cycle. The desktop client does not emit it today: desktop
+rows (those carrying an `os` attribute rather than mobile's `os_name`) have no
+`connect_trigger`, so a query must not assume its presence outside the mobile
+cohort.
 
 | Value | Meaning |
 | --- | --- |
@@ -226,7 +230,8 @@ Two rules keep the numbers honest:
   denominator is inflated by reconnects that cluster exactly where a benign
   timeout is most likely. Compare failure-mode shares *within* an app-version
   cohort, and use `connect_trigger` to separate first connects from recovery
-  reconnects — that attribute is the durable control for this confound.
+  reconnects — that attribute is the durable control for this confound (mobile
+  rows only; desktop rows do not carry it).
 - Expect a one-time distribution shift when the taxonomy ships: failures that
   raced a concurrent close used to be recorded as `cancelled` (or as `unknown`
   on Android). Attribution is now error-first, so those rows re-materialize with
