@@ -155,7 +155,12 @@ Winsock numbers — so matching the portable names there would compile cleanly,
 never match, and silently degrade every socket failure to `unclassified`. The
 standard library carries the same split in `net/error_unix.go` and
 `net/error_windows.go`. CI runs on Linux only, so a test asserts the table is
-non-zero and collision-free rather than relying on a platform run.
+non-zero and collision-free rather than relying on a platform run. That check
+alone cannot catch a reversion to the portable names — Go's invented values are
+also non-zero and distinct — so a windows-tagged companion test pins the raw
+Winsock numbers themselves; it needs a Windows test run to execute, which CI
+does not provide, leaving the hardcoded literals as the everyday defense and
+any one-off developer run as the tripwire.
 
 ### The set is frozen
 
