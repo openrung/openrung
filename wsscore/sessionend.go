@@ -59,9 +59,27 @@ func (e SessionEnd) String() string {
 	}
 }
 
-// sessionEndForCloseCode maps an observed close code. Only a code that arrived
-// in an actual close frame can indicate an orderly shutdown; a missing frame
-// (zero) and every abnormal code mean the path was lost.
+// sessionEndForCloseCode maps an observed close code. A session ended in an
+// orderly way when a close frame arrived AND says the peer chose to stop. A
+// frame reporting an error condition, and the absence of any frame, both mean
+// the path was lost.
+//
+// The peer choosing to stop is the whole set below. CloseNoStatusReceived is
+// gorilla's designation for a close frame whose payload carried no status
+// (conn.go assigns it whenever that payload is under two bytes); such a frame
+// is legal per RFC 6455 section 5.5.1 and is still the peer closing, so
+// requiring a status would report an orderly shutdown as censorship — the exact
+// misreport this type exists to prevent. CloseServiceRestart and
+// CloseTryAgainLater are a peer stopping deliberately, which is what a relay
+// redeploy looks like.
+//
+// Everything else stays loss, and each for a reason: zero means no frame ever
+// arrived, CloseAbnormalClosure is gorilla's designation for exactly that,
+// CloseProtocolError / CloseUnsupportedData / CloseInvalidFramePayloadData /
+// CloseMessageTooBig / CloseMandatoryExtension report a broken exchange,
+// ClosePolicyViolation is a rejection worth surfacing rather than renewing
+// through, CloseInternalServerErr is the relay failing, and 1014 bad-gateway
+// (which gorilla does not name) is an edge reporting its origin unreachable.
 //
 // The frame is authored by whatever terminates the WebSocket, which for a
 // fronted session is the CDN edge rather than the relay behind it. Two
@@ -74,7 +92,11 @@ func (e SessionEnd) String() string {
 // report loss, and never grants trust.
 func sessionEndForCloseCode(code int) SessionEnd {
 	switch code {
-	case websocket.CloseNormalClosure, websocket.CloseGoingAway:
+	case websocket.CloseNormalClosure,
+		websocket.CloseGoingAway,
+		websocket.CloseNoStatusReceived,
+		websocket.CloseServiceRestart,
+		websocket.CloseTryAgainLater:
 		return SessionEndRemote
 	default:
 		return SessionEndTransport

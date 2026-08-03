@@ -309,6 +309,78 @@ func TestSessionEndTokensAndGracefulness(t *testing.T) {
 	}
 }
 
+// TestSessionEndForEveryReceivedCloseCode pins the whole classification, not
+// just the codes the current relay happens to send. A peer that stops in an
+// orderly way must never be reported as a lost path, however it words the close
+// frame — including a legal frame that carries no status at all.
+func TestSessionEndForEveryReceivedCloseCode(t *testing.T) {
+	for code, want := range map[int]SessionEnd{
+		0:                                      SessionEndTransport, // no close frame ever arrived
+		websocket.CloseNormalClosure:           SessionEndRemote,    // 1000
+		websocket.CloseGoingAway:               SessionEndRemote,    // 1001
+		websocket.CloseProtocolError:           SessionEndTransport, // 1002
+		websocket.CloseUnsupportedData:         SessionEndTransport, // 1003
+		websocket.CloseNoStatusReceived:        SessionEndRemote,    // 1005, a frame with no status
+		websocket.CloseAbnormalClosure:         SessionEndTransport, // 1006
+		websocket.CloseInvalidFramePayloadData: SessionEndTransport, // 1007
+		websocket.ClosePolicyViolation:         SessionEndTransport, // 1008
+		websocket.CloseMessageTooBig:           SessionEndTransport, // 1009
+		websocket.CloseMandatoryExtension:      SessionEndTransport, // 1010
+		websocket.CloseInternalServerErr:       SessionEndTransport, // 1011
+		websocket.CloseServiceRestart:          SessionEndRemote,    // 1012
+		websocket.CloseTryAgainLater:           SessionEndRemote,    // 1013
+		1014:                                   SessionEndTransport, // bad gateway
+		websocket.CloseTLSHandshake:            SessionEndTransport, // 1015
+	} {
+		if got := sessionEndForCloseCode(code); got != want {
+			t.Errorf("sessionEndForCloseCode(%d) = %v, want %v", code, got, want)
+		}
+	}
+}
+
+// TestSessionEndTreatsAStatuslessCloseFrameAsOrderly proves the 1005 mapping
+// end to end rather than only through the mapping table: gorilla synthesizes
+// that code from a real, legal, empty close frame on the wire.
+func TestSessionEndTreatsAStatuslessCloseFrameAsOrderly(t *testing.T) {
+	upgrader := websocket.Upgrader{
+		Subprotocols: []string{Subprotocol}, EnableCompression: false,
+		CheckOrigin: func(*http.Request) bool { return true },
+	}
+	edge := newLocalEdge(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		conn, err := NewWebSocketConn(ws, DefaultWebSocketReadMax)
+		if err != nil {
+			return
+		}
+		if _, err := NewServerSession(conn); err != nil {
+			return
+		}
+		time.Sleep(150 * time.Millisecond)
+		// A close frame with an empty payload: legal, and what gorilla reports
+		// as CloseNoStatusReceived on the other side.
+		_ = ws.WriteControl(websocket.CloseMessage, []byte{}, time.Now().Add(time.Second))
+		_ = ws.Close()
+	}))
+
+	client := dialHeldClient(t, edge, LifecycleOptions{})
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- client.Serve(context.Background()) }()
+	select {
+	case <-serveErr:
+	case <-time.After(20 * time.Second):
+		t.Fatal("Serve did not return after the peer closed")
+	}
+	if code := client.RemoteCloseCode(); code != websocket.CloseNoStatusReceived {
+		t.Fatalf("observed close code = %d, want %d", code, websocket.CloseNoStatusReceived)
+	}
+	if got := client.SessionEnd(); got != SessionEndRemote || !got.Graceful() {
+		t.Fatalf("SessionEnd = %v (graceful=%t), want an orderly remote close", got, got.Graceful())
+	}
+}
+
 func TestIdleGuardDisarmStopsExpiryAndStillAdmitsStreams(t *testing.T) {
 	expired := make(chan struct{})
 	guard, err := NewIdleGuard(60*time.Millisecond, func() { close(expired) })
