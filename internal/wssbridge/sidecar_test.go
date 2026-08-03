@@ -487,6 +487,57 @@ func TestSidecarPendingHandshakeLimitBoundsReplayStalls(t *testing.T) {
 	}
 }
 
+// TestSidecarKeepsSessionQuietAfterItsFirstStream pins the distinction between
+// an unused session and a quiet one. A phone with the VPN on carries no traffic
+// for hours; evicting it broke the tunnel and the client could only report that
+// as a lost path. Sessions that never carry a stream are still evicted, which
+// is what the neighbouring idle test covers.
+func TestSidecarKeepsSessionQuietAfterItsFirstStream(t *testing.T) {
+	target := startEchoTarget(t)
+	fixture := newSidecarFixture(t, func(opts *SidecarOptions) {
+		opts.FixedTarget = target.Addr().String()
+		opts.NoStreamIdleTimeout = 80 * time.Millisecond
+		opts.StreamIdleTimeout = time.Minute
+		opts.SessionLifetime = time.Minute
+	})
+	edge := sidecarEdge(t, fixture.handler, testOriginOld, "198.51.100.19:443")
+	client, err := dialSidecarClient(t, edge, fixture.ticket(t, "relay-a", "front-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	serveCtx, cancelServe := context.WithCancel(context.Background())
+	defer cancelServe()
+	go func() { _ = client.Serve(serveCtx) }()
+
+	host, port := client.Endpoint()
+	local, err := net.Dial("tcp", net.JoinHostPort(host, fmt.Sprint(port)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("opaque-reality-bytes")
+	if _, err := local.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	received := make([]byte, len(payload))
+	if _, err := io.ReadFull(local, received); err != nil {
+		t.Fatal(err)
+	}
+	waitSnapshot(t, fixture.stats, func(s SidecarSnapshot) bool { return s.CurrentStreams == 1 })
+	_ = local.Close()
+	waitSnapshot(t, fixture.stats, func(s SidecarSnapshot) bool { return s.CurrentStreams == 0 })
+
+	// Well past the no-stream idle window with no stream in flight.
+	time.Sleep(500 * time.Millisecond)
+	snapshot := fixture.stats.Snapshot()
+	if snapshot.CurrentSessions != 1 || snapshot.IdleSessionCloses != 0 {
+		t.Fatalf("a session that had carried a stream was evicted for going quiet: %+v", snapshot)
+	}
+	if end := client.SessionEnd(); end != wsscore.SessionEndNone {
+		t.Fatalf("client session ended with %v", end)
+	}
+}
+
 func TestSidecarIdleAndLifetimeControlsCloseAndReleaseSessions(t *testing.T) {
 	for name, configure := range map[string]func(*SidecarOptions){
 		"idle": func(opts *SidecarOptions) {

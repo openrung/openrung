@@ -53,8 +53,16 @@ type Front struct {
 type LifecycleOptions struct {
 	MaxConcurrentStreams int
 	StreamIdleTimeout    time.Duration
-	NoStreamIdleTimeout  time.Duration
-	SessionLifetime      time.Duration
+	// NoStreamIdleTimeout closes a client session that has no active stream for
+	// this long. It is OFF unless set, because a client session belongs to the
+	// caller: a VPN holds an idle tunnel open while its user is not browsing, and
+	// an armed guard would close that tunnel and be indistinguishable from the
+	// path breaking. SessionLifetime still bounds every session.
+	//
+	// DefaultNoStreamIdleTimeout remains the relay sidecar's default, where the
+	// peer is untrusted and an unused session must not be held open.
+	NoStreamIdleTimeout time.Duration
+	SessionLifetime     time.Duration
 }
 
 // NormalizeLifecycleOptions applies defaults and rejects unbounded or
@@ -67,8 +75,10 @@ func NormalizeLifecycleOptions(opts LifecycleOptions) (LifecycleOptions, error) 
 	if opts.StreamIdleTimeout, err = boundedDuration(opts.StreamIdleTimeout, DefaultStreamIdleTimeout, MaxSessionLifetime, "stream idle timeout"); err != nil {
 		return LifecycleOptions{}, err
 	}
-	if opts.NoStreamIdleTimeout, err = boundedDuration(opts.NoStreamIdleTimeout, DefaultNoStreamIdleTimeout, MaxSessionLifetime, "no-stream idle timeout"); err != nil {
-		return LifecycleOptions{}, err
+	if opts.NoStreamIdleTimeout != 0 {
+		if opts.NoStreamIdleTimeout, err = boundedDuration(opts.NoStreamIdleTimeout, DefaultNoStreamIdleTimeout, MaxSessionLifetime, "no-stream idle timeout"); err != nil {
+			return LifecycleOptions{}, err
+		}
 	}
 	if opts.SessionLifetime, err = boundedDuration(opts.SessionLifetime, DefaultSessionLifetime, MaxSessionLifetime, "session lifetime"); err != nil {
 		return LifecycleOptions{}, err

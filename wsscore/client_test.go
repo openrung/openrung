@@ -148,7 +148,9 @@ func TestLifecycleAndClientBoundsRejectUnsafeValues(t *testing.T) {
 		"too many streams":     {MaxConcurrentStreams: MaxConcurrentStreams + 1},
 		"negative stream idle": {StreamIdleTimeout: -time.Second},
 		"long no-stream idle":  {NoStreamIdleTimeout: MaxSessionLifetime + time.Second},
-		"long lifetime":        {SessionLifetime: MaxSessionLifetime + time.Second},
+		// Zero disables the client guard; a negative value is still a mistake.
+		"negative no-stream idle": {NoStreamIdleTimeout: -time.Second},
+		"long lifetime":           {SessionLifetime: MaxSessionLifetime + time.Second},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := NormalizeLifecycleOptions(opts); err == nil {

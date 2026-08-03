@@ -302,7 +302,7 @@ func parseConfig(args []string, getenv func(string) string) (config, error) {
 	fs.StringVar(&firstByteTimeout, "first-byte-timeout", firstByteTimeout, "first stream byte timeout")
 	fs.StringVar(&streamIdleTimeout, "stream-idle-timeout", streamIdleTimeout, "active stream idle timeout")
 	fs.StringVar(&sessionLifetime, "session-lifetime", sessionLifetime, "maximum session lifetime")
-	fs.StringVar(&noStreamIdleTimeout, "no-stream-idle-timeout", noStreamIdleTimeout, "between-stream idle timeout")
+	fs.StringVar(&noStreamIdleTimeout, "no-stream-idle-timeout", noStreamIdleTimeout, "how long a session that has never carried a stream may be held open")
 	fs.StringVar(&pingInterval, "ping-interval", pingInterval, "WebSocket ping interval")
 	fs.StringVar(&pingWriteTimeout, "ping-write-timeout", pingWriteTimeout, "WebSocket ping write timeout")
 	fs.StringVar(&statsLogInterval, "stats-log-interval", statsLogInterval, "aggregate stats log interval")

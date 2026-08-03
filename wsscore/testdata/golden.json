@@ -98,7 +98,7 @@
   "lifecycle_defaults": {
     "max_concurrent_streams": 128,
     "stream_idle_timeout": "5m0s",
-    "no_stream_idle_timeout": "2m0s",
+    "no_stream_idle_timeout": "0s",
     "session_lifetime": "6h0m0s"
   }
 }
