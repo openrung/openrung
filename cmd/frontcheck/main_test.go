@@ -236,30 +236,40 @@ func TestRelayListAgeDetectsACachedBody(t *testing.T) {
 		name       string
 		serverTime string
 		wantAge    time.Duration
+		wantReject bool
 	}{
 		{name: "signed for this request", serverTime: "2026-08-03T09:00:00Z", wantAge: 0},
 		{name: "within tolerance", serverTime: "2026-08-03T08:57:00Z", wantAge: 3 * time.Minute},
-		{name: "a cached body that still verifies", serverTime: "2026-08-03T08:31:00Z", wantAge: 29 * time.Minute},
 		{
-			// The four-hour Cloudflare stale-cache incident this guards against.
-			name: "the stale-edge case", serverTime: "2026-08-03T05:00:00Z", wantAge: 4 * time.Hour,
+			name: "a cached body that still verifies", serverTime: "2026-08-03T08:31:00Z",
+			wantAge: 29 * time.Minute, wantReject: true,
 		},
 		{
-			// A broker clock slightly ahead is not staleness, and must not be
-			// reported as a negative age that trips the limit.
-			name: "broker clock ahead of ours", serverTime: "2026-08-03T09:00:30Z", wantAge: -30 * time.Second,
+			// The four-hour Cloudflare stale-cache incident this guards against.
+			name: "the stale-edge case", serverTime: "2026-08-03T05:00:00Z",
+			wantAge: 4 * time.Hour, wantReject: true,
+		},
+		{
+			// Ordinary skew in the other direction is tolerated.
+			name: "broker clock slightly ahead of ours", serverTime: "2026-08-03T09:00:30Z",
+			wantAge: -30 * time.Second,
+		},
+		{
+			// The reason the lower bound exists. A clock this far behind would
+			// make a four-hour-old cached list read as zero seconds old, and
+			// not_after is relative to the same stale server_time so the
+			// signature check passes too. Freshness is simply unknowable here.
+			name: "this machine's clock is hours behind", serverTime: "2026-08-03T13:00:00Z",
+			wantAge: -4 * time.Hour, wantReject: true,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			age, err := relayListAge(body(test.serverTime), now)
-			if err != nil {
-				t.Fatalf("relayListAge: %v", err)
-			}
+			age, err := checkRelayListFreshness(body(test.serverTime), now)
 			if age != test.wantAge {
 				t.Fatalf("age = %s, want %s", age, test.wantAge)
 			}
-			if stale := age > maxRelayListAge; stale != (test.wantAge > maxRelayListAge) {
-				t.Fatalf("age %s judged stale=%v against limit %s", age, stale, maxRelayListAge)
+			if rejected := err != nil; rejected != test.wantReject {
+				t.Fatalf("rejected = %v (%v), want %v", rejected, err, test.wantReject)
 			}
 		})
 	}
@@ -272,9 +282,44 @@ func TestRelayListAgeRequiresServerTime(t *testing.T) {
 		`{"key_id":"627405615601c589","relays":[]}`,
 		`not json at all`,
 	} {
-		if _, err := relayListAge([]byte(body), time.Now()); err == nil {
+		if _, err := checkRelayListFreshness([]byte(body), time.Now()); err == nil {
 			t.Errorf("%s was treated as having a known age", body)
 		}
+	}
+}
+
+// The refusal message reaches terminal scrollback and CI logs, so it must name
+// the proxy without carrying any part of its credentials.
+func TestProxyLocationCarriesNoCredentials(t *testing.T) {
+	for _, test := range []struct {
+		raw  string
+		want string
+	}{
+		{raw: "https://review-user:review-secret@proxy.invalid", want: "https://proxy.invalid"},
+		{raw: "http://token-as-username@proxy.invalid:3128", want: "http://proxy.invalid:3128"},
+		{raw: "http://127.0.0.1:3128", want: "http://127.0.0.1:3128"},
+		{raw: "socks5://user:pw@127.0.0.1:1080", want: "socks5://127.0.0.1:1080"},
+	} {
+		t.Run(test.raw, func(t *testing.T) {
+			proxy, err := url.Parse(test.raw)
+			if err != nil {
+				t.Fatalf("parse proxy: %v", err)
+			}
+			got := proxyLocation(proxy)
+			if got != test.want {
+				t.Fatalf("proxyLocation = %q, want %q", got, test.want)
+			}
+			// Belt and braces: whatever the shape, no credential material may
+			// survive into the message.
+			for _, secret := range []string{"review-secret", "token-as-username", "review-user", ":pw@", "user:"} {
+				if strings.Contains(got, secret) {
+					t.Fatalf("proxyLocation(%q) = %q leaks %q", test.raw, got, secret)
+				}
+			}
+		})
+	}
+	if got := proxyLocation(nil); got == "" {
+		t.Fatal("a nil proxy produced an empty location")
 	}
 }
 

@@ -51,6 +51,11 @@ const (
 	// the origin must have caching disabled and why this is checked directly
 	// rather than inferred from comparing two fetches.
 	maxRelayListAge = 5 * time.Minute
+
+	// maxRelayListLead bounds the opposite direction: how far server_time may
+	// sit AHEAD of this machine's clock before the staleness test above stops
+	// meaning anything. See checkRelayListFreshness.
+	maxRelayListLead = 5 * time.Minute
 )
 
 type checkResult struct {
@@ -172,7 +177,7 @@ func reportProxyRefusal(endpoint, proxy *url.URL, err error) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "  proxy selection failed: %v\n", err)
 	} else {
-		fmt.Fprintf(os.Stderr, "  net/http would send this request through %s\n", proxy)
+		fmt.Fprintf(os.Stderr, "  net/http would send this request through %s\n", proxyLocation(proxy))
 	}
 	fmt.Fprintln(os.Stderr, "  Go tunnels proxied HTTPS with CONNECT and then runs its own SNI-bearing")
 	fmt.Fprintln(os.Stderr, "  handshake, so the transport's no-SNI dialer never runs and no check here")
@@ -180,6 +185,31 @@ func reportProxyRefusal(endpoint, proxy *url.URL, err error) {
 	// net/http reads only HTTP(S)_PROXY and NO_PROXY — naming ALL_PROXY here
 	// would send an operator to unset a variable it never consulted.
 	fmt.Fprintln(os.Stderr, "  Unset HTTPS_PROXY (or add the host to NO_PROXY) and re-run.")
+}
+
+// proxyLocation names the proxy without any part of its credentials. A proxy
+// URL routinely carries userinfo, and this message lands in terminal scrollback
+// and CI logs; the scheme and authority are all an operator needs to recognize
+// which configuration is in play.
+//
+// url.URL.Redacted is deliberately not used: it masks only the password, and a
+// token-in-the-username proxy URL is a common enough shape that its output
+// would still be a credential.
+func proxyLocation(proxy *url.URL) string {
+	if proxy == nil {
+		return "an unnamed proxy"
+	}
+	location := proxy.Host
+	if location == "" {
+		location = proxy.Opaque
+	}
+	if proxy.Scheme != "" {
+		location = proxy.Scheme + "://" + location
+	}
+	if strings.TrimSpace(location) == "" {
+		return "an unnamed proxy"
+	}
+	return location
 }
 
 type frontChecker struct {
@@ -366,18 +396,11 @@ func (c *frontChecker) fetchRelayList(
 		fmt.Sprintf("%d bytes, signature verified under pinned key %s", len(payload), list.KeyID),
 	}
 
-	age, err := relayListAge(payload, time.Now())
+	age, err := checkRelayListFreshness(payload, time.Now())
 	if err != nil {
 		return nil, details, err
 	}
-	if age > maxRelayListAge {
-		return nil, details, fmt.Errorf(
-			"the served list is %s old (server_time is that far behind this machine's clock, limit %s) — "+
-				"either this front is caching the relay list, which its route must not do, or this machine's clock is wrong",
-			age.Round(time.Second), maxRelayListAge,
-		)
-	}
-	details = append(details, fmt.Sprintf("server_time is %s old, so it was signed for this request", age.Round(time.Second)))
+	details = append(details, describeRelayListAge(age))
 
 	// Measure, rather than infer, that the fetch took the path the first check
 	// reported. Without this, a PASS would rest on the absence of a proxy
@@ -404,8 +427,49 @@ func (c *frontChecker) fetchRelayList(
 	return payload, details, nil
 }
 
+// checkRelayListFreshness bounds server_time in BOTH directions and returns the
+// age for reporting.
+//
+// The upper bound is the staleness test. The lower bound is not symmetry for its
+// own sake: staleness is measured against this machine's clock, so a clock that
+// runs behind hides exactly the failure the upper bound looks for. A clock four
+// hours slow makes a four-hour-old cached list read as zero seconds old, and it
+// passes signature verification too, because not_after is relative to the same
+// stale server_time. A list far enough ahead of local time therefore means
+// freshness cannot be established at all, and saying so is the only honest
+// outcome.
+func checkRelayListFreshness(payload []byte, now time.Time) (time.Duration, error) {
+	age, err := relayListAge(payload, now)
+	if err != nil {
+		return 0, err
+	}
+	switch {
+	case age > maxRelayListAge:
+		return age, fmt.Errorf(
+			"the served list is %s old (limit %s) — either this front is caching the relay list, "+
+				"which its route must not do, or this machine's clock is ahead of the broker's",
+			age.Round(time.Second), maxRelayListAge,
+		)
+	case age < -maxRelayListLead:
+		return age, fmt.Errorf(
+			"server_time is %s ahead of this machine's clock (limit %s), so this run cannot tell a freshly "+
+				"signed list from a cached one — a clock this far behind would make a stale list read as current. "+
+				"Correct this machine's clock and re-run",
+			(-age).Round(time.Second), maxRelayListLead,
+		)
+	}
+	return age, nil
+}
+
+func describeRelayListAge(age time.Duration) string {
+	if age < 0 {
+		return fmt.Sprintf("server_time is %s ahead of this machine's clock, within tolerance", (-age).Round(time.Second))
+	}
+	return fmt.Sprintf("server_time is %s old, so it was signed for this request", age.Round(time.Second))
+}
+
 // relayListAge reports how far the signed body's server_time sits behind now. A
-// clock ahead of the broker yields a negative age, which is not staleness.
+// clock behind the broker's yields a negative age.
 func relayListAge(payload []byte, now time.Time) (time.Duration, error) {
 	var body struct {
 		ServerTime *time.Time `json:"server_time"`
