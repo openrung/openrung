@@ -298,6 +298,16 @@ verification, and rollback — is documented in
 [`Caddyfile`](./Caddyfile). It is additive: the broker container and the
 plaintext `:8080` path are untouched.
 
+### Adding a front
+
+A candidate front must pass `go run ./cmd/frontcheck -url <https URL>` before it
+is added to the built-in discovery order: the check confirms, read-only, that a
+signed relay list arrives and verifies, and — for the SNI-less fronts — that the
+suppressed-SNI path reaches the same origin as an ordinary one. Azure Front Door
+is designed and implemented but not yet provisioned or advertised; its
+measurements, its weaker certificate tradeoff, and its provisioning steps are in
+[`azure-front-door.md`](./azure-front-door.md).
+
 ## Container hardening
 
 Both `docker-compose.yml` and `lightsail-up.sh` run the broker with a

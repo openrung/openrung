@@ -325,6 +325,35 @@ out of crypto/tls is FIPS chain filtering, so in FIPS 140-3 mode this front is
 refused instead of dialed. Custom broker URLs remain fully standard, and DNS
 resolution of the distribution name still exposes it.
 
+Azure Front Door endpoints (`*.azurefd.net`) take the same suppressed-SNI path
+and the same no-ECH, no-fallback, FIPS-refusing policy, but they cannot make the
+same certificate promise, and the difference is deliberate rather than
+incidental. Without a server name the Azure edge serves a shared default
+certificate whose only SAN is `*.azureedge.net`; that does not cover the
+`*.azurefd.net` endpoint being dialed, and no configuration changes it — a
+custom domain still receives the shared certificate on this path, and the
+`*.azureedge.net` name that would match belongs to a retiring product. The
+client therefore pins that SAN instead of the endpoint hostname. An impersonator
+must present a publicly-trusted certificate for a name under `azureedge.net`,
+so the connection proves *an Azure edge*, not *our endpoint*.
+
+That is a real reduction against the other two fronts, and it is acceptable only
+because TLS is not where this client's trust rests. The relay list is
+Ed25519-signed by the origin and verified against keys pinned in the module, and
+the signed envelope binds the channel, the echoed limit, and a `not_after`
+freshness bound — so a front that is not ours can neither forge a list nor replay
+an expired one. What an impersonator would still obtain is the request side:
+client identity headers, telemetry payloads, and the ability to serve nothing at
+all. That residue is why the Azure front belongs last in the discovery order, and
+why the endpoint-name gap is reported explicitly rather than left implicit.
+
+Because the SNI-less behaviour is undocumented, carries no SLA, and is a
+property of the edge fleet an endpoint lands on rather than of Front Door as a
+product, an endpoint must pass `cmd/frontcheck` before it is advertised. The
+recognizers match name *shapes* rather than this deployment's own endpoints, so
+rotating a front cannot silently return its name to the wire; adding an endpoint
+to the built-in order is a separate, deliberate step.
+
 Relay registration/heartbeat clients and the relay data path remain outside
 `brokerapi`.
 
