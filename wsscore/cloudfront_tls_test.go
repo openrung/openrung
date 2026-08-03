@@ -165,6 +165,7 @@ func TestNoSNITLSDialUsesSelectedNetworkDialerOnce(t *testing.T) {
 		},
 		&tls.Config{MinVersion: tls.VersionTLS12},
 		"d111111abcdef8.cloudfront.net",
+		&dialPhases{},
 	)
 	connection, err := dial(t.Context(), "tcp", "d111111abcdef8.cloudfront.net:443")
 	if connection != nil {

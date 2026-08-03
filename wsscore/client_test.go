@@ -73,7 +73,7 @@ func TestNetworkDialerProtectsActualSocketBeforeConnect(t *testing.T) {
 	defer listener.Close()
 
 	protector := &recordingProtector{allow: false}
-	dialer := newNetworkDialer(time.Second, protector)
+	dialer := newNetworkDialer(time.Second, protector, nil)
 	conn, err := dialer.DialContext(t.Context(), "tcp", listener.Addr().String())
 	if conn != nil {
 		_ = conn.Close()

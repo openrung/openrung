@@ -307,6 +307,31 @@ lets Xray bind `0.0.0.0:443` directly; otherwise each loopback inner stream
 would create an address and byte-count record outside the sidecar's aggregate
 counter policy.
 
+### Classifying a failed handshake
+
+Knowing *how* a WSS handshake failed is what separates "the censor dropped the
+ClientHello" from "the CDN refused us" from "our own sidecar is down", and the
+three call for opposite responses. The client therefore classifies the failure
+inside `wsscore.DialClient`, at the one point where the typed error and the CDN
+response status both still exist, and forwards a single token from a closed,
+frozen set. Nothing richer crosses the module boundary: the response body is
+still closed unread, the error chain is still discarded, and the resulting error
+carries only a compile-time fixed string. The do-not-log list above is unchanged
+— classification does not add anything to what may be recorded, it only decides
+which of a few dozen fixed words describes what already happened. There are no
+timing measurements: a censor controls when it drops or resets, so a per-event
+number would be a channel it could write a user's identity into. The token
+registry, including the quasi-identifier notes and the frozen-set rule, is in
+[`wsscore/README.md`](../wsscore/README.md); the telemetry-side reading norms
+are in [`docs/api.md`](api.md).
+
+Whether a given dial omitted SNI is deliberately **not** sent by clients. It is
+derivable operator-side by joining the `front_id` already on the row against the
+signed relay list. That join only survives front rotation if the signed relay
+list is archived daily with a named owner — a prerequisite for any future
+comparison between the no-SNI and ordinary-SNI paths, which would otherwise be
+unanalyzable after the first rotation.
+
 ## Client repository scope
 
 This repository's desktop client is the only client restored by this change.

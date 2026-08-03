@@ -101,6 +101,17 @@ func run(args []string) error {
 	return nil
 }
 
+// dialFailureSuffix appends wsscore's closed classification token so a front
+// acceptance check says whether the edge refused, the sidecar answered, or the
+// handshake died on the wire. The token is the only failure detail wsscore
+// exposes; there is nothing else to print.
+func dialFailureSuffix(err error) string {
+	if reason := wsscore.FailureReason(err); reason != "" {
+		return " (" + reason + ")"
+	}
+	return ""
+}
+
 type pathList []string
 
 func (p *pathList) String() string { return strings.Join(*p, ",") }
@@ -219,7 +230,7 @@ func runIssued(ctx context.Context, cfg config) error {
 	}
 	bridge, err := wsscore.DialClient(ctx, wsscore.ClientOptions{URL: cfg.url, Ticket: response.Ticket})
 	if err != nil {
-		return errors.New("issued production ticket was rejected")
+		return errors.New("issued production ticket was rejected" + dialFailureSuffix(err))
 	}
 	_ = bridge.Close()
 	fmt.Println("broker_ticket_issuance=ok production_sidecar_acceptance=ok")
@@ -559,7 +570,7 @@ func endToEndProbeTicket(ctx context.Context, cfg config, ticket string) error {
 	}
 	bridge, err := wsscore.DialClient(ctx, wsscore.ClientOptions{URL: cfg.url, Ticket: ticket})
 	if err != nil {
-		return errors.New("start WSS bridge client")
+		return errors.New("start WSS bridge client" + dialFailureSuffix(err))
 	}
 	defer bridge.Close()
 	bridgeCtx, cancelBridge := context.WithCancel(ctx)

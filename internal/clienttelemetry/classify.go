@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"unicode/utf8"
 
+	"github.com/openrung/openrung/wsscore"
+
 	"openrung/internal/client"
 )
 
@@ -31,6 +33,11 @@ type httpStatusError interface {
 // It inspects the whole error chain with typed checks (errors.Is/errors.As); the
 // returned tokens are a fixed enum the iOS/Android clients must mirror. "" for a
 // nil error; "unknown" when nothing matches.
+//
+// A failed WSS handshake carries wsscore's own closed taxonomy (ws_upgrade,
+// http_403, tls_timeout, dns_bogon, …); wsscore classified it at the only point
+// where the typed error and the CDN status still existed, so that token is
+// authoritative here. See wsscore/README.md for the token registry.
 func ClassifyError(err error) string {
 	if err == nil {
 		return ""
@@ -43,6 +50,14 @@ func ClassifyError(err error) string {
 		return "cancelled"
 	case errors.Is(err, context.DeadlineExceeded):
 		return "timeout"
+	}
+
+	// The WSS transport pre-classified this failure. Its token is more specific
+	// than every generic rule below, which would only ever see the deliberately
+	// information-free DialError and return "unknown".
+	var dialErr *wsscore.DialError
+	if errors.As(err, &dialErr) {
+		return dialErr.Reason()
 	}
 
 	// Relay-selection sentinels (internal/client), distinct so the dashboard can

@@ -224,6 +224,9 @@ func TestDialClientRejectsUnsolicitedWebSocketExtensions(t *testing.T) {
 	if err == nil || err.Error() != "WSS extensions were unexpectedly negotiated" {
 		t.Fatalf("DialClient error = %v, want unsolicited-extension rejection", err)
 	}
+	if reason := FailureReason(err); reason != ReasonWSSubprotocol {
+		t.Fatalf("FailureReason = %q, want %q", reason, ReasonWSSubprotocol)
+	}
 }
 
 func TestWebSocketConnSerializesWritesAndWriteDeadlines(t *testing.T) {
