@@ -449,6 +449,16 @@ and forward its loopback listener over SSH. Origin mode verifies rejection of
 an invalid origin token, acceptance of both rotation-overlap tokens, exact
 per-source saturation and release, and bounded idle/lifetime cleanup:
 
+`OPENRUNG_WSS_NO_STREAM_IDLE_TIMEOUT` bounds a session that has **never**
+carried a stream, which is what a parked ticket looks like. It stops applying
+once a session carries its first stream: a client that is connected but not
+browsing — a phone with the VPN on — is entitled to hold a quiet session, and
+evicting it broke the tunnel while costing an attacker nothing, since one cheap
+stream reset the same window. An in-use session stays bounded by
+`OPENRUNG_WSS_SESSION_LIFETIME`, the per-source session cap, and the ticket's
+non-replenishing stream budget. Origin mode still exercises this because its
+lifecycle probe opens a session and never opens a stream.
+
 ```sh
 go run ./cmd/wssmatrix \
   -mode origin \

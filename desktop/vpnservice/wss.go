@@ -21,7 +21,9 @@ import (
 )
 
 const (
-	accessTransportWSS    = "wss"
+	accessTransportWSS = "wss"
+	// wssSessionEndedStage marks an orderly session end rather than a failure.
+	wssSessionEndedStage  = "wss_session_ended"
 	wssTicketAttemptLimit = 5 * time.Second
 	wssTicketDefaultRetry = 10 * time.Second
 	wssTicketMaxRetry     = 30 * time.Second
@@ -30,6 +32,7 @@ const (
 type wssBridge interface {
 	Endpoint() (host string, port int)
 	Serve(context.Context) error
+	SessionEnd() wsscore.SessionEnd
 	Close() error
 }
 
@@ -316,14 +319,31 @@ func serveWSS(result *candidateResult, ctx context.Context, bridge wssBridge) {
 	if ctx.Err() != nil {
 		return
 	}
-	if err == nil {
-		err = errors.New("WSS session stopped unexpectedly")
+	// Serve returns nil for every session end, orderly or not, so the reason has
+	// to come from the transport itself. An orderly end still costs the tunnel
+	// and has to be rebuilt, but nothing failed: it must not count against the
+	// front or the relay.
+	end := bridge.SessionEnd()
+	stage := "wss_session"
+	if end.Graceful() {
+		stage = wssSessionEndedStage
 	}
-	err = markWSSTransportError("wss_session", result.frontID, err)
+	if err == nil {
+		err = fmt.Errorf("WSS session ended (%s)", end)
+	}
+	err = markWSSTransportError(stage, result.frontID, err)
 	select {
 	case result.transportErr <- err:
 	default:
 	}
+}
+
+// gracefulWSSSessionEnd reports an orderly end of a promoted WSS session: the
+// relay closed it, or its bounded lifetime elapsed. Only a session that ended
+// without the peer saying so is evidence that the path was lost.
+func gracefulWSSSessionEnd(err error) bool {
+	stage, ok := wssTransportStage(err)
+	return ok && stage == wssSessionEndedStage
 }
 
 func (s *Service) recordTransportFallback(mgr *clienttelemetry.Manager, relayID string, directErr error) {
@@ -335,6 +355,19 @@ func (s *Service) recordTransportFallback(mgr *clienttelemetry.Manager, relayID 
 		attrs["failure_reason"] = reason
 	}
 	mgr.Record("transport_fallback", relayID, attrs, nil)
+}
+
+// recordWSSTransportEnded reports an orderly session end on its own event, so
+// transport_failed keeps meaning "the path broke" and stays usable as a signal.
+func (s *Service) recordWSSTransportEnded(mgr *clienttelemetry.Manager, relayID string, err error) {
+	if mgr == nil {
+		return
+	}
+	attrs := map[string]string{"transport": accessTransportWSS}
+	if _, frontID, ok := wssTransportMetadata(err); ok && frontID != "" {
+		attrs["front_id"] = frontID
+	}
+	mgr.Record("transport_session_ended", relayID, attrs, nil)
 }
 
 func (s *Service) recordWSSTransportFailed(mgr *clienttelemetry.Manager, relayID string, err error) {

@@ -63,7 +63,11 @@ func (s *Service) supervise(ctx context.Context, conn *connection, cur *candidat
 			}
 			trigger = transportErr
 			transportFailure = true
-			s.appendLog("WSS access transport stopped unexpectedly; reconnecting")
+			if gracefulWSSSessionEnd(trigger) {
+				s.appendLog("WSS access transport session ended; reconnecting")
+			} else {
+				s.appendLog("WSS access transport stopped unexpectedly; reconnecting")
+			}
 		case probeErr := <-healthFail:
 			if ctx.Err() != nil || s.isDisconnecting(conn) {
 				return "", nil
@@ -85,7 +89,11 @@ func (s *Service) supervise(ctx context.Context, conn *connection, cur *candidat
 		if transportFailure {
 			// A front/session failure is not evidence against the destination relay.
 			failedRelayID = ""
-			s.recordWSSTransportFailed(conn.mgr, oldRelayID, trigger)
+			if gracefulWSSSessionEnd(trigger) {
+				s.recordWSSTransportEnded(conn.mgr, oldRelayID, trigger)
+			} else {
+				s.recordWSSTransportFailed(conn.mgr, oldRelayID, trigger)
+			}
 		} else {
 			// The bare relay_attempt_failed (no attempt measurement — this is not a
 			// ladder rung) is what dents the dying relay's broker ranking.

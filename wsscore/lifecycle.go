@@ -13,6 +13,7 @@ type IdleGuard struct {
 	active     int
 	expired    bool
 	closed     bool
+	disarmed   bool
 	generation uint64
 	timer      *time.Timer
 	onExpire   func()
@@ -61,8 +62,28 @@ func (g *IdleGuard) Done() {
 		return
 	}
 	g.active--
-	if g.active == 0 {
+	if g.active == 0 && !g.disarmed {
 		g.scheduleLocked()
+	}
+}
+
+// Disarm permanently stops the timer while still admitting streams. It
+// separates "this session is unused" from "this session is quiet": a session
+// that has carried a stream is in use, and holding it open is the point of the
+// transport. Only Close rejects further streams.
+func (g *IdleGuard) Disarm() {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.disarmed {
+		return
+	}
+	g.disarmed = true
+	g.generation++
+	if g.timer != nil {
+		g.timer.Stop()
 	}
 }
 

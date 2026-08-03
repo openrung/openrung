@@ -51,8 +51,24 @@ Reality key material or interprets payload bytes.
 `DialClient` sends the opaque ticket only as `Authorization: Bearer ...`,
 disables compression and proxy inheritance, requires the WSS subprotocol, binds
 its inner endpoint to a loopback IP literal, and applies bounded handshake,
-message, stream-idle, no-stream-idle, stream-concurrency, and session-lifetime
-controls. Custom network dial callbacks cannot be combined with
+message, stream-idle, stream-concurrency, and session-lifetime controls.
+
+A client applies no no-stream idle control unless one is requested through
+`LifecycleOptions.NoStreamIdleTimeout`. A client session belongs to its caller,
+which knows whether it still wants the transport: a VPN deliberately holds an
+idle tunnel open while its user is not browsing, and a guard armed at dial time
+would close that tunnel and be indistinguishable from the path breaking.
+`DefaultNoStreamIdleTimeout` remains the relay sidecar's default, where the peer
+is untrusted and a session that never carries a stream must not be held open.
+
+`Client.SessionEnd` reports why a session stopped, because `Serve` returns a nil
+error for every end. `SessionEnd.Graceful` separates an orderly end — the
+caller's own close, an idle or lifetime bound, or a peer that closed the session
+— from `SessionEndTransport`, which means the session ended without the peer
+saying so. The distinction is observed rather than assumed: an orderly WebSocket
+close frame reaches the client through the CDN, while a lost path yields an
+abnormal closure because no close frame ever arrives. Callers must consult it
+instead of treating every session end as loss. Custom network dial callbacks cannot be combined with
 `SocketProtector`, because that could silently bypass Android socket
 protection. Custom callbacks that claim to have completed TLS are rejected
 entirely, and TLS verification cannot be disabled. When
