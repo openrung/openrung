@@ -85,6 +85,12 @@ func run() error {
 		return errors.New("OPENRUNG_FOUNDATION_TOKEN must differ from OPENRUNG_VOLUNTEER_TOKEN: a shared value would let any holder of the volunteer token register a foundation relay")
 	}
 
+	// The operational API token gates the machine-to-machine relay inventory
+	// endpoint. Unset leaves that route unregistered; a value shared with any
+	// other broker credential is refused outright (see validateAPIToken).
+	dashboardToken := os.Getenv("OPENRUNG_DASHBOARD_TOKEN")
+	apiToken := os.Getenv("OPENRUNG_API_TOKEN")
+
 	// Fail closed on the signing key too: a missing or malformed seed must
 	// crash-loop (an ordinary, visible outage) rather than serve unsigned relay
 	// lists, which healthz and old clients would never notice while every
@@ -95,6 +101,17 @@ func run() error {
 	}
 	signingKeyID := broker.SigningKeyID(signingSeed)
 	slog.Info("relay list signing enabled", "key_id", signingKeyID)
+	// Checked after the seeds are parsed so a token that reuses signing key
+	// material is caught with the same message as a reused bearer token.
+	if err := validateAPIToken(apiToken, []namedCredential{
+		{name: "OPENRUNG_VOLUNTEER_TOKEN", value: registrationToken},
+		{name: "OPENRUNG_FOUNDATION_TOKEN", value: foundationToken},
+		{name: "OPENRUNG_DASHBOARD_TOKEN", value: dashboardToken},
+		{name: "OPENRUNG_RELAY_SIGNING_KEY", value: os.Getenv("OPENRUNG_RELAY_SIGNING_KEY")},
+		{name: "OPENRUNG_WSS_TICKET_SIGNING_SEED", value: os.Getenv("OPENRUNG_WSS_TICKET_SIGNING_SEED")},
+	}); err != nil {
+		return err
+	}
 	geoResolver := newGeoIPResolver(*geoIPEndpoint)
 	store, err := newRelayStore(*relayStore, *relayDatabaseURL, rankingMode)
 	if err != nil {
@@ -120,7 +137,8 @@ func run() error {
 		FoundationToken:   foundationToken,
 		RelayLeaseTTL:     *leaseTTL,
 		TelemetrySink:     telemetrySink,
-		DashboardToken:    os.Getenv("OPENRUNG_DASHBOARD_TOKEN"),
+		DashboardToken:    dashboardToken,
+		APIToken:          apiToken,
 		// Cloudflare's published ranges are trusted by default; add more (e.g. an upstream LB) here.
 		TrustedProxyCIDRs:          splitAndTrim(os.Getenv("OPENRUNG_TRUSTED_PROXY_CIDRS")),
 		MaxNewRelayIDsPerIPPerDay:  maxNewRelayIDs,
@@ -171,7 +189,7 @@ func run() error {
 		close(shutdownDone)
 	}()
 
-	slog.Info("starting broker", "version", buildinfo.Version(baseVersion), "revision", buildinfo.Revision(), "addr", *addr, "lease_ttl", leaseTTL.String(), "telemetry_store", *telemetryStore, "telemetry_file", *telemetryFile, "relay_store", *relayStore, "relay_ranking", rankingMode, "dashboard_enabled", os.Getenv("OPENRUNG_DASHBOARD_TOKEN") != "", "foundation_registration_enabled", foundationToken != "", "wss_ticket_issuance_enabled", len(wssTicketSeed) != 0, "status_interval", statusInterval.String(), "geoip_enabled", geoResolver != nil)
+	slog.Info("starting broker", "version", buildinfo.Version(baseVersion), "revision", buildinfo.Revision(), "addr", *addr, "lease_ttl", leaseTTL.String(), "telemetry_store", *telemetryStore, "telemetry_file", *telemetryFile, "relay_store", *relayStore, "relay_ranking", rankingMode, "dashboard_enabled", dashboardToken != "", "operational_api_enabled", apiToken != "", "foundation_registration_enabled", foundationToken != "", "wss_ticket_issuance_enabled", len(wssTicketSeed) != 0, "status_interval", statusInterval.String(), "geoip_enabled", geoResolver != nil)
 	err = server.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {
 		<-shutdownDone
@@ -252,6 +270,38 @@ func parseNewRelayIDCap(value string) (int, error) {
 		return 0, errors.New("OPENRUNG_MAX_NEW_RELAY_IDS_PER_IP_PER_DAY must be a non-zero integer or 'off'")
 	}
 	return parsed, nil
+}
+
+// namedCredential pairs a broker credential with the environment variable it
+// came from, so validateAPIToken can name the collision it refuses instead of
+// making the operator guess which value they reused.
+type namedCredential struct {
+	name  string
+	value string
+}
+
+// validateAPIToken refuses an operational API token that duplicates another
+// broker credential. Each collision would silently widen that credential's
+// blast radius in a different direction: sharing a registration token would
+// hand every relay operator the fleet inventory, sharing the dashboard token
+// would put a browser-session secret into scripted machine-to-machine callers
+// (and vice versa), and sharing either signing seed would leak private key
+// material to whoever merely needed to read the inventory — the one that could
+// forge a signed directory. Empty is not a collision: an unset token disables
+// the endpoint, and an unset peer credential is simply not configured.
+func validateAPIToken(apiToken string, others []namedCredential) error {
+	if apiToken == "" {
+		return nil
+	}
+	for _, other := range others {
+		if other.value == "" {
+			continue
+		}
+		if apiToken == other.value {
+			return fmt.Errorf("OPENRUNG_API_TOKEN must differ from %s: a shared value would extend that credential's reach to every holder of the operational API token", other.name)
+		}
+	}
+	return nil
 }
 
 func envDefault(key, fallback string) string {

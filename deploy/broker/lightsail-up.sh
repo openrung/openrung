@@ -25,11 +25,13 @@
 # OPENRUNG_DASHBOARD_TOKEN, OPENRUNG_RELAY_STORE, OPENRUNG_RELAY_DATABASE_URL,
 # OPENRUNG_TELEMETRY_STORE, OPENRUNG_TELEMETRY_DATABASE_URL, OPENRUNG_GEOIP_ENDPOINT.
 #
-# This helper deliberately does NOT accept OPENRUNG_FOUNDATION_TOKEN. Lightsail
-# retains user-data, and the bootstrap log is readable on the instance, so
-# interpolating the privileged bearer here would leave durable copies. Provision
-# the broker first, then transfer the token over SSH into the root-owned,
-# mode-0600 /etc/openrung/broker.env and recreate the container with --env-file.
+# This helper deliberately does NOT accept OPENRUNG_FOUNDATION_TOKEN or
+# OPENRUNG_API_TOKEN. Lightsail retains user-data, and the bootstrap log is
+# readable on the instance, so interpolating a privileged bearer here would
+# leave durable copies. Provision the broker first, then transfer those tokens
+# over SSH into the root-owned, mode-0600 /etc/openrung/broker.env and recreate
+# the container with --env-file. Both are refused loudly rather than dropped
+# silently, so a helper run cannot look like it configured them.
 #
 # OPENRUNG_RELAY_SIGNING_KEY is deliberately NOT overridable here: user-data
 # persists world-readable under /var/lib/cloud, so the instance generates a
@@ -55,6 +57,11 @@ GEOIP_ENDPOINT="${OPENRUNG_GEOIP_ENDPOINT:-}"
 
 if [ "${OPENRUNG_FOUNDATION_TOKEN+x}" = x ]; then
   echo "error: OPENRUNG_FOUNDATION_TOKEN is not accepted by this helper because Lightsail user-data persists; install it post-boot in /etc/openrung/broker.env" >&2
+  exit 2
+fi
+
+if [ "${OPENRUNG_API_TOKEN+x}" = x ]; then
+  echo "error: OPENRUNG_API_TOKEN is not accepted by this helper because Lightsail user-data persists; install it post-boot in /etc/openrung/broker.env" >&2
   exit 2
 fi
 
@@ -235,4 +242,9 @@ echo "Foundation registration is disabled until OPENRUNG_FOUNDATION_TOKEN is add
 echo "post-boot to the root-owned /etc/openrung/broker.env, then recreate the container"
 echo "with --env-file (docker restart does not reload a changed env file)."
 echo "Never pass that token through Lightsail user-data or an inline docker -e argument."
+echo
+echo "The operational fleet endpoint (GET /admin/api/relays/inventory) is likewise"
+echo "disabled until OPENRUNG_API_TOKEN is added post-boot the same way. Generate it"
+echo "with 'openssl rand -hex 32'; the broker refuses to start if it matches any other"
+echo "token or signing seed in that file."
 echo "OPENRUNG_BROKER name=${NAME} ip=${STATIC_IP} port=${PORT}"

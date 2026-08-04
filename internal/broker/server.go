@@ -41,6 +41,15 @@ type Config struct {
 	TelemetryReader  TelemetryReader
 	TelemetryQuerier TelemetryQuerier
 	DashboardToken   string
+	// APIToken is the bearer credential for the machine-to-machine operational
+	// API (GET /admin/api/relays/inventory). It is deliberately separate from
+	// DashboardToken — that one buys an interactive browser session over the
+	// telemetry corpus, this one buys a signed fleet snapshot — and from the
+	// registration tokens, so operational tooling never carries a credential
+	// that could write to the directory. Empty leaves the route unregistered,
+	// so an unconfigured broker 404s instead of running the endpoint open;
+	// cmd/broker refuses to start when it equals any other broker credential.
+	APIToken string
 	// TrustedProxyCIDRs are additional CIDRs (beyond Cloudflare's published ranges) whose forwarded
 	// CF-Connecting-IP / X-Forwarded-For headers the broker will trust for the real client IP.
 	TrustedProxyCIDRs []string
@@ -114,6 +123,16 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 	mux.HandleFunc("GET /api/v1/relays.mirror", rateLimited(relayListLimiter, clientIP, 10, listRelaysMirrorHandler(store, relaySigner)))
 	if wssIssuer != nil {
 		mux.HandleFunc("POST /api/v1/wss/tickets", rateLimitedBy(wssTicketLimiter, wssTicketRateKey(clientIP), 10, wssTicketHandler(store, wssIssuer)))
+	}
+	// The operational inventory exists only when its dedicated token does, so
+	// an unconfigured broker runs no handler, holds no limiter state, and can
+	// answer nothing but 404 on the path — the same posture as the dashboard
+	// routes. The pattern deliberately carries no method: the handler screens
+	// the method itself, after the credential check, so ServeMux cannot answer
+	// ahead of it (see relayInventoryHandler).
+	if cfg.APIToken != "" {
+		inventoryLimiter := newIPRateLimiter(inventoryRatePerSecond, inventoryBurst, rateLimiterMaxTrackedIPs)
+		mux.HandleFunc("/admin/api/relays/inventory", rateLimited(inventoryLimiter, clientIP, inventoryRetryAfterSeconds, relayInventoryHandler(store, cfg.APIToken, relaySigner)))
 	}
 	mux.HandleFunc("POST /api/v1/telemetry/events", rateLimited(telemetryLimiter, clientIP, 10, telemetryHandler(cfg.TelemetrySink, store, clientIP, relayLedger)))
 	mux.HandleFunc("GET /api/v1/speed-test", rateLimited(speedTestLimiter, clientIP, 30, speedTestHandler(speedTestMaxConcurrent)))

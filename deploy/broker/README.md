@@ -162,8 +162,8 @@ not reload a changed env file). `lightsail-up.sh` intentionally rejects
 
 ## Relay-list signing
 
-Every 2xx relay-list response (`/api/v1/relays` and `/api/v1/relays.mirror`) is
-signed with an Ed25519 key — a detached signature over the exact body bytes in
+Every 2xx relay-list response (`/api/v1/relays`, `/api/v1/relays.mirror`, and
+the operational `/admin/api/relays/inventory`) is signed with an Ed25519 key — a detached signature over the exact body bytes in
 the `X-OpenRung-Relays-Signature` header — so clients can verify the directory
 over non-TLS channels (the direct-IP fallback, static mirrors). The broker
 **refuses to start** without `OPENRUNG_RELAY_SIGNING_KEY` (standard base64 of
@@ -263,6 +263,36 @@ Set `OPENRUNG_DASHBOARD_TOKEN` to a long random string to enable the protected
 dashboard at `/admin/telemetry`. When unset, the dashboard and its data API
 return 404. Always serve it over HTTPS so the admin session cookie is protected.
 
+## Operational relay inventory
+
+Set `OPENRUNG_API_TOKEN` to enable the machine-to-machine fleet endpoint:
+
+```sh
+curl -fsS -H "Authorization: Bearer $OPENRUNG_API_TOKEN" \
+  https://broker-origin.openrung.org/admin/api/relays/inventory
+```
+
+Note the hostname: the **origin**, not the public `broker.openrung.org` front.
+That front is a Cloudflare Worker (`deploy/broker-proxy`) which terminates TLS
+for every client and passes unknown paths through with no timeout — no reason
+to disclose a privileged operator credential to an edge, or to hold an edge
+connection open for a full-fleet read, when the tooling holding this token
+already reaches the origin directly.
+
+It returns every currently active relay — never the ranked, truncated page
+clients receive — in stable relay-ID order, signed like the relay list under
+its own `"inventory"` channel. Use it for fleet audits and deployment checks,
+where "did this relay come back?" must not be confounded with "did it rank into
+the page?". When the variable is unset the route is not registered and returns
+404.
+
+Generate the token independently of every other credential
+(`openssl rand -hex 32`): the broker refuses to start when it equals the
+volunteer, foundation, or dashboard token, or either signing seed. Like
+`OPENRUNG_FOUNDATION_TOKEN` it is a secret the deploy helpers deliberately do
+not accept — install it post-boot in `/etc/openrung/broker.env` and recreate
+the container with `--env-file`.
+
 ## Shared PostgreSQL state (optional)
 
 For safer restarts or multiple brokers behind a load balancer, use Postgres
@@ -347,6 +377,7 @@ docker inspect openrung-broker \
 | `OPENRUNG_RELAY_SIGNING_KEY`         | yes      | —                                   | Std-base64 32-byte Ed25519 seed; signs every relay-list response |
 | `OPENRUNG_WSS_TICKET_SIGNING_SEED`   | no       | —                                   | Dedicated std-base64 32-byte Ed25519 seed; enables relay/front-bound WSS tickets |
 | `OPENRUNG_DASHBOARD_TOKEN`           | no       | —                                   | Enables the protected `/admin/telemetry` dashboard             |
+| `OPENRUNG_API_TOKEN`                 | no       | —                                   | Enables `GET /admin/api/relays/inventory`; must differ from every other credential |
 | `OPENRUNG_ADDR`                      | no       | `:8080`                             | HTTP listen address                                            |
 | `OPENRUNG_TRUSTED_PROXY_CIDRS`       | no       | Cloudflare ranges                   | Extra trusted proxy CIDRs for forwarded client IPs             |
 | `OPENRUNG_RELAY_STORE`               | no       | `memory`                            | Relay state backend: `memory` or `postgres`                    |

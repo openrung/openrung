@@ -15,6 +15,10 @@ so legitimate clients behind one carrier-grade NAT address do not all consume
 one bucket. That identifier is not authentication, so relay-side admission
 limits remain mandatory.
 
+The credentialed operational endpoint `GET /admin/api/relays/inventory` is rate
+limited the same way, on a tighter budget: authentication bounds who may call
+it, not how often, and each call costs a full unbounded read of the relay store.
+
 ## Client telemetry
 
 Android clients attach a persistent installation identifier and a per-connection
@@ -345,6 +349,82 @@ neither mint offline rows nor inflate the connected-clients count. As a
 second bound, the response lists at most 200 offline rows (the busiest); the
 totals still count every attested offline relay, and the page notes when rows
 were hidden.
+
+## Operational relay inventory
+
+```http
+GET /admin/api/relays/inventory
+Authorization: Bearer <OPENRUNG_API_TOKEN>
+```
+
+The broker's machine-to-machine view of its own fleet: **every** currently
+active relay, for the operator's own tooling (fleet audits, deployment checks,
+capacity reports). Unlike `GET /api/v1/relays` this is not a client candidate
+page — it is never ranked and never truncated, so "absent from the inventory"
+means the relay's lease has expired, not that it ranked below a page cut.
+
+`OPENRUNG_API_TOKEN` enables the endpoint. When it is unset the route is not
+registered at all and every request returns 404, so an unconfigured broker
+cannot even be probed for it. The token is a dedicated credential: the broker
+refuses to start when it equals the volunteer, foundation, or dashboard token,
+or either signing seed. Requests are rate limited per client IP like the public
+endpoints — a leaked token must not become an amplification lever against the
+broker's database — and answer `429 Too Many Requests` with `Retry-After` over
+budget. A missing or invalid bearer gets `401`; a method other than `GET` or
+`HEAD` gets `405` with `Allow: GET, HEAD`, but only once the bearer has been
+accepted — an anonymous caller sees the same `401` whatever method it uses.
+A storage failure gets `503`. Every response the endpoint produces — `200`,
+`401`, `405`, `429`, `503` — carries `no-store` in `Cache-Control`; the signed
+`200` sends `no-store, no-transform`, like the other signed channels.
+
+Authentication is the bearer token and nothing else. The path sits inside the
+dashboard cookie's `/admin` scope, but no dashboard session authorizes it and
+this token opens no dashboard page — the two credentials are separate on
+purpose, and the broker refuses to start if they are equal.
+
+Call the broker origin directly, not the public CDN front. The front is a
+Cloudflare Worker that terminates TLS for every client (`deploy/broker-proxy`),
+and it passes unknown paths through with no timeout; there is no reason to hand
+a privileged operator credential to an edge, or to hold an edge connection open
+for a full-fleet read, when the tooling that holds this token already reaches
+the origin.
+
+Relays are ordered by **relay ID**, ascending. Ranking order moves with live
+telemetry, so two snapshots taken a minute apart would otherwise differ
+everywhere and diff to noise even when the fleet is unchanged. Note the limit
+of the join: a relay registered with a stable identity keeps its ID across
+reconnects, but a legacy identity-less registration mints a fresh random ID
+each time, so those rows do move between snapshots.
+
+Successful responses are signed exactly like the relay list — the same
+`X-OpenRung-Relays-Signature` header and the same Ed25519 key — but carry
+`channel` `"inventory"` and, like the mirror channel, no `limit` field: an
+inventory body is not request-shaped and is never truncated, so there is
+nothing to echo. The distinct channel is what stops an operator snapshot — an
+untruncated superset of any client page, in a different order — from being
+replayed into a client's API or mirror slot. `not_after` is `server_time` + 5
+minutes, far tighter than the API channel's 30: a relay lease lives about three
+minutes, so a stale inventory describes a fleet that no longer exists.
+
+The relay objects are byte-for-byte the public directory descriptors. Lease
+tokens, stable-identity keys and proofs, hub-observed exit addresses, telemetry,
+and signing seeds never appear here; the endpoint exposes fleet membership, not
+credentials.
+
+Response:
+
+```json
+{
+  "count": 23,
+  "server_time": "2026-06-09T07:00:00Z",
+  "not_after": "2026-06-09T07:05:00Z",
+  "key_id": "3097e2dee2cb4a34",
+  "channel": "inventory",
+  "relays": [
+    { "id": "relay_0a1b...", "public_host": "203.0.113.7", "public_port": 443, "node_class": "foundation", "...": "..." }
+  ]
+}
+```
 
 ## Health
 
