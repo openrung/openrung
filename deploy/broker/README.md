@@ -379,7 +379,7 @@ docker inspect openrung-broker \
 | `OPENRUNG_RELAY_SIGNING_KEY`         | yes      | —                                   | Std-base64 32-byte Ed25519 seed; signs every relay-list response |
 | `OPENRUNG_WSS_TICKET_SIGNING_SEED`   | no       | —                                   | Dedicated std-base64 32-byte Ed25519 seed; enables relay/front-bound WSS tickets |
 | `OPENRUNG_DASHBOARD_TOKEN`           | no       | —                                   | Enables the protected `/admin/telemetry` dashboard             |
-| `OPENRUNG_RELAY_INVENTORY_TOKEN`     | no       | —                                   | Enables full signed `/admin/api/relays/inventory`; must differ from volunteer, Foundation, and dashboard tokens |
+| `OPENRUNG_RELAY_INVENTORY_TOKEN`     | no       | —                                   | Enables full signed `/admin/api/relays/inventory`; must differ from all bearer tokens and signing seeds |
 | `OPENRUNG_ADDR`                      | no       | `:8080`                             | HTTP listen address                                            |
 | `OPENRUNG_TRUSTED_PROXY_CIDRS`       | no       | Cloudflare ranges                   | Extra trusted proxy CIDRs for forwarded client IPs             |
 | `OPENRUNG_RELAY_STORE`               | no       | `memory`                            | Relay state backend: `memory` or `postgres`                    |
