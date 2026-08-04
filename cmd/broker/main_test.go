@@ -32,23 +32,30 @@ func TestParseOptionalWSSTicketSeed(t *testing.T) {
 }
 
 func TestValidateInventoryToken(t *testing.T) {
-	if err := validateInventoryToken("", "volunteer", "foundation", "dashboard"); err != nil {
+	if err := validateInventoryToken("", "volunteer", "foundation", "dashboard", "relay-seed", "wss-seed"); err != nil {
 		t.Fatalf("empty inventory token: %v", err)
 	}
 	for name, values := range map[string]struct {
-		inventory, registration, foundation, dashboard string
+		inventory, registration, foundation, dashboard, relaySigningKey, wssTicketSigningSeed string
 	}{
-		"volunteer":  {"same", "same", "foundation", "dashboard"},
-		"foundation": {"same", "volunteer", "same", "dashboard"},
-		"dashboard":  {"same", "volunteer", "foundation", "same"},
+		"volunteer":               {"same", "same", "foundation", "dashboard", "relay-seed", "wss-seed"},
+		"foundation":              {"same", "volunteer", "same", "dashboard", "relay-seed", "wss-seed"},
+		"dashboard":               {"same", "volunteer", "foundation", "same", "relay-seed", "wss-seed"},
+		"relay signing seed":      {"same", "volunteer", "foundation", "dashboard", "same", "wss-seed"},
+		"WSS ticket signing seed": {"same", "volunteer", "foundation", "dashboard", "relay-seed", "same"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if err := validateInventoryToken(values.inventory, values.registration, values.foundation, values.dashboard); err == nil {
+			if err := validateInventoryToken(values.inventory, values.registration, values.foundation, values.dashboard, values.relaySigningKey, values.wssTicketSigningSeed); err == nil {
 				t.Fatal("accepted equal credentials")
 			}
 		})
 	}
-	if err := validateInventoryToken("inventory", "volunteer", "foundation", "dashboard"); err != nil {
+	if err := validateInventoryToken("inventory", "volunteer", "foundation", "dashboard", "relay-seed", "wss-seed"); err != nil {
 		t.Fatalf("distinct credentials rejected: %v", err)
+	}
+	// The first configured conflict must always win so startup errors are stable.
+	err := validateInventoryToken("same", "same", "foundation", "dashboard", "same", "same")
+	if err == nil || !strings.Contains(err.Error(), "OPENRUNG_VOLUNTEER_TOKEN") {
+		t.Fatalf("conflict error = %v, want volunteer token", err)
 	}
 }

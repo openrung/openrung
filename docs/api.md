@@ -384,8 +384,10 @@ This optional operational endpoint is intended solely for operator automation
 (for example, `bunny-wss-front.sh inventory`). Set the dedicated
 `OPENRUNG_RELAY_INVENTORY_TOKEN` to register it; otherwise it returns `404`.
 It accepts only an exact bearer value and is separately rate limited. The token
-must differ from the dashboard, volunteer-registration, and Foundation tokens;
-the broker rejects an unsafe configuration at startup.
+must be independently generated and differ from every bearer token and signing
+seed. The broker rejects reuse of dashboard, volunteer-registration, Foundation,
+relay-list-signing, or WSS-ticket-signing values at startup. It cannot inspect
+an external manifest-signing seed, so operators must keep that seed separate.
 
 The successful response contains `count`, `server_time`, `not_after`, `key_id`,
 `channel: "relay-inventory-v1"`, and all currently active public relay

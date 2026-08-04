@@ -120,8 +120,10 @@ for operator tooling such as `bunny-wss-front.sh inventory`. It returns every
 currently active public relay descriptor, sorted by stable relay ID; it is not
 the ranked/truncated client directory page. Set a distinct
 `OPENRUNG_RELAY_INVENTORY_TOKEN` to enable it. When unset, the route is not
-registered and returns `404`. The broker refuses to start if this token equals
-the volunteer-registration, Foundation, or dashboard token.
+registered and returns `404`. Generate it independently: the broker refuses to
+start if it equals the volunteer-registration, Foundation, or dashboard token,
+or either broker-local relay-list/WSS signing seed. The broker cannot inspect
+an external manifest-signing seed, so keep that seed separate operationally too.
 
 Send exactly `Authorization: Bearer <token>` over HTTPS. Responses, including
 errors, are `Cache-Control: no-store`; successful JSON is signed with the

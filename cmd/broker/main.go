@@ -50,7 +50,8 @@ func run() error {
 		fmt.Println(versionInfo())
 		return nil
 	}
-	wssTicketSeed, err := parseOptionalWSSTicketSeed(os.Getenv("OPENRUNG_WSS_TICKET_SIGNING_SEED"))
+	wssTicketSigningSeed := os.Getenv("OPENRUNG_WSS_TICKET_SIGNING_SEED")
+	wssTicketSeed, err := parseOptionalWSSTicketSeed(wssTicketSigningSeed)
 	if err != nil {
 		return err
 	}
@@ -85,7 +86,8 @@ func run() error {
 		return errors.New("OPENRUNG_FOUNDATION_TOKEN must differ from OPENRUNG_VOLUNTEER_TOKEN: a shared value would let any holder of the volunteer token register a foundation relay")
 	}
 	inventoryToken := os.Getenv("OPENRUNG_RELAY_INVENTORY_TOKEN")
-	if err := validateInventoryToken(inventoryToken, registrationToken, foundationToken, os.Getenv("OPENRUNG_DASHBOARD_TOKEN")); err != nil {
+	relaySigningKey := os.Getenv("OPENRUNG_RELAY_SIGNING_KEY")
+	if err := validateInventoryToken(inventoryToken, registrationToken, foundationToken, os.Getenv("OPENRUNG_DASHBOARD_TOKEN"), relaySigningKey, wssTicketSigningSeed); err != nil {
 		return err
 	}
 
@@ -93,7 +95,7 @@ func run() error {
 	// crash-loop (an ordinary, visible outage) rather than serve unsigned relay
 	// lists, which healthz and old clients would never notice while every
 	// verifying client silently lost discovery.
-	signingSeed, err := broker.ParseSigningSeed(os.Getenv("OPENRUNG_RELAY_SIGNING_KEY"))
+	signingSeed, err := broker.ParseSigningSeed(relaySigningKey)
 	if err != nil {
 		return err
 	}
@@ -188,17 +190,22 @@ func run() error {
 	return err
 }
 
-func validateInventoryToken(inventory, registration, foundation, dashboard string) error {
+func validateInventoryToken(inventory, registration, foundation, dashboard, relaySigningKey, wssTicketSigningSeed string) error {
 	if inventory == "" {
 		return nil
 	}
-	for name, token := range map[string]string{
-		"OPENRUNG_VOLUNTEER_TOKEN":  registration,
-		"OPENRUNG_FOUNDATION_TOKEN": foundation,
-		"OPENRUNG_DASHBOARD_TOKEN":  dashboard,
+	for _, credential := range []struct {
+		name  string
+		value string
+	}{
+		{"OPENRUNG_VOLUNTEER_TOKEN", registration},
+		{"OPENRUNG_FOUNDATION_TOKEN", foundation},
+		{"OPENRUNG_DASHBOARD_TOKEN", dashboard},
+		{"OPENRUNG_RELAY_SIGNING_KEY", relaySigningKey},
+		{"OPENRUNG_WSS_TICKET_SIGNING_SEED", wssTicketSigningSeed},
 	} {
-		if token != "" && inventory == token {
-			return fmt.Errorf("OPENRUNG_RELAY_INVENTORY_TOKEN must differ from %s", name)
+		if credential.value != "" && inventory == credential.value {
+			return fmt.Errorf("OPENRUNG_RELAY_INVENTORY_TOKEN must differ from %s", credential.name)
 		}
 	}
 	return nil
