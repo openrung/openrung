@@ -29,12 +29,22 @@ const (
 	// Unknown versions are ignored so direct Reality remains backward-compatible.
 	WSSProtocolVersion = wsscore.ProtocolVersion
 
-	// ChannelAPI and ChannelMirror name the two signed relay-list channels.
-	// The value lives inside the signed body so a long-lived mirror artifact
-	// can never be replayed into an API slot (or vice versa): clients check it
-	// against the channel they actually fetched from.
-	ChannelAPI    = "api"
-	ChannelMirror = "mirror"
+	// ChannelAPI, ChannelMirror, and ChannelInventory name the signed
+	// relay-list channels. The value lives inside the signed body so a
+	// long-lived mirror artifact can never be replayed into an API slot (or
+	// vice versa): consumers check it against the channel they actually
+	// fetched from.
+	//
+	// ChannelInventory is the credentialed operational snapshot served by
+	// GET /admin/api/relays/inventory: the complete active relay set in stable
+	// relay-ID order, never the client-facing candidate ranking. It is a
+	// distinct channel precisely so an operator snapshot — untruncated, and so
+	// a superset of any client page — can never be replayed into a client's
+	// API or mirror slot, where the differing ordering and page contract would
+	// otherwise go unnoticed.
+	ChannelAPI       = "api"
+	ChannelMirror    = "mirror"
+	ChannelInventory = "inventory"
 
 	// NodeClassFoundation marks a relay operated by the OpenRung Foundation
 	// itself; NodeClassVolunteer (the default) marks community-operated
@@ -314,7 +324,8 @@ type ListResponse struct {
 	// 32-byte Ed25519 signing public key. Advisory routing only: clients fall
 	// back to trying every pinned key when it matches none of them.
 	KeyID string `json:"key_id"`
-	// Channel is ChannelAPI or ChannelMirror (see the constants above).
+	// Channel is ChannelAPI, ChannelMirror, or ChannelInventory (see the
+	// constants above).
 	Channel string `json:"channel"`
 	// Limit echoes the effective request limit on the API channel so clients
 	// can reject a signed body replayed from a differently-shaped request.

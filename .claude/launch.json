@@ -15,6 +15,7 @@
         "OPENRUNG_ALLOW_ANONYMOUS_REGISTRATION=true",
         "OPENRUNG_RELAY_SIGNING_KEY=ERERERERERERERERERERERERERERERERERERERERERE=",
         "OPENRUNG_FOUNDATION_TOKEN=preview-foundation-token",
+        "OPENRUNG_API_TOKEN=preview-api-token",
         "go",
         "run",
         "./cmd/broker",

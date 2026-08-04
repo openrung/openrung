@@ -137,6 +137,12 @@ func TestVerifyRelayListRejectsEveryEnvelopeFailure(t *testing.T) {
 	flippedSignature := append([]byte(nil), signature...)
 	flippedSignature[0] ^= 1
 	mirrorBody := []byte(`{"not_after":"2026-07-10T00:30:00Z","channel":"mirror","limit":1,"relays":[]}`)
+	// The broker's operational inventory channel is signed with the SAME key
+	// as the API channel, so a validly signed inventory snapshot — untruncated
+	// and in a different order than any client page — must be rejected here on
+	// the channel field alone. It carries no limit either, so the echo check
+	// must never be what saves us.
+	inventoryBody := []byte(`{"not_after":"2026-07-10T00:30:00Z","channel":"inventory","relays":[]}`)
 	noExpiryBody := []byte(`{"channel":"api","limit":1,"relays":[]}`)
 	invalidJSON := []byte(`{"channel":`)
 	badRelayBody := []byte(`{"not_after":"2026-07-10T00:30:00Z","channel":"api","limit":1,"relays":[{"public_port":"not-an-integer"}]}`)
@@ -166,6 +172,7 @@ func TestVerifyRelayListRejectsEveryEnvelopeFailure(t *testing.T) {
 		{"expired", keys, vectors.SpecVector.Header, body, 1, time.Date(2026, 7, 10, 0, 35, 1, 0, time.UTC), "expired"},
 		{"limit", keys, vectors.SpecVector.Header, body, 2, vectorNow, "echoed limit"},
 		{"channel", keys, signedHeader(signer, vectors.SpecVector.KeyID, mirrorBody), mirrorBody, 1, vectorNow, "channel"},
+		{"inventory channel", keys, signedHeader(signer, vectors.SpecVector.KeyID, inventoryBody), inventoryBody, 1, vectorNow, "channel"},
 		{"expiry", keys, signedHeader(signer, vectors.SpecVector.KeyID, noExpiryBody), noExpiryBody, 1, vectorNow, "no not_after"},
 		{"json", keys, signedHeader(signer, vectors.SpecVector.KeyID, invalidJSON), invalidJSON, 1, vectorNow, "not valid JSON"},
 		{"relay wire schema", keys, signedHeader(signer, vectors.SpecVector.KeyID, badRelayBody), badRelayBody, 1, vectorNow, "wire schema"},
