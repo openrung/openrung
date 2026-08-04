@@ -107,8 +107,8 @@ func run() error {
 		{name: "OPENRUNG_VOLUNTEER_TOKEN", value: registrationToken},
 		{name: "OPENRUNG_FOUNDATION_TOKEN", value: foundationToken},
 		{name: "OPENRUNG_DASHBOARD_TOKEN", value: dashboardToken},
-		{name: "OPENRUNG_RELAY_SIGNING_KEY", value: os.Getenv("OPENRUNG_RELAY_SIGNING_KEY")},
-		{name: "OPENRUNG_WSS_TICKET_SIGNING_SEED", value: os.Getenv("OPENRUNG_WSS_TICKET_SIGNING_SEED")},
+		canonicalSeedCredential("OPENRUNG_RELAY_SIGNING_KEY", signingSeed),
+		canonicalSeedCredential("OPENRUNG_WSS_TICKET_SIGNING_SEED", wssTicketSeed),
 	}); err != nil {
 		return err
 	}
@@ -278,6 +278,17 @@ func parseNewRelayIDCap(value string) (int, error) {
 type namedCredential struct {
 	name  string
 	value string
+}
+
+// canonicalSeedCredential compares the API token with the actual parsed seed,
+// not its raw environment spelling. The base64 decoder ignores CR/LF and the
+// optional WSS parser also trims surrounding whitespace, so comparing the raw
+// strings would let two spellings of the same secret evade the collision guard.
+func canonicalSeedCredential(name string, seed []byte) namedCredential {
+	if len(seed) == 0 {
+		return namedCredential{name: name}
+	}
+	return namedCredential{name: name, value: base64.StdEncoding.EncodeToString(seed)}
 }
 
 // validateAPIToken refuses an operational API token that duplicates another

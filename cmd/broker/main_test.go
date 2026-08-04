@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"strings"
 	"testing"
+
+	"openrung/internal/broker"
 )
 
 func TestVersionInfo(t *testing.T) {
@@ -74,6 +76,34 @@ func TestValidateAPIToken(t *testing.T) {
 	}
 	if err := validateAPIToken(apiToken, unset); err != nil {
 		t.Fatalf("an unset peer credential must not count as a collision: %v", err)
+	}
+}
+
+// The parsers accept harmless formatting variants around base64 seeds. The
+// collision guard must compare the parsed material so those variants cannot
+// hide that the API token discloses a signing seed.
+func TestValidateAPITokenRejectsEquivalentSigningSeedEncodings(t *testing.T) {
+	raw := []byte(strings.Repeat("s", 32))
+	canonical := base64.StdEncoding.EncodeToString(raw)
+
+	relaySeed, err := broker.ParseSigningSeed(canonical[:8] + "\n" + canonical[8:])
+	if err != nil {
+		t.Fatalf("parse relay seed with newline: %v", err)
+	}
+	wssSeed, err := parseOptionalWSSTicketSeed(" \t" + canonical + "\r\n")
+	if err != nil {
+		t.Fatalf("parse WSS seed with surrounding whitespace: %v", err)
+	}
+
+	for _, credential := range []namedCredential{
+		canonicalSeedCredential("OPENRUNG_RELAY_SIGNING_KEY", relaySeed),
+		canonicalSeedCredential("OPENRUNG_WSS_TICKET_SIGNING_SEED", wssSeed),
+	} {
+		t.Run(credential.name, func(t *testing.T) {
+			if err := validateAPIToken(canonical, []namedCredential{credential}); err == nil {
+				t.Fatalf("accepted an API token that reveals the parsed %s material", credential.name)
+			}
+		})
 	}
 }
 
