@@ -113,6 +113,36 @@ file, then **recreate** the container with `--env-file` (a Docker restart does
 not reload a changed env file). `lightsail-up.sh` intentionally rejects
 `OPENRUNG_FOUNDATION_TOKEN` for this reason.
 
+### Relay inventory for operator tooling
+
+`GET /admin/api/relays/inventory` is an optional machine-to-machine snapshot
+for operator tooling such as `bunny-wss-front.sh inventory`. It returns every
+currently active public relay descriptor, sorted by stable relay ID; it is not
+the ranked/truncated client directory page. Set a distinct
+`OPENRUNG_RELAY_INVENTORY_TOKEN` to enable it. When unset, the route is not
+registered and returns `404`. The broker refuses to start if this token equals
+the volunteer-registration, Foundation, or dashboard token.
+
+Send exactly `Authorization: Bearer <token>` over HTTPS. Responses, including
+errors, are `Cache-Control: no-store`; successful JSON is signed with the
+ordinary broker relay-list key but carries the inventory-specific signed
+`channel: "relay-inventory-v1"` contract. The signing seed remains broker-local.
+Generate and rotate the token independently. Put it in a root-owned mode-0600
+env/header file or retrieve it through a secret-manager command. For example,
+avoid putting the token in a command argument:
+
+```sh
+hdr=$(mktemp)
+chmod 600 "$hdr"
+secret-manager-command-for-inventory-token | sed 's/^/Authorization: Bearer /' > "$hdr"
+curl --fail --header @"$hdr" https://broker.example/admin/api/relays/inventory
+rm -f "$hdr"
+```
+
+Recreate the container after rotating the broker env file; a restart does not
+reload its environment. Do not give this token to relays, clients, dashboards,
+or general users.
+
 > **Rolling back past `node_class`:** a broker image that predates the
 > `node_class` column does not guard registrations or heartbeats, so it can
 > overwrite a foundation relay's `host:port` row — replacing its id, keys, and
@@ -347,6 +377,7 @@ docker inspect openrung-broker \
 | `OPENRUNG_RELAY_SIGNING_KEY`         | yes      | —                                   | Std-base64 32-byte Ed25519 seed; signs every relay-list response |
 | `OPENRUNG_WSS_TICKET_SIGNING_SEED`   | no       | —                                   | Dedicated std-base64 32-byte Ed25519 seed; enables relay/front-bound WSS tickets |
 | `OPENRUNG_DASHBOARD_TOKEN`           | no       | —                                   | Enables the protected `/admin/telemetry` dashboard             |
+| `OPENRUNG_RELAY_INVENTORY_TOKEN`     | no       | —                                   | Enables full signed `/admin/api/relays/inventory`; must differ from volunteer, Foundation, and dashboard tokens |
 | `OPENRUNG_ADDR`                      | no       | `:8080`                             | HTTP listen address                                            |
 | `OPENRUNG_TRUSTED_PROXY_CIDRS`       | no       | Cloudflare ranges                   | Extra trusted proxy CIDRs for forwarded client IPs             |
 | `OPENRUNG_RELAY_STORE`               | no       | `memory`                            | Relay state backend: `memory` or `postgres`                    |

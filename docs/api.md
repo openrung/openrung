@@ -373,6 +373,32 @@ When the broker uses PostgreSQL relay state, `/healthz` also verifies database
 connectivity. If relay state is unavailable, it returns `503` with an error
 payload so a load balancer can stop routing to that broker instance.
 
+## Relay inventory (operator-only)
+
+```http
+GET /admin/api/relays/inventory
+Authorization: Bearer <inventory-token>
+```
+
+This optional operational endpoint is intended solely for operator automation
+(for example, `bunny-wss-front.sh inventory`). Set the dedicated
+`OPENRUNG_RELAY_INVENTORY_TOKEN` to register it; otherwise it returns `404`.
+It accepts only an exact bearer value and is separately rate limited. The token
+must differ from the dashboard, volunteer-registration, and Foundation tokens;
+the broker rejects an unsafe configuration at startup.
+
+The successful response contains `count`, `server_time`, `not_after`, `key_id`,
+`channel: "relay-inventory-v1"`, and all currently active public relay
+descriptors, ordered by relay ID. It is signed with the existing relay-list
+signature header; this inventory channel is not a client candidate page or a
+mirror artifact. No lease token, registration credential, private identity
+material, telemetry, observed tunnel exit, or private signing material appears
+in the response. Every outcome has `Cache-Control: no-store`.
+
+Store and rotate the bearer independently in a mode-0600 token/header file or
+retrieve it with a secret-manager command. Do not place it in argv, shell
+history, relay configuration, dashboard sessions, or client code.
+
 ## Register Relay
 
 ```http

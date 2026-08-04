@@ -84,6 +84,10 @@ func run() error {
 	if foundationToken != "" && foundationToken == registrationToken {
 		return errors.New("OPENRUNG_FOUNDATION_TOKEN must differ from OPENRUNG_VOLUNTEER_TOKEN: a shared value would let any holder of the volunteer token register a foundation relay")
 	}
+	inventoryToken := os.Getenv("OPENRUNG_RELAY_INVENTORY_TOKEN")
+	if err := validateInventoryToken(inventoryToken, registrationToken, foundationToken, os.Getenv("OPENRUNG_DASHBOARD_TOKEN")); err != nil {
+		return err
+	}
 
 	// Fail closed on the signing key too: a missing or malformed seed must
 	// crash-loop (an ordinary, visible outage) rather than serve unsigned relay
@@ -121,6 +125,7 @@ func run() error {
 		RelayLeaseTTL:     *leaseTTL,
 		TelemetrySink:     telemetrySink,
 		DashboardToken:    os.Getenv("OPENRUNG_DASHBOARD_TOKEN"),
+		InventoryToken:    inventoryToken,
 		// Cloudflare's published ranges are trusted by default; add more (e.g. an upstream LB) here.
 		TrustedProxyCIDRs:          splitAndTrim(os.Getenv("OPENRUNG_TRUSTED_PROXY_CIDRS")),
 		MaxNewRelayIDsPerIPPerDay:  maxNewRelayIDs,
@@ -181,6 +186,22 @@ func run() error {
 		err = closeErr
 	}
 	return err
+}
+
+func validateInventoryToken(inventory, registration, foundation, dashboard string) error {
+	if inventory == "" {
+		return nil
+	}
+	for name, token := range map[string]string{
+		"OPENRUNG_VOLUNTEER_TOKEN":  registration,
+		"OPENRUNG_FOUNDATION_TOKEN": foundation,
+		"OPENRUNG_DASHBOARD_TOKEN":  dashboard,
+	} {
+		if token != "" && inventory == token {
+			return fmt.Errorf("OPENRUNG_RELAY_INVENTORY_TOKEN must differ from %s", name)
+		}
+	}
+	return nil
 }
 
 func versionInfo() string {

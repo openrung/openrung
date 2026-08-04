@@ -30,3 +30,25 @@ func TestParseOptionalWSSTicketSeed(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateInventoryToken(t *testing.T) {
+	if err := validateInventoryToken("", "volunteer", "foundation", "dashboard"); err != nil {
+		t.Fatalf("empty inventory token: %v", err)
+	}
+	for name, values := range map[string]struct {
+		inventory, registration, foundation, dashboard string
+	}{
+		"volunteer":  {"same", "same", "foundation", "dashboard"},
+		"foundation": {"same", "volunteer", "same", "dashboard"},
+		"dashboard":  {"same", "volunteer", "foundation", "same"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateInventoryToken(values.inventory, values.registration, values.foundation, values.dashboard); err == nil {
+				t.Fatal("accepted equal credentials")
+			}
+		})
+	}
+	if err := validateInventoryToken("inventory", "volunteer", "foundation", "dashboard"); err != nil {
+		t.Fatalf("distinct credentials rejected: %v", err)
+	}
+}

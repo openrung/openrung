@@ -17,8 +17,12 @@ import (
 const (
 	relayListRatePerSecond = 2.0
 	relayListBurst         = 30
-	wssTicketRatePerSecond = 2.0
-	wssTicketBurst         = 30
+	// Inventory is an authenticated operator endpoint but can return the full
+	// fleet, so keep its per-source budget intentionally smaller than clients'.
+	relayInventoryRatePerSecond = 1.0 / 30
+	relayInventoryBurst         = 5
+	wssTicketRatePerSecond      = 2.0
+	wssTicketBurst              = 30
 
 	telemetryRatePerSecond = 1.0
 	telemetryBurst         = 20

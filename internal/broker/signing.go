@@ -111,6 +111,27 @@ func (s signer) writeSigned(w http.ResponseWriter, resp relay.ListResponse) {
 	_, _ = w.Write(body) // identical buffer — sign-what-you-send
 }
 
+// writeSignedInventory applies the ordinary relay-list signing key to the
+// inventory-specific wire contract. It must not call writeSigned: inventory is
+// not a client directory page and carries its own signed channel marker.
+func (s signer) writeSignedInventory(w http.ResponseWriter, resp inventoryResponse) {
+	resp.ServerTime = resp.ServerTime.UTC().Truncate(time.Second)
+	resp.NotAfter = resp.NotAfter.UTC().Truncate(time.Second)
+	resp.Relays = normalizePublicRelayDescriptors(resp.Relays)
+	body, err := json.Marshal(resp)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not encode relay inventory")
+		return
+	}
+	sig := ed25519.Sign(s.key, body)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store, no-transform")
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.Header().Set(signatureHeader, "ed25519;"+s.keyID+";"+base64.StdEncoding.EncodeToString(sig))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
 // normalizeSignedRelayListTimes narrows the public directory wire format to
 // UTC RFC 3339 at whole-second precision, which every supported client can
 // decode. It clones the descriptor slice before changing timestamps so the
@@ -119,14 +140,18 @@ func normalizeSignedRelayListTimes(resp relay.ListResponse) relay.ListResponse {
 	resp.ServerTime = resp.ServerTime.UTC().Truncate(time.Second)
 	resp.NotAfter = resp.NotAfter.UTC().Truncate(time.Second)
 	if resp.Relays != nil {
-		relays := make([]relay.Descriptor, len(resp.Relays))
-		copy(relays, resp.Relays)
-		for i := range relays {
-			relays[i].RegisteredAt = relays[i].RegisteredAt.UTC().Truncate(time.Second)
-			relays[i].LastHeartbeatAt = relays[i].LastHeartbeatAt.UTC().Truncate(time.Second)
-			relays[i].ExpiresAt = relays[i].ExpiresAt.UTC().Truncate(time.Second)
-		}
-		resp.Relays = relays
+		resp.Relays = normalizePublicRelayDescriptors(resp.Relays)
 	}
 	return resp
+}
+
+func normalizePublicRelayDescriptors(relays []relay.Descriptor) []relay.Descriptor {
+	cloned := make([]relay.Descriptor, len(relays))
+	copy(cloned, relays)
+	for i := range cloned {
+		cloned[i].RegisteredAt = cloned[i].RegisteredAt.UTC().Truncate(time.Second)
+		cloned[i].LastHeartbeatAt = cloned[i].LastHeartbeatAt.UTC().Truncate(time.Second)
+		cloned[i].ExpiresAt = cloned[i].ExpiresAt.UTC().Truncate(time.Second)
+	}
+	return cloned
 }

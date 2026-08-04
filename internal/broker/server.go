@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/netip"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -41,6 +42,11 @@ type Config struct {
 	TelemetryReader  TelemetryReader
 	TelemetryQuerier TelemetryQuerier
 	DashboardToken   string
+	// InventoryToken authorizes the operational relay inventory endpoint. Empty
+	// leaves that endpoint unregistered so it does not advertise its existence.
+	// It is intentionally separate from every relay, dashboard, and signing
+	// credential.
+	InventoryToken string
 	// TrustedProxyCIDRs are additional CIDRs (beyond Cloudflare's published ranges) whose forwarded
 	// CF-Connecting-IP / X-Forwarded-For headers the broker will trust for the real client IP.
 	TrustedProxyCIDRs []string
@@ -87,6 +93,7 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 	speedTestLimiter := newIPRateLimiter(speedTestRatePerSecond, speedTestBurst, rateLimiterMaxTrackedIPs)
 	relayRegistrationLimiter := newIPRateLimiter(relayRegistrationRatePerSecond, relayRegistrationBurst, rateLimiterMaxTrackedIPs)
 	wssTicketLimiter := newIPRateLimiter(wssTicketRatePerSecond, wssTicketBurst, rateLimiterMaxTrackedIPs)
+	inventoryLimiter := newIPRateLimiter(relayInventoryRatePerSecond, relayInventoryBurst, rateLimiterMaxTrackedIPs)
 	relayLedger := newRelayIDLedger(relayLedgerTTL, relayLedgerMaxEntries)
 	seedRelayLedger(relayLedger, store)
 	newIDCap := newNewRelayCap(cfg.MaxNewRelayIDsPerIPPerDay, newRelayCapWindow, cfg.RegistrationCapExemptCIDRs)
@@ -112,6 +119,9 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 	mux.HandleFunc("POST /api/v1/relays/", heartbeatRelay)
 	mux.HandleFunc("GET /api/v1/relays", rateLimited(relayListLimiter, clientIP, 10, listRelaysHandler(store, cfg.TelemetrySink, clientIP, clientSeen, relaySigner)))
 	mux.HandleFunc("GET /api/v1/relays.mirror", rateLimited(relayListLimiter, clientIP, 10, listRelaysMirrorHandler(store, relaySigner)))
+	if cfg.InventoryToken != "" {
+		mux.HandleFunc("GET /admin/api/relays/inventory", rateLimited(inventoryLimiter, clientIP, 30, relayInventoryHandler(store, cfg.InventoryToken, relaySigner)))
+	}
 	if wssIssuer != nil {
 		mux.HandleFunc("POST /api/v1/wss/tickets", rateLimitedBy(wssTicketLimiter, wssTicketRateKey(clientIP), 10, wssTicketHandler(store, wssIssuer)))
 	}
@@ -129,6 +139,49 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 	}
 
 	return mux
+}
+
+// inventoryResponse is a signed operational snapshot, deliberately distinct
+// from client directory pages. Channel binds the signature to this endpoint so
+// a successful inventory response cannot be mistaken for an API relay list.
+type inventoryResponse struct {
+	Count      int                `json:"count"`
+	ServerTime time.Time          `json:"server_time"`
+	NotAfter   time.Time          `json:"not_after"`
+	KeyID      string             `json:"key_id"`
+	Channel    string             `json:"channel"`
+	Relays     []relay.Descriptor `json:"relays"`
+}
+
+func relayInventoryHandler(store RelayStore, token string, s signer) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// This endpoint is credentialed operational data. Never allow an edge or
+		// browser cache to retain either a successful snapshot or an error.
+		w.Header().Set("Cache-Control", "no-store")
+		if !bearerMatches(r, token) {
+			writeError(w, http.StatusUnauthorized, "missing or invalid relay inventory token")
+			return
+		}
+		now := time.Now().UTC()
+		relays, err := store.List(now, 0) // unbounded active set, never a client page
+		if err != nil {
+			slog.Error("could not list relay inventory", "error", err)
+			writeError(w, http.StatusServiceUnavailable, "could not list relays")
+			return
+		}
+		// Stores are free to return a ranking-ordered slice. Copy before sorting
+		// so inventory presentation cannot mutate a store-owned slice.
+		relays = append([]relay.Descriptor(nil), relays...)
+		sort.Slice(relays, func(i, j int) bool { return relays[i].ID < relays[j].ID })
+		s.writeSignedInventory(w, inventoryResponse{
+			Count:      len(relays),
+			ServerTime: now,
+			NotAfter:   now.Add(apiNotAfterWindow),
+			KeyID:      s.keyID,
+			Channel:    "relay-inventory-v1",
+			Relays:     relays,
+		})
+	}
 }
 
 func registerHandler(store RelayStore, cfg Config, clientIP *clientIPResolver, ledger *relayIDLedger, newIDCap *newRelayCap) http.HandlerFunc {
