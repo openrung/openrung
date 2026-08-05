@@ -6,11 +6,11 @@ import (
 	"time"
 )
 
-func TestDiscoveryStaggerMatchesMobile(t *testing.T) {
-	// Cross-client tuning constant: must equal the mobile AppConfig's
-	// DISCOVERY_STAGGER_MS so every client races discovery identically.
+func TestDiscoveryStaggerSharedDefault(t *testing.T) {
+	// Lock the intended shared tuning value. Mobile consumes this same brokerapi
+	// constant through its native binding rather than copying it into AppConfig.
 	if DiscoveryStagger != 2500*time.Millisecond {
-		t.Fatalf("DiscoveryStagger = %v, want 2.5s (keep in sync with DISCOVERY_STAGGER_MS)", DiscoveryStagger)
+		t.Fatalf("DiscoveryStagger = %v, want shared 2.5s default", DiscoveryStagger)
 	}
 }
 

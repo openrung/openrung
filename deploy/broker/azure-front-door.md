@@ -10,8 +10,12 @@ replaced before anything shipped.
 Installed clients only gain this front when they update — the front list is
 compiled in, and there is no server-side way to push one. Desktop picks it up on
 its next release build; the mobile repositories must bump their pinned
-`brokerapi` tag to **v0.4.0**, mirror both the URL and two-phase discovery policy
-in `AppConfig`, and keep Azure out of any application-level WSS-ticket failover.
+`brokerapi` tag to **v0.4.0** and rebuild their AAR/XCFramework. Their native
+bindings already call `BrokerCandidates`, `FirstReachable`, and
+`RequestWSSTicket`, so the URL, two-phase discovery policy, and hard pre-HTTP
+ticket refusal arrive with that rebuilt module. Mobile still owns ticket
+ordering and retries; it should also filter Azure there as defense in depth and
+to avoid a guaranteed failed attempt.
 
 ## Why Azure, and why SNI-less
 
@@ -291,9 +295,13 @@ after the gate passed:
    ticket orchestration filters them as defense in depth. This is required
    because the signed directory authenticates relay lists but cannot make a
    bearer response confidential from an impersonating Azure edge.
-5. Still outstanding: the mobile repositories must pin `brokerapi/v0.4.0`,
-   mirror the URL **and strict trust phase** in their own `AppConfig`, and route
-   WSS-ticket requests through the shared method or independently exclude Azure.
+5. Still outstanding: the mobile repositories must pin `brokerapi/v0.4.0` and
+   rebuild their native bindings. Their discovery binding already delegates to
+   `BrokerCandidates` / `FirstReachable`, and their per-attempt ticket binding
+   already delegates to `RequestWSSTicket`; no discovery URL or phase should be
+   duplicated in platform `AppConfig`. Their Swift/Kotlin ticket-front builders
+   should nevertheless filter an Azure winning front as defense in depth and
+   keep the platform-owned default ticket lists endpoint-authenticated only.
 
 Re-run `frontcheck` after any endpoint, CDN, or certificate change.
 

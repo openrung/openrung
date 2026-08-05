@@ -413,6 +413,15 @@ mobile the same opportunistic ECH, signature verification, identity headers,
 cache policy, and URL hardening as desktop. Publishing this module does not by
 itself update either separately released app.
 
+Native mobile discovery delegates candidate construction and racing to
+`BrokerCandidates` and `FirstReachable`, so platform `AppConfig` must not
+duplicate the discovery URL list or its trust phases. Swift and Kotlin still
+own WSS-ticket ordering, deadlines, and retries, but every individual attempt
+calls `RequestWSSTicket`; rebuilding against `brokerapi/v0.4.0` therefore
+inherits the hard pre-HTTP refusal for endpoint-unbound fronts. The platform
+ticket-front builders should filter such a winning front too as defense in
+depth and to avoid a request that is guaranteed to fail locally.
+
 The mobile app's update-manifest checker is a separate signed-content client
 with its own keys, rollback protection, and GitHub fallback. Its current
 Cloudflare-broker candidate must also move behind the Go broker transport—or be

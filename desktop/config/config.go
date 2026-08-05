@@ -45,8 +45,9 @@ const (
 	// candidate joins every DiscoveryStagger. Endpoint-unbound candidates wait
 	// for the stronger phase to fail rather than joining on this timer. Long
 	// enough that a healthy primary almost always wins outright, short enough
-	// that a blocked primary does not serialize the other strong front. Must stay
-	// in sync with the mobile AppConfig's DISCOVERY_STAGGER_MS and phase policy.
+	// that a blocked primary does not serialize the other strong front. The
+	// shared brokerapi constant also drives mobile's native binding; platform
+	// AppConfig must not carry a second copy of this policy.
 	DiscoveryStagger = brokerapi.DefaultDiscoveryStagger
 
 	// RelayTCPTimeout bounds the pre-connect TCP reachability check against a
@@ -132,9 +133,9 @@ var InternetProbeURLs = []string{
 // (broker.openrung.org) and AWS CloudFront distribution both authenticate the
 // exact endpoint and race first. Azure Front Door authenticates only a shared
 // Azure edge, so it is attempted only after both stronger fronts fail. All
-// three proxy the one signing origin and serve signed lists. Keep both the list
-// and its two-phase trust policy in sync with the mobile clients' AppConfig so
-// every client discovers identically.
+// three proxy the one signing origin and serve signed lists. brokerapi owns both
+// this list and its two-phase trust policy; mobile's native binding consumes the
+// same functions rather than duplicating either in platform AppConfig.
 var DefaultBrokerURLs = brokerapi.DefaultBrokerURLs()
 
 // Candidates are the ordered discovery endpoints for one request, plus
@@ -147,14 +148,12 @@ type Candidates = brokerapi.Candidates
 // a request: a genuine primary override first (with OverrideFirst set), then
 // the built-in defaults.
 //
-// The shared policy matches the mobile app's candidates() behavior: a
-// non-blank primary is tried FIRST only when it is a genuine override, i.e.
-// not already one of the defaults — and only such an override sets
-// OverrideFirst, giving it the strict head phase described on Candidates. A
-// persisted value that merely echoes a default must not reorder the defaults'
-// HTTPS-first preference (or claim the override phase), otherwise an upgrader
-// whose last-used default was the raw IP would keep hitting the IP before the
-// Cloudflare-fronted endpoint.
+// This brokerapi policy is also used directly by the mobile native binding. A
+// non-blank primary is tried FIRST only when it is a genuine override, i.e. not
+// already one of the defaults — and only such an override sets OverrideFirst,
+// giving it the strict head phase described on Candidates. A persisted value
+// that merely echoes a default must not reorder the defaults' HTTPS-first
+// preference (or claim the override phase).
 func BrokerCandidates(primary string) Candidates {
 	return brokerapi.BrokerCandidates(primary)
 }

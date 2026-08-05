@@ -68,7 +68,8 @@ func ListRelays(ctx context.Context, brokerURL string, opts Options) (relay.List
 }
 
 // FirstReachable races exact-endpoint-authenticated candidates with a staggered
-// start (happy-eyeballs style), mirroring the mobile app's firstReachable.
+// start (happy-eyeballs style). The mobile native binding calls this same
+// brokerapi implementation rather than carrying a separate race policy.
 // candidate[0] starts immediately; every stagger interval
 // (config.DiscoveryStagger unless Options.Stagger overrides it) with no success
 // yet, the next candidate in that trust phase joins the race. The first SUCCESS
