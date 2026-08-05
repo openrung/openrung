@@ -29,6 +29,16 @@ func TestGenerateLabelProducesValidNames(t *testing.T) {
 const minLabelCombinations = 10000
 
 func TestLabelVocabularyIsLargeAndUnique(t *testing.T) {
+	assertRawFormatting := func(name, raw string) {
+		for lineNumber, line := range strings.Split(raw, "\n") {
+			if line != strings.TrimSpace(line) {
+				t.Errorf("%s line %d has surrounding whitespace: %q", name, lineNumber+1, line)
+			}
+		}
+	}
+	assertRawFormatting("label_adjectives.txt", labelAdjectivesRaw)
+	assertRawFormatting("label_nouns.txt", labelNounsRaw)
+
 	assertUnique := func(name string, words []string) {
 		seen := make(map[string]bool, len(words))
 		for _, w := range words {
@@ -40,6 +50,31 @@ func TestLabelVocabularyIsLargeAndUnique(t *testing.T) {
 	}
 	assertUnique("labelAdjectives", labelAdjectives)
 	assertUnique("labelNouns", labelNouns)
+
+	// The vocabulary is now hand-editable data rather than Go literals, and
+	// deploy/lib/relay-label.sh reads the same files. Reject any word that
+	// would produce a label the relay itself refuses at startup.
+	assertUsable := func(name string, words []string) {
+		if len(words) == 0 {
+			t.Fatalf("%s is empty; the embedded word list failed to load", name)
+		}
+		for _, w := range words {
+			if w != strings.TrimSpace(w) {
+				t.Errorf("%s word %q has surrounding whitespace", name, w)
+			}
+			if w != strings.ToLower(w) {
+				t.Errorf("%s word %q is not lowercase", name, w)
+			}
+			if strings.Contains(w, "-") {
+				t.Errorf("%s word %q contains '-', which would break the adjective-noun split", name, w)
+			}
+			if _, err := relay.NormalizeLabel(w + "-x"); err != nil {
+				t.Errorf("%s word %q is not usable in a label: %v", name, w, err)
+			}
+		}
+	}
+	assertUsable("labelAdjectives", labelAdjectives)
+	assertUsable("labelNouns", labelNouns)
 
 	combinations := len(labelAdjectives) * len(labelNouns)
 	if combinations < minLabelCombinations {

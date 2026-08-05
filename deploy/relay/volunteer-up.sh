@@ -61,29 +61,30 @@ log() { echo "volunteer-up: $*"; }
 # in the dashboard alongside fleet names instead of as raw relay-ID hex. The
 # label is published in the relay directory: a generated name is also the
 # privacy-safe default — never derive one from the hostname or username.
-ADJECTIVES='happy grumpy glorious sleepy brave clever gentle jolly mighty nimble plucky quiet rapid shiny snappy spry sturdy sunny swift witty zesty breezy cosmic dapper eager fuzzy golden hardy lucky merry noble proud quirky rustic silly valiant'
-NOUNS='hippo walrus castle otter falcon badger lantern comet maple harbor meadow beacon pebble willow cactus cobra ferret gecko heron ibex jaguar koala lemur marmot narwhal ocelot panther quokka raven salmon tapir urchin viper wombat yak zebra'
-
-pick_word() { # number word... — prints word[number % count]
-    pw_i=$1
-    shift
-    pw_i=$((pw_i % $#))
-    while [ "$pw_i" -gt 0 ]; do
-        shift
-        pw_i=$((pw_i - 1))
-    done
-    printf '%s' "$1"
-}
-
-random_number() {
-    # POSIX sh has no $RANDOM; cksum is in POSIX (and busybox) and turns
-    # /dev/urandom bytes into a decimal. Naming needs no crypto strength.
-    head -c 8 /dev/urandom | cksum | tr -s ' ' | cut -d ' ' -f 1
-}
-
+#
+# The vocabulary itself lives in the relay binary (internal/relayruntime/
+# label_*.txt, compiled in via go:embed), so this script asks the image it has
+# already pulled instead of carrying its own copy of the word lists. A second
+# copy here would silently drift from the canonical one, which is exactly how
+# the fleet ended up naming relays out of a 1,296-name space.
+#
+# Requires that the pull has already run — see the docker pull before the
+# env-file branch below.
 random_label() {
-    # shellcheck disable=SC2086
-    printf '%s-%s' "$(pick_word "$(random_number)" $ADJECTIVES)" "$(pick_word "$(random_number)" $NOUNS)"
+    # The image ENTRYPOINT builds its own argument list and discards anything
+    # passed to `docker run`, so invoke the binary directly. It only prints a
+    # name and exits: no network, no config, no privileged port.
+    rl_label="$(docker run --rm --entrypoint /usr/local/bin/relay "$IMAGE" -print-label 2>/dev/null)" || rl_label=""
+    rl_label="$(printf '%s' "$rl_label" | tr -d '\r\n')"
+    if validate_label "$rl_label"; then
+        printf '%s' "$rl_label"
+        return 0
+    fi
+    # An image pinned via OPENRUNG_IMAGE may predate -print-label. Fall back to
+    # random hex rather than reintroducing a word list: it needs no vocabulary
+    # to stay in sync, and four random bytes collide far less often than an
+    # adjective-noun pair does.
+    printf 'relay-%s' "$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 }
 
 # Mirrors the relay binary's own label rules (relay.NormalizeLabel,
@@ -381,6 +382,11 @@ main() {
             || die "existing '$CONTAINER' is not running; inspect and recover it before attempting an update"
     fi
 
+    # Pull before naming: random_label asks this image for the name, and the
+    # env file written below must record whatever it returns.
+    log "pulling $IMAGE"
+    docker pull "$IMAGE" >/dev/null
+
     if [ -f "$ENV_FILE" ]; then
         log "reusing existing $ENV_FILE (stable relay identity preserved)"
         # Env files written before naming existed carry no label, and the
@@ -450,9 +456,6 @@ main() {
         mv "$ENV_FILE.tmp" "$ENV_FILE"
         log "wrote $ENV_FILE (root-owned, mode 0600) with public host ${PUBLIC_HOST} and relay name '${LABEL}'"
     fi
-
-    log "pulling $IMAGE"
-    docker pull "$IMAGE" >/dev/null
 
     # Updates are a recoverable transaction. Host networking prevents the old
     # and new relay from listening on 443 simultaneously, so retain the exact

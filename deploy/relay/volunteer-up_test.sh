@@ -72,6 +72,7 @@ set -u
 containers=$SIM_DIR/containers
 log=$DOCKER_LOG
 scenario=${SIM_SCENARIO:-ok}
+label_scenario=${SIM_LABEL_SCENARIO:-ok}
 op=${1:-}
 [ "$#" -gt 0 ] && shift
 
@@ -157,6 +158,34 @@ case "$op" in
         ;;
     pull)
         printf 'pull %s\n' "${1:-}" >>"$log"
+        ;;
+    run)
+        printf 'run %s\n' "$*" >>"$log"
+        if [ "$#" -ne 5 ] \
+            || [ "$1" != --rm ] \
+            || [ "$2" != --entrypoint ] \
+            || [ "$3" != /usr/local/bin/relay ] \
+            || [ -z "$4" ] \
+            || [ "$5" != -print-label ]; then
+            echo "unexpected docker run arguments: $*" >&2
+            exit 2
+        fi
+        case "$label_scenario" in
+            ok)
+                # Model the current relay image's provisioning-only flag.
+                # Keep this deterministic so unrelated transaction tests do
+                # not depend on /dev/urandom or accidentally exercise fallback.
+                printf 'amber-alpaca\n'
+                ;;
+            unsupported)
+                # Model an image that predates -print-label.
+                exit 2
+                ;;
+            *)
+                echo "unknown label scenario: $label_scenario" >&2
+                exit 2
+                ;;
+        esac
         ;;
     stop)
         stop_ref=$(last_arg "$@")
@@ -648,6 +677,23 @@ test_first_run_generates_label_and_promotes() {
     else
         fail "first run: the openrung ASCII banner is missing"
     fi
+    if grep -q '^run --rm --entrypoint /usr/local/bin/relay .* -print-label$' "$DOCKER_LOG"; then
+        pass
+    else
+        fail "first run: the relay image's -print-label path was not exercised"
+    fi
+}
+
+test_first_run_falls_back_for_flagless_image() {
+    reset_simulation
+    rm -f "$CONTAINERS/openrung-relay" "$ENV_FILE"
+    run_volunteer_up_first_run ok SIM_LABEL_SCENARIO=unsupported
+    if [ "$RUN_RC" -eq 0 ] && grep -Eq '^OPENRUNG_LABEL=relay-[0-9a-f]{8}$' "$ENV_FILE"; then
+        pass
+    else
+        fail "flagless image fallback: expected a persisted relay-<8 hex digits> label (exit $RUN_RC)"
+    fi
+    assert_candidate_is_live "flagless image fallback"
 }
 
 test_first_run_honors_explicit_label() {
@@ -717,6 +763,7 @@ test_successful_update_promotes_candidate
 test_update_pins_override_label_and_respects_existing
 test_overlong_label_is_refused_before_mutation
 test_first_run_generates_label_and_promotes
+test_first_run_falls_back_for_flagless_image
 test_first_run_honors_explicit_label
 test_special_ipv4_ranges
 
