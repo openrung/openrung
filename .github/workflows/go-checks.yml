@@ -28,6 +28,15 @@ jobs:
           bash -n deploy/broker/azure-front-door-up.sh
           bash -n deploy/broker/azure-front-door-up_test.sh
           bash deploy/broker/azure-front-door-up_test.sh
+          bash -n deploy/relay/bunny/bunny-wss-front.sh
+          bash -n deploy/relay/bunny/bunny-wss-front_test.sh
+          bash deploy/relay/bunny/bunny-wss-front_test.sh
+          bash -n deploy/relay/bunny/hetzner-wss-origin-firewall.sh
+          bash -n deploy/relay/bunny/hetzner-wss-origin-firewall_test.sh
+          bash deploy/relay/bunny/hetzner-wss-origin-firewall_test.sh
+          bash -n deploy/relay/foundation-wss-host.sh
+          bash -n deploy/relay/foundation-wss-host_test.sh
+          bash deploy/relay/foundation-wss-host_test.sh
           bash -n deploy/relay/foundation-up.sh
           bash -n deploy/relay/foundation-up_test.sh
           bash deploy/relay/foundation-up_test.sh
