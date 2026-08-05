@@ -14,6 +14,14 @@ import (
 const (
 	cloudflareBrokerHost = "broker.openrung.org"
 	cloudFrontBrokerHost = "d2r7mdpyevvs1m.cloudfront.net"
+	// The endpoint prefix is deliberately generic. Suppressing SNI keeps this
+	// name out of the ClientHello, but the client still resolves it over
+	// ordinary cleartext DNS, so the name is the one part of this front a
+	// passive observer sees. A project-identifying prefix would make that query
+	// a keyword match — enough to blocklist the front by pattern, and enough to
+	// mark the user as running this software. Keep it boring; the Azure-assigned
+	// suffix already makes it unguessable.
+	azureBrokerHost = "cdn-edge-cxdnhsg2aadmaubj.z02.azurefd.net"
 
 	// DefaultBrokerURL is the Cloudflare broker front. Direct connections to
 	// its standard HTTPS port opportunistically use the embedded ECH config.
@@ -24,6 +32,16 @@ const (
 	// SNI instead and let the encrypted HTTP Host header select the
 	// distribution.
 	CloudFrontBrokerURL = "https://" + cloudFrontBrokerHost + "/"
+
+	// AzureBrokerURL is the independent Azure Front Door front. Like
+	// CloudFront it receives no ECH config and is dialed without SNI, but it
+	// cannot prove it is THIS endpoint: without a server name the Azure edge
+	// serves a shared certificate that does not cover the endpoint name, so the
+	// connection authenticates an Azure edge and the Ed25519 relay-list
+	// signature does the rest. Discovery therefore tries it only after every
+	// endpoint-bound front has failed — see
+	// azureFrontDoorVerification for the full tradeoff.
+	AzureBrokerURL = "https://" + azureBrokerHost + "/"
 
 	DefaultRelayLimit       = 5
 	DefaultDiscoveryStagger = 2500 * time.Millisecond
@@ -176,8 +194,12 @@ func platformHeaderValue(platform Platform, configured string) string {
 }
 
 // DefaultBrokerURLs returns a fresh copy of the built-in front order.
+//
+// The Azure front is deliberately last as a stable preference order. In
+// addition, FirstReachable classifies it as endpoint-unbound and does not start
+// it until the two fronts with full peer authentication have both failed.
 func DefaultBrokerURLs() []string {
-	return []string{DefaultBrokerURL, CloudFrontBrokerURL}
+	return []string{DefaultBrokerURL, CloudFrontBrokerURL, AzureBrokerURL}
 }
 
 // BrokerCandidates returns a de-duplicated discovery order. A genuine custom

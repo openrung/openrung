@@ -39,14 +39,15 @@ const (
 	// cannot trip the broker's per-IP rate limit on its own (see broker PR #5).
 	MinDirectoryRefreshInterval = 30 * time.Second
 
-	// DiscoveryStagger is the head start each discovery candidate gets over the
-	// next one in discovery.FirstReachable's staggered race: candidate[0] starts
-	// immediately and, until an attempt succeeds, the next candidate joins every
-	// DiscoveryStagger. Long enough that a healthy primary almost always wins
-	// outright (so fallback fronts see no extra traffic), short enough that a
-	// blocked or hung primary delays discovery by one interval instead of a full
-	// request timeout. Must stay in sync with the mobile AppConfig's
-	// DISCOVERY_STAGGER_MS so every client races identically.
+	// DiscoveryStagger is the head start each candidate gets over the next one
+	// within discovery.FirstReachable's current trust phase: candidate[0] starts
+	// immediately and, until an attempt succeeds, the next equally authenticated
+	// candidate joins every DiscoveryStagger. Endpoint-unbound candidates wait
+	// for the stronger phase to fail rather than joining on this timer. Long
+	// enough that a healthy primary almost always wins outright, short enough
+	// that a blocked primary does not serialize the other strong front. The
+	// shared brokerapi constant also drives mobile's native binding; platform
+	// AppConfig must not carry a second copy of this policy.
 	DiscoveryStagger = brokerapi.DefaultDiscoveryStagger
 
 	// RelayTCPTimeout bounds the pre-connect TCP reachability check against a
@@ -116,9 +117,11 @@ var InternetProbeURLs = []string{
 	"https://cp.cloudflare.com/generate_204",
 }
 
-// DefaultBrokerURLs are the ordered discovery candidates. They are raced with
-// a staggered start — each entry gets a DiscoveryStagger head start over the
-// next, and the first to return relays wins (see discovery.FirstReachable).
+// DefaultBrokerURLs are the ordered discovery candidates. Exact-endpoint fronts
+// are raced with a staggered start — each entry gets a DiscoveryStagger head
+// start over the next, and the first to return relays wins. An endpoint-unbound
+// front is a separate fallback phase and does not start until every stronger
+// candidate has failed (see discovery.FirstReachable).
 //
 // Every entry MUST be HTTPS. The relay list is Ed25519-signed (see
 // brokerapi/signing.go), which detaches its authenticity from the transport — but
@@ -126,14 +129,13 @@ var InternetProbeURLs = []string{
 // these requests, so a cleartext or bare-IP entry would expose them to an
 // on-path censor. EnforceSecureBrokerURL rejects non-HTTPS hosts.
 //
-// Two independent fronts are deployed: the Cloudflare Worker
-// (broker.openrung.org) and an AWS CloudFront distribution on a different
-// provider AND DNS zone, so a single CDN/zone/account failure no longer fails
-// discovery CLOSED. Both proxy the one signing origin, so both serve signed
-// lists. Now that the list is signed, non-TLS / out-of-band channels (signed
-// static mirrors, a pinned direct-IP fallback) become safe to add in a later
-// step. Keep this list in sync with the mobile clients' AppConfig so every
-// client discovers identically.
+// Three independent fronts are deployed. The Cloudflare Worker
+// (broker.openrung.org) and AWS CloudFront distribution both authenticate the
+// exact endpoint and race first. Azure Front Door authenticates only a shared
+// Azure edge, so it is attempted only after both stronger fronts fail. All
+// three proxy the one signing origin and serve signed lists. brokerapi owns both
+// this list and its two-phase trust policy; mobile's native binding consumes the
+// same functions rather than duplicating either in platform AppConfig.
 var DefaultBrokerURLs = brokerapi.DefaultBrokerURLs()
 
 // Candidates are the ordered discovery endpoints for one request, plus
@@ -146,14 +148,12 @@ type Candidates = brokerapi.Candidates
 // a request: a genuine primary override first (with OverrideFirst set), then
 // the built-in defaults.
 //
-// The shared policy matches the mobile app's candidates() behavior: a
-// non-blank primary is tried FIRST only when it is a genuine override, i.e.
-// not already one of the defaults — and only such an override sets
-// OverrideFirst, giving it the strict head phase described on Candidates. A
-// persisted value that merely echoes a default must not reorder the defaults'
-// HTTPS-first preference (or claim the override phase), otherwise an upgrader
-// whose last-used default was the raw IP would keep hitting the IP before the
-// Cloudflare-fronted endpoint.
+// This brokerapi policy is also used directly by the mobile native binding. A
+// non-blank primary is tried FIRST only when it is a genuine override, i.e. not
+// already one of the defaults — and only such an override sets OverrideFirst,
+// giving it the strict head phase described on Candidates. A persisted value
+// that merely echoes a default must not reorder the defaults' HTTPS-first
+// preference (or claim the override phase).
 func BrokerCandidates(primary string) Candidates {
 	return brokerapi.BrokerCandidates(primary)
 }

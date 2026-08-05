@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -60,6 +61,28 @@ func TestAzureFrontDoorAddress(t *testing.T) {
 	} {
 		if got := azureFrontDoorAddress(test.address); got != test.ok {
 			t.Errorf("azureFrontDoorAddress(%q) = %v, want %v", test.address, got, test.ok)
+		}
+	}
+}
+
+func TestEndpointUnboundBrokerFront(t *testing.T) {
+	tests := []struct {
+		brokerURL string
+		want      bool
+	}{
+		{brokerURL: AzureBrokerURL, want: true},
+		{brokerURL: "https://" + testAzureBareEndpoint + "/prefix", want: true},
+		{brokerURL: "HTTPS://" + strings.ToUpper(testAzureEndpoint) + ".:443/", want: true},
+		{brokerURL: "https://" + testAzureEndpoint + ":8443/"},
+		{brokerURL: "http://" + testAzureEndpoint + "/"},
+		{brokerURL: "https://broker.example/"},
+		{brokerURL: CloudFrontBrokerURL},
+		{brokerURL: "https://user:password@" + testAzureEndpoint + "/"},
+		{brokerURL: "not a broker URL"},
+	}
+	for _, test := range tests {
+		if got := EndpointUnboundBrokerFront(test.brokerURL); got != test.want {
+			t.Errorf("EndpointUnboundBrokerFront(%q) = %v, want %v", test.brokerURL, got, test.want)
 		}
 	}
 }
@@ -214,17 +237,48 @@ func TestFrontVerificationRulesDoNotCrossApply(t *testing.T) {
 	}
 }
 
-// The Azure endpoint is not among the built-in fronts yet: it has no
-// provisioned endpoint, and cmd/frontcheck has to pass against a real one
-// first. This guards the accident of shipping a dead front that every client
-// would race and time out on.
-func TestAzureFrontIsNotYetAdvertised(t *testing.T) {
-	for _, candidate := range DefaultBrokerURLs() {
-		if strings.Contains(candidate, "azurefd.net") {
-			t.Fatalf(
-				"broker front %q is advertised, but no Azure endpoint has been verified with cmd/frontcheck",
-				candidate,
-			)
+// The advertised Azure front must actually take the no-SNI path, and must not
+// collide with either other front's mechanism. The endpoint that ships was
+// accepted by cmd/frontcheck on 2026-08-05.
+func TestBrokerAzureConstantsStayLinked(t *testing.T) {
+	parsed, err := EnforceSecureBrokerURL(AzureBrokerURL)
+	if err != nil {
+		t.Fatalf("parse %s: %v", AzureBrokerURL, err)
+	}
+	if parsed.Hostname() != azureBrokerHost {
+		t.Fatalf("AzureBrokerURL host = %q, want %q", parsed.Hostname(), azureBrokerHost)
+	}
+	address := net.JoinHostPort(parsed.Hostname(), "443")
+	if !azureFrontDoorAddress(address) {
+		t.Fatalf("the advertised Azure front %q is not recognized, so it would be dialed WITH SNI", address)
+	}
+	// Each built-in front conceals its hostname by a different mechanism, and
+	// no front may end up on two paths at once.
+	if isCloudflareBrokerAddress(address) {
+		t.Fatal("the Azure front also matches the ECH front")
+	}
+	if _, ok := cloudFrontDistributionAddress(address); ok {
+		t.Fatal("the Azure front also matches the CloudFront path")
+	}
+	if azureFrontDoorAddress(net.JoinHostPort(cloudFrontBrokerHost, "443")) {
+		t.Fatal("the CloudFront front also matches the Azure path")
+	}
+	if azureFrontDoorAddress(net.JoinHostPort(cloudflareBrokerHost, "443")) {
+		t.Fatal("the Cloudflare front also matches the Azure path")
+	}
+}
+
+// Keep the stable built-in preference order even though FirstReachable also
+// enforces the stronger boundary by putting endpoint-unbound fronts in a
+// separate phase.
+func TestAzureFrontRemainsLastInDefaultOrder(t *testing.T) {
+	defaults := DefaultBrokerURLs()
+	if len(defaults) == 0 || defaults[len(defaults)-1] != AzureBrokerURL {
+		t.Fatalf("built-in front order = %v, want the Azure front last", defaults)
+	}
+	for _, candidate := range defaults[:len(defaults)-1] {
+		if EndpointUnboundBrokerFront(candidate) {
+			t.Fatalf("an endpoint-unbound front appears before the end of the order: %q", candidate)
 		}
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/openrung/openrung/brokerapi"
 	"github.com/openrung/openrung/wsscore"
 
 	"openrung/desktop/config"
@@ -132,9 +133,10 @@ func TestSupportedWSSFrontsRequiresCanonicalEligibleRelay(t *testing.T) {
 }
 
 func TestWSSTicketBrokerFailoverAndBoundedRetryAfter(t *testing.T) {
-	servingFront := config.DefaultBrokerURLs[1]
+	servingFront := brokerapi.CloudFrontBrokerURL
 	fronts := wssTicketBrokerFronts(servingFront)
-	if len(fronts) != len(config.DefaultBrokerURLs) || fronts[0] != servingFront || fronts[1] != config.DefaultBrokerURLs[0] {
+	wantFronts := []string{brokerapi.CloudFrontBrokerURL, brokerapi.DefaultBrokerURL}
+	if !reflect.DeepEqual(fronts, wantFronts) {
 		t.Fatalf("ticket broker fronts = %v", fronts)
 	}
 
@@ -166,11 +168,56 @@ func TestWSSTicketBrokerFailoverAndBoundedRetryAfter(t *testing.T) {
 	if response.Ticket != "new-ticket" || len(calls) != len(fronts)+1 {
 		t.Fatalf("response=%+v calls=%v", response, calls)
 	}
+	wantCalls := []string{brokerapi.CloudFrontBrokerURL, brokerapi.DefaultBrokerURL, brokerapi.CloudFrontBrokerURL}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("ticket broker calls = %v, want %v", calls, wantCalls)
+	}
 	if len(waits) != 1 || waits[0] != wssTicketMaxRetry {
 		t.Fatalf("bounded Retry-After waits = %v", waits)
 	}
 	if !conn.wssTicketRetryUsed {
 		t.Fatal("one-per-ladder retry was not consumed")
+	}
+}
+
+func TestWSSTicketRequestsExcludeEndpointUnboundAzureFronts(t *testing.T) {
+	tests := map[string]string{
+		"built-in Azure front":                 brokerapi.AzureBrokerURL,
+		"another native Azure Front Door name": "https://ANOTHER-NATIVE-FRONT.z01.AzureFD.net:443/",
+	}
+	wantCalls := []string{brokerapi.DefaultBrokerURL, brokerapi.CloudFrontBrokerURL}
+	request := relay.WSSSessionTicketRequest{RelayID: "relay-a", FrontID: "front-a"}
+
+	for name, servingFront := range tests {
+		t.Run(name, func(t *testing.T) {
+			s := New()
+			conn := &connection{brokerURL: servingFront}
+			var calls []string
+			s.requestWSSTicket = func(_ context.Context, brokerURL string, got relay.WSSSessionTicketRequest, _, _ string) (relay.WSSSessionTicketResponse, error) {
+				calls = append(calls, brokerURL)
+				if brokerapi.EndpointUnboundBrokerFront(brokerURL) {
+					t.Fatalf("WSS bearer ticket request used endpoint-unbound front %q", brokerURL)
+				}
+				if got != request {
+					t.Fatalf("ticket request = %+v, want %+v", got, request)
+				}
+				if brokerURL == brokerapi.DefaultBrokerURL {
+					return relay.WSSSessionTicketResponse{}, errors.New("first strong front unavailable")
+				}
+				return successfulWSSTicket(testWSSFront("front-a", testWSSFrontAURL), "strong-front-ticket"), nil
+			}
+
+			response, err := s.requestWSSSessionTicket(t.Context(), conn, request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.Ticket != "strong-front-ticket" {
+				t.Fatalf("ticket = %q", response.Ticket)
+			}
+			if !reflect.DeepEqual(calls, wantCalls) {
+				t.Fatalf("ticket broker calls = %v, want %v", calls, wantCalls)
+			}
+		})
 	}
 }
 

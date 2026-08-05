@@ -66,6 +66,27 @@ func azureFrontDoorAddress(address string) bool {
 	}
 }
 
+// EndpointUnboundBrokerFront reports whether brokerURL names a native Azure
+// Front Door endpoint whose no-SNI TLS connection authenticates the shared
+// Azure edge fleet rather than the requested endpoint. Discovery must defer
+// these fronts until every candidate with endpoint-bound authentication has
+// failed.
+//
+// Malformed URLs, non-HTTPS URLs, custom Front Door domains, and native Front
+// Door endpoints on a nonstandard port return false. Those inputs do not use
+// the shared-edge TLS path selected by this package.
+func EndpointUnboundBrokerFront(brokerURL string) bool {
+	parsed, err := EnforceSecureBrokerURL(brokerURL)
+	if err != nil || !strings.EqualFold(parsed.Scheme, "https") {
+		return false
+	}
+	port := parsed.Port()
+	if port == "" {
+		port = "443"
+	}
+	return azureFrontDoorAddress(net.JoinHostPort(parsed.Hostname(), port))
+}
+
 func isAzureFrontDoorZone(label string) bool {
 	if len(label) != 3 {
 		return false
@@ -105,10 +126,11 @@ func isAzureFrontDoorZone(label string) bool {
 //     ours cannot forge one. The signed envelope also binds channel, echoed
 //     limit, and a not_after freshness bound, so it cannot replay an expired
 //     list either.
-//   - What an impersonator would still get is the request side and denial of
-//     service: the client identity headers, telemetry payloads, and the ability
-//     to serve nothing. That is the cost being accepted here, and it is the
-//     reason this front belongs last in the discovery order rather than first.
+//   - For operations allowed over this front, an impersonator would still get
+//     the request side and denial of service: relay-list identity headers,
+//     telemetry payloads, and the ability to serve nothing. Bearer-credential
+//     requests must reject this authentication class. The remaining exposure
+//     is why discovery puts this front in a separate last-resort phase.
 //
 // If Microsoft changes the default certificate, this fails closed and front
 // racing covers reachability.

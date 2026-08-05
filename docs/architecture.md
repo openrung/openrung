@@ -308,8 +308,10 @@ module rather than fetched through DNS; an authenticated server retry
 configuration can refresh it after a successful retry. ECH failure is never a
 hard failure: the attempt is tightly bounded and starts a fresh ordinary-TLS
 connection so networks that drop Cloudflare ECH retain the existing behavior.
-CloudFront and custom broker URLs do not receive ECH, and every fallback keeps
-normal hostname and certificate verification.
+CloudFront and custom broker URLs do not receive ECH. CloudFront keeps exact
+hostname verification on its suppressed-SNI path, custom URLs keep ordinary
+hostname verification, and Azure's deliberately weaker exception is isolated
+below.
 
 CloudFront cannot serve this deployment's ECH config, so connections to a
 native `*.cloudfront.net` distribution omit the ClientHello server name and let
@@ -337,15 +339,38 @@ client therefore pins that SAN instead of the endpoint hostname. An impersonator
 must present a publicly-trusted certificate for a name under `azureedge.net`,
 so the connection proves *an Azure edge*, not *our endpoint*.
 
-That is a real reduction against the other two fronts, and it is acceptable only
-because TLS is not where this client's trust rests. The relay list is
+That is a real reduction against the other two fronts, and it is acceptable for
+relay discovery only because TLS is not where the directory's authenticity
+rests. The relay list is
 Ed25519-signed by the origin and verified against keys pinned in the module, and
 the signed envelope binds the channel, the echoed limit, and a `not_after`
 freshness bound — so a front that is not ours can neither forge a list nor replay
-an expired one. What an impersonator would still obtain is the request side:
-client identity headers, telemetry payloads, and the ability to serve nothing at
-all. That residue is why the Azure front belongs last in the discovery order, and
-why the endpoint-name gap is reported explicitly rather than left implicit.
+an expired one. That protection does not extend to every broker exchange: an
+impersonator still obtains client identity headers and telemetry payloads, and a
+WSS session ticket is a short-lived bearer whose confidentiality depends on
+exact endpoint authentication. Ticket requests therefore exclude Azure even
+when Azure served the directory.
+
+Discovery also treats endpoint-unbound fronts as a separate fallback phase. The
+Cloudflare and CloudFront candidates race first; Azure is not contacted merely
+because their stagger elapsed, and starts only after every exact-endpoint front
+has failed. An active censor can still force that fallback by making the stronger
+fronts fail — that is inherent in offering a censored-network fallback — but an
+ordinary slow response cannot silently downgrade the connection. The endpoint
+name gap and this residual exposure are reported explicitly rather than left
+implicit.
+
+Phasing is bought with latency, and the bill falls in the case the fallback
+exists for. A phase ends only when every candidate in it has failed, and each
+attempt carries the full relay-list timeout, so two blackholed strong fronts —
+what a censor that drops rather than resets produces — take roughly one timeout
+plus one stagger before Azure is contacted at all. Under the previous
+single-phase race Azure started once the stagger elapsed and could answer in a
+few seconds. Discovery is therefore materially slower on a censored network than
+it would be without the invariant, and that is the accepted price of refusing to
+let a merely slow front hand the session to a weaker one. If that cost proves
+too high in the field, the lever is a shorter per-attempt timeout inside the
+first phase — not reordering the phases.
 
 Because the SNI-less behaviour is undocumented, carries no SLA, and is a
 property of the edge fleet an endpoint lands on rather than of Front Door as a
@@ -387,6 +412,15 @@ platform's native binding. This removes the TypeScript TLS limitation and gives
 mobile the same opportunistic ECH, signature verification, identity headers,
 cache policy, and URL hardening as desktop. Publishing this module does not by
 itself update either separately released app.
+
+Native mobile discovery delegates candidate construction and racing to
+`BrokerCandidates` and `FirstReachable`, so platform `AppConfig` must not
+duplicate the discovery URL list or its trust phases. Swift and Kotlin still
+own WSS-ticket ordering, deadlines, and retries, but every individual attempt
+calls `RequestWSSTicket`; rebuilding against `brokerapi/v0.4.0` therefore
+inherits the hard pre-HTTP refusal for endpoint-unbound fronts. The platform
+ticket-front builders should filter such a winning front too as defense in
+depth and to avoid a request that is guaranteed to fail locally.
 
 The mobile app's update-manifest checker is a separate signed-content client
 with its own keys, rollback protection, and GitHub fallback. Its current
