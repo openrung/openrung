@@ -42,7 +42,15 @@ set -euo pipefail
 RG="${OPENRUNG_AZURE_RG:-openrung-broker-front}"
 LOCATION="${OPENRUNG_AZURE_LOCATION:-japaneast}"
 PROFILE="${OPENRUNG_AZURE_PROFILE:-openrung-broker-front}"
-ENDPOINT="${OPENRUNG_AZURE_ENDPOINT:-openrung-broker}"
+# Keep this prefix GENERIC and free of anything naming this project. Suppressing
+# SNI keeps the endpoint name out of the ClientHello, but the client still
+# resolves it over ordinary cleartext DNS, so the name is the one part of this
+# front a passive observer sees. A prefix like "openrung-broker" turns that query
+# into a keyword match — enough to blocklist the front by pattern, and enough to
+# mark the user as running this software. Azure appends an unguessable suffix, so
+# a boring prefix costs nothing. The resource group and profile names below are
+# never on the wire and stay descriptive on purpose.
+ENDPOINT="${OPENRUNG_AZURE_ENDPOINT:-cdn-edge}"
 ORIGIN_HOST="${OPENRUNG_BROKER_ORIGIN:-broker-origin.openrung.org}"
 
 ORIGIN_GROUP="broker-origin"

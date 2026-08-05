@@ -14,7 +14,14 @@ import (
 const (
 	cloudflareBrokerHost = "broker.openrung.org"
 	cloudFrontBrokerHost = "d2r7mdpyevvs1m.cloudfront.net"
-	azureBrokerHost      = "openrung-broker-fegzhgh3dkawf4da.z02.azurefd.net"
+	// The endpoint prefix is deliberately generic. Suppressing SNI keeps this
+	// name out of the ClientHello, but the client still resolves it over
+	// ordinary cleartext DNS, so the name is the one part of this front a
+	// passive observer sees. A project-identifying prefix would make that query
+	// a keyword match — enough to blocklist the front by pattern, and enough to
+	// mark the user as running this software. Keep it boring; the Azure-assigned
+	// suffix already makes it unguessable.
+	azureBrokerHost = "cdn-edge-cxdnhsg2aadmaubj.z02.azurefd.net"
 
 	// DefaultBrokerURL is the Cloudflare broker front. Direct connections to
 	// its standard HTTPS port opportunistically use the embedded ECH config.

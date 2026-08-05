@@ -1,8 +1,10 @@
 # Azure Front Door as broker front #3
 
 Status: **live and advertised.** Provisioned 2026-08-05 as
-`openrung-broker-fegzhgh3dkawf4da.z02.azurefd.net`, accepted by `cmd/frontcheck`
-on the same day, and raced **last** in `brokerapi.DefaultBrokerURLs()`.
+`cdn-edge-cxdnhsg2aadmaubj.z02.azurefd.net`, accepted by `cmd/frontcheck`, and
+raced **last** in `brokerapi.DefaultBrokerURLs()`. The endpoint prefix is
+generic on purpose — see below; the first attempt used a project-identifying
+name and was replaced before anything shipped.
 
 Installed clients only gain this front when they update — the front list is
 compiled in, and there is no server-side way to push one. Desktop picks it up on
@@ -147,6 +149,36 @@ carries no VPN clause in its AUP.
 Budget alerts only email; they do not stop spending. Set one, and keep the
 runbook for deallocating if credit is exhausted.
 
+### The endpoint name must not identify this project
+
+Suppressing SNI keeps the endpoint name out of the ClientHello, but the client
+resolves it over **ordinary cleartext DNS** — `brokerapi` installs no custom
+resolver and there is no DoH. So the hostname is the one part of this front a
+passive on-path observer still sees, and the name we choose is the whole of what
+they learn.
+
+An endpoint called `openrung-broker-…` makes that DNS query a keyword match. Two
+consequences, the second worse than the first:
+
+- The front can be blocklisted by pattern, without the censor knowing anything
+  about this project in advance.
+- The query **marks the user** as running this software. In Iran that is a
+  personal-safety property, not just a reachability one.
+
+So the prefix is deliberately generic (`cdn-edge`), matching how CloudFront's
+`d2r7mdpyevvs1m.cloudfront.net` reveals nothing. Azure appends an unguessable
+suffix, so a boring prefix costs nothing. The resource group and profile names
+are never on the wire and stay descriptive.
+
+Endpoint names are **immutable** — changing one means creating a new endpoint
+with its own route, verifying it, and deleting the old one.
+
+Note the same reasoning indicts `broker.openrung.org`, the *primary* front,
+far more directly: it is a subdomain of the project's own domain, and ECH hides
+the SNI but not the A-record lookup. That is a larger, separate decision — the
+Cloudflare front is the deliberately well-known one — but it is where a
+DNS-observing censor gets the most, not here.
+
 ### Client IP behind this front
 
 Requests arriving through Front Door are attributed to the **Front Door edge
@@ -251,3 +283,16 @@ First propagation took about 12 minutes, during which the endpoint returned
 Front Door's generic 404 on both the no-SNI and SNI paths equally. That is
 expected for a new profile and is not an SNI problem — if only the no-SNI path
 404s, that is a different fault.
+
+**Wait for consistent 200s before running the gate.** Propagation does not flip
+cleanly: a new endpoint spends several minutes returning an intermittent mix of
+404 and 200 *from the same edge address*, because servers behind that anycast IP
+pick the new config up at different times. Running `frontcheck` in that window
+produces a confusing partial failure — the handshake and Host-routing checks
+pass while the two relay fetches 404 — which looks like a routing
+misconfiguration and is not. Poll until the relay path returns 200 steadily
+(a dozen consecutive successes is a reasonable bar), then run the gate:
+
+```bash
+until curl -sf -o /dev/null "https://<endpoint>/api/v1/relays?limit=5"; do sleep 10; done
+```
