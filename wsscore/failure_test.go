@@ -31,7 +31,7 @@ const (
 // tlsMode selects one of the two production TLS paths. The no-SNI path
 // completes TLS inside noSNITLSDialContext and marks the phase booleans there;
 // the ordinary-SNI path lets gorilla run TLS and marks the same booleans
-// through httptrace. Both cases set CloudFrontNoSNI exactly as the shipped
+// through httptrace. Both cases set NativeFrontNoSNI exactly as the shipped
 // clients do, so the recognition rule alone selects the path.
 type tlsMode struct {
 	name            string
@@ -49,7 +49,7 @@ func dialTaxonomyFailure(t *testing.T, mode tlsMode, dialer *websocket.Dialer, h
 	t.Helper()
 	client, err := DialClient(t.Context(), ClientOptions{
 		URL: "wss://" + mode.host + BridgePath, Ticket: taxonomyTicket,
-		WebSocketDialer: dialer, CloudFrontNoSNI: true,
+		WebSocketDialer: dialer, NativeFrontNoSNI: true,
 		HandshakeTimeout: handshakeTimeout, PingInterval: -1,
 	})
 	if client != nil {
@@ -460,7 +460,7 @@ func TestClassifyCancellationAndPreserveErrorsIs(t *testing.T) {
 	go func() {
 		client, err := DialClient(ctx, ClientOptions{
 			URL: "wss://" + taxonomyDistribution + BridgePath, Ticket: taxonomyTicket,
-			WebSocketDialer: dialer, CloudFrontNoSNI: true, PingInterval: -1,
+			WebSocketDialer: dialer, NativeFrontNoSNI: true, PingInterval: -1,
 		})
 		if client != nil {
 			_ = client.Close()

@@ -72,23 +72,25 @@ instead of treating every session end as loss. Custom network dial callbacks can
 `SocketProtector`, because that could silently bypass Android socket
 protection. Custom callbacks that claim to have completed TLS are rejected
 entirely, and TLS verification cannot be disabled. When
-`ClientOptions.CloudFrontNoSNI` is enabled for a native, one-label
-`*.cloudfront.net` distribution URL, `DialClient` omits the ClientHello SNI,
+`ClientOptions.NativeFrontNoSNI` is enabled for a native, one-label
+`*.cloudfront.net` or `*.b-cdn.net` URL, `DialClient` omits the ClientHello SNI,
 accepts only a normally trusted certificate valid for the exact signed URL
-host, and leaves that hostname in the encrypted HTTP `Host` header. Custom
-CloudFront CNAMEs and every other CDN URL retain ordinary SNI derived from the
-signed front URL. Encrypted ClientHello configuration is rejected on the
-CloudFront no-SNI path so it cannot silently add a different public SNI. The
-in-repository desktop client enables this option; external module consumers
-must opt in deliberately when they upgrade.
+host, and leaves that hostname in the encrypted HTTP `Host` header. Custom CDN
+CNAMEs and every other CDN URL retain ordinary SNI derived from the signed
+front URL. Encrypted ClientHello configuration is rejected on the native-front
+no-SNI path so it cannot silently add a different public SNI. The deprecated
+`CloudFrontNoSNI` field remains an alias for pinned consumers. The in-repository
+desktop client enables the new option; external module consumers must opt in
+deliberately when they upgrade.
 
 `brokerapi/cloudfront_tls.go` applies the same technique to the control plane
 in a separate copy — `brokerapi` carries no dependencies, so it cannot import
 this module. That copy is default-on rather than opt-in, matches dialed
 addresses rather than signed URLs, and additionally disables session
-resumption, because it runs on a shared pooled transport. The two are expected
-to stay aligned on what they verify, so a change to the recognition rule or the
-verification hook should be considered for both.
+resumption, because it runs on a shared pooled transport. It deliberately
+recognizes CloudFront only: broker fronts are not hosted on bunny.net. Changes
+to the verification hook should still be considered for both modules, while
+provider recognition remains scoped to the fronts each module actually dials.
 
 ## Dial failure classification
 
@@ -202,7 +204,7 @@ transport-failure reason instead of reaching telemetry verbatim.
 On a dial that TLS verification rejects — including a DNS-poisoned dial into
 reserved space — verification fails before any HTTP request is written, so no
 `Authorization` bearer bytes ever reach the endpoint. `failure_test.go` asserts
-this for every certificate-failure mode, and `cloudfront_tls_test.go` asserts it
+this for every certificate-failure mode, and `nosni_tls_test.go` asserts it
 for the no-SNI path.
 
 ## Compatibility tests

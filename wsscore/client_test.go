@@ -183,7 +183,7 @@ func TestLifecycleAndClientBoundsRejectUnsafeValues(t *testing.T) {
 	}
 	if _, err := DialClient(t.Context(), ClientOptions{
 		URL: "wss://d111111abcdef8.cloudfront.net" + BridgePath, Ticket: "ticket",
-		TLSConfig: &tls.Config{EncryptedClientHelloConfigList: []byte{1}}, CloudFrontNoSNI: true,
+		TLSConfig: &tls.Config{EncryptedClientHelloConfigList: []byte{1}}, NativeFrontNoSNI: true,
 	}); err == nil {
 		t.Fatal("encrypted client hello was accepted for CloudFront no-SNI mode")
 	}

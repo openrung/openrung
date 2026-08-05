@@ -11,20 +11,37 @@ import (
 	"time"
 )
 
-// cloudFrontDistributionHost recognizes only the one-label distribution names
-// covered by CloudFront's default *.cloudfront.net certificate. Custom CNAMEs
-// continue through the ordinary SNI-bearing TLS path.
-func cloudFrontDistributionHost(rawURL string) (string, bool) {
+// nativeFrontZones lists the CDN parent zones whose edges answer a ClientHello
+// carrying no SNI with a default certificate covering every one-label name
+// beneath them. Both entries were confirmed to serve exactly that certificate
+// without SNI: CloudFront's *.cloudfront.net and bunny.net's *.b-cdn.net.
+//
+// A zone belongs here only if its default no-SNI certificate authenticates the
+// same host the signed front URL names. Adding one whose edges instead answer
+// with an unrelated certificate would silently disable the hostname check that
+// makes dropping SNI safe.
+var nativeFrontZones = []string{
+	"cloudfront.net",
+	"b-cdn.net",
+}
+
+// nativeFrontHost recognizes only the one-label CDN hostnames covered by their
+// zone's default certificate. Custom CNAMEs continue through the ordinary
+// SNI-bearing TLS path, because a default certificate cannot authenticate them.
+func nativeFrontHost(rawURL string) (string, bool) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return "", false
 	}
 	host := parsed.Hostname()
-	labels := strings.Split(host, ".")
-	if len(labels) != 3 || labels[0] == "" || labels[1] != "cloudfront" || labels[2] != "net" {
-		return "", false
+	for _, zone := range nativeFrontZones {
+		label, found := strings.CutSuffix(host, "."+zone)
+		if !found || label == "" || strings.Contains(label, ".") {
+			continue
+		}
+		return host, true
 	}
-	return host, true
+	return "", false
 }
 
 func noSNITLSDialContext(

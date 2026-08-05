@@ -14,9 +14,14 @@ import (
 // verified against the CNAME the client asked for.
 //
 // This is the address-shaped counterpart of the URL-shaped check the WSS data
-// path applies in wsscore/cloudfront_tls.go. Keep the two in step on what they
-// recognize; the port gate and case/trailing-dot normalization are extra here
-// because a dial address has been through no canonicalization of its own.
+// path applies in wsscore/nosni_tls.go. The port gate and case/trailing-dot
+// normalization are extra here because a dial address has been through no
+// canonicalization of its own.
+//
+// The two deliberately no longer recognize the same set. wsscore also accepts
+// bunny.net's *.b-cdn.net because relay WSS fronts are provisioned there; the
+// broker's own fronts are not, so widening this one would enable no-SNI for a
+// front shape nothing configures and nothing tests end to end.
 func cloudFrontDistributionAddress(address string) (string, bool) {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil || port != "443" {
