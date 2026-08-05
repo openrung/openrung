@@ -1,10 +1,13 @@
 # Azure Front Door as broker front #3
 
-Status: **client support implemented, not yet advertised.** No Azure
-subscription or Front Door endpoint exists for this project, so nothing is
-provisioned and no endpoint appears in the built-in discovery order. The client
-code path is complete and tested; wiring an endpoint in is the remaining step,
-and it is gated on the acceptance check below.
+Status: **live and advertised.** Provisioned 2026-08-05 as
+`openrung-broker-fegzhgh3dkawf4da.z02.azurefd.net`, accepted by `cmd/frontcheck`
+on the same day, and raced **last** in `brokerapi.DefaultBrokerURLs()`.
+
+Installed clients only gain this front when they update — the front list is
+compiled in, and there is no server-side way to push one. Desktop picks it up on
+its next release build; the mobile repositories must bump their pinned
+`brokerapi` tag to **v0.4.0** and mirror the addition in their `AppConfig`.
 
 ## Why Azure, and why SNI-less
 
@@ -82,10 +85,11 @@ The script is idempotent and encodes the settings below, including the two that
 are load-bearing rather than stylistic (no custom domain, caching off). It
 checks the origin first and asserts caching is actually off afterwards.
 
-### Known blocker: sponsorship subscriptions cannot create a profile
+### Resolved blocker: sponsorship subscriptions cannot create a profile
 
-Attempted 2026-08-04 on subscription `2ac42581-…` (offer `Sponsored_2016-01-01`,
-the nonprofit grant). Profile creation fails:
+Hit on 2026-08-04 and cleared by a quota request on 2026-08-05; recorded because
+it will recur on any new sponsorship subscription. Subscription `2ac42581-…`
+(offer `Sponsored_2016-01-01`, the nonprofit grant) refused profile creation:
 
 ```
 ERROR: (BadRequest) The number of profiles created exceeds quota.
@@ -143,6 +147,23 @@ carries no VPN clause in its AUP.
 Budget alerts only email; they do not stop spending. Set one, and keep the
 runbook for deallocating if credit is exhausted.
 
+### Client IP behind this front
+
+Requests arriving through Front Door are attributed to the **Front Door edge
+IP**, not the real client, exactly as they already are through CloudFront. That
+is deliberate and lives in [`Caddyfile`](./Caddyfile): the origin strips
+`CF-Connecting-IP` and overwrites `X-Forwarded-For` with its own immediate peer,
+because a CDN that forwards viewer headers would otherwise let a client inject a
+forged client IP. Fidelity is traded for unspoofability.
+
+So the Azure front introduces no new exposure here, but it does inherit the
+consequences: per-IP rate limits and the 64-new-identities-per-IP-per-day
+registration cap bucket by edge IP for fronted traffic, and telemetry records
+the edge IP as `client_ip`. Worth watching after this front carries real load —
+if Azure egresses to the origin from a narrower set of addresses than CloudFront
+does, those caps bite sooner. `OPENRUNG_REGISTRATION_CAP_EXEMPT_CIDRS` is the
+lever if they do.
+
 ## Acceptance gate — run before advertising
 
 ```bash
@@ -182,16 +203,51 @@ ClientHello, which no front-side change can prevent.
 Every check must pass. Record the printed certificate details in the pull
 request that advertises the endpoint.
 
-## Advertising the endpoint
+## Advertising — done for this endpoint
 
-Only after the gate passes:
+Recorded so a replacement endpoint follows the same path. Done on 2026-08-05
+after the gate passed:
 
-1. Add the endpoint constant and URL to `brokerapi/types.go`, appending it
-   **last** in `DefaultBrokerURLs()`.
-2. Delete `TestAzureFrontIsNotYetAdvertised` in `brokerapi/azure_tls_test.go`,
-   which exists to catch exactly this being done prematurely.
-3. Bump `brokerapi/VERSION`.
-4. Mirror the addition in the mobile clients' `AppConfig`, which keep their own
-   copy of the discovery order.
+1. `azureBrokerHost` / `AzureBrokerURL` added in `brokerapi/types.go`, appended
+   **last** in `DefaultBrokerURLs()`. Last is not cosmetic — this front proves
+   only that the peer is an Azure edge, so it must not displace a front that
+   proves it is ours. `TestAzureFrontIsRacedLast` holds that.
+2. `TestAzureFrontIsNotYetAdvertised` replaced by
+   `TestBrokerAzureConstantsStayLinked`, which asserts the shipped endpoint is
+   recognized by the no-SNI recognizer — a name the recognizer missed would be
+   dialed *with* SNI and silently leak.
+3. `brokerapi/VERSION` → 0.4.0.
+4. Still outstanding: the mobile repositories must pin `brokerapi/v0.4.0` and
+   mirror the addition in their own `AppConfig`.
 
 Re-run `frontcheck` after any endpoint, CDN, or certificate change.
+
+### Gate result, 2026-08-05
+
+```
+PASS  transport TLS policy for this host
+        SNI suppressed — Azure Front Door: certificate must carry the SAN *.azureedge.net
+PASS  handshake completes and satisfies that policy
+        TLS 1.3, ALPN ""
+        leaf subject "*.azureedge.net", issuer "Microsoft TLS G2 ECC CA OCSP 06"
+        leaf SANs [*.azureedge.net]
+        chain depth 4, leaf expires 2026-11-14T10:49:57Z
+PASS  signed relay list fetches and verifies over the shipping path
+        4180 bytes, signature verified under pinned key 627405615601c589
+        server_time is 0s old, so it was signed for this request
+        carried over TLS with ClientHello server name ""
+PASS  SNI-bearing control serves the same signed list
+        matches the no-SNI response
+PASS  edge routes on the Host header, not the address
+        Host "frontcheck-unroutable.invalid" got HTTP 404 and no relay signature
+```
+
+Azure assigned a **z02** endpoint, not the z01 seen in every earlier
+measurement. The recognizer matches the zone by shape rather than by literal, so
+this needed no code change; a hardcoded `z01` would have fallen through to
+SNI-bearing TLS and leaked the endpoint name.
+
+First propagation took about 12 minutes, during which the endpoint returned
+Front Door's generic 404 on both the no-SNI and SNI paths equally. That is
+expected for a new profile and is not an SNI problem — if only the no-SNI path
+404s, that is a different fault.

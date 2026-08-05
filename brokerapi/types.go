@@ -14,6 +14,7 @@ import (
 const (
 	cloudflareBrokerHost = "broker.openrung.org"
 	cloudFrontBrokerHost = "d2r7mdpyevvs1m.cloudfront.net"
+	azureBrokerHost      = "openrung-broker-fegzhgh3dkawf4da.z02.azurefd.net"
 
 	// DefaultBrokerURL is the Cloudflare broker front. Direct connections to
 	// its standard HTTPS port opportunistically use the embedded ECH config.
@@ -24,6 +25,15 @@ const (
 	// SNI instead and let the encrypted HTTP Host header select the
 	// distribution.
 	CloudFrontBrokerURL = "https://" + cloudFrontBrokerHost + "/"
+
+	// AzureBrokerURL is the independent Azure Front Door front. Like
+	// CloudFront it receives no ECH config and is dialed without SNI, but it
+	// cannot prove it is THIS endpoint: without a server name the Azure edge
+	// serves a shared certificate that does not cover the endpoint name, so the
+	// connection authenticates an Azure edge and the Ed25519 relay-list
+	// signature does the rest. That is why it is raced last — see
+	// azureFrontDoorVerification for the full tradeoff.
+	AzureBrokerURL = "https://" + azureBrokerHost + "/"
 
 	DefaultRelayLimit       = 5
 	DefaultDiscoveryStagger = 2500 * time.Millisecond
@@ -176,8 +186,13 @@ func platformHeaderValue(platform Platform, configured string) string {
 }
 
 // DefaultBrokerURLs returns a fresh copy of the built-in front order.
+//
+// The Azure front is deliberately last. Its TLS proves only that the peer is an
+// Azure edge, not that it is this deployment's endpoint, so it should carry
+// traffic when the two fronts with full peer authentication are unreachable —
+// not in preference to them.
 func DefaultBrokerURLs() []string {
-	return []string{DefaultBrokerURL, CloudFrontBrokerURL}
+	return []string{DefaultBrokerURL, CloudFrontBrokerURL, AzureBrokerURL}
 }
 
 // BrokerCandidates returns a de-duplicated discovery order. A genuine custom
