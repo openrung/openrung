@@ -38,7 +38,8 @@ const (
 	// cannot prove it is THIS endpoint: without a server name the Azure edge
 	// serves a shared certificate that does not cover the endpoint name, so the
 	// connection authenticates an Azure edge and the Ed25519 relay-list
-	// signature does the rest. That is why it is raced last — see
+	// signature does the rest. Discovery therefore tries it only after every
+	// endpoint-bound front has failed — see
 	// azureFrontDoorVerification for the full tradeoff.
 	AzureBrokerURL = "https://" + azureBrokerHost + "/"
 
@@ -194,10 +195,9 @@ func platformHeaderValue(platform Platform, configured string) string {
 
 // DefaultBrokerURLs returns a fresh copy of the built-in front order.
 //
-// The Azure front is deliberately last. Its TLS proves only that the peer is an
-// Azure edge, not that it is this deployment's endpoint, so it should carry
-// traffic when the two fronts with full peer authentication are unreachable —
-// not in preference to them.
+// The Azure front is deliberately last as a stable preference order. In
+// addition, FirstReachable classifies it as endpoint-unbound and does not start
+// it until the two fronts with full peer authentication have both failed.
 func DefaultBrokerURLs() []string {
 	return []string{DefaultBrokerURL, CloudFrontBrokerURL, AzureBrokerURL}
 }

@@ -6,6 +6,7 @@ gomobile bindings all use one implementation of:
 
 - opportunistic Encrypted Client Hello for the Cloudflare broker front;
 - verified SNI-less TLS for the CloudFront broker front;
+- provider-bound SNI-less TLS for the Azure Front Door discovery fallback;
 - relay-list signature and freshness verification;
 - secure broker URL enforcement;
 - identity, application, platform, and no-store request headers;
@@ -47,6 +48,20 @@ through a FIPS policy with no exported equivalent, so the replacement hook
 cannot honor it, and running under a weaker certificate policy than the rest of
 the process is not a trade this module makes. Discovery still reaches the
 Cloudflare front.
+
+Native Azure Front Door endpoints also suppress SNI, but Azure's shared
+no-SNI certificate cannot authenticate the exact `*.azurefd.net` endpoint. The
+transport pins the shared edge SAN and a public trust chain, which proves an
+Azure edge rather than this deployment. `FirstReachable` therefore races all
+endpoint-bound candidates first and starts endpoint-unbound candidates only
+after every stronger candidate has failed. The relay directory remains
+authentic because its signed envelope is verified independently of TLS.
+
+That signature does not make every broker response safe over a provider-bound
+connection. In particular, a WSS session ticket is a short-lived bearer that an
+impersonating front could forward from the real broker and redeem first.
+`RequestWSSTicket` refuses endpoint-unbound fronts before issuing any HTTP
+request; application-level ticket failover should filter them as well.
 
 This removes the cleartext TLS signal from direct connections, not every
 hostname signal. DNS resolution of the distribution name still carries it. So
@@ -100,11 +115,12 @@ module extraction. The mobile integration must move that request behind this
 transport (or stop using the Cloudflare broker URL) before claiming complete
 broker-SNI concealment. Note that even then the claim holds only where ECH
 survives: the Cloudflare front's ordinary-TLS fallback still sends its hostname,
-and only the CloudFront front is unconditionally SNI-less.
+and only the native CloudFront and Azure fronts are unconditionally SNI-less.
+Azure has the weaker provider-bound authentication described above.
 
-`RequestWSSTicket` owns one hardened POST and response validation. Overall
-deadline, broker-front failover, and the single bounded Retry-After round remain
-application orchestration policy for now.
+`RequestWSSTicket` owns one hardened POST and response validation and refuses
+endpoint-unbound fronts. Overall deadline, broker-front failover, and the single
+bounded Retry-After round remain application orchestration policy for now.
 
 Relay registration/heartbeat and the relay data path are intentionally outside
 this module.

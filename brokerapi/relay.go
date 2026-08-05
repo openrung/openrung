@@ -87,8 +87,10 @@ func statusError(resp *http.Response, operation, brokerURL string) error {
 	}
 }
 
-// FirstReachable starts built-in candidates with a stagger and returns the
-// first verified success. A genuine custom override is attempted alone first.
+// FirstReachable races endpoint-bound candidates with a stagger and returns the
+// first verified success. Endpoint-unbound fronts are raced in a second phase
+// only after every endpoint-bound candidate has failed. A genuine custom
+// override is attempted alone first, regardless of its authentication class.
 func (c *Client) FirstReachable(ctx context.Context, candidates Candidates, options ListOptions) (Fetch, error) {
 	if len(candidates.URLs) == 0 {
 		return Fetch{}, errors.New("no broker endpoints configured")
@@ -118,6 +120,57 @@ func (c *Client) FirstReachable(ctx context.Context, candidates Candidates, opti
 }
 
 func (c *Client) race(ctx context.Context, urls []string, options ListOptions) (Fetch, error) {
+	if len(urls) == 0 {
+		return Fetch{}, errors.New("no broker endpoints configured")
+	}
+
+	endpointBound := make([]string, 0, len(urls))
+	endpointUnbound := make([]string, 0, len(urls))
+	for _, brokerURL := range urls {
+		if EndpointUnboundBrokerFront(brokerURL) {
+			endpointUnbound = append(endpointUnbound, brokerURL)
+		} else {
+			endpointBound = append(endpointBound, brokerURL)
+		}
+	}
+
+	if len(endpointBound) == 0 {
+		return c.racePhase(ctx, endpointUnbound, options)
+	}
+	if len(endpointUnbound) == 0 {
+		return c.racePhase(ctx, endpointBound, options)
+	}
+
+	fetch, boundErr := c.racePhase(ctx, endpointBound, options)
+	if boundErr == nil {
+		return fetch, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return Fetch{}, err
+	}
+
+	fetch, unboundErr := c.racePhase(ctx, endpointUnbound, options)
+	if unboundErr == nil {
+		return fetch, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return Fetch{}, err
+	}
+
+	// The old single-phase race returned the error from urls[0] after every
+	// candidate failed. Classification can change execution order, but not the
+	// caller-visible error choice.
+	if EndpointUnboundBrokerFront(urls[0]) {
+		return Fetch{}, unboundErr
+	}
+	return Fetch{}, boundErr
+}
+
+func (c *Client) racePhase(ctx context.Context, urls []string, options ListOptions) (Fetch, error) {
+	if err := ctx.Err(); err != nil {
+		return Fetch{}, err
+	}
+
 	stagger := options.Stagger
 	if stagger <= 0 {
 		stagger = DefaultDiscoveryStagger

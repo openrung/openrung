@@ -67,22 +67,21 @@ func ListRelays(ctx context.Context, brokerURL string, opts Options) (relay.List
 	return decodeRelayList(list.JSON())
 }
 
-// FirstReachable races the candidates with a staggered start (happy-eyeballs
-// style), mirroring the mobile app's firstReachable. candidate[0] starts
-// immediately; every stagger interval (config.DiscoveryStagger unless
-// Options.Stagger overrides it) with no success yet, the next candidate joins
-// the race. The first SUCCESS wins: its fetch is returned with the endpoint
-// that served it — so the caller can pin later requests to the same broker —
-// and every other in-flight attempt is aborted via context cancellation.
-// Priority is expressed only through the head start: a later candidate that
-// answers first wins even while an earlier one is still pending. A blocked or
-// rate-limited primary therefore never takes discovery offline as long as one
-// candidate answers, and a hung primary costs one stagger interval instead of
-// a full request timeout. If EVERY candidate fails, the FIRST candidate's
-// error is returned — the primary's failure is the meaningful diagnostic (and
-// carries a Retry-After when the primary was rate-limited). With a single
-// candidate this reduces to exactly one attempt whose error propagates
-// unchanged.
+// FirstReachable races exact-endpoint-authenticated candidates with a staggered
+// start (happy-eyeballs style), mirroring the mobile app's firstReachable.
+// candidate[0] starts immediately; every stagger interval
+// (config.DiscoveryStagger unless Options.Stagger overrides it) with no success
+// yet, the next candidate in that trust phase joins the race. The first SUCCESS
+// in the phase wins and every other in-flight attempt is canceled.
+//
+// Endpoint-unbound fronts are held in a separate fallback phase. They do not
+// start merely because a stagger elapsed; every exact-endpoint candidate must
+// fail first. This keeps an ordinary slow response from downgrading discovery
+// to a front that authenticates only its CDN operator. Within either phase,
+// priority is expressed through the head start, so a later peer can still win.
+// If every candidate fails, the original first candidate's error remains the
+// diagnostic. With a single candidate this reduces to exactly one attempt whose
+// error propagates unchanged.
 //
 // When candidates.OverrideFirst is set, URLs[0] is a GENUINE user override
 // (see config.BrokerCandidates) and racing it would betray the user's choice:
@@ -90,12 +89,11 @@ func ListRelays(ctx context.Context, brokerURL string, opts Options) (relay.List
 // to a default front. The override is therefore attempted strictly first,
 // alone, with its full per-attempt timeout — no default is contacted while it
 // is pending — and it wins on any success, exactly like the old sequential
-// loop. Only when the override FAILS does the staggered race above start over
-// the REMAINING candidates (the first of them immediately, the next one
-// stagger later, and so on). If the override and every remaining candidate
+// loop. Only when the override FAILS does the phased default policy above start
+// over the REMAINING candidates. If the override and every remaining candidate
 // fail, the override's error is surfaced — it is candidates.URLs[0], so the
-// all-fail diagnostic is unchanged — except when the caller's ctx was
-// cancelled mid-race, which still surfaces the cancellation.
+// all-fail diagnostic is unchanged — except when the caller's ctx was canceled
+// mid-race, which still surfaces the cancellation.
 func FirstReachable(ctx context.Context, candidates config.Candidates, opts Options) (Fetch, error) {
 	fetch, err := brokerapi.NewClient(opts.HTTPClient, brokerapi.Options{
 		AppVersion: client.AppVersion(),

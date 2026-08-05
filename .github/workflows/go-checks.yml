@@ -23,8 +23,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Relay deploy state matrices
+      - name: Deploy script tests
         run: |
+          bash -n deploy/broker/azure-front-door-up.sh
+          bash -n deploy/broker/azure-front-door-up_test.sh
+          bash deploy/broker/azure-front-door-up_test.sh
           bash -n deploy/relay/foundation-up.sh
           bash -n deploy/relay/foundation-up_test.sh
           bash deploy/relay/foundation-up_test.sh

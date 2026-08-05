@@ -65,6 +65,28 @@ func TestAzureFrontDoorAddress(t *testing.T) {
 	}
 }
 
+func TestEndpointUnboundBrokerFront(t *testing.T) {
+	tests := []struct {
+		brokerURL string
+		want      bool
+	}{
+		{brokerURL: AzureBrokerURL, want: true},
+		{brokerURL: "https://" + testAzureBareEndpoint + "/prefix", want: true},
+		{brokerURL: "HTTPS://" + strings.ToUpper(testAzureEndpoint) + ".:443/", want: true},
+		{brokerURL: "https://" + testAzureEndpoint + ":8443/"},
+		{brokerURL: "http://" + testAzureEndpoint + "/"},
+		{brokerURL: "https://broker.example/"},
+		{brokerURL: CloudFrontBrokerURL},
+		{brokerURL: "https://user:password@" + testAzureEndpoint + "/"},
+		{brokerURL: "not a broker URL"},
+	}
+	for _, test := range tests {
+		if got := EndpointUnboundBrokerFront(test.brokerURL); got != test.want {
+			t.Errorf("EndpointUnboundBrokerFront(%q) = %v, want %v", test.brokerURL, got, test.want)
+		}
+	}
+}
+
 func TestBrokerAzureDialOmitsSNI(t *testing.T) {
 	for _, endpoint := range []string{testAzureEndpoint, testAzureBareEndpoint} {
 		t.Run(endpoint, func(t *testing.T) {
@@ -246,17 +268,17 @@ func TestBrokerAzureConstantsStayLinked(t *testing.T) {
 	}
 }
 
-// The Azure front authenticates only "an Azure edge", so it must never displace
-// a front that proves it is ours. Discovery races candidates in order with a
-// stagger, so position is the whole mitigation.
-func TestAzureFrontIsRacedLast(t *testing.T) {
+// Keep the stable built-in preference order even though FirstReachable also
+// enforces the stronger boundary by putting endpoint-unbound fronts in a
+// separate phase.
+func TestAzureFrontRemainsLastInDefaultOrder(t *testing.T) {
 	defaults := DefaultBrokerURLs()
 	if len(defaults) == 0 || defaults[len(defaults)-1] != AzureBrokerURL {
 		t.Fatalf("built-in front order = %v, want the Azure front last", defaults)
 	}
 	for _, candidate := range defaults[:len(defaults)-1] {
-		if strings.Contains(candidate, "azurefd.net") {
-			t.Fatalf("an Azure front appears before the end of the order: %q", candidate)
+		if EndpointUnboundBrokerFront(candidate) {
+			t.Fatalf("an endpoint-unbound front appears before the end of the order: %q", candidate)
 		}
 	}
 }

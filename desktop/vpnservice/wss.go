@@ -152,14 +152,18 @@ func (s *Service) wssDialer() func(context.Context, string, string) (wssBridge, 
 	}
 }
 
-// wssTicketBrokerFronts places the broker front that served this session's
-// signed directory first, then adds every independent configured default.
+// wssTicketBrokerFronts places the endpoint-authenticated broker front that
+// served this session's signed directory first, then adds each equally strong
+// configured default. A relay-list signature can recover authenticity when a
+// discovery front authenticates only its CDN, but a bearer ticket also needs
+// confidentiality: ticket requests therefore require TLS authentication of
+// the exact broker endpoint and never use endpoint-unbound fronts.
 func wssTicketBrokerFronts(primary string) []string {
 	fronts := make([]string, 0, len(config.DefaultBrokerURLs)+1)
 	seen := make(map[string]struct{}, len(config.DefaultBrokerURLs)+1)
 	add := func(value string) {
 		value = strings.TrimSpace(value)
-		if value == "" {
+		if value == "" || brokerapi.EndpointUnboundBrokerFront(value) {
 			return
 		}
 		if _, duplicate := seen[value]; duplicate {

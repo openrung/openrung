@@ -48,8 +48,11 @@ func (r WSSTicketResponse) GoString() string {
 	return r.String()
 }
 
-// RequestWSSTicket asks one broker front for a credential. Redirects are never
-// followed, preventing POST or identity replay to another origin.
+// RequestWSSTicket asks one endpoint-authenticated broker front for a
+// credential. Redirects are never followed, preventing POST or identity replay
+// to another origin. Endpoint-unbound fronts are refused: a relay-list
+// signature protects directory authenticity, but cannot keep a bearer ticket
+// in this response confidential from an impersonating front.
 func (c *Client) RequestWSSTicket(
 	ctx context.Context,
 	brokerURL string,
@@ -64,6 +67,11 @@ func (c *Client) RequestWSSTicket(
 	endpoint, err := WSSTicketURL(brokerURL)
 	if err != nil {
 		return WSSTicketResponse{}, err
+	}
+	if EndpointUnboundBrokerFront(brokerURL) {
+		return WSSTicketResponse{}, errors.New(
+			"WSS ticket requests require TLS authentication of the exact broker endpoint",
+		)
 	}
 	ctx, cancel := withRequestTimeout(ctx, DefaultWSSTicketTimeout)
 	defer cancel()

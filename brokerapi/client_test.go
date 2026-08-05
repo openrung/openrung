@@ -215,6 +215,191 @@ func TestFirstReachableStaggersAndCancelsLoser(t *testing.T) {
 	}
 }
 
+func TestFirstReachableDefersEndpointUnboundFrontPastStagger(t *testing.T) {
+	var endpointUnboundStarted atomic.Bool
+	secondBoundStarted := make(chan struct{})
+	releaseSecondBound := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(releaseSecondBound) }) })
+
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch {
+		case request.URL.Hostname() == azureBrokerHost:
+			endpointUnboundStarted.Store(true)
+			return nil, errors.New("endpoint-unbound front must not start")
+		case request.URL.Port() == "8001":
+			<-request.Context().Done()
+			return nil, request.Context().Err()
+		case request.URL.Port() == "8002":
+			close(secondBoundStarted)
+			select {
+			case <-releaseSecondBound:
+				return response(request, http.StatusOK, `{"count":0,"server_time":"2026-07-24T00:00:00Z","relays":[]}`), nil
+			case <-request.Context().Done():
+				return nil, request.Context().Err()
+			}
+		default:
+			return nil, errors.New("unexpected candidate")
+		}
+	})
+	api := NewClient(&http.Client{Transport: transport}, Options{})
+
+	type result struct {
+		fetch Fetch
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		fetch, err := api.FirstReachable(context.Background(), Candidates{
+			// Put Azure before the second strong front to prove authentication
+			// class, rather than slice position, controls phase membership.
+			URLs: []string{
+				"http://127.0.0.1:8001",
+				AzureBrokerURL,
+				"http://127.0.0.1:8002",
+			},
+		}, ListOptions{Stagger: time.Millisecond})
+		done <- result{fetch: fetch, err: err}
+	}()
+
+	select {
+	case <-secondBoundStarted:
+		// The stagger elapsed and started another endpoint-bound candidate.
+	case <-time.After(time.Second):
+		t.Fatal("second endpoint-bound front did not start")
+	}
+	if endpointUnboundStarted.Load() {
+		t.Fatal("endpoint-unbound front started when the discovery stagger elapsed")
+	}
+	releaseOnce.Do(func() { close(releaseSecondBound) })
+
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		if got.fetch.BrokerURL != "http://127.0.0.1:8002" {
+			t.Fatalf("fetch = %+v", got.fetch)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("endpoint-bound winner did not finish discovery")
+	}
+	if endpointUnboundStarted.Load() {
+		t.Fatal("endpoint-unbound front started despite an endpoint-bound success")
+	}
+}
+
+func TestFirstReachableStartsEndpointUnboundOnlyAfterEveryBoundFrontFails(t *testing.T) {
+	firstBoundErr := errors.New("first endpoint-bound front failed")
+	secondBoundErr := errors.New("second endpoint-bound front failed")
+	endpointUnboundErr := errors.New("endpoint-unbound front failed")
+	secondBoundStarted := make(chan struct{})
+	releaseSecondBound := make(chan struct{})
+	endpointUnboundStarted := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(releaseSecondBound) }) })
+
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch {
+		case request.URL.Hostname() == azureBrokerHost:
+			close(endpointUnboundStarted)
+			return nil, endpointUnboundErr
+		case request.URL.Port() == "8001":
+			return nil, firstBoundErr
+		case request.URL.Port() == "8002":
+			close(secondBoundStarted)
+			<-releaseSecondBound
+			return nil, secondBoundErr
+		default:
+			return nil, errors.New("unexpected candidate")
+		}
+	})
+	api := NewClient(&http.Client{Transport: transport}, Options{})
+	done := make(chan error, 1)
+	go func() {
+		_, err := api.FirstReachable(context.Background(), Candidates{
+			// Endpoint-unbound is intentionally first to also verify that an
+			// all-fail race still reports the original first candidate's error.
+			URLs: []string{
+				AzureBrokerURL,
+				"http://127.0.0.1:8001",
+				"http://127.0.0.1:8002",
+			},
+		}, ListOptions{Stagger: time.Millisecond})
+		done <- err
+	}()
+
+	select {
+	case <-secondBoundStarted:
+	case <-time.After(time.Second):
+		t.Fatal("second endpoint-bound front did not start")
+	}
+	select {
+	case <-endpointUnboundStarted:
+		t.Fatal("endpoint-unbound front started while a stronger front was still running")
+	default:
+	}
+
+	releaseOnce.Do(func() { close(releaseSecondBound) })
+	select {
+	case <-endpointUnboundStarted:
+	case <-time.After(time.Second):
+		t.Fatal("endpoint-unbound front did not start after every stronger front failed")
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, endpointUnboundErr) {
+			t.Fatalf("all-fail error = %v, want original first candidate error %v", err, endpointUnboundErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("all-fail discovery did not return")
+	}
+}
+
+func TestFirstReachableCancellationDoesNotEnterEndpointUnboundPhase(t *testing.T) {
+	strongerStarted := make(chan struct{})
+	var endpointUnboundStarted atomic.Bool
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Hostname() == azureBrokerHost {
+			endpointUnboundStarted.Store(true)
+			return nil, errors.New("endpoint-unbound front must not start")
+		}
+		close(strongerStarted)
+		<-request.Context().Done()
+		return nil, request.Context().Err()
+	})
+	api := NewClient(&http.Client{Transport: transport}, Options{})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := api.FirstReachable(ctx, Candidates{
+			URLs: []string{AzureBrokerURL, "http://127.0.0.1:8001"},
+		}, ListOptions{Stagger: time.Millisecond})
+		done <- err
+	}()
+
+	select {
+	case <-strongerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("endpoint-bound front did not start")
+	}
+	if endpointUnboundStarted.Load() {
+		t.Fatal("endpoint-unbound front started before the stronger phase")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled discovery returned %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled discovery did not return promptly")
+	}
+	if endpointUnboundStarted.Load() {
+		t.Fatal("cancellation entered the endpoint-unbound phase")
+	}
+}
+
 func TestFirstReachableParentCancellationReturnsWithoutDrainingTransport(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})

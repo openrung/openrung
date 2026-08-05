@@ -2,14 +2,16 @@
 
 Status: **live and advertised.** Provisioned 2026-08-05 as
 `cdn-edge-cxdnhsg2aadmaubj.z02.azurefd.net`, accepted by `cmd/frontcheck`, and
-raced **last** in `brokerapi.DefaultBrokerURLs()`. The endpoint prefix is
-generic on purpose — see below; the first attempt used a project-identifying
-name and was replaced before anything shipped.
+advertised **only as a last-resort discovery phase** after both
+exact-endpoint-authenticated fronts fail. The endpoint prefix is generic on
+purpose — see below; the first attempt used a project-identifying name and was
+replaced before anything shipped.
 
 Installed clients only gain this front when they update — the front list is
 compiled in, and there is no server-side way to push one. Desktop picks it up on
 its next release build; the mobile repositories must bump their pinned
-`brokerapi` tag to **v0.4.0** and mirror the addition in their `AppConfig`.
+`brokerapi` tag to **v0.4.0**, mirror both the URL and two-phase discovery policy
+in `AppConfig`, and keep Azure out of any application-level WSS-ticket failover.
 
 ## Why Azure, and why SNI-less
 
@@ -68,10 +70,19 @@ hostname to verify against. Three options existed:
    can buy for a domain they own.
 
 What the connection proves is therefore *an Azure edge*, not *our endpoint*.
-That is survivable because relay lists are Ed25519-signed and verified against
-pinned keys, with a `not_after` bound that also defeats replay — but an
-impersonating front would still see client identity headers and telemetry, and
-could refuse to serve. Hence: **last in the discovery order.**
+That is survivable for relay discovery because lists are Ed25519-signed and
+verified against pinned keys, with a `not_after` bound that also defeats replay.
+It is not sufficient for every broker response: an impersonating front would
+still see client identity headers and telemetry, could refuse to serve, and
+could steal a WSS bearer ticket by forwarding the request to the real broker.
+`RequestWSSTicket` therefore rejects this front before sending HTTP, and desktop
+ticket failover filters it as defense in depth.
+
+Discovery enforces the weaker trust boundary structurally rather than relying
+only on list position. Cloudflare and CloudFront race in the first phase; Azure
+does not start when their stagger elapses and is attempted only after both have
+failed. An active censor can still force the fallback by blocking both stronger
+fronts, but a merely slow response cannot silently downgrade discovery.
 
 A custom domain does not help. Without SNI the edge serves the shared
 certificate regardless of the Host, so a custom domain would be no better
@@ -83,9 +94,24 @@ authenticated while losing the ordinary verification it gets by keeping SNI.
 bash deploy/broker/azure-front-door-up.sh
 ```
 
-The script is idempotent and encodes the settings below, including the two that
-are load-bearing rather than stylistic (no custom domain, caching off). It
-checks the origin first and asserts caching is actually off afterwards.
+The script is convergent and fail-closed, not merely create-if-missing. On every
+run it checks the origin, requires the existing profile to have the Standard
+SKU, reconciles the endpoint state, health probe, load-balancing, origin TLS,
+and route protocol settings, and then reads the effective configuration back.
+It verifies the origin host and host header, HTTPS port, certificate-name check,
+enabled states, probe fields, sole origin, route origin group, HTTPS-only input
+and forwarding, `/*` match, default-domain link, and sole endpoint, origin
+group, origin, and route.
+
+Some route state is deliberately not removed automatically. If an existing
+route has a cache configuration, custom-domain attachment, rule set, or origin
+path, the script exits with the offending value before updating that route.
+Those additions can change request routing or re-enable caching, and removing
+them may detach operator-created resources; inspect and remove them deliberately
+in Azure, then rerun. It also requires the dedicated profile to contain no
+custom-domain resources at all. A successful run therefore means all asserted
+properties matched after reconciliation—not just that resources with the right
+names existed.
 
 ### Resolved blocker: sponsorship subscriptions cannot create a profile
 
@@ -146,6 +172,10 @@ carries no VPN clause in its AUP.
    a failure would mean only that the root has no handler rather than that the
    broker is unhealthy.
 
+Rerun `bash deploy/broker/azure-front-door-up.sh` after any portal or CLI
+change. The script repairs drift in the ordinary mutable fields above and fails
+on incompatible attachments or any value Azure did not apply as requested.
+
 Budget alerts only email; they do not stop spending. Set one, and keep the
 runbook for deallocating if credit is exhausted.
 
@@ -171,7 +201,12 @@ suffix, so a boring prefix costs nothing. The resource group and profile names
 are never on the wire and stay descriptive.
 
 Endpoint names are **immutable** — changing one means creating a new endpoint
-with its own route, verifying it, and deleting the old one.
+with its own route and verifying it before clients move. The provisioning script
+intentionally requires one endpoint per dedicated profile and rejects a changed
+`OPENRUNG_AZURE_ENDPOINT` before creating anything. For a staged replacement,
+provision a fresh profile (and, if convenient, resource group), run the gate,
+ship the new URL, and retain the old profile until clients using its compiled-in
+URL can be retired. Then delete the old profile deliberately.
 
 Note the same reasoning indicts `broker.openrung.org`, the *primary* front,
 far more directly: it is a subdomain of the project's own domain, and ECH hides
@@ -241,16 +276,24 @@ Recorded so a replacement endpoint follows the same path. Done on 2026-08-05
 after the gate passed:
 
 1. `azureBrokerHost` / `AzureBrokerURL` added in `brokerapi/types.go`, appended
-   **last** in `DefaultBrokerURLs()`. Last is not cosmetic — this front proves
-   only that the peer is an Azure edge, so it must not displace a front that
-   proves it is ours. `TestAzureFrontIsRacedLast` holds that.
+   last in `DefaultBrokerURLs()`. More importantly, `FirstReachable` classifies
+   native Azure endpoints as endpoint-unbound and does not start their phase
+   until every exact-endpoint candidate has failed. The strict-phase tests in
+   `brokerapi/client_test.go` hold that boundary independently of list order;
+   `TestAzureFrontRemainsLastInDefaultOrder` also preserves the stable default
+   preference.
 2. `TestAzureFrontIsNotYetAdvertised` replaced by
    `TestBrokerAzureConstantsStayLinked`, which asserts the shipped endpoint is
    recognized by the no-SNI recognizer — a name the recognizer missed would be
    dialed *with* SNI and silently leak.
 3. `brokerapi/VERSION` → 0.4.0.
-4. Still outstanding: the mobile repositories must pin `brokerapi/v0.4.0` and
-   mirror the addition in their own `AppConfig`.
+4. `RequestWSSTicket` rejects endpoint-unbound fronts before HTTP, and desktop
+   ticket orchestration filters them as defense in depth. This is required
+   because the signed directory authenticates relay lists but cannot make a
+   bearer response confidential from an impersonating Azure edge.
+5. Still outstanding: the mobile repositories must pin `brokerapi/v0.4.0`,
+   mirror the URL **and strict trust phase** in their own `AppConfig`, and route
+   WSS-ticket requests through the shared method or independently exclude Azure.
 
 Re-run `frontcheck` after any endpoint, CDN, or certificate change.
 
