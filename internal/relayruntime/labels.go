@@ -30,13 +30,15 @@ var (
 	labelNouns      = parseLabelWords(labelNounsRaw)
 )
 
-// parseLabelWords splits the embedded word list, ignoring blank lines so the
-// data files stay forgiving of a trailing newline.
+// parseLabelWords splits the embedded word list without normalizing its
+// contents. Keeping each non-empty line byte-for-byte aligned with the shell
+// helper lets the vocabulary tests reject whitespace and other invalid data
+// before the two naming paths can diverge.
 func parseLabelWords(raw string) []string {
 	lines := strings.Split(raw, "\n")
 	words := make([]string, 0, len(lines))
-	for _, line := range lines {
-		if word := strings.TrimSpace(line); word != "" {
+	for _, word := range lines {
+		if word != "" {
 			words = append(words, word)
 		}
 	}

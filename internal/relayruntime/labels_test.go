@@ -29,6 +29,16 @@ func TestGenerateLabelProducesValidNames(t *testing.T) {
 const minLabelCombinations = 10000
 
 func TestLabelVocabularyIsLargeAndUnique(t *testing.T) {
+	assertRawFormatting := func(name, raw string) {
+		for lineNumber, line := range strings.Split(raw, "\n") {
+			if line != strings.TrimSpace(line) {
+				t.Errorf("%s line %d has surrounding whitespace: %q", name, lineNumber+1, line)
+			}
+		}
+	}
+	assertRawFormatting("label_adjectives.txt", labelAdjectivesRaw)
+	assertRawFormatting("label_nouns.txt", labelNounsRaw)
+
 	assertUnique := func(name string, words []string) {
 		seen := make(map[string]bool, len(words))
 		for _, w := range words {
