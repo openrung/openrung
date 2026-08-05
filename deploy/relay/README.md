@@ -302,10 +302,13 @@ For an eligible direct-mode Foundation relay on public/local port 443:
 2. Copy [`.wss.env.example`](.wss.env.example) to `.wss.env`, set mode `0600`,
    and configure the exact relay ID, broker ticket public-key ring, and a unique
    current/overlap origin-token ring for every advertised front.
-3. Configure CloudFront to use this relay's origin TLS listener on `8443`, with
-   the origin-facing firewall and fixed loopback proxy described in
-   [`cloudfront-wss.md`](cloudfront-wss.md). The compose file intentionally does
-   not invent or store origin certificate secrets.
+3. Configure the CDN front to use this relay's origin TLS listener on `8443`,
+   with the origin-facing firewall and fixed loopback proxy described in
+   [`cloudfront-wss.md`](cloudfront-wss.md). For a bunny.net pull zone, that
+   runbook still defines the architecture and rollout discipline; read it with
+   [`bunny-wss.md`](bunny-wss.md), which records only the provider differences.
+   The compose file intentionally does not invent or store origin certificate
+   secrets.
 4. Start the colocated services:
 
    ```sh
