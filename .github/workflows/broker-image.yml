@@ -15,6 +15,7 @@ on:
       - 'internal/wssbridge/**'
       - 'go.mod'
       - 'go.sum'
+      - '.dockerignore'
       # The root go.mod replaces nested modules with local directories, so the
       # broker's build/download layers depend on their contents too.
       - 'brokerapi/go.mod'

@@ -7,49 +7,65 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
 )
 
-func TestNewXrayCommandExcludesIdentitySeedFromEnvironment(t *testing.T) {
-	t.Setenv(IdentitySeedEnvironmentVariable, "long-lived-secret")
-	t.Setenv("OPENRUNG_TEST_CHILD_ENV", "preserved")
+func TestNewXrayCommandSanitizesOpenRungEnvironment(t *testing.T) {
+	secretVariables := []string{
+		"OPENRUNG_VOLUNTEER_TOKEN",
+		"openrung_foundation_token",
+		"OpenRung_Relay_Signing_Key",
+		"OPENRUNG_DASHBOARD_TOKEN",
+		"openrung_api_token",
+		"OpenRung_Identity_Seed",
+		"OPENRUNG_REALITY_private_KEY",
+	}
+	for _, name := range secretVariables {
+		t.Setenv(name, "must-not-reach-xray")
+	}
+	t.Setenv("XRAY_LOCATION_ASSET", "/xray-assets")
 
 	cmd := NewXrayCommand(context.Background(), "xray", "run")
-	if slices.Contains(cmd.Env, IdentitySeedEnvironmentVariable+"=long-lived-secret") {
-		t.Fatal("Xray command inherited OPENRUNG_IDENTITY_SEED")
+	for _, name := range secretVariables {
+		if environmentContainsVariable(cmd.Env, name) {
+			t.Fatalf("Xray command inherited %s", name)
+		}
 	}
-	if !slices.Contains(cmd.Env, "OPENRUNG_TEST_CHILD_ENV=preserved") {
+	if !slices.Contains(cmd.Env, "XRAY_LOCATION_ASSET=/xray-assets") {
 		t.Fatal("Xray command dropped unrelated environment variables")
-	}
-
-	// Windows treats environment names case-insensitively. Exercise the filter
-	// directly so a differently-cased spelling cannot survive into a child.
-	filtered := environmentWithoutIdentitySeed([]string{
-		"OpenRung_Identity_Seed=also-secret",
-		"OPENRUNG_TEST_CHILD_ENV=preserved",
-	})
-	if len(filtered) != 1 || filtered[0] != "OPENRUNG_TEST_CHILD_ENV=preserved" {
-		t.Fatalf("case-insensitive identity seed filtering = %q", filtered)
 	}
 }
 
-func TestGenerateRealityKeyPairExcludesIdentitySeedFromEnvironment(t *testing.T) {
+func TestGenerateRealityKeyPairSanitizesOpenRungEnvironment(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake Xray executable requires a POSIX shell")
 	}
 
 	fakeXray := filepath.Join(t.TempDir(), "xray")
 	script := `#!/bin/sh
-if [ -n "${OPENRUNG_IDENTITY_SEED:-}" ]; then
-  echo "identity seed leaked to xray" >&2
+if env | grep -Eiq '^openrung_'; then
+  echo "OpenRung environment leaked to xray" >&2
   exit 97
+fi
+if [ "${XRAY_LOCATION_ASSET:-}" != "/xray-assets" ]; then
+  echo "Xray runtime environment was dropped" >&2
+  exit 98
 fi
 printf 'Private key: private_key\nPublic key: public-key\n'
 `
 	if err := os.WriteFile(fakeXray, []byte(script), 0o700); err != nil {
 		t.Fatalf("write fake Xray: %v", err)
 	}
-	t.Setenv(IdentitySeedEnvironmentVariable, "long-lived-secret")
+	for _, name := range []string{
+		"OpenRung_Volunteer_Token",
+		"OPENRUNG_FOUNDATION_TOKEN",
+		"openrung_identity_seed",
+		"OPENRUNG_Reality_Private_Key",
+	} {
+		t.Setenv(name, "must-not-reach-xray")
+	}
+	t.Setenv("XRAY_LOCATION_ASSET", "/xray-assets")
 
 	keys, err := GenerateRealityKeyPair(fakeXray)
 	if err != nil {
@@ -58,6 +74,16 @@ printf 'Private key: private_key\nPublic key: public-key\n'
 	if keys.PrivateKey != "private_key" || keys.PublicKey != "public-key" {
 		t.Fatalf("unexpected keys: %+v", keys)
 	}
+}
+
+func environmentContainsVariable(environ []string, want string) bool {
+	for _, entry := range environ {
+		name, _, _ := strings.Cut(entry, "=")
+		if strings.EqualFold(name, want) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestBuildXrayConfig(t *testing.T) {

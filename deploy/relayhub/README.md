@@ -39,7 +39,7 @@ Operators who already know the relay is publicly reachable can select
 ## Quick start
 
 ```sh
-cp .env.example .env          # set OPENRUNG_HUB_PUBLIC_HOST + OPENRUNG_BROKER_URL
+install -m 0600 .env.example .env  # set OPENRUNG_HUB_PUBLIC_HOST + OPENRUNG_BROKER_URL
 mkdir -p certs                # put hub.crt + hub.key here (see TLS below)
 docker compose up -d --build
 docker compose logs -f

@@ -112,6 +112,10 @@ trap 'rm -f "$UD"' EXIT
 cat > "$UD" <<'TMPL'
 #!/bin/bash
 set -eux
+# Secrets are written later in this bootstrap. Keep newly-created files private
+# by default, then explicitly relax only the public certificate and directories
+# that the unprivileged relayhub container must traverse.
+umask 077
 exec > /var/log/openrung-init.log 2>&1
 export DEBIAN_FRONTEND=noninteractive
 
@@ -159,11 +163,12 @@ MAC=$(imds network/interfaces/macs/ | head -1 | tr -d /)
 PRIMARY=$(imds local-ipv4)
 SECONDARY=$(imds "network/interfaces/macs/$MAC/local-ipv4s" | grep -v "^$PRIMARY$" | head -1)
 
-mkdir -p /etc/openrung/certs
+install -d -m 0755 /etc/openrung/certs
 openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
   -keyout /etc/openrung/certs/hub.key -out /etc/openrung/certs/hub.crt \
   -subj "/CN=__EIP1__" -addext "subjectAltName=IP:__EIP1__,IP:__EIP2__"
-chmod 644 /etc/openrung/certs/hub.crt /etc/openrung/certs/hub.key
+chmod 0600 /etc/openrung/certs/hub.key
+chmod 0644 /etc/openrung/certs/hub.crt
 
 cat > /etc/openrung/relayhub.env <<ENV
 OPENRUNG_HUB_PUBLIC_HOST=__EIP1__
@@ -178,8 +183,22 @@ OPENRUNG_HUB_REFLECTOR_ADVERTISE=__EIP1__:__REFLECTOR_PORT__,__EIP2__:__REFLECTO
 __TOKEN_ENV__
 __ANON_ENV__
 ENV
+chown root:root /etc/openrung/relayhub.env
+chmod 0600 /etc/openrung/relayhub.env
 
 docker pull __IMAGE__
+# The image runs as its unprivileged openrung user. Preserve mode 0600 while
+# making the key readable by that user through the read-only bind mount.
+if ! HUB_UID=$(docker run --rm --entrypoint id __IMAGE__ -u); then
+  echo "could not resolve relayhub image UID" >&2
+  exit 1
+fi
+case "$HUB_UID" in
+  ''|*[!0-9]*) echo "invalid relayhub image UID: $HUB_UID" >&2; exit 1 ;;
+  0) echo "relayhub image must run as a non-root user" >&2; exit 1 ;;
+esac
+chown "$HUB_UID" /etc/openrung/certs/hub.key
+chmod 0600 /etc/openrung/certs/hub.key
 docker rm -f openrung-relayhub 2>/dev/null || true
 docker run -d --name openrung-relayhub --restart unless-stopped \
   --network host --cap-drop ALL --read-only --tmpfs /tmp \

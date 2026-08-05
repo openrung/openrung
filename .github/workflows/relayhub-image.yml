@@ -19,6 +19,7 @@ on:
       - 'wsscore/**'
       - 'go.mod'
       - 'go.sum'
+      - '.dockerignore'
       - 'deploy/relayhub/**'
       - '.github/workflows/relayhub-image.yml'
   workflow_dispatch:

@@ -17,8 +17,10 @@ import (
 const (
 	// IdentitySeedEnvironmentVariable carries the relay's long-lived Ed25519
 	// identity seed. Xray never needs it, so every Xray subprocess is launched
-	// with this variable removed from its environment.
+	// without the relay's OPENRUNG_* environment namespace.
 	IdentitySeedEnvironmentVariable = "OPENRUNG_IDENTITY_SEED"
+
+	openRungEnvironmentVariablePrefix = "OPENRUNG_"
 
 	// DefaultMaxSessions and DefaultMaxMbps are advertised capacity hints. The
 	// relay does not enforce them directly; the broker uses them when ranking
@@ -149,24 +151,33 @@ func GenerateRealityKeyPair(xrayPath string) (RealityKeyPair, error) {
 	return ParseRealityKeyPair(out)
 }
 
-// NewXrayCommand constructs an Xray subprocess without passing the relay's
-// stable-identity seed to it. This shared boundary covers both one-shot key
+// NewXrayCommand constructs an Xray subprocess without passing relay-owned
+// environment variables to it. This shared boundary covers both one-shot key
 // generation and the long-running relay process.
 func NewXrayCommand(ctx context.Context, path string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, path, args...)
-	cmd.Env = environmentWithoutIdentitySeed(os.Environ())
+	cmd.Env = environmentForXray(os.Environ())
 	return cmd
 }
 
-func environmentWithoutIdentitySeed(environ []string) []string {
+func environmentForXray(environ []string) []string {
+	// Keep the ordinary process environment because Xray may need PATH, proxy or
+	// certificate settings, and XRAY_* runtime configuration. Xray receives all
+	// relay configuration through its config file and never needs OPENRUNG_*.
+	// Filtering the whole application namespace is safer than maintaining a list
+	// of today's secrets: future relay credentials are excluded by default too.
 	filtered := make([]string, 0, len(environ))
 	for _, entry := range environ {
 		name, _, _ := strings.Cut(entry, "=")
-		if !strings.EqualFold(name, IdentitySeedEnvironmentVariable) {
+		if !hasCaseInsensitivePrefix(name, openRungEnvironmentVariablePrefix) {
 			filtered = append(filtered, entry)
 		}
 	}
 	return filtered
+}
+
+func hasCaseInsensitivePrefix(value, prefix string) bool {
+	return len(value) >= len(prefix) && strings.EqualFold(value[:len(prefix)], prefix)
 }
 
 func ParseRealityKeyPair(out []byte) (RealityKeyPair, error) {

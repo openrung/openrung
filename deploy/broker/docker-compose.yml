@@ -1,6 +1,6 @@
 # OpenRung broker (control plane).
 #
-#   cp .env.example .env      # then edit .env (token/anonymous, dashboard, store)
+#   install -m 0600 .env.example .env  # then edit .env (token/anonymous, dashboard, store)
 #   docker compose up -d --build
 #   docker compose logs -f
 #

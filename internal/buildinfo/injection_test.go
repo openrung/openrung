@@ -77,3 +77,75 @@ func TestInjectionSitesUseProvenSymbols(t *testing.T) {
 		t.Fatal("found no -X injection sites at all; the scan pattern is broken")
 	}
 }
+
+// Every server Dockerfile uses COPY . . during its build stage. Keep local
+// credentials, private-key material, and documentation-only env templates out
+// of that context so they cannot be retained in an image layer or remote cache.
+func TestDockerBuildContextExcludesSecretFiles(t *testing.T) {
+	path := filepath.Join("..", "..", ".dockerignore")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+
+	ruleLines := make(map[string]int)
+	lastNegationLine := 0
+	for lineNumber, line := range strings.Split(string(data), "\n") {
+		rule := strings.TrimSpace(line)
+		if rule == "" || strings.HasPrefix(rule, "#") {
+			continue
+		}
+		ruleLines[rule] = lineNumber + 1
+		if strings.HasPrefix(rule, "!") {
+			lastNegationLine = lineNumber + 1
+		}
+	}
+
+	for _, required := range []string{
+		".env",
+		".env.*",
+		"*.env",
+		"*.env.*",
+		"**/.env",
+		"**/.env.*",
+		"**/*.env",
+		"**/*.env.*",
+		"*.key",
+		"*.pem",
+		"*.p12",
+		"*.pfx",
+		"*.seed",
+		"**/*.key",
+		"**/*.pem",
+		"**/*.p12",
+		"**/*.pfx",
+		"**/*.seed",
+	} {
+		lineNumber, ok := ruleLines[required]
+		if !ok {
+			t.Errorf("%s does not exclude secret files matching %q", path, required)
+		} else if lineNumber < lastNegationLine {
+			// Docker evaluates matching rules in order. Requiring every secret
+			// rule after the final exception prevents a later broad negation,
+			// such as !deploy/**, from restoring sensitive files to the context.
+			t.Errorf("%s:%d secret rule %q precedes a later negation on line %d", path, lineNumber, required, lastNegationLine)
+		}
+	}
+
+	dockerfiles, err := filepath.Glob(filepath.Join("..", "..", "deploy", "*", "Dockerfile"))
+	if err != nil {
+		t.Fatalf("glob deploy Dockerfiles: %v", err)
+	}
+	if len(dockerfiles) == 0 {
+		t.Fatal("no deploy Dockerfiles found; env-template build-input check is not running")
+	}
+	for _, dockerfile := range dockerfiles {
+		contents, err := os.ReadFile(dockerfile)
+		if err != nil {
+			t.Fatalf("read %s: %v", dockerfile, err)
+		}
+		if strings.Contains(string(contents), ".env.example") {
+			t.Errorf("%s consumes an env template; review whether it needs a narrow .dockerignore exception", dockerfile)
+		}
+	}
+}

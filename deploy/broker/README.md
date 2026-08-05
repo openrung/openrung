@@ -14,7 +14,7 @@ fronted by Cloudflare with a direct-IP origin fallback on `:8080`.
 ## Quick start
 
 ```sh
-cp .env.example .env          # edit: signing seeds, token/anonymous, dashboard, store
+install -m 0600 .env.example .env  # edit: signing seeds, token/anonymous, dashboard, store
 docker compose up -d --build
 docker compose logs -f
 ```
