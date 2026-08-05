@@ -54,10 +54,11 @@ if [ "${OPENRUNG_NODE_CLASS:-volunteer}" != "volunteer" ]; then
   exit 2
 fi
 
-adjectives=(happy grumpy glorious sleepy brave clever gentle jolly mighty nimble plucky quiet rapid shiny snappy spry sturdy sunny swift witty zesty breezy cosmic dapper eager fuzzy golden hardy lucky merry noble proud quirky rustic silly valiant)
-nouns=(hippo walrus castle otter falcon badger lantern comet maple harbor meadow beacon pebble willow cactus cobra ferret gecko heron ibex jaguar koala lemur marmot narwhal ocelot panther quokka raven salmon tapir urchin viper wombat yak zebra)
+# Names come from the relay binary's own vocabulary, read from the canonical
+# word lists rather than a copy kept here (see deploy/lib/relay-label.sh).
+source "$(dirname -- "${BASH_SOURCE[0]}")/../lib/relay-label.sh"
 
-NAME="${1:-${adjectives[RANDOM % ${#adjectives[@]}]}-${nouns[RANDOM % ${#nouns[@]}]}}"
+NAME="${1:-$(openrung_random_label)}"
 
 echo "Provisioning Linode relay '${NAME}' in ${REGION} (${TYPE}, ${OS_IMAGE})"
 

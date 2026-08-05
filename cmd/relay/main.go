@@ -42,6 +42,7 @@ func main() {
 		os.Exit(1)
 	}
 	showVersion := flag.Bool("version", false, "print relay version and exit")
+	printLabel := flag.Bool("print-label", false, "print one random adjective-noun label and exit; provisioning scripts use this to name a relay from the binary's own vocabulary instead of keeping a copy of the word lists")
 	flag.StringVar(&cfg.BrokerURL, "broker", "http://localhost:8080", "broker base URL")
 	flag.StringVar(&cfg.RegistrationToken, "registration-token", os.Getenv("OPENRUNG_VOLUNTEER_TOKEN"), "volunteer-class relay registration token")
 	flag.StringVar(&cfg.Label, "label", os.Getenv("OPENRUNG_LABEL"), "human-readable relay label shown in the broker; a random adjective-noun is generated when empty")
@@ -77,6 +78,10 @@ func main() {
 	flag.Parse()
 	if *showVersion {
 		fmt.Println(versionInfo())
+		return
+	}
+	if *printLabel {
+		fmt.Println(relayruntime.GenerateLabel())
 		return
 	}
 
