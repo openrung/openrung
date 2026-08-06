@@ -24,7 +24,7 @@ Shared Go modules are versioned separately from deployable applications:
 | --- | --- | --- | --- |
 | `github.com/openrung/openrung/brokerapi` | `brokerapi/VERSION` | `brokerapi/vX.Y.Z` | Root and desktop clients in this repository; pinned mobile broker bindings |
 | `github.com/openrung/openrung/punchcore` | `punchcore/VERSION` | `punchcore/vX.Y.Z` | Relay/hub and desktop code in this repository; pinned mobile punch bindings |
-| `github.com/openrung/openrung/wsscore` | `wsscore/VERSION` | `wsscore/vX.Y.Z` | Desktop client and relay sidecar in this repository; separately released mobile clients when they adopt WSS |
+| `github.com/openrung/openrung/wsscore` | `wsscore/VERSION` | `wsscore/vX.Y.Z` | Desktop client and relay sidecar in this repository; pinned Android and iOS WSS bindings |
 
 These nested-module versions identify reusable code, not a running service or
 an application release. In-repository Go modules use local replacements so

@@ -22,8 +22,9 @@ ticket HTTP exchange, telemetry posting, URL hardening, and the shared broker
 TLS transport. Direct-first selection, multi-front scheduling, relay-health
 and telemetry lifecycle decisions, sing-box configuration, recovery, and UI
 state remain desktop application responsibilities. Android and iOS are
-maintained and released outside this repository; publishing either shared
-module does not restore or enable their WSS fallback.
+maintained and released outside this repository and implement the same
+direct-first contract through their own platform orchestration over pinned
+`brokerapi` and `wsscore` releases.
 
 ## Desktop App: Local Proxy
 

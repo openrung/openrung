@@ -71,16 +71,16 @@ cleartext ClientHello, while the Cloudflare front conceals its own only as long
 as ECH survives — the ordinary-TLS fallback sends it. A configured proxy
 tunnels both fronts outside this transport and keeps sending the name.
 
-The desktop client still tries direct Reality first. When a genuine network
-failure blocks a direct-mode Foundation relay, that relay may advertise its own
-signed WSS fronts. Each CDN front terminates at the same relay's local sidecar,
-which carries opaque Reality bytes only to that relay's loopback Reality
-listener. The broker issues relay- and front-bound authorization tickets but
-remains outside the user data path. The desktop client and relay-local sidecar
-share the transport mechanics from the independently versioned
-[`wsscore`](wsscore/README.md) module; ticket authority, origin authentication,
-deployment policy, telemetry orchestration, and user interfaces remain in
-their owning applications.
+The desktop app and both mobile clients still try direct Reality first. When a
+genuine network failure blocks a direct-mode Foundation relay, that relay may
+advertise its own signed WSS fronts. Each CDN front terminates at the same
+relay's local sidecar, which carries opaque Reality bytes only to that relay's
+loopback Reality listener. The broker issues relay- and front-bound
+authorization tickets but remains outside the user data path. Those clients
+and the relay-local sidecar share the transport mechanics from the
+independently versioned [`wsscore`](wsscore/README.md) module; ticket authority,
+origin authentication, deployment policy, telemetry orchestration, and user
+interfaces remain in their owning applications.
 
 ## Highlights
 
@@ -92,9 +92,9 @@ their owning applications.
   attempt NAT hole punching first, with the relay hub as the fallback.
 - 📱 **Full-device mobile client** — the OpenRung app routes all device
   traffic in VPN mode (developed in a separate React Native repository).
-- 🛡️ **Direct-first censorship fallback** — the desktop client can carry the
-  existing end-to-end Reality connection through a relay-owned WSS/CDN front
-  when the direct route is blocked.
+- 🛡️ **Direct-first censorship fallback** — the desktop app and both mobile
+  clients can carry the existing end-to-end Reality connection through a
+  relay-owned WSS/CDN front when the direct route is blocked.
 - 🧭 **Privacy-aware control plane** — the broker matchmakes but never carries
   user traffic.
 - 🗄️ **Production-friendly broker** — optional shared PostgreSQL state for safe
@@ -285,8 +285,8 @@ go run ./cmd/client check -broker http://localhost:8080
 
 For the zero-privilege desktop proxy app and macOS full-device CLI routing, see
 [`docs/desktop-client.md`](docs/desktop-client.md).
-WSS fallback is currently desktop-only. Android and iOS are developed in
-separate repositories and do not currently ship this fallback.
+The separately maintained Android and iOS clients implement the same
+direct-first WSS/CDN fallback through pinned `brokerapi` and `wsscore` modules.
 
 ## Repository layout
 
@@ -308,15 +308,14 @@ internal/relayruntime/  Relay runtime, Xray config, and broker client helpers.
 internal/wssbridge/  Relay-side tickets, replay/origin authentication,
                      admission limits, and sidecar orchestration over wsscore.
 brokerapi/           Shared broker control-plane Go client (nested module
-                     github.com/openrung/openrung/brokerapi) for desktop and
-                     separately released mobile bindings.
+                     github.com/openrung/openrung/brokerapi) for desktop,
+                     Android, and iOS bindings.
 punchcore/           Shared NAT hole-punch protocol core (nested Go module
                      github.com/openrung/openrung/punchcore) consumed by the
-                     servers, the desktop client, and the mobile app's binding.
+                     servers and the desktop, Android, and iOS clients.
 wsscore/             Shared opaque Reality-over-WSS transport core (nested Go
                      module github.com/openrung/openrung/wsscore) consumed by
-                     the desktop client and relay-local sidecar, and available
-                     for separately released mobile clients to pin.
+                     the desktop, Android, and iOS clients and relay sidecar.
 desktop/             Desktop GUI client (Wails v2 + React; own Go module).
 desktop-volunteer/   One-click volunteer relay GUI (Wails v2 + React; own
                      Go module).
@@ -344,9 +343,9 @@ docs/                Architecture, API, client, and operations docs.
 - **Abuse and rate controls** — exit policies, rate limits, and abuse
   reporting ahead of a broad public rollout.
 - **NAT hole-punch coverage** — direct client↔relay paths for volunteer-run
-  relays behind CGNAT are implemented in the desktop and Android clients using
-  `github.com/openrung/openrung/punchcore`; iOS support and broader production
-  rollout are still planned.
+  relays behind CGNAT are implemented in the desktop, Android, and iOS clients
+  using `github.com/openrung/openrung/punchcore`; broader production rollout
+  and harder NAT mappings remain planned.
 - **Dual-stack relay discovery** — multiple public endpoints per relay.
 
 Have an opinion on what should come first?

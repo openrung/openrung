@@ -99,12 +99,13 @@ const (
 	// suspend reconnection (and leave traffic on the normal network) for long.
 	MaxRecoveryBackoff = 60 * time.Second
 
-	// Mid-session health monitor (desktop-only; mobile has no equivalent yet):
-	// one probe sweep through the tunnel every HealthProbeInterval. After
-	// HealthFailureThreshold consecutive failures AND proof the local network
-	// is alive (some known relay answers a TCP dial), the tunnel is declared
-	// dead and an automatic failover re-ladder runs. The network-alive gate is
-	// what keeps a wifi blip or laptop sleep from churning relays.
+	// Desktop mid-session health monitor; mobile clients own separate native
+	// health and recovery policies. One probe sweep through the tunnel runs every
+	// HealthProbeInterval. After HealthFailureThreshold consecutive failures AND
+	// proof the local network is alive (some known relay answers a TCP dial), the
+	// tunnel is declared dead and an automatic failover re-ladder runs. The
+	// network-alive gate is what keeps a wifi blip or laptop sleep from churning
+	// relays.
 	HealthProbeInterval    = 30 * time.Second
 	HealthFailureThreshold = 3
 )

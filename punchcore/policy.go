@@ -5,8 +5,8 @@ import "net"
 // Policy selects between the trust profiles of the two first-party consumers.
 // DesktopPolicy preserves the historical openrung/internal/punch behavior and is
 // also what the hub and volunteers run; MobilePolicy preserves the hardened
-// behavior of the Android punchbridge. Zero values are NOT a valid policy; always
-// start from a preset.
+// behavior of the Android/iOS native bindings. Zero values are NOT a valid policy;
+// always start from a preset.
 type Policy struct {
 	// MaxPeersPerKind caps how many candidates of each kind (host, srflx) a peer
 	// may advertise before SanitizePeers stops accepting them. Desktop 8, mobile 4.
@@ -35,7 +35,7 @@ type Policy struct {
 // hub coordinator, the CLI/desktop clients, and volunteers.
 func DesktopPolicy() Policy { return Policy{MaxPeersPerKind: 8} }
 
-// MobilePolicy is the hardened Android punchbridge profile.
+// MobilePolicy is the hardened Android/iOS native-client profile.
 func MobilePolicy() Policy {
 	return Policy{MaxPeersPerKind: 4, RequireGlobalSrflx: true, SingleSrflxIP: true,
 		StrictReflectorAddrs: true, FailGatherOnCancel: true}

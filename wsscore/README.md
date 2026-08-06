@@ -2,10 +2,10 @@
 
 `github.com/openrung/openrung/wsscore` is OpenRung's reusable opaque
 Reality-over-WebSocket transport. It is a nested Go module and the **single
-source of truth** used by the desktop client and the relay-local sidecar in
-this repository. Android and iOS live in separate repositories and must pin,
-integrate, test, and release this module independently; adding it here does not
-restore either mobile client by itself.
+source of truth** used by the desktop client and relay-local sidecar in this
+repository and by the Android and iOS native bindings in the separate mobile
+repository. Mobile releases pin, test, and ship reviewed module versions; a
+new tag here does not update an installed app by itself.
 
 The CDN terminates the outer TLS/WebSocket connection at the destination
 relay's own sidecar. The existing Reality connection remains end to end inside
@@ -20,12 +20,14 @@ Reality key material or interprets payload bytes.
   `Client.Close`).
 - Binary-only WebSocket-to-`net.Conn` adaptation, the shared yamux profile,
   opaque bidirectional copying, and reusable idle/lifetime controls.
-- The gomobile-friendly `SocketProtector` hook. Android implementations must
-  delegate `Protect(fd int32) bool` to `VpnService.protect(fd)` so the outer CDN
-  socket does not recurse into the VPN tunnel. Protection fails closed and is
-  installed before `connect(2)`. Mobile repositories should expose their own
-  small gomobile binding wrapper around the client API; `wsscore` also exports
-  Go-native relay/test primitives and is not itself a direct gobind surface.
+- The gomobile-friendly `SocketProtector` hook. Android delegates
+  `Protect(fd int32) bool` to `VpnService.protect(fd)` so the outer CDN socket
+  does not recurse into the VPN tunnel. Protection fails closed and is
+  installed before `connect(2)`. The mobile repository exposes small Android
+  and iOS binding wrappers around the client API; iOS uses the dedicated
+  nil-protector constructor for PacketTunnel-owned sockets. `wsscore` also
+  exports Go-native relay/test primitives and is not itself a direct gobind
+  surface.
 
 ## What never belongs here
 
@@ -80,8 +82,9 @@ CNAMEs and every other CDN URL retain ordinary SNI derived from the signed
 front URL. Encrypted ClientHello configuration is rejected on the native-front
 no-SNI path so it cannot silently add a different public SNI. The deprecated
 `CloudFrontNoSNI` field remains an alias for pinned consumers. The in-repository
-desktop client enables the new option; external module consumers must opt in
-deliberately when they upgrade.
+desktop client enables `NativeFrontNoSNI`; the current Android and iOS bindings
+enable the compatibility alias and retain CloudFront no-SNI behavior until
+their next reviewed pin upgrade.
 
 `brokerapi/cloudfront_tls.go` applies the same technique to the control plane
 in a separate copy — `brokerapi` carries no dependencies, so it cannot import

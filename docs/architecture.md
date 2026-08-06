@@ -168,11 +168,11 @@ discovery, punch mechanics, reflector, policies) lives in the nested
 `punchcore/` Go module
 (`github.com/openrung/openrung/punchcore`) — the single source of truth with no
 hand-mirrored copies. The servers and the desktop client consume it in-repo via
-`internal/punch` (the quic-go session/transport/bridge layer); the Android app's
-gomobile binding (`android/punchbridge` in `openrung-mobile-app`) consumes the
-punchcore module at a pinned, tagged version. iOS remains a follow-up: it embeds
-stock sing-box without an app-layer punch client, so it ignores `punch_capable`
-and uses the hub relay with no regression.
+`internal/punch` (the quic-go session/transport/bridge layer). The Android and
+iOS native bindings in `openrung-mobile-app` consume the same punchcore module
+at a pinned, tagged version. Both mobile platforms try the direct punched path
+for an eligible signed descriptor and retain the Relay Hub as the same-relay
+fallback when punching is unavailable, fails, or becomes unstable.
 
 #### punchcore pin/upgrade procedure (wire changes)
 
@@ -186,14 +186,17 @@ and uses the hub relay with no regression.
    through the Go proxy); no manual tagging.
 4. Dependabot in the mobile repo (scoped to punchcore) opens the
    `android/punchbridge/go.mod` (+`go.sum`) bump PR when it sees the new tag,
-   which automatically busts the AAR CI caches (their hash keys include
-   go.mod/go.sum). Manual fallback: `go get` the new version directly.
-5. Rebuild the AAR via `android/build-libbox-release.sh` and ship.
+   which automatically busts the Android AAR and iOS XCFramework CI caches
+   (their hash keys include go.mod/go.sum). Manual fallback: `go get` the new
+   version directly.
+5. Rebuild the AAR via `android/build-libbox-release.sh` and the XCFramework via
+   `ios/build-libbox-release.sh`, run both platform VPN suites, and ship the
+   corresponding app releases.
 
 Local cross-repo development uses
-`PUNCHCORE_SRC=/path/to/openrung/punchcore android/build-libbox-release.sh`
-and/or an uncommitted `go.work` — never in releases (GPL §6 pins the module
-version).
+`PUNCHCORE_SRC=/path/to/openrung/punchcore` with either mobile platform's
+`build-libbox-release.sh` and/or an uncommitted `go.work` — never in releases
+(GPL §6 pins the module version).
 
 ```mermaid
 sequenceDiagram
@@ -233,33 +236,33 @@ sequenceDiagram
     V->>V: Xray exits to destination
 ```
 
-### Relay-local WSS fallback (desktop client ↔ Foundation relay)
+### Relay-local WSS fallback (client ↔ Foundation relay)
 
 Eligible direct-mode Foundation relays can expose a CDN-fronted WebSocket
 fallback when a client network blocks the relay's raw IP. This is not the Relay
 Hub and does not introduce a gateway fleet: every advertised front has that
 same relay as its CDN origin, and the relay-local sidecar can dial only its
-fixed loopback Reality listener. Direct Reality remains the desktop client's
-first choice, and Reality still authenticates and encrypts the complete inner
+fixed loopback Reality listener. Every WSS-capable client tries direct Reality
+first, and Reality still authenticates and encrypts the complete inner
 connection end to end. See [`wss-fallback.md`](wss-fallback.md) for the full
 protocol, failure-classification, and rollout contract.
 
 The nested `wsscore/` Go module
 (`github.com/openrung/openrung/wsscore`) is the single reusable implementation
-of the WSS data-plane mechanics. Both the desktop client and the relay-local
-sidecar consume it. It owns the protocol constants, strict advertised-front URL
-validation, binary-only WebSocket byte-stream adapter, shared bounded yamux
-configuration, opaque bidirectional copying, lifecycle limits, and the optional
-socket-control hook a future Android integration can connect to
-`VpnService.protect`.
+of the WSS data-plane mechanics. The desktop client, Android and iOS native
+bindings, and relay-local sidecar consume it. It owns the protocol constants,
+strict advertised-front URL validation, binary-only WebSocket byte-stream
+adapter, shared bounded yamux configuration, opaque bidirectional copying,
+lifecycle limits, Android's `VpnService.protect` socket-control hook, and the
+Apple constructor for PacketTunnel-owned sockets.
 
 The module deliberately does not own system policy or authority. Broker ticket
 issuance, relay-local ticket verification and replay persistence, CDN origin
 authentication, per-source admission policy, relay capability signing,
-CloudFront/deployment configuration, desktop direct-first and health/telemetry
-orchestration, and every platform UI remain in this repository's surrounding
-packages and applications. A ticket is only an opaque bearer value to the
-shared transport; `wsscore` never selects a relay or destination.
+CloudFront/deployment configuration, platform direct-first and health/telemetry
+orchestration, and every platform UI remain in their surrounding packages and
+applications. A ticket is only an opaque bearer value to the shared transport;
+`wsscore` never selects a relay or destination.
 
 #### wsscore pin/upgrade procedure
 
@@ -273,10 +276,10 @@ shared transport; `wsscore` never selects a relay or destination.
    making that nested-module version fetchable without copying its code into a
    consumer repository. Golden and live interoperability tests guard its public
    protocol and transport behavior.
-4. External clients explicitly update their pinned module version, integrate
-   their platform socket-routing and fallback policy, run their own tests, and
-   publish their own application release. Updating or tagging `wsscore` does
-   not release a mobile app.
+4. External clients explicitly update their pinned module version, verify their
+   platform socket-routing and fallback-policy integration, run their own tests,
+   and publish their own application release. Updating or tagging `wsscore`
+   does not release a mobile app.
 
 Local cross-repository development may use an uncommitted `go.work` or local
 module replacement. Released consumers pin a `wsscore/vX.Y.Z` tag.
@@ -286,10 +289,10 @@ module replacement. Released consumers pin a `wsscore/vX.Y.Z` tag.
 The nested `brokerapi/` Go module
 (`github.com/openrung/openrung/brokerapi`) is the client-side source of truth
 for end-user connection and session broker exchanges implemented by the
-module. The desktop CLI and GUI consume the in-tree module, and mobile
-repositories can expose the same implementation through a small gomobile
-binding instead of maintaining parallel request code. The broker server and
-its authorization policy remain in
+module. The desktop CLI and GUI consume the in-tree module, and the mobile
+repository exposes the same implementation through its Android and iOS
+gomobile bindings instead of maintaining parallel request code. The broker
+server and its authorization policy remain in
 `internal/broker`; extracting the client does not move the broker or add it to
 the relay data path.
 
@@ -407,11 +410,16 @@ VPN integration, tests, version pins, and release processes:
 - Android uses `VpnService` plus the embedded tunnel engine.
 - iOS uses a `NetworkExtension` packet tunnel provider.
 
-Mobile broker requests should consume a pinned `brokerapi` release through the
+Both platforms implement NAT-punch-first access for eligible Relay Hub relays
+through their pinned `punchcore` binding, with the hub path as the same-relay
+fallback. They also implement direct-first WSS/CDN fallback for eligible
+Foundation relays through pinned `brokerapi` and `wsscore` bindings.
+
+Mobile broker requests consume a pinned `brokerapi` release through the
 platform's native binding. This removes the TypeScript TLS limitation and gives
 mobile the same opportunistic ECH, signature verification, identity headers,
-cache policy, and URL hardening as desktop. Publishing this module does not by
-itself update either separately released app.
+cache policy, and URL hardening as desktop. Publishing a new module tag does
+not by itself update either separately released app.
 
 Native mobile discovery delegates candidate construction and racing to
 `BrokerCandidates` and `FirstReachable`, so platform `AppConfig` must not
@@ -422,22 +430,20 @@ inherits the hard pre-HTTP refusal for endpoint-unbound fronts. The platform
 ticket-front builders should filter such a winning front too as defense in
 depth and to avoid a request that is guaranteed to fail locally.
 
-The mobile app's update-manifest checker is a separate signed-content client
-with its own keys, rollback protection, and GitHub fallback. Its current
-Cloudflare-broker candidate must also move behind the Go broker transport—or be
-removed—during mobile integration. Until then, that request still exposes the
-broker SNI unconditionally, so integrating relay discovery and telemetry alone
-is not complete mobile broker-SNI concealment. Moving it is necessary but not
-sufficient: only the CloudFront front is unconditionally SNI-less, while the
-Cloudflare front's ordinary-TLS fallback still sends its hostname wherever ECH
-is blocked.
+The mobile app's update-manifest checker remains a separate signed-content
+client with its own keys, freshness and rollback rules, and GitHub fallback.
+Its exact Cloudflare and CloudFront candidates run through the native
+`brokerapi` transport; signature verification and candidate selection remain in
+the application layer, and the exact redirecting GitHub release asset is the
+narrow JavaScript-fetch exception. Cloudflare's ordinary-TLS fallback still
+sends its hostname wherever ECH is blocked, while the native CloudFront front
+is unconditionally SNI-less.
 
-The reusable `wsscore` module makes a future transport integration possible but
-does not restore or ship WSS fallback on either platform. Android must still
-wire socket protection and the ticket/direct-first policy in its repository;
-iOS must perform its corresponding platform integration. Each mobile release
-must advertise support only after that repository independently implements and
-tests the complete contract.
+Android wires WSS socket protection to `VpnService.protect` before connect;
+iOS uses the Apple constructor for PacketTunnel-owned sockets. Swift and Kotlin
+own the corresponding direct-first classification, ticket ordering, lifecycle,
+recovery, and telemetry policy, while the pinned shared modules own their
+common transport and broker mechanics.
 
 ### Future Dedicated Exit Mode
 

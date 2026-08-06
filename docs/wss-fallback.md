@@ -9,7 +9,7 @@ Foundation relays that explicitly advertise it in their signed descriptor.
 There is no standalone WSS intermediary and no cross-relay router:
 
 ```text
-desktop client
+OpenRung client (desktop / Android / iOS)
   ├─ first choice ── Reality/TCP ─────────────────────► selected relay :443
   └─ fallback ────── WSS front ─► relay origin TLS :8443
                                       └─ loopback-only relay-local sidecar
@@ -66,13 +66,14 @@ Reality handshake succeeding.
 ## Shared transport implementation
 
 The nested Go module `github.com/openrung/openrung/wsscore` is the single
-reusable implementation of these data-plane mechanics. The desktop client and
-relay-local sidecar both consume it; neither maintains a second WebSocket,
-yamux, or opaque-copy implementation. The module owns the public protocol
-constants, strict production front-URL validation, binary-only WebSocket stream
-adaptation, the shared bounded yamux profile, opaque bidirectional copying,
-session/stream lifecycle controls, and an optional socket-control hook for a
-future Android caller to connect to `VpnService.protect`.
+reusable implementation of these data-plane mechanics. The desktop client,
+Android and iOS native bindings, and relay-local sidecar consume it; none
+maintains a second WebSocket, yamux, or opaque-copy implementation. The module
+owns the public protocol constants, strict production front-URL validation,
+binary-only WebSocket stream adaptation, the shared bounded yamux profile,
+opaque bidirectional copying, session/stream lifecycle controls, Android's
+`VpnService.protect` socket-control hook, and the corresponding Apple
+constructor for PacketTunnel-owned sockets.
 
 `wsscore` is intentionally authority-free. Its client is given one exact URL
 and an opaque bearer ticket by its caller, and its server-side transport is
@@ -176,7 +177,7 @@ not widen them without a new reviewed protocol version.
 ## Obtaining a ticket
 
 Ticket acquisition is control-plane HTTPS, not part of relay health probing.
-The desktop client:
+The client:
 
 1. Selects a relay using the normal signed directory and health ranking.
 2. Attempts direct Reality first.
@@ -334,26 +335,20 @@ unanalyzable after the first rotation.
 
 ## Client repository scope
 
-This repository's desktop client is the only client restored by this change.
-It consumes `wsscore` for the shared transport and `brokerapi` for the broker
-HTTP exchanges while retaining direct-first selection, local-failure
-classification, broker-front scheduling, bounded retry handling, telemetry
-lifecycle, and independent fallback health in the desktop application layer as
-described above.
+This repository owns the desktop orchestration, shared `wsscore` and
+`brokerapi` modules, broker ticket authority, and relay-local sidecar. Android
+and iOS are maintained in the separate mobile repository and implement the
+same signed-front, direct-first, ticket, lifecycle, recovery, and telemetry
+contract in their native VPN owners. Android wires `wsscore` socket protection
+to `VpnService.protect`; iOS uses the Apple constructor for PacketTunnel-owned
+sockets. Both platforms route individual ticket and broker operations through
+their pinned `brokerapi` binding.
 
-Android and iOS are developed in separate repositories. They are not updated,
-restored, or made WSS-capable by this repository change. Mobile release notes
-must continue to describe WSS fallback as unavailable until each mobile
-repository independently implements and tests the same protocol and security
-contract. The reusable module and its Android socket-control hook are adoption
-building blocks only: Android still has to wire the hook to
-`VpnService.protect`, and both platforms must add their own ticket,
-direct-first, lifecycle, and UI integration before publishing a separate
-mobile release. The reusable `brokerapi` module lets those repositories adopt
-the same SNI-concealing broker client — ECH for the Cloudflare front, SNI-less
-TLS for the CloudFront front — without reimplementing it, but its tag is also
-only an adoption building block until a mobile binding is integrated and
-released.
+The mobile repository pins reviewed module tags, rebuilds its AAR and
+XCFramework, runs platform VPN tests, and publishes its own application
+releases. A new shared-module tag therefore does not update a released mobile
+app by itself; current mobile support comes from the independently integrated
+and tested application code.
 
 ## Rollout and rollback contract
 

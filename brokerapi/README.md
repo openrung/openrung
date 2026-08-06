@@ -1,8 +1,8 @@
 # brokerapi
 
 `brokerapi` is OpenRung's shared Go client for end-user connection and session
-broker requests. It is a standalone module so the CLI, desktop app, and future
-gomobile bindings all use one implementation of:
+broker requests. It is a standalone module so the CLI, desktop app, and Android
+and iOS gomobile bindings all use one implementation of:
 
 - opportunistic Encrypted Client Hello for the Cloudflare broker front;
 - verified SNI-less TLS for the CloudFront broker front;
@@ -102,21 +102,19 @@ result, err := api.FirstReachable(
 application can decode those bytes into its own relay model without exposing
 server-internal relay fields through this module.
 
-For mobile, bind a small cancellation-owning wrapper into the same Go
-AAR/XCFramework as the existing tunnel library. Do not ship a second Go
-runtime in a separate Android AAR. A wrapper should return verified relay JSON
-and accept telemetry JSON through `SendTelemetryBatchJSON`; JavaScript `fetch`
-must not remain on any pre-tunnel broker path that needs ECH.
+The mobile repository binds cancellation-owning wrappers into the same Go
+AAR/XCFramework as its tunnel library, avoiding a second Go runtime. Native
+directory discovery returns verified relay JSON, telemetry passes through
+`SendTelemetryBatchJSON`, and WSS ticket operations remain inside the native
+VPN owners rather than crossing the React Native bridge.
 
-The separately maintained mobile app also fetches the signed update manifest
-from the Cloudflare broker front. That manifest has its own signing keys,
-rollback rules, and multi-origin policy and is not implemented by this initial
-module extraction. The mobile integration must move that request behind this
-transport (or stop using the Cloudflare broker URL) before claiming complete
-broker-SNI concealment. Note that even then the claim holds only where ECH
-survives: the Cloudflare front's ordinary-TLS fallback still sends its hostname,
-and only the native CloudFront and Azure fronts are unconditionally SNI-less.
-Azure has the weaker provider-bound authentication described above.
+The separately maintained mobile app also routes its exact Cloudflare and
+CloudFront update-manifest candidates through this transport. The manifest's
+signature, freshness, rollback, cache, and multi-origin selection policy remain
+in the application layer, with an exact redirecting GitHub release URL as its
+narrow JavaScript fallback. Broker-SNI concealment still holds only where ECH
+survives on Cloudflare; its ordinary-TLS fallback sends the hostname, while the
+native CloudFront front is unconditionally SNI-less.
 
 `RequestWSSTicket` owns one hardened POST and response validation and refuses
 endpoint-unbound fronts. Overall deadline, broker-front failover, and the single
