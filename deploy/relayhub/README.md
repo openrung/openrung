@@ -71,15 +71,70 @@ governed by the tunnel/punch protocol versions and negotiated capability flags.
 `ec2-up.sh` provisions a hub on EC2 with a secondary private IP + **two Elastic IPs**, so the punch
 reflector has two vantage points (RFC 5780 classification). It binds the on-NIC private IPs and
 advertises the EIPs (the bind/advertise split), self-signs a TLS cert covering both EIPs, installs a
-boot-time unit that keeps the secondary private IP on the interface across reboots, and runs the hub
-with punch enabled.
+boot-time unit that keeps the secondary private IP on the interface across reboots, and stages the
+hub with punch enabled. It starts immediately only after an explicit anonymous-mode opt-in.
 
 ```sh
+# Authenticated deployment: stage the host, then install the token over verified SSH.
 ./deploy/relayhub/ec2-up.sh hub-ec2-seoul
+
+# Deliberately public deployment: start an open hub immediately.
+OPENRUNG_ALLOW_ANONYMOUS_VOLUNTEERS=true \
+  ./deploy/relayhub/ec2-up.sh hub-ec2-seoul-open
 ```
 
+This helper never accepts a bearer token. It rejects
+`OPENRUNG_VOLUNTEER_TOKEN` even when the variable is set to an empty value, and
+does so before making any AWS call. With no explicit anonymous opt-in it pulls
+the image and prepares the TLS and environment files, but leaves relayhub
+stopped. EC2 retains instance user-data and exposes it through IMDS to local
+processes; because the hub uses host networking, an IMDSv2 session token does
+not isolate user-data from the container. A bearer token must therefore never
+be passed to this bootstrap.
+
+For an authenticated hub, use this staged deployment:
+
+1. Provision the host with `OPENRUNG_VOLUNTEER_TOKEN` unset.
+2. Verify and pin the instance's SSH host key through an authenticated,
+   out-of-band source. Do not use first-contact TOFU for a credential transfer.
+   If the named EC2 key pair already exists, `OPENRUNG_KEY_FILE` must identify
+   its matching, usable local private key; the provisioning helper compares its
+   public key with the copy held by EC2 before allocating the instance's EIPs.
+3. Send exactly one token line over that verified SSH connection via stdin, not
+   argv. Wait for cloud-init before installing it, or cloud-init can overwrite
+   the environment file. For example, run the following in Bash after replacing
+   `<eip1>` and the key path and after pinning the host key:
+
+   ```bash
+   (
+     set +x
+     IFS= read -r -s -p 'Volunteer token: ' token
+     printf '\n' >&2
+     printf '%s\n' "$token"
+   ) | ssh -o StrictHostKeyChecking=yes \
+       -i ~/.ssh/id_ed25519_openrung ubuntu@<eip1> \
+       'sudo cloud-init status --wait >/dev/null &&
+        sudo /usr/local/sbin/openrung-relayhub-install-token'
+   ```
+
+   The root-only installer accepts standard HTTP bearer-token characters
+   (for example, output from `openssl rand -hex 32`), atomically writes exactly
+   one `OPENRUNG_VOLUNTEER_TOKEN` assignment to
+   `/etc/openrung/relayhub.env` as `root:root` mode `0600`, removes any
+   anonymous opt-in, and performs the first container start with the hardened
+   flags. The start helper validates that exactly one authentication mode is
+   configured and never removes an existing container before attempting a
+   replacement.
+
+If this helper was previously run with a token, assume that credential persists
+in EC2 user-data, cloud-init artifacts, and disk snapshots. Rotate the token and
+replace or retire the affected instance; changing the file mode does not remove
+those historical copies.
+
 Defaults: `ap-northeast-2`, `t4g.micro` (ARM). Override via `OPENRUNG_REGION`, `OPENRUNG_EC2_TYPE`,
-`OPENRUNG_EC2_SUBNET`, etc. Verify with `curl -k https://<eip1>:9444/api/v1/punch/config` (returns
+`OPENRUNG_EC2_SUBNET`, etc. A custom `OPENRUNG_IMAGE` must run as a non-root user and provide the
+`id` executable so the bootstrap can assign the TLS private key to the image's runtime UID. Verify
+with `curl -k https://<eip1>:9444/api/v1/punch/config` (returns
 the two advertised reflector EIPs). Note EC2 egress is metered and each in-use public IPv4 is billed
 hourly — this helper exists because two same-family public IPs are easy to get on EC2, not because
 EC2 is the right place to move bytes. Read the bandwidth warning above before using it for anything
