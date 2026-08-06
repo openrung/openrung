@@ -1,6 +1,6 @@
 # OpenRung relay hub.
 #
-#   cp .env.example .env      # then edit .env (set OPENRUNG_HUB_PUBLIC_HOST + OPENRUNG_BROKER_URL)
+#   install -m 0600 .env.example .env  # then edit .env (set public host + broker URL)
 #   # put your TLS cert/key in ./certs (strongly recommended — see README.md)
 #   docker compose up -d --build
 #   docker compose logs -f

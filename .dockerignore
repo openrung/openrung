@@ -29,8 +29,29 @@ build
 .cache
 .claude
 
-# Local runtime files and secrets.
+# Local runtime files and secrets. The Dockerfiles do not consume environment
+# templates, so keep examples out of the broad `COPY . .` build stages too.
 .env
+.env.*
+*.env
+*.env.*
+**/.env
+**/.env.*
+**/*.env
+**/*.env.*
+
+# Locally generated private-key material. Public .crt certificates may remain
+# available to builds, but private keys must never enter a COPY . . layer.
+*.key
+*.pem
+*.p12
+*.pfx
+*.seed
+**/*.key
+**/*.pem
+**/*.p12
+**/*.pfx
+**/*.seed
 *.local.json
 openrung-telemetry.jsonl
 openrung-xray-config.json

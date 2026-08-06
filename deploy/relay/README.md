@@ -30,7 +30,7 @@ heartbeats normally, so it remains available for rollback.
 
 ```sh
 cd deploy/relay
-cp .env.example .env          # edit: set OPENRUNG_BROKER_URL and OPENRUNG_PUBLIC_HOST
+install -m 0600 .env.example .env  # edit: set OPENRUNG_BROKER_URL and OPENRUNG_PUBLIC_HOST
 docker compose up -d --build
 docker compose logs -f        # expect: registered relay … / heartbeat ok
 ```
