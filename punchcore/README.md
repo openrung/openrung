@@ -8,8 +8,9 @@ format and mechanics, consumed by:
 - the relay hub and relay runtimes (this repository, via `internal/punch`
   and `internal/tunnel`),
 - the desktop CLI and GUI clients (this repository),
-- the Android app's gomobile binding (`android/punchbridge` in
-  `openrung-mobile-app`), which pins a tagged version of this module.
+- the Android and iOS native bindings (`android/punchbridge` plus the mobile
+  build grafts in `openrung-mobile-app`), which pin a tagged version of this
+  module.
 
 ## What belongs here
 
@@ -23,14 +24,14 @@ format and mechanics, consumed by:
 - **The hub HTTP client** (`HubClient`) and `HardenedHTTPClient`.
 - **The `Policy` presets**: `DesktopPolicy()` (historical
   `internal/punch` behavior; also what the hub and relay runtimes run) and
-  `MobilePolicy()` (the hardened Android profile). Zero-value `Policy` is not
+  `MobilePolicy()` (the hardened Android/iOS profile). Zero-value `Policy` is not
   valid; always start from a preset.
 
 ## What never belongs here
 
 - QUIC transports, sessions, or bridges — the QUIC stack differs per consumer
-  (mainline quic-go on desktop/servers, the sagernet fork on Android), so each
-  consumer keeps its own session layer on top of this module.
+  (mainline quic-go on desktop/servers and the mobile libbox integration), so
+  each consumer keeps its own session layer on top of this module.
 - Hub secret storage or rotation policy.
 - The hub's HTTP coordination *server* (`internal/tunnel`).
 - Any UI.
@@ -54,15 +55,17 @@ protocol change and must be treated as one (see `ProtoVersion`).
    the Go proxy). No manual tagging.
 4. Dependabot in the mobile repo (scoped to this module) opens the
    `android/punchbridge/go.mod` (+`go.sum`) bump PR when it sees the new tag;
-   the bump automatically busts the AAR CI caches. Manual fallback:
+   the shared pin automatically busts the Android AAR and iOS XCFramework CI
+   caches. Manual fallback:
    `go get github.com/openrung/openrung/punchcore@vX.Y.Z` in
    `android/punchbridge`.
-5. Rebuild the AAR via `android/build-libbox-release.sh` and ship.
+5. Rebuild the AAR via `android/build-libbox-release.sh` and the XCFramework via
+   `ios/build-libbox-release.sh`, run both platform VPN suites, and ship the
+   corresponding app releases.
 
-Local cross-repo development: use
-`PUNCHCORE_SRC=/path/to/openrung/punchcore android/build-libbox-release.sh`
-and/or an uncommitted `go.work`; never in releases (GPL §6 pins the module
-version).
+Local cross-repo development: use `PUNCHCORE_SRC=/path/to/openrung/punchcore`
+with either mobile platform's `build-libbox-release.sh` and/or an uncommitted
+`go.work`; never in releases (GPL §6 pins the module version).
 
 ## License
 
