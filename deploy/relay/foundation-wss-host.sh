@@ -34,6 +34,13 @@ KNOWN_HOSTS="${OPENRUNG_KNOWN_HOSTS:-$HOME/.ssh/known_hosts}"
 SSH_OPTS=(-i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=${KNOWN_HOSTS}")
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+# Only native one-label CDN hostnames are accepted, because the client drops
+# SNI on exactly these and verifies the zone's default wildcard certificate
+# against the advertised host.  A custom CNAME would fail that verification, so
+# it must never reach a relay's advertised front list through this helper.
+# Keep in step with nativeFrontZones in wsscore/nosni_tls.go.
+FRONT_URL_PATTERN='^wss://([a-z0-9]+\.cloudfront\.net|[a-z0-9]([a-z0-9-]*[a-z0-9])?\.b-cdn\.net)/api/v1/wss-bridge$'
 [[ "$COMMAND" =~ ^(migrate|stabilize|sidecar|origin-tls|matrix-limits|advertise|audit)$ ]] || die "unknown command"
 [[ "$RELAY" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || die "relay name is invalid"
 [[ "$HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]{0,254}$ ]] || die "host is invalid"
@@ -41,6 +48,25 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 ssh-keygen -F "$HOST" -f "$KNOWN_HOSTS" >/dev/null || die "host key is not pinned: ${HOST}"
 
 ssh_run() { ssh "${SSH_OPTS[@]}" "${SSH_USER}@${HOST}" "$@"; }
+
+# Emit a remote command that writes this SSH session's stdin to a root-owned
+# file at the given mode.
+#
+# `install /dev/stdin DEST` cannot be used directly: when DEST already exists,
+# GNU install fails with ENOENT because it unlinks the destination and then
+# reopens the source by path, which a consumed pipe no longer resolves to.
+# That made every one of these writes work exactly once and fail on re-run —
+# including over the Caddyfile the caddy package ships, so origin-tls could
+# never succeed on a host where the package had just been installed.
+#
+# Writing a sibling temporary and renaming is both idempotent and atomic: a
+# reader either sees the whole previous file or the whole new one, and the
+# secret never exists at a readable mode.
+stdin_to_file() {
+  local mode="$1" dest="$2"
+  printf 'sudo rm -f %s.new && sudo install -m %s -o root -g root /dev/stdin %s.new && sudo mv %s.new %s' \
+    "$dest" "$mode" "$dest" "$dest" "$dest"
+}
 
 case "$COMMAND" in
   migrate)
@@ -313,12 +339,25 @@ REMOTE
     IMAGE="${6:-}"
     TICKET_FILE="${OPENRUNG_WSS_TICKET_PUBLIC_KEYS_FILE:-}"
     TOKENS_FILE="${OPENRUNG_WSS_ORIGIN_TOKENS_FILE:-}"
+    VIEWER_HEADER="${OPENRUNG_WSS_VIEWER_ADDRESS_HEADER:-}"
+    [[ -z "$VIEWER_HEADER" || "$VIEWER_HEADER" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,63}$ ]] \
+      || die "viewer address header name is invalid"
     [[ "$RELAY_ID" =~ ^relay_[0-9a-f]{32}$ ]] || die "relay ID is invalid"
     [[ "$FRONT_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || die "front ID is invalid"
     [[ "$IMAGE" =~ ^[A-Za-z0-9][A-Za-z0-9:/@._-]*$ ]] || die "image is invalid"
     for file in "$TICKET_FILE" "$TOKENS_FILE"; do
       [[ -f "$file" ]] || die "required sidecar input file is missing"
-      mode="$(stat -f '%Lp' "$file" 2>/dev/null || stat -c '%a' "$file")"
+      # Separate assignments, not `bsd || gnu` inside one substitution: GNU
+      # stat reads -f as "filesystem status" and can print data for the real
+      # file before failing, which the substitution would keep and prepend to
+      # the mode -- passing a world-readable secret off as 0600 on Linux.
+      if mode="$(stat -f '%Lp' "$file" 2>/dev/null)"; then
+        :
+      elif mode="$(stat -c '%a' "$file" 2>/dev/null)"; then
+        :
+      else
+        die "could not inspect sidecar input file permissions"
+      fi
       [[ "$mode" == 600 ]] || die "sidecar input files must have mode 0600"
     done
     jq -e 'type == "array" and length >= 1 and length <= 2 and (length == (unique | length)) and all(.[]; type == "string" and length >= 32 and length <= 512 and test("^[^[:space:]]+$"))' "$TOKENS_FILE" >/dev/null \
@@ -334,6 +373,13 @@ REMOTE
       tr -d '\r\n' <"$TICKET_FILE"
       printf '\nOPENRUNG_WSS_FRONT_ORIGIN_TOKENS='
       jq -c . "${TMP_ENV}.tokens"
+      # Only emitted when set, so a CloudFront host keeps the sidecar's own
+      # CloudFront-Viewer-Address default.  A bunny front must set this,
+      # because bunny sends no ip:port address header of its own and its front
+      # supplies one through an edge rule instead.
+      if [[ -n "$VIEWER_HEADER" ]]; then
+        printf 'OPENRUNG_WSS_VIEWER_ADDRESS_HEADER=%s\n' "$VIEWER_HEADER"
+      fi
       printf 'OPENRUNG_WSS_MAX_SESSIONS_PER_SOURCE=512\n'
       printf 'OPENRUNG_WSS_MAX_STREAMS_PER_SOURCE=4096\n'
       printf 'OPENRUNG_WSS_MAX_PENDING_HANDSHAKES=4096\n'
@@ -341,7 +387,9 @@ REMOTE
       printf 'OPENRUNG_WSS_GLOBAL_HANDSHAKE_BURST=10000\n'
     } >"$TMP_ENV"
     chmod 0600 "$TMP_ENV"
-    ssh_run "sudo install -d -m 0700 -o root -g root /etc/openrung && sudo install -m 0600 -o root -g root /dev/stdin /etc/openrung/wss.env" <"$TMP_ENV"
+    ssh_run "set -e
+      sudo install -d -m 0700 -o root -g root /etc/openrung
+      $(stdin_to_file 0600 /etc/openrung/wss.env)" <"$TMP_ENV"
     ssh_run "set -e
       sudo grep -q '^OPENRUNG_IDENTITY_SEED=' /etc/openrung/relay.env
       ! sudo grep -q '^OPENRUNG_WSS_FRONTS=' /etc/openrung/relay.env
@@ -382,7 +430,8 @@ https://${ORIGIN_HOST}:8443 {
 }
 EOF
     ssh_run "sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq caddy >/dev/null"
-    ssh_run "sudo install -m 0644 -o root -g root /dev/stdin /etc/caddy/Caddyfile" <"$CADDYFILE"
+    ssh_run "set -e
+      $(stdin_to_file 0644 /etc/caddy/Caddyfile)" <"$CADDYFILE"
     ssh_run "set -e
       sudo caddy validate --config /etc/caddy/Caddyfile >/dev/null
       sudo systemctl enable --now caddy >/dev/null
@@ -429,7 +478,7 @@ EOF
     FRONT_URL="${5:-}"
     IMAGE="${6:-}"
     [[ "$FRONT_ID" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]] || die "front ID is invalid"
-    [[ "$FRONT_URL" =~ ^wss://[a-z0-9]+\.cloudfront\.net/api/v1/wss-bridge$ ]] || die "front URL is invalid"
+    [[ "$FRONT_URL" =~ $FRONT_URL_PATTERN ]] || die "front URL is invalid"
     [[ "$IMAGE" =~ ^[A-Za-z0-9][A-Za-z0-9:/@._-]*$ ]] || die "image is invalid"
     REMOTE_SCRIPT="$(mktemp)"
     trap 'rm -f "$REMOTE_SCRIPT"' EXIT
@@ -479,11 +528,19 @@ REMOTE
     IMAGE="${4:-}"
     FRONT_ID="${5:-}"
     FRONT_URL="${6:-}"
+    VIEWER_HEADER_CHECK=:
     [[ "$IMAGE" =~ ^[A-Za-z0-9][A-Za-z0-9:/@._-]*$ ]] || die "image is invalid"
     if [[ -n "$FRONT_ID" || -n "$FRONT_URL" ]]; then
       [[ "$FRONT_ID" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]] || die "front ID is invalid"
-      [[ "$FRONT_URL" =~ ^wss://[a-z0-9]+\.cloudfront\.net/api/v1/wss-bridge$ ]] || die "front URL is invalid"
+      [[ "$FRONT_URL" =~ $FRONT_URL_PATTERN ]] || die "front URL is invalid"
       FRONT_CHECK="test \"\$(sudo grep -c '^OPENRUNG_WSS_FRONTS=' /etc/openrung/relay.env)\" = 1 && sudo grep -Fqx 'OPENRUNG_WSS_FRONTS=${FRONT_ID}=${FRONT_URL}' /etc/openrung/relay.env && sudo test -f /etc/openrung/relay.env.pre-wss-advertise && test \"\$(sudo stat -c '%a %U:%G' /etc/openrung/relay.env.pre-wss-advertise)\" = '600 root:root'"
+      if [[ "$FRONT_URL" == wss://*.b-cdn.net/api/v1/wss-bridge ]]; then
+        VIEWER_HEADER_CHECK="test \"\$(sudo grep -c '^OPENRUNG_WSS_VIEWER_ADDRESS_HEADER=' /etc/openrung/wss.env || true)\" = 1; sudo grep -Fqx 'OPENRUNG_WSS_VIEWER_ADDRESS_HEADER=X-OpenRung-Viewer-Address' /etc/openrung/wss.env"
+      else
+        # CloudFront uses the sidecar's CloudFront-Viewer-Address default when
+        # unset; reject any override so the provider default stays authoritative.
+        VIEWER_HEADER_CHECK="test \"\$(sudo grep -c '^OPENRUNG_WSS_VIEWER_ADDRESS_HEADER=' /etc/openrung/wss.env || true)\" = 0"
+      fi
     else
       FRONT_CHECK="! sudo grep -q '^OPENRUNG_WSS_FRONTS=' /etc/openrung/relay.env"
     fi
@@ -498,6 +555,7 @@ REMOTE
       test \"\$(sudo stat -c '%a %U:%G' /etc/openrung/relay.env)\" = '600 root:root'
       test \"\$(sudo stat -c '%a %U:%G' /etc/openrung/wss.env)\" = '600 root:root'
       $FRONT_CHECK
+      $VIEWER_HEADER_CHECK
       test \"\$(sudo grep -c '^OPENRUNG_WSS_MAX_SESSIONS_PER_SOURCE=512\$' /etc/openrung/wss.env)\" = 1
       ! sudo grep -q '^OPENRUNG_WSS_NO_STREAM_IDLE_TIMEOUT=' /etc/openrung/wss.env
       ! sudo grep -q '^OPENRUNG_WSS_FIXED_TARGET=' /etc/openrung/wss.env

@@ -119,7 +119,7 @@ func TestClassifyErrorUsesWSSTaxonomy(t *testing.T) {
 
 	client, dialErr := wsscore.DialClient(t.Context(), wsscore.ClientOptions{
 		URL:    "wss://d111111abcdef8.cloudfront.net" + wsscore.BridgePath,
-		Ticket: "classify-ticket", CloudFrontNoSNI: true, PingInterval: -1,
+		Ticket: "classify-ticket", NativeFrontNoSNI: true, PingInterval: -1,
 		WebSocketDialer: &websocket.Dialer{
 			TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12},
 			NetDialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {

@@ -18,6 +18,13 @@ go.work.sum
 
 # Local generated relay configs
 openrung-xray-config.json
+
+# WSS front state written by OPENRUNG_WSS_FRONT_STATE_FILE.  Front hostnames are
+# rotated when they are blocked, so committing a mapping would preserve every
+# one this project has ever used, permanently, in git history.  Derive the live
+# mapping with `deploy/relay/bunny/bunny-wss-front.sh inventory` instead.
+wss-fronts.json
+*-wss-front-state.json
 *.local.json
 
 # Runtime-generated broker telemetry log

@@ -136,22 +136,29 @@ func receiveTLSObservation(t *testing.T, name string, values <-chan string) stri
 	}
 }
 
-func TestCloudFrontDistributionHost(t *testing.T) {
+func TestNativeFrontHost(t *testing.T) {
 	for _, test := range []struct {
 		url  string
 		host string
 		ok   bool
 	}{
 		{url: "wss://d111111abcdef8.cloudfront.net" + BridgePath, host: "d111111abcdef8.cloudfront.net", ok: true},
+		{url: "wss://openrung-plucky-heron.b-cdn.net" + BridgePath, host: "openrung-plucky-heron.b-cdn.net", ok: true},
 		{url: "wss://cdn.example.com" + BridgePath},
 		{url: "wss://cloudfront.net" + BridgePath},
+		{url: "wss://b-cdn.net" + BridgePath},
 		{url: "wss://nested.d111111abcdef8.cloudfront.net" + BridgePath},
+		{url: "wss://nested.openrung-plucky-heron.b-cdn.net" + BridgePath},
 		{url: "wss://d111111abcdef8.cloudfront.net.example" + BridgePath},
+		{url: "wss://openrung-plucky-heron.b-cdn.net.example" + BridgePath},
+		// A zone name that merely ends in a recognized one is a different
+		// domain, so its certificate cannot be assumed to cover the host.
+		{url: "wss://front.notb-cdn.net" + BridgePath},
 		{url: ":// malformed"},
 	} {
-		host, ok := cloudFrontDistributionHost(test.url)
+		host, ok := nativeFrontHost(test.url)
 		if host != test.host || ok != test.ok {
-			t.Errorf("cloudFrontDistributionHost(%q) = (%q, %v), want (%q, %v)", test.url, host, ok, test.host, test.ok)
+			t.Errorf("nativeFrontHost(%q) = (%q, %v), want (%q, %v)", test.url, host, ok, test.host, test.ok)
 		}
 	}
 }
@@ -180,28 +187,63 @@ func TestNoSNITLSDialUsesSelectedNetworkDialerOnce(t *testing.T) {
 	}
 }
 
-func TestDialClientCloudFrontNoSNIOmitsSNIAndPreservesHost(t *testing.T) {
-	const distributionHost = "d111111abcdef8.cloudfront.net"
-	edge := newObservedTLSEdge(t, "*.cloudfront.net")
-	peerCallbackCalled := false
-	connectionCallbackCalled := false
-	edge.dialer.TLSClientConfig.VerifyPeerCertificate = func(rawCertificates [][]byte, verifiedChains [][]*x509.Certificate) error {
-		if len(rawCertificates) != 2 || len(verifiedChains) == 0 {
-			return fmt.Errorf("verification callback received raw=%d chains=%d", len(rawCertificates), len(verifiedChains))
-		}
-		peerCallbackCalled = true
-		return nil
-	}
-	edge.dialer.TLSClientConfig.VerifyConnection = func(state tls.ConnectionState) error {
-		if state.ServerName != "" || len(state.VerifiedChains) == 0 {
-			return fmt.Errorf("connection callback received SNI %q and %d chains", state.ServerName, len(state.VerifiedChains))
-		}
-		connectionCallbackCalled = true
-		return nil
-	}
+func TestDialClientNativeFrontNoSNIOmitsSNIAndPreservesHost(t *testing.T) {
+	for _, front := range []struct {
+		name            string
+		host            string
+		certificateName string
+	}{
+		{name: "cloudfront", host: "d111111abcdef8.cloudfront.net", certificateName: "*.cloudfront.net"},
+		{name: "bunny", host: "openrung-plucky-heron.b-cdn.net", certificateName: "*.b-cdn.net"},
+	} {
+		t.Run(front.name, func(t *testing.T) {
+			edge := newObservedTLSEdge(t, front.certificateName)
+			peerCallbackCalled := false
+			connectionCallbackCalled := false
+			edge.dialer.TLSClientConfig.VerifyPeerCertificate = func(rawCertificates [][]byte, verifiedChains [][]*x509.Certificate) error {
+				if len(rawCertificates) != 2 || len(verifiedChains) == 0 {
+					return fmt.Errorf("verification callback received raw=%d chains=%d", len(rawCertificates), len(verifiedChains))
+				}
+				peerCallbackCalled = true
+				return nil
+			}
+			edge.dialer.TLSClientConfig.VerifyConnection = func(state tls.ConnectionState) error {
+				if state.ServerName != "" || len(state.VerifiedChains) == 0 {
+					return fmt.Errorf("connection callback received SNI %q and %d chains", state.ServerName, len(state.VerifiedChains))
+				}
+				connectionCallbackCalled = true
+				return nil
+			}
 
+			client, err := DialClient(t.Context(), ClientOptions{
+				URL: "wss://" + front.host + BridgePath, Ticket: front.name + "-ticket",
+				WebSocketDialer: edge.dialer, NativeFrontNoSNI: true, PingInterval: -1,
+			})
+			if err != nil {
+				t.Fatalf("DialClient: %v", err)
+			}
+			defer client.Close()
+			if sni := receiveTLSObservation(t, "ClientHello", edge.sni); sni != "" {
+				t.Fatalf("ClientHello SNI = %q, want empty", sni)
+			}
+			if host := receiveTLSObservation(t, "HTTP Host", edge.host); host != front.host {
+				t.Fatalf("HTTP Host = %q, want %q", host, front.host)
+			}
+			if !peerCallbackCalled || !connectionCallbackCalled {
+				t.Fatalf("TLS verification callbacks called: peer=%v connection=%v", peerCallbackCalled, connectionCallbackCalled)
+			}
+		})
+	}
+}
+
+// TestDialClientDeprecatedCloudFrontNoSNIStillOmitsSNI keeps the pre-rename
+// field working for consumers pinned to an older wsscore call site, including
+// on the zone that did not exist when that field was named.
+func TestDialClientDeprecatedCloudFrontNoSNIStillOmitsSNI(t *testing.T) {
+	const frontHost = "openrung-plucky-heron.b-cdn.net"
+	edge := newObservedTLSEdge(t, "*.b-cdn.net")
 	client, err := DialClient(t.Context(), ClientOptions{
-		URL: "wss://" + distributionHost + BridgePath, Ticket: "cloudfront-ticket",
+		URL: "wss://" + frontHost + BridgePath, Ticket: "deprecated-field-ticket",
 		WebSocketDialer: edge.dialer, CloudFrontNoSNI: true, PingInterval: -1,
 	})
 	if err != nil {
@@ -211,15 +253,12 @@ func TestDialClientCloudFrontNoSNIOmitsSNIAndPreservesHost(t *testing.T) {
 	if sni := receiveTLSObservation(t, "ClientHello", edge.sni); sni != "" {
 		t.Fatalf("ClientHello SNI = %q, want empty", sni)
 	}
-	if host := receiveTLSObservation(t, "HTTP Host", edge.host); host != distributionHost {
-		t.Fatalf("HTTP Host = %q, want %q", host, distributionHost)
-	}
-	if !peerCallbackCalled || !connectionCallbackCalled {
-		t.Fatalf("TLS verification callbacks called: peer=%v connection=%v", peerCallbackCalled, connectionCallbackCalled)
+	if host := receiveTLSObservation(t, "HTTP Host", edge.host); host != frontHost {
+		t.Fatalf("HTTP Host = %q, want %q", host, frontHost)
 	}
 }
 
-func TestDialClientCloudFrontNoSNIIsOptIn(t *testing.T) {
+func TestDialClientNativeFrontNoSNIIsOptIn(t *testing.T) {
 	const distributionHost = "d111111abcdef8.cloudfront.net"
 	edge := newObservedTLSEdge(t, "*.cloudfront.net")
 	client, err := DialClient(t.Context(), ClientOptions{
@@ -238,7 +277,7 @@ func TestDialClientCloudFrontNoSNIIsOptIn(t *testing.T) {
 	}
 }
 
-func TestDialClientCloudFrontNoSNIRejectsInvalidCertificates(t *testing.T) {
+func TestDialClientNativeFrontNoSNIRejectsInvalidCertificates(t *testing.T) {
 	const distributionHost = "d111111abcdef8.cloudfront.net"
 	for _, test := range []struct {
 		name             string
@@ -265,7 +304,7 @@ func TestDialClientCloudFrontNoSNIRejectsInvalidCertificates(t *testing.T) {
 			}
 			client, err := DialClient(t.Context(), ClientOptions{
 				URL: "wss://" + distributionHost + BridgePath, Ticket: "invalid-certificate-ticket",
-				WebSocketDialer: edge.dialer, CloudFrontNoSNI: true, PingInterval: -1,
+				WebSocketDialer: edge.dialer, NativeFrontNoSNI: true, PingInterval: -1,
 			})
 			if client != nil {
 				_ = client.Close()
@@ -289,12 +328,12 @@ func TestDialClientCloudFrontNoSNIRejectsInvalidCertificates(t *testing.T) {
 	}
 }
 
-func TestDialClientNonCloudFrontRetainsSNI(t *testing.T) {
+func TestDialClientNonNativeFrontRetainsSNI(t *testing.T) {
 	const frontHost = "cdn.example.com"
 	edge := newObservedTLSEdge(t, frontHost)
 	client, err := DialClient(t.Context(), ClientOptions{
 		URL: "wss://" + frontHost + BridgePath, Ticket: "cdn-ticket",
-		WebSocketDialer: edge.dialer, CloudFrontNoSNI: true, PingInterval: -1,
+		WebSocketDialer: edge.dialer, NativeFrontNoSNI: true, PingInterval: -1,
 	})
 	if err != nil {
 		t.Fatalf("DialClient: %v", err)

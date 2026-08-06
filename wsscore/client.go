@@ -33,9 +33,17 @@ type ClientOptions struct {
 	TLSConfig       *tls.Config
 	WebSocketDialer *websocket.Dialer
 
-	// CloudFrontNoSNI omits ClientHello SNI for native one-label
-	// *.cloudfront.net URLs while retaining certificate verification against
-	// the signed URL hostname. It has no effect on custom CNAMEs or other CDNs.
+	// NativeFrontNoSNI omits ClientHello SNI for native one-label CDN URLs
+	// whose zone default certificate covers them (*.cloudfront.net,
+	// *.b-cdn.net) while retaining certificate verification against the signed
+	// URL hostname. It has no effect on custom CNAMEs or other CDNs.
+	NativeFrontNoSNI bool
+
+	// CloudFrontNoSNI is the former name of NativeFrontNoSNI, from when
+	// CloudFront was the only recognized zone. Either field enables the same
+	// behavior, so pinned consumers keep building across the rename.
+	//
+	// Deprecated: use NativeFrontNoSNI.
 	CloudFrontNoSNI bool
 
 	HandshakeTimeout time.Duration
@@ -74,8 +82,8 @@ func DialClient(ctx context.Context, opts ClientOptions) (*Client, error) {
 	if err := ValidateFrontURL(opts.URL); err != nil {
 		return nil, err
 	}
-	verificationName, nativeCloudFront := cloudFrontDistributionHost(opts.URL)
-	omitSNI := opts.CloudFrontNoSNI && nativeCloudFront
+	verificationName, nativeFront := nativeFrontHost(opts.URL)
+	omitSNI := (opts.NativeFrontNoSNI || opts.CloudFrontNoSNI) && nativeFront
 	if len(opts.Ticket) == 0 || len(opts.Ticket) > MaxTicketBytes || strings.ContainsAny(opts.Ticket, "\r\n") {
 		return nil, errors.New("WSS ticket is missing or oversized")
 	}
@@ -94,7 +102,7 @@ func DialClient(ctx context.Context, opts ClientOptions) (*Client, error) {
 		return nil, err
 	}
 	if omitSNI && len(tlsConfig.EncryptedClientHelloConfigList) != 0 {
-		return nil, errors.New("WSS CloudFront no-SNI mode cannot be combined with encrypted client hello")
+		return nil, errors.New("WSS native-front no-SNI mode cannot be combined with encrypted client hello")
 	}
 
 	loopback := opts.LoopbackHost
