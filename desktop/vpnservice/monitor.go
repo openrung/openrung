@@ -167,6 +167,16 @@ func (s *Service) supervise(ctx context.Context, conn *connection, cur *candidat
 // the end (never excluded: it may be the only relay there is), then the ladder.
 // The telemetry session survives: no BeginSession, no terminal events here.
 func (s *Service) reladder(ctx context.Context, conn *connection, port int, targetCountry, targetRelayID, failedRelayID string) (*candidateResult, int64, string, error) {
+	// Take exactly one fresh settings snapshot for this recovery pass. The old
+	// candidate has already been torn down by supervise, so replacing the pass
+	// snapshot here cannot make two live candidates observe different rules.
+	// This is also how a change persisted while CONNECTING takes effect without
+	// aborting the in-flight recovery.
+	rules := s.splitTunnelSnapshot()
+	s.mu.Lock()
+	conn.splitTunnel = rules
+	s.mu.Unlock()
+
 	brokerURL := s.connBrokerURL(conn)
 	fetch, fetchMS, err := s.fetchCandidates(ctx, conn, brokerURL, targetCountry, targetRelayID)
 	var rateLimited *discovery.RateLimitedError

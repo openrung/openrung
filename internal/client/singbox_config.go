@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"path/filepath"
 	"strings"
 
 	"openrung/internal/relay"
@@ -49,7 +50,37 @@ type SingBoxConfigInput struct {
 	// and loop back into the tunnel (deadlock). The loopback bridge address needs
 	// no exclusion; this peer IP does.
 	PunchPeerExcludeAddress string
+	// SplitTunnel contains validated proxy-mode bypass rules. A nil or inert
+	// value preserves the baseline config byte-for-byte. Desktop intentionally
+	// has no per-process exclusions: only requests entering the mixed proxy can
+	// be routed here.
+	SplitTunnel *SplitTunnelRules
 }
+
+// SplitTunnelRules is the ready-to-emit form of the desktop split-tunnel
+// preference. Callers validate/stage both binary rule-set files for every
+// country before constructing it. Countries are normalized again here as a
+// final forward-compatible guard.
+type SplitTunnelRules struct {
+	BypassLAN           bool
+	BypassCountries     []string
+	RuleSetDirectory    string
+	ProxyDomainSuffixes []string
+}
+
+type splitTunnelCountry struct {
+	code           string
+	geositeTag     string
+	geoipTag       string
+	directResolver string
+}
+
+var supportedSplitTunnelCountries = []splitTunnelCountry{
+	{code: "ir", geositeTag: "geosite-ir", geoipTag: "geoip-ir", directResolver: "178.22.122.100"},
+	{code: "cn", geositeTag: "geosite-cn", geoipTag: "geoip-cn", directResolver: "223.5.5.5"},
+}
+
+var defaultProxyProbeDomainSuffixes = []string{"www.gstatic.com", "cp.cloudflare.com"}
 
 func BuildSingBoxConfig(input SingBoxConfigInput) ([]byte, error) {
 	if err := validateRelayForConfig(input.Relay); err != nil {
@@ -88,15 +119,29 @@ func BuildSingBoxConfig(input SingBoxConfigInput) ([]byte, error) {
 		serverPort = input.BridgePort
 	}
 
+	dns := map[string]any{
+		"servers": dnsServerObjects(dnsServers),
+		"final":   "dns-0",
+	}
+	route := map[string]any{
+		"auto_detect_interface":   true,
+		"default_domain_resolver": "dns-0",
+		"rules": []any{
+			map[string]any{
+				"protocol": "dns",
+				"action":   "hijack-dns",
+			},
+		},
+		"final": "proxy",
+	}
+	applySplitTunnelConfig(dns, route, input.SplitTunnel)
+
 	cfg := map[string]any{
 		"log": map[string]any{
 			"level":     "info",
 			"timestamp": true,
 		},
-		"dns": map[string]any{
-			"servers": dnsServerObjects(dnsServers),
-			"final":   "dns-0",
-		},
+		"dns": dns,
 		"inbounds": []any{
 			inbound,
 		},
@@ -133,20 +178,126 @@ func BuildSingBoxConfig(input SingBoxConfigInput) ([]byte, error) {
 				"tag":  "block",
 			},
 		},
-		"route": map[string]any{
-			"auto_detect_interface":   true,
-			"default_domain_resolver": "dns-0",
-			"rules": []any{
-				map[string]any{
-					"protocol": "dns",
-					"action":   "hijack-dns",
-				},
-			},
-			"final": "proxy",
-		},
+		"route": route,
 	}
 
 	return json.MarshalIndent(cfg, "", "  ")
+}
+
+func applySplitTunnelConfig(dns, route map[string]any, rules *SplitTunnelRules) {
+	if rules == nil {
+		return
+	}
+	countries := normalizedSplitTunnelCountries(rules.BypassCountries, rules.RuleSetDirectory)
+	if !rules.BypassLAN && len(countries) == 0 {
+		return
+	}
+
+	routeRules := route["rules"].([]any)
+	if len(countries) > 0 {
+		probeSuffixes := normalizedDomainSuffixes(rules.ProxyDomainSuffixes)
+		if len(probeSuffixes) == 0 {
+			probeSuffixes = append([]string(nil), defaultProxyProbeDomainSuffixes...)
+		}
+		routeRules = append(routeRules,
+			map[string]any{"action": "sniff"},
+			map[string]any{"domain_suffix": probeSuffixes, "outbound": "proxy"},
+		)
+	}
+	if rules.BypassLAN || len(countries) > 0 {
+		// Mixed HTTP/SOCKS requests commonly arrive with a hostname rather than
+		// an IP destination. Resolve it before IP-based LAN/geoip matching so the
+		// proxy-only desktop port preserves the mobile client's effective rules.
+		// The force-proxy probe rule above remains terminal and therefore cannot
+		// be diverted by an address learned here.
+		routeRules = append(routeRules, map[string]any{"action": "resolve"})
+	}
+	if rules.BypassLAN {
+		routeRules = append(routeRules, map[string]any{
+			"ip_is_private": true,
+			"outbound":      "direct",
+		})
+	}
+	for _, country := range countries {
+		routeRules = append(routeRules, map[string]any{
+			"rule_set": []string{country.geositeTag, country.geoipTag},
+			"outbound": "direct",
+		})
+	}
+	route["rules"] = routeRules
+
+	if len(countries) == 0 {
+		return
+	}
+
+	ruleSets := make([]any, 0, len(countries)*2)
+	for _, country := range countries {
+		for _, tag := range []string{country.geositeTag, country.geoipTag} {
+			ruleSets = append(ruleSets, map[string]any{
+				"type":   "local",
+				"tag":    tag,
+				"format": "binary",
+				"path":   filepath.Join(rules.RuleSetDirectory, tag+".srs"),
+			})
+		}
+	}
+	route["rule_set"] = ruleSets
+
+	dnsServers := dns["servers"].([]any)
+	for _, country := range countries {
+		dnsServers = append(dnsServers, map[string]any{
+			"tag":    "dns-direct-" + country.code,
+			"type":   "udp",
+			"server": country.directResolver,
+		})
+	}
+	dns["servers"] = dnsServers
+
+	probeSuffixes := normalizedDomainSuffixes(rules.ProxyDomainSuffixes)
+	if len(probeSuffixes) == 0 {
+		probeSuffixes = append([]string(nil), defaultProxyProbeDomainSuffixes...)
+	}
+	dnsRules := []any{
+		map[string]any{"domain_suffix": probeSuffixes, "server": "dns-0"},
+	}
+	for _, country := range countries {
+		dnsRules = append(dnsRules, map[string]any{
+			"rule_set": []string{country.geositeTag},
+			"server":   "dns-direct-" + country.code,
+		})
+	}
+	dns["rules"] = dnsRules
+}
+
+func normalizedSplitTunnelCountries(codes []string, ruleSetDirectory string) []splitTunnelCountry {
+	if strings.TrimSpace(ruleSetDirectory) == "" {
+		return nil
+	}
+	requested := make(map[string]bool, len(codes))
+	for _, code := range codes {
+		requested[strings.ToLower(strings.TrimSpace(code))] = true
+	}
+	out := make([]splitTunnelCountry, 0, len(supportedSplitTunnelCountries))
+	for _, country := range supportedSplitTunnelCountries {
+		if requested[country.code] {
+			out = append(out, country)
+		}
+	}
+	return out
+}
+
+func normalizedDomainSuffixes(suffixes []string) []string {
+	seen := make(map[string]bool, len(suffixes))
+	out := make([]string, 0, len(suffixes))
+	for _, suffix := range suffixes {
+		suffix = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(suffix)), ".")
+		if suffix == "" || seen[suffix] {
+			continue
+		}
+		seen[suffix] = true
+		out = append(out, suffix)
+	}
+	return out
 }
 
 // buildInbound constructs the single inbound for the requested mode. ModeTUN

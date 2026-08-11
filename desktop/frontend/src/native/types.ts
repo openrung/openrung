@@ -62,4 +62,7 @@ export interface OpenRungVpnModule {
   getState(): Promise<NativeVpnState>;
   getIdentity(): Promise<NativeIdentity>;
   getProxyInfo(): Promise<NativeProxyInfo>;
+  /** Persist the split-tunnel config JSON. When an active proxy connection's
+   * effective config changes, native reconnects to the same relay target. */
+  setSplitTunnelConfig(configJson: string): Promise<void>;
 }

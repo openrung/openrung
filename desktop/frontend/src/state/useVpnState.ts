@@ -6,7 +6,7 @@
 import { useCallback, useEffect } from 'react';
 import { AppConfig } from '../core/config';
 import { OpenRungVpn, subscribeVpnState } from '../native/OpenRungVpn';
-import { applyNativeState, useAppState } from './store';
+import { applyNativeState, flushSplitTunnelPush, useAppState } from './store';
 import type { AppState } from './store';
 
 export interface VpnStateHook {
@@ -48,8 +48,16 @@ export function useVpnState(): VpnStateHook {
   }, []);
 
   const connect = useCallback(
-    (country?: string | null, relayId?: string | null) =>
-      OpenRungVpn.connect(AppConfig.DEFAULT_BROKER_URL, country ?? null, relayId ?? null),
+    async (country?: string | null, relayId?: string | null) => {
+      // Native snapshots routing preferences at connect start. Flush fresh
+      // defaults or a just-toggled preference before dispatching that start.
+      await flushSplitTunnelPush();
+      return OpenRungVpn.connect(
+        AppConfig.DEFAULT_BROKER_URL,
+        country ?? null,
+        relayId ?? null,
+      );
+    },
     [],
   );
 

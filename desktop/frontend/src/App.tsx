@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ExitNodeMap } from './components/ExitNodeMap';
 import { ConnectCard } from './components/ConnectCard';
 import { ConsolePanel } from './components/ConsolePanel';
@@ -10,14 +10,15 @@ import { SettingsScreen } from './screens/SettingsScreen';
 import { AboutScreen } from './screens/AboutScreen';
 import { LicensesScreen } from './screens/LicensesScreen';
 import { LicenseTextScreen } from './screens/LicenseTextScreen';
+import { SplitTunnelingScreen } from './screens/SplitTunnelingScreen';
 import { Logo } from './components/Logo';
 import { useVpnState } from './state/useVpnState';
-import { refreshDirectory } from './state/store';
+import { hydrateSplitTunnel, refreshDirectory } from './state/store';
 import { isMock } from './native/OpenRungVpn';
 
 type Tab = 'home' | 'settings' | 'about';
-// Sub-screens pushed over the About tab (mirrors the RN app's subRoute stack).
-type SubRoute = 'licenses' | 'licenseText' | null;
+// Sub-screens pushed over a root tab (mirrors the RN app's subRoute stack).
+type SubRoute = 'splitTunneling' | 'licenses' | 'licenseText' | null;
 
 const NAV = [
   { key: 'home' as const, label: 'Home', Icon: HomeIcon },
@@ -31,8 +32,11 @@ export default function App() {
   const [subRoute, setSubRoute] = useState<SubRoute>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('map');
   const [consoleOpen, setConsoleOpen] = useState(false);
+  const [restoreSplitTunnelFocus, setRestoreSplitTunnelFocus] = useState(false);
+  const splitTunnelButtonRef = useRef<HTMLButtonElement>(null);
 
   const onSelectTab = (next: Tab) => {
+    setRestoreSplitTunnelFocus(false);
     setSubRoute(null);
     setTab(next);
   };
@@ -40,8 +44,16 @@ export default function App() {
   // Populate the exit-node map once on mount (Go owns failover/429; the throttle
   // there caps broker hits regardless of how often this is called).
   useEffect(() => {
+    hydrateSplitTunnel();
     void refreshDirectory();
   }, []);
+
+  useEffect(() => {
+    if (restoreSplitTunnelFocus && tab === 'settings' && subRoute == null) {
+      splitTunnelButtonRef.current?.focus();
+      setRestoreSplitTunnelFocus(false);
+    }
+  }, [restoreSplitTunnelFocus, subRoute, tab]);
 
   const regions = state.availableRegions;
   const connectTo = (code: string) => void prepareAndConnect(code);
@@ -121,13 +133,26 @@ export default function App() {
           </>
         )}
 
-        {tab === 'settings' && (
-          <SettingsScreen
-            consoleOpen={consoleOpen}
-            connectionStatus={state.native.status}
-            onToggleConsole={() => setConsoleOpen(o => !o)}
-          />
-        )}
+        {tab === 'settings' &&
+          (subRoute === 'splitTunneling' ? (
+            <SplitTunnelingScreen
+              onBack={() => {
+                setRestoreSplitTunnelFocus(true);
+                setSubRoute(null);
+              }}
+            />
+          ) : (
+            <SettingsScreen
+              consoleOpen={consoleOpen}
+              connectionStatus={state.native.status}
+              onToggleConsole={() => setConsoleOpen(o => !o)}
+              onOpenSplitTunneling={() => {
+                setRestoreSplitTunnelFocus(false);
+                setSubRoute('splitTunneling');
+              }}
+              splitTunnelingButtonRef={splitTunnelButtonRef}
+            />
+          ))}
 
         {tab === 'about' &&
           (subRoute === 'licenses' ? (

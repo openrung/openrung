@@ -207,7 +207,7 @@ the rest of `desktop/frontend`'s `devDependencies`), and all GitHub Actions.
 
 ## 7. Desktop app (Wails GUI)
 
-The desktop release packages bundle three layers. The in-app "Open-source
+The desktop release packages bundle four layers. The in-app "Open-source
 licenses" screen renders this section (via
 `desktop/frontend/src/licenses/notices.ts`) so recipients get the notices
 offline.
@@ -219,7 +219,43 @@ See section 1. The binary embeds, among others: gVisor (Apache-2.0), quic-go
 transitive set from the exact sing-box version pinned in
 `.github/workflows/desktop-release.yml`.
 
-### 7.2 Application binary (Go) — statically linked
+### 7.2 Bundled split-tunneling rule-set data
+
+The desktop app embeds four compiled sing-box rule-set binaries as routing data.
+They are staged on disk at runtime for the Iranian and Chinese proxy-bypass
+presets; they are data files, not linked Go code. Exact source commits, fetch
+dates, and SHA-256 hashes are recorded in
+`desktop/rulesets/README.md`.
+
+#### Iran-sing-box-rules (Chocolate4U) — GPL-3.0
+
+- **Components:** `geosite-ir.srs` and `geoip-ir.srs` (compiled rule sets for
+  the Iranian sites and IP preset).
+- **License:** GNU General Public License v3.0 (**GPL-3.0**). The full GPL-3.0
+  text is bundled in this repository as `LICENSE`.
+- **Upstream:** https://github.com/Chocolate4U/Iran-sing-box-rules
+
+#### sing-geosite data — v2fly/domain-list-community (MIT)
+
+- **Component:** `geosite-cn.srs` (compiled Chinese domain rule set), built by
+  SagerNet/sing-geosite from the `v2fly/domain-list-community` dataset.
+- **License and attribution:** MIT; Copyright (c) 2018-2019 V2Ray. The MIT text
+  is reproduced in Appendix A.
+- **Upstream:** https://github.com/SagerNet/sing-geosite and
+  https://github.com/v2fly/domain-list-community
+
+#### sing-geoip — MaxMind GeoLite2 data
+
+- **Component:** `geoip-cn.srs` (compiled Chinese IP rule set), built by
+  SagerNet/sing-geoip from MaxMind GeoLite2 country data.
+- **Required attribution (must be preserved):**
+
+  > This product includes GeoLite2 data created by MaxMind, available from
+  > https://www.maxmind.com
+
+- **Upstream:** https://github.com/SagerNet/sing-geoip
+
+### 7.3 Application binary (Go) — statically linked
 
 Union of `GOOS={darwin,windows,linux} go list -deps -tags desktop,production`
 (2026-07-11, versions per `desktop/go.mod`):
@@ -264,7 +300,7 @@ Union of `GOOS={darwin,windows,linux} go list -deps -tags desktop,production`
 
 - `github.com/tkrajina/go-reflector`
 
-### 7.3 Embedded web frontend (Vite bundle)
+### 7.4 Embedded web frontend (Vite bundle)
 
 Runtime `dependencies` of `desktop/frontend/package.json`:
 

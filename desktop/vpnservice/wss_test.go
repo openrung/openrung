@@ -362,6 +362,8 @@ func TestWSSDirectFailureFallsBackOnSameRelayAndPreservesReality(t *testing.T) {
 	fixture.ShortID = "0102030405060708"
 	fixture.ServerName = "camouflage.example.com"
 	s, _ := newLadderService(t, func() []relay.Descriptor { return []relay.Descriptor{fixture} })
+	s.splitTunnelRaw = `{"version":1,"enabled":true,"bypass_lan":false,"bypass_countries":["cn"]}`
+	s.stageRuleSets = successfulRuleSetStager
 	s.dialRelay = func(context.Context, string, int) (int64, error) { return 0, errors.New("direct TCP blocked") }
 
 	type ticketCall struct {
@@ -429,6 +431,9 @@ func TestWSSDirectFailureFallsBackOnSameRelayAndPreservesReality(t *testing.T) {
 	if outbound.Server != bridge.host || outbound.ServerPort != bridge.port || outbound.UUID != fixture.ClientID || outbound.Flow != fixture.Flow ||
 		outbound.TLS.ServerName != fixture.ServerName || outbound.TLS.Reality.PublicKey != fixture.RealityPublicKey || outbound.TLS.Reality.ShortID != fixture.ShortID {
 		t.Fatalf("WSS changed Reality config: %+v", outbound)
+	}
+	if tags := configRuleSetTags(t, captured.body); !reflect.DeepEqual(tags, []string{"geosite-cn", "geoip-cn"}) {
+		t.Fatalf("WSS fallback lost split-tunnel rules: %v", tags)
 	}
 
 	_ = s.Disconnect()

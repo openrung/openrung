@@ -734,6 +734,62 @@ button {
   opacity: 0.42;
 }
 
+/* terminal-style boolean control (Settings → Split tunneling) */
+.or-terminal-switch {
+  flex: none;
+  min-width: 54px;
+  padding: 7px 12px;
+  border-radius: var(--or-radius-sm, 10px);
+  border: 1px solid var(--or-glass-border, rgba(41, 79, 53, 0.9));
+  background: var(--or-glass, rgba(7, 17, 11, 0.86));
+  color: var(--or-dim-text, #7da989);
+  font-size: 10px;
+  font-weight: normal;
+  letter-spacing: 1.5px;
+  text-align: center;
+}
+
+.or-terminal-switch.is-on {
+  color: var(--or-terminal-green, #65f58a);
+  background: var(--or-segment-active, rgba(101, 245, 138, 0.12));
+  font-weight: bold;
+  text-shadow: 0 0 8px var(--or-glow-soft, rgba(101, 245, 138, 0.25));
+}
+
+.or-terminal-switch:not(:disabled):hover {
+  border-color: var(--or-terminal-green, #65f58a);
+}
+
+.or-terminal-switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.or-split-presets {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition: opacity 120ms ease;
+}
+
+.or-split-presets.is-disabled {
+  opacity: 0.45;
+}
+
+.or-split-screen .or-setting-subtitle {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.or-split-footer {
+  margin: 8px auto 0;
+  color: var(--or-dim-text, #7da989);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+}
+
 /* about screen */
 .or-about-hero {
   display: flex;

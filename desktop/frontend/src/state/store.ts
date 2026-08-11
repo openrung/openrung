@@ -4,15 +4,23 @@
  *   2. refreshDirectory's fetchRelays → the Go binding (listRelaysForDirectory),
  *      which owns broker candidate ordering / failover / 429 backoff. The
  *      injectable fetchRelays seam means loadExitNodeDirectory is reused verbatim.
- * Everything else — the external-store shape, supersession token, directory
- * status semantics — is unchanged from mobile.
+ *   3. Split-tunnel preferences use synchronous localStorage while the native
+ *      bridge remains asynchronous.
+ * Directory supersession and status semantics remain aligned with mobile.
  */
 import { useSyncExternalStore } from 'react';
 import { AppConfig } from '../core/config';
 import type { DirectoryStatus, ExitNodeRegion, HomeViewMode } from '../core/model/exitNode';
 import { loadExitNodeDirectory } from '../core/net/exitNodeDirectory';
-import { listRelaysForDirectory } from '../native/OpenRungVpn';
+import { listRelaysForDirectory, OpenRungVpn } from '../native/OpenRungVpn';
 import type { NativeVpnState } from '../native/types';
+
+export interface SplitTunnelState {
+  enabled: boolean;
+  bypassLan: boolean;
+  bypassCountries: string[]; // lowercase ISO codes; v1 recognizes only ir/cn
+  excludedApps: string[]; // always empty on proxy-only desktop; kept for contract parity
+}
 
 export interface AppState {
   native: NativeVpnState; // mirrored from the Go bridge
@@ -21,10 +29,12 @@ export interface AppState {
   availableRegions: ExitNodeRegion[];
   languageTag: string; // '' = system, persisted in localStorage
   homeViewMode: HomeViewMode; // home directory presentation, persisted in localStorage
+  splitTunnel: SplitTunnelState; // persisted locally and mirrored to the Go service
 }
 
 export const LANGUAGE_STORAGE_KEY = 'openrung.language';
 export const HOME_VIEW_MODE_STORAGE_KEY = 'openrung.homeViewMode';
+export const SPLIT_TUNNEL_STORAGE_KEY = 'openrung.splitTunnel';
 
 const INITIAL_NATIVE_STATE: NativeVpnState = {
   status: 'disconnected',
@@ -32,6 +42,13 @@ const INITIAL_NATIVE_STATE: NativeVpnState = {
   lastError: null,
   logLines: [],
   recents: [],
+};
+
+const INITIAL_SPLIT_TUNNEL: SplitTunnelState = {
+  enabled: true,
+  bypassLan: true,
+  bypassCountries: ['ir', 'cn'],
+  excludedApps: [],
 };
 
 function initialState(): AppState {
@@ -42,6 +59,7 @@ function initialState(): AppState {
     availableRegions: [],
     languageTag: '',
     homeViewMode: 'map',
+    splitTunnel: INITIAL_SPLIT_TUNNEL,
   };
 }
 
@@ -69,6 +87,14 @@ const listeners = new Set<() => void>();
 // Supersession token for directory loads: a newer (forced) refresh makes any
 // in-flight load stale so its completion can't clobber state.
 let directoryGeneration = 0;
+
+const SPLIT_TUNNEL_PUSH_DEBOUNCE_MS = 1200;
+const SPLIT_TUNNEL_PUSH_TIMEOUT_MS = 3000;
+let splitTunnelPushTimer: ReturnType<typeof setTimeout> | null = null;
+let splitTunnelHydrated = false;
+let splitTunnelPushEpoch = 0;
+let splitTunnelRevision = 0;
+let splitTunnelPushChain: Promise<void> = Promise.resolve();
 
 function setState(next: AppState): void {
   state = next;
@@ -157,8 +183,179 @@ export function hydrateHomeViewMode(): void {
   }
 }
 
+/** Serializes the shared v1 bridge contract in the stable native comparison order. */
+function splitTunnelConfigJson(split: SplitTunnelState): string {
+  return JSON.stringify({
+    version: 1,
+    enabled: split.enabled,
+    bypass_lan: split.bypassLan,
+    bypass_countries: split.bypassCountries,
+    excluded_packages: split.excludedApps,
+  });
+}
+
+/** Queues bridge writes in order so an older slow call cannot overwrite a
+ * newer preference. A bridge failure must never block Settings or Connect. */
+function pushSplitTunnelToNative(): Promise<void> {
+  const configJson = splitTunnelConfigJson(state.splitTunnel);
+  const epoch = splitTunnelPushEpoch;
+  const push = async () => {
+    if (epoch !== splitTunnelPushEpoch) {
+      return;
+    }
+    let bridgePush: Promise<void>;
+    try {
+      bridgePush = Promise.resolve(OpenRungVpn.setSplitTunnelConfig(configJson));
+    } catch {
+      // Supports a newer frontend running against a stale desktop binary.
+      return;
+    }
+    // Native persistence should be fast, but a stale or wedged bridge must not
+    // make Connect unavailable forever. The native service serializes calls,
+    // so letting the UI proceed after this bound still preserves Go-side order
+    // if the original invocation eventually completes.
+    await new Promise<void>(resolve => {
+      const timeout = setTimeout(resolve, SPLIT_TUNNEL_PUSH_TIMEOUT_MS);
+      bridgePush.then(
+        () => {
+          clearTimeout(timeout);
+          resolve();
+        },
+        () => {
+          clearTimeout(timeout);
+          resolve();
+        },
+      );
+    });
+  };
+  splitTunnelPushChain = splitTunnelPushChain.then(push, push);
+  return splitTunnelPushChain;
+}
+
+function scheduleSplitTunnelPush(): void {
+  if (splitTunnelPushTimer != null) {
+    clearTimeout(splitTunnelPushTimer);
+  }
+  splitTunnelPushTimer = setTimeout(() => {
+    splitTunnelPushTimer = null;
+    void pushSplitTunnelToNative();
+  }, SPLIT_TUNNEL_PUSH_DEBOUNCE_MS);
+}
+
+/** Validates browser-persisted state and drops unknown v1 country presets. */
+function parsePersistedSplitTunnel(raw: string): SplitTunnelState | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== 'object' || parsed == null) {
+    return null;
+  }
+  const candidate = parsed as Record<string, unknown>;
+  const { enabled, bypassLan, bypassCountries, excludedApps } = candidate;
+  if (
+    typeof enabled !== 'boolean' ||
+    typeof bypassLan !== 'boolean' ||
+    !Array.isArray(bypassCountries) ||
+    !Array.isArray(excludedApps)
+  ) {
+    return null;
+  }
+  const isString = (value: unknown): value is string => typeof value === 'string';
+  return {
+    enabled,
+    bypassLan,
+    bypassCountries: bypassCountries
+      .filter(isString)
+      .filter(code => code === 'ir' || code === 'cn'),
+    // Proxy enrollment is already per-app on desktop, so package exclusions
+    // never become part of the effective desktop policy.
+    excludedApps: [],
+  };
+}
+
+/**
+ * Loads split-tunnel preferences once and mirrors them to native. Fresh
+ * installs materialize the mobile defaults (enabled, LAN + Iran + China).
+ * Malformed storage does not overwrite a potentially valid native config.
+ */
+export function hydrateSplitTunnel(): void {
+  if (splitTunnelHydrated) {
+    return;
+  }
+
+  let persisted: string | null;
+  try {
+    persisted = localStorage.getItem(SPLIT_TUNNEL_STORAGE_KEY);
+  } catch {
+    return;
+  }
+  splitTunnelHydrated = true;
+
+  if (persisted == null) {
+    writeStored(SPLIT_TUNNEL_STORAGE_KEY, JSON.stringify(state.splitTunnel));
+    scheduleSplitTunnelPush();
+    return;
+  }
+
+  const parsed = parsePersistedSplitTunnel(persisted);
+  if (parsed == null) {
+    return;
+  }
+  if (JSON.stringify(parsed) !== JSON.stringify(state.splitTunnel)) {
+    splitTunnelRevision++;
+    setState({ ...state, splitTunnel: parsed });
+  }
+  scheduleSplitTunnelPush();
+}
+
+/** Persists a local edit and debounces an active-connection reapply. */
+export function setSplitTunnel(patch: Partial<SplitTunnelState>): void {
+  splitTunnelHydrated = true;
+  const splitTunnel = { ...state.splitTunnel, ...patch, excludedApps: [] };
+  splitTunnelRevision++;
+  setState({ ...state, splitTunnel });
+  writeStored(SPLIT_TUNNEL_STORAGE_KEY, JSON.stringify(splitTunnel));
+  scheduleSplitTunnelPush();
+}
+
+/** Flushes initialization or a pending edit before native snapshots a connect. */
+export async function flushSplitTunnelPush(): Promise<void> {
+  hydrateSplitTunnel();
+  // Re-check after every await. A user can edit the policy while an older
+  // bridge push is resolving; Connect must snapshot the newest revision, not
+  // merely whichever call happened to be in flight when the button was hit.
+  for (;;) {
+    const revision = splitTunnelRevision;
+    if (splitTunnelPushTimer != null) {
+      clearTimeout(splitTunnelPushTimer);
+      splitTunnelPushTimer = null;
+      void pushSplitTunnelToNative();
+    }
+    const chain = splitTunnelPushChain;
+    await chain;
+    if (
+      revision === splitTunnelRevision &&
+      splitTunnelPushTimer == null &&
+      chain === splitTunnelPushChain
+    ) {
+      return;
+    }
+  }
+}
+
 /** Test-only: resets the store to its initial state. */
 export function resetStoreForTests(): void {
   directoryGeneration++;
+  splitTunnelHydrated = false;
+  splitTunnelPushEpoch++;
+  splitTunnelRevision = 0;
+  splitTunnelPushChain = Promise.resolve();
+  if (splitTunnelPushTimer != null) {
+    clearTimeout(splitTunnelPushTimer);
+    splitTunnelPushTimer = null;
+  }
   state = initialState();
 }

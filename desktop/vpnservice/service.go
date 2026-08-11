@@ -100,6 +100,17 @@ type connection struct {
 	snapshotTaken bool // snapshot captured once; survives a recovery proxy release
 	snapshot      proxymode.Snapshot
 	mgr           *clienttelemetry.Manager
+	// requested* are the caller's original selection, not the broker front that
+	// happened to serve discovery or the relay that happened to win. A live
+	// settings reapply uses these exact values, matching a manual relay switch.
+	requestedBrokerURL     string
+	requestedTargetCountry string
+	requestedTargetRelayID string
+	// splitTunnel is immutable within one ladder pass, so direct, punch, and WSS
+	// candidates can never observe different rule versions. A recovery replaces
+	// it once, before its fresh ladder begins, to pick up settings persisted while
+	// the prior pass was connecting or waiting for the network.
+	splitTunnel *client.SplitTunnelRules
 
 	// active is the promoted (live) candidate's resources; nil while the ladder
 	// is still trying candidates or after a teardown. Only the runConnect
@@ -255,6 +266,9 @@ type Service struct {
 	store     *persist.Store
 	proxy     proxymode.Controller
 	stopEmit  chan struct{}
+	// splitTunnelRaw is the exact bridge payload persisted by the frontend. It
+	// is guarded by mu and parsed into one immutable snapshot per ladder pass.
+	splitTunnelRaw string
 
 	// proxyPortMu pins only a successfully resolved endpoint for this process.
 	// A transient allocation failure remains retryable on the next Settings or
@@ -273,6 +287,7 @@ type Service struct {
 	fetchRelays       func(ctx context.Context, brokerURL string, limit int, clientID, sessionID string) (discovery.Fetch, error)
 	tunnelReady       func(ctx context.Context, proxyPort int) error
 	writeConfig       func(data []byte) (string, error)
+	stageRuleSets     func(directory string, requested []string) ruleSetStageResult
 	requestWSSTicket  func(ctx context.Context, brokerURL string, request relay.WSSSessionTicketRequest, clientID, sessionID string) (relay.WSSSessionTicketResponse, error)
 	dialWSS           func(ctx context.Context, rawURL, ticket string) (wssBridge, error)
 	waitWSSRetry      func(ctx context.Context, delay time.Duration) error
@@ -361,6 +376,11 @@ func New() *Service {
 func (s *Service) Startup(ctx context.Context) {
 	if store, err := persist.New(); err == nil {
 		s.store = store
+		if raw, ok := store.LoadSplitTunnelConfig(); ok {
+			s.mu.Lock()
+			s.splitTunnelRaw = raw
+			s.mu.Unlock()
+		}
 		// Crash recovery: a leftover proxy snapshot means a prior session died
 		// without restoring the OS proxy. Undo it before doing anything else.
 		if snap, ok := store.LoadProxySnapshot(); ok {
@@ -419,18 +439,73 @@ func (s *Service) Prepare() (bool, error) {
 func (s *Service) Connect(brokerURL, targetCountry, targetRelayID string) error {
 	s.connectMu.Lock()
 	defer s.connectMu.Unlock()
+	return s.connectLocked(brokerURL, targetCountry, targetRelayID)
+}
 
+// connectLocked replaces any prior connection while connectMu is held. Rule
+// staging happens before teardown so a routine asset refresh does not extend
+// the user's direct-network reconnect gap.
+func (s *Service) connectLocked(brokerURL, targetCountry, targetRelayID string) error {
+	rules := s.splitTunnelSnapshot()
+	s.connectLockedWithSnapshot(
+		brokerURL,
+		targetCountry,
+		targetRelayID,
+		rules,
+		s.currentProxySnapshot(),
+	)
+	return nil
+}
+
+func (s *Service) currentProxySnapshot() *proxymode.Snapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.conn == nil || !s.conn.snapshotTaken {
+		return nil
+	}
+	snapshot := s.conn.snapshot
+	return &snapshot
+}
+
+// connectLockedWithSnapshot is shared by user Connect and connected-only
+// split-tunnel reapply. Keeping teardown and install in this one connectMu
+// critical section prevents a racing Disconnect from being followed by an
+// unintended tunnel resurrection.
+func (s *Service) connectLockedWithSnapshot(
+	brokerURL, targetCountry, targetRelayID string,
+	rules *client.SplitTunnelRules,
+	inheritedProxySnapshot *proxymode.Snapshot,
+) {
 	s.teardownExisting()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	conn := &connection{cancel: cancel, done: make(chan struct{})}
+	conn := &connection{
+		cancel:                 cancel,
+		done:                   make(chan struct{}),
+		requestedBrokerURL:     brokerURL,
+		requestedTargetCountry: targetCountry,
+		requestedTargetRelayID: targetRelayID,
+		splitTunnel:            rules,
+	}
+	if inheritedProxySnapshot != nil {
+		// A relay switch or settings reapply is one logical proxy session. Carry
+		// the true pre-OpenRung snapshot across its connection replacement so a
+		// failed interim Restore can never be re-snapshotted as our own stale
+		// loopback proxy and overwrite the user's recoverable settings.
+		conn.snapshotTaken = true
+		conn.snapshot = *inheritedProxySnapshot
+		// Conservatively retain the restoration obligation too. The prior
+		// Restore may have failed, and if this replacement is cancelled or its
+		// ladder fails before promotion it must retry the original snapshot
+		// rather than treating "Set has not run yet" as proof the OS is clean.
+		conn.proxySet = true
+	}
 	s.mu.Lock()
 	s.conn = conn
 	s.mu.Unlock()
 
 	s.setStatus(StatusPreparing, keepLabel, clearError)
 	go s.runConnect(ctx, conn, brokerURL, targetCountry, targetRelayID)
-	return nil
 }
 
 func (s *Service) Disconnect() error {
@@ -838,6 +913,7 @@ func (s *Service) attemptDirectCandidate(ctx context.Context, conn *connection, 
 		Mode:               client.ModeProxy,
 		ProxyListenAddress: proxyconfig.Host,
 		ProxyListenPort:    port,
+		SplitTunnel:        conn.splitTunnel,
 	}
 	if est := s.maybePunch(candCtx, conn.mgr, cand); est != nil {
 		res.punch = est
@@ -1055,7 +1131,18 @@ func (s *Service) applyProxy(conn *connection, port int) {
 	// Mark restoration pending before Set: platform controllers can mutate OS
 	// state and only then fail while notifying applications of the change.
 	conn.proxySet = true
-	if err := s.proxy.Set(proxyconfig.Host, port); err != nil {
+	var setErr error
+	if optionController, ok := s.proxy.(proxymode.OptionController); ok {
+		bypassLAN := conn.splitTunnel != nil && conn.splitTunnel.BypassLAN
+		setErr = optionController.SetWithOptions(
+			proxyconfig.Host,
+			port,
+			proxymode.SetOptions{BypassLAN: bypassLAN},
+		)
+	} else {
+		setErr = s.proxy.Set(proxyconfig.Host, port)
+	}
+	if setErr != nil {
 		s.appendLog(fmt.Sprintf("system proxy set failed; set manual proxy %s:%d", proxyconfig.Host, port))
 		// A failed Set may have partially applied: put the captured setting back
 		// so the user's proxy is never left pointing at us with nothing there.

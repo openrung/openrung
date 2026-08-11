@@ -49,6 +49,28 @@ allowing a LAN-facing bind address would turn the desktop app into an open
 proxy. Loopback prevents remote-network access, but other accounts on the same
 multi-user computer may still be able to reach the listener.
 
+### Split tunneling
+
+Settings includes the same preset policy used by the mobile clients. New
+desktop installs enable direct routing for private LAN destinations plus
+Iranian and Chinese sites and address ranges. Each preset can be changed
+independently, and disabling the master switch sends all traffic that reaches
+OpenRung's local proxy through the relay.
+
+Country presets use bundled, integrity-pinned sing-box `geosite` and `geoip`
+rule sets plus an in-country direct DNS resolver. OpenRung validates both files
+before enabling a country; missing or damaged data drops that preset toward
+the normal proxied route and never blocks a connection. Settings are persisted
+locally and flushed before Connect. An effective change to a fully connected
+session reconnects to the same requested relay target; an in-progress connect
+or recovery is not interrupted and reads the latest policy on its next pass.
+
+This remains proxy-only split tunneling. It affects HTTP/SOCKS requests that
+enter OpenRung's loopback proxy; applications that ignore the proxy are already
+direct. Generic process-level exclusions are therefore not offered on desktop
+(the native payload retains an empty compatibility field), and an application's
+own `NO_PROXY` or system bypass rules still take precedence before sing-box.
+
 ### POSIX shell applications
 
 macOS and Windows are configured through their system proxy settings. Linux

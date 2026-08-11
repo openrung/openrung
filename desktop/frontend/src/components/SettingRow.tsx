@@ -1,16 +1,17 @@
 // A bordered settings/info row (title + subtitle, optional trailing control or
 // click action), mirroring the RN SettingPanel. Renders as a button when
 // onPress is given, otherwise a static panel.
-import type { ReactNode } from 'react';
+import type { ReactNode, Ref } from 'react';
 
 interface Props {
   title: string;
   subtitle?: string;
   trailing?: ReactNode;
   onPress?: () => void;
+  buttonRef?: Ref<HTMLButtonElement>;
 }
 
-export function SettingRow({ title, subtitle, trailing, onPress }: Props) {
+export function SettingRow({ title, subtitle, trailing, onPress, buttonRef }: Props) {
   const inner = (
     <>
       <div className="or-setting-text">
@@ -24,7 +25,12 @@ export function SettingRow({ title, subtitle, trailing, onPress }: Props) {
 
   if (onPress != null) {
     return (
-      <button type="button" className="or-setting-row is-pressable" onClick={onPress}>
+      <button
+        ref={buttonRef}
+        type="button"
+        className="or-setting-row is-pressable"
+        onClick={onPress}
+      >
         {inner}
       </button>
     );

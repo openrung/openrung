@@ -1,21 +1,31 @@
 // Settings tab (desktop), mirroring the RN SettingsScreen layout: a large
-// title then sectioned panels. The desktop's operational settings are a
-// read-only CONNECTION summary and a DIAGNOSTICS section whose Debug row
+// title then sectioned panels. CONNECTION includes the proxy routing mode and
+// split-tunnel presets; LOCAL PROXY exposes endpoint integration; DIAGNOSTICS
 // toggles the connection console. (Language + speed test are RN features not
 // yet ported to desktop.)
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type Ref } from 'react';
 import { SettingRow } from '../components/SettingRow';
 import { AppConfig } from '../core/config';
 import { copyText, OpenRungVpn } from '../native/OpenRungVpn';
 import type { ConnectionStatus, NativeProxyInfo } from '../native/types';
+import { useAppState } from '../state/store';
 
 interface Props {
   consoleOpen: boolean;
   connectionStatus: ConnectionStatus;
   onToggleConsole: () => void;
+  onOpenSplitTunneling: () => void;
+  splitTunnelingButtonRef?: Ref<HTMLButtonElement>;
 }
 
-export function SettingsScreen({ consoleOpen, connectionStatus, onToggleConsole }: Props) {
+export function SettingsScreen({
+  consoleOpen,
+  connectionStatus,
+  onToggleConsole,
+  onOpenSplitTunneling,
+  splitTunnelingButtonRef,
+}: Props) {
+  const splitTunnel = useAppState().splitTunnel;
   const [proxyInfo, setProxyInfo] = useState<NativeProxyInfo | null>(null);
   const [proxyError, setProxyError] = useState<string | null>(null);
   const [copied, setCopied] = useState<'endpoint' | 'enable' | 'disable' | null>(null);
@@ -52,6 +62,16 @@ export function SettingsScreen({ consoleOpen, connectionStatus, onToggleConsole 
       <span className="or-section-header">CONNECTION</span>
       <SettingRow title="Broker" subtitle={AppConfig.DEFAULT_BROKER_URL} />
       <SettingRow title="Tunnel mode" subtitle="System proxy (per-app, no admin)" />
+      <SettingRow
+        title="Split tunneling"
+        subtitle={
+          splitTunnel.enabled
+            ? 'On — selected proxy traffic bypasses the relay.'
+            : 'Off — proxy traffic uses the relay.'
+        }
+        onPress={onOpenSplitTunneling}
+        buttonRef={splitTunnelingButtonRef}
+      />
 
       <span className="or-section-header">LOCAL PROXY</span>
       {proxyInfo != null ? (

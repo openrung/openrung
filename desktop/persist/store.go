@@ -21,6 +21,7 @@ const (
 	proxyPortLockFile = "proxy-port.lock"
 	proxyEnvFile      = "proxy-env-%d.sh"
 	proxySnapshotHdr  = "proxy-snapshot.json"
+	splitTunnelFile   = "split-tunnel.json"
 )
 
 // RecentNode mirrors the contract's RecentNode (openrung-mobile-app
@@ -79,6 +80,26 @@ func (s *Store) LoadRecents() []RecentNode {
 // SaveRecents persists the recents list (best-effort).
 func (s *Store) SaveRecents(recents []RecentNode) error {
 	return s.writeJSON(recentsFile, recents)
+}
+
+// LoadSplitTunnelConfig returns the raw mobile-compatible split-tunnel JSON
+// and whether the file exists. The raw string deliberately stays opaque to
+// this package: vpnservice owns schema validation and treats malformed data as
+// no split tunneling. Keeping the existence bit distinct from an empty string
+// also preserves an explicitly persisted (invalid) empty payload.
+func (s *Store) LoadSplitTunnelConfig() (string, bool) {
+	data, err := os.ReadFile(filepath.Join(s.dir, splitTunnelFile))
+	if err != nil {
+		return "", false
+	}
+	return string(data), true
+}
+
+// SaveSplitTunnelConfig atomically persists the raw bridge payload verbatim.
+// The service compares effective parsed configurations rather than raw bytes,
+// so harmless key reordering never causes a live reconnect.
+func (s *Store) SaveSplitTunnelConfig(configJSON string) error {
+	return s.writeFile(splitTunnelFile, []byte(configJSON))
 }
 
 // LoadProxyPort returns the stable per-install loopback proxy port. Missing,

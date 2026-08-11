@@ -6,12 +6,15 @@ import (
 	"strconv"
 )
 
-// defaultProxyBypass keeps loopback, link-local, and private LAN destinations
-// off the relay: a user's router page, NAS, or localhost dev server should stay
-// direct, and — critically — traffic to 127.0.0.1 must not be routed back into
-// the loopback proxy itself. Mirrors the bypass list common Windows proxy
-// clients apply. "<local>" matches any hostname without a dot.
-const defaultProxyBypass = "localhost;127.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;172.28.*;172.29.*;172.30.*;172.31.*;192.168.*;<local>"
+// requiredProxyBypass prevents the local mixed proxy from recursively proxying
+// loopback requests. It stays active even when the split-tunnel LAN preset is
+// off. "<local>" and private ranges live in lanProxyBypass so the user's LAN
+// toggle is not silently overridden by WinInet before traffic reaches sing-box.
+const requiredProxyBypass = "localhost;127.*;[::1]"
+
+const lanProxyBypass = "10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;172.28.*;172.29.*;172.30.*;172.31.*;192.168.*;<local>"
+
+const defaultProxyBypass = requiredProxyBypass + ";" + lanProxyBypass
 
 // winProxyBackend is the OS-facing surface of the Windows controller: the
 // WinInet registry reads/writes plus the settings-changed notification. It is an
@@ -42,10 +45,18 @@ func (c *windowsController) Snapshot() (Snapshot, error) {
 }
 
 func (c *windowsController) Set(host string, port int) error {
+	return c.SetWithOptions(host, port, SetOptions{BypassLAN: true})
+}
+
+func (c *windowsController) SetWithOptions(host string, port int, options SetOptions) error {
+	proxyBypass := requiredProxyBypass
+	if options.BypassLAN {
+		proxyBypass = defaultProxyBypass
+	}
 	state := WindowsProxyState{
 		ProxyEnable:   true,
 		ProxyServer:   net.JoinHostPort(host, strconv.Itoa(port)),
-		ProxyOverride: defaultProxyBypass,
+		ProxyOverride: proxyBypass,
 		// Clear any PAC URL: a stale auto-config script takes precedence over the
 		// static proxy we just set and would silently defeat it. The prior value
 		// is captured in the snapshot and restored on disconnect.

@@ -30,6 +30,30 @@ func TestRecentsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSplitTunnelConfigRoundTripPreservesRawPayload(t *testing.T) {
+	store := NewInDir(t.TempDir())
+	if raw, ok := store.LoadSplitTunnelConfig(); ok || raw != "" {
+		t.Fatalf("fresh split-tunnel config = %q, %v; want absent", raw, ok)
+	}
+
+	raw := `{"version":1,"enabled":true,"bypass_lan":true,"bypass_countries":["ir","cn"],"future":1}`
+	if err := store.SaveSplitTunnelConfig(raw); err != nil {
+		t.Fatalf("SaveSplitTunnelConfig: %v", err)
+	}
+	if got, ok := store.LoadSplitTunnelConfig(); !ok || got != raw {
+		t.Fatalf("split-tunnel config = %q, %v; want %q, true", got, ok, raw)
+	}
+
+	// Empty is malformed at the schema layer, but persistence must distinguish
+	// it from absence so startup fails open instead of inventing defaults.
+	if err := store.SaveSplitTunnelConfig(""); err != nil {
+		t.Fatalf("SaveSplitTunnelConfig empty: %v", err)
+	}
+	if got, ok := store.LoadSplitTunnelConfig(); !ok || got != "" {
+		t.Fatalf("empty split-tunnel config = %q, %v; want empty, true", got, ok)
+	}
+}
+
 func TestProxyPortLifecycle(t *testing.T) {
 	dir := t.TempDir()
 	store := NewInDir(dir)

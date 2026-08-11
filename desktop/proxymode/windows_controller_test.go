@@ -90,6 +90,26 @@ func TestWindowsSetEnablesLoopbackProxy(t *testing.T) {
 	}
 }
 
+func TestWindowsSetWithoutLANBypassKeepsOnlyLoopbackExceptions(t *testing.T) {
+	backend := &fakeBackend{}
+	c := &windowsController{backend: backend}
+
+	if err := c.SetWithOptions("127.0.0.1", 7890, SetOptions{BypassLAN: false}); err != nil {
+		t.Fatalf("SetWithOptions: %v", err)
+	}
+	got := backend.writes[0].ProxyOverride
+	for _, want := range []string{"localhost", "127.*", "[::1]"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("ProxyOverride %q missing required loopback exception %q", got, want)
+		}
+	}
+	for _, unwanted := range []string{"10.*", "172.16.*", "192.168.*", "<local>"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("ProxyOverride %q unexpectedly bypasses LAN pattern %q", got, unwanted)
+		}
+	}
+}
+
 func TestWindowsRestoreReappliesSnapshot(t *testing.T) {
 	original := WindowsProxyState{
 		ProxyEnable:   true,

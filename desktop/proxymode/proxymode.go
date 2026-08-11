@@ -54,3 +54,19 @@ type Controller interface {
 	// Restore reverts to a previously captured snapshot.
 	Restore(snap Snapshot) error
 }
+
+// SetOptions controls platform-specific system-proxy behavior. Controllers
+// that do not implement OptionController continue to use Set's historical
+// behavior.
+type SetOptions struct {
+	// BypassLAN keeps private and dotless destinations outside the system proxy.
+	// When false, only the loopback exceptions needed to avoid proxy recursion
+	// remain; sing-box can then apply the split-tunnel LAN rule itself.
+	BypassLAN bool
+}
+
+// OptionController is an additive capability used where the operating system
+// has its own pre-proxy bypass list (currently Windows WinInet).
+type OptionController interface {
+	SetWithOptions(host string, port int, options SetOptions) error
+}

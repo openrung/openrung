@@ -61,6 +61,7 @@ export class MockOpenRungVpn implements OpenRungVpnModule {
   };
   private readonly listeners = new Set<(s: NativeVpnState) => void>();
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
+  private splitTunnelConfigJson: string | null = null;
 
   subscribe(cb: (s: NativeVpnState) => void): () => void {
     this.listeners.add(cb);
@@ -147,6 +148,21 @@ export class MockOpenRungVpn implements OpenRungVpnModule {
       enableCommand: '. "$HOME/.config/openrung/proxy-env.sh" && openrung_proxy_on',
       disableCommand: 'openrung_proxy_off',
     };
+  }
+
+  async setSplitTunnelConfig(configJson: string): Promise<void> {
+    const changed = configJson !== this.splitTunnelConfigJson;
+    this.splitTunnelConfigJson = configJson;
+    if (changed && this.state.status === 'connected') {
+      // Mirror production's brief same-target reapply without changing the
+      // stable local proxy endpoint or the selected relay identity.
+      const relayLabel = this.state.relayLabel;
+      this.emit({ status: 'connecting' }, 'applying split tunnel config');
+      this.later(
+        () => this.emit({ status: 'connected', relayLabel }, 'split tunnel config applied'),
+        400,
+      );
+    }
   }
 
   async listRelaysForDirectory(): Promise<RelayListResponse> {

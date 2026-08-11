@@ -25,6 +25,9 @@ export interface LicenseComponent {
  */
 export const components: LicenseComponent[] = [
   { name: 'sing-box (bundled engine)', license: 'GPL-3.0-or-later', url: 'https://github.com/SagerNet/sing-box' },
+  { name: 'Iran split-tunneling rule sets', license: 'GPL-3.0', url: 'https://github.com/Chocolate4U/Iran-sing-box-rules' },
+  { name: 'v2fly/domain-list-community data', license: 'MIT', url: 'https://github.com/v2fly/domain-list-community' },
+  { name: 'MaxMind GeoLite2 country data', license: 'GeoLite2 attribution', url: 'https://www.maxmind.com' },
   { name: 'gVisor', license: 'Apache-2.0', url: 'https://github.com/google/gvisor' },
   { name: 'quic-go', license: 'MIT', url: 'https://github.com/quic-go/quic-go' },
   { name: 'wireguard-go', license: 'MIT', url: 'https://git.zx2c4.com/wireguard-go' },
@@ -87,7 +90,42 @@ sing-box name is used only descriptively.
 
 ---
 
-## 2. Application binary (Go) — permissive components
+## 2. Bundled split-tunneling rule-set data
+
+The desktop app embeds four compiled sing-box rule-set binaries as routing
+data. They are staged on disk at runtime for the Iranian and Chinese
+proxy-bypass presets; they are data files, not linked Go code. Exact source
+commits, fetch dates, and SHA-256 hashes are recorded in
+desktop/rulesets/README.md.
+
+### Iran-sing-box-rules (Chocolate4U) — GPL-3.0
+
+- Components: geosite-ir.srs and geoip-ir.srs (compiled rule sets for the
+  Iranian sites and IP preset).
+- License: GNU General Public License v3.0 (GPL-3.0). The full GPL-3.0 text
+  follows these notices and is bundled in the repository as LICENSE.
+- Upstream: https://github.com/Chocolate4U/Iran-sing-box-rules
+
+### sing-geosite data — v2fly/domain-list-community (MIT)
+
+- Component: geosite-cn.srs (compiled Chinese domain rule set), built by
+  SagerNet/sing-geosite from the v2fly/domain-list-community dataset.
+- License and attribution: MIT; Copyright (c) 2018-2019 V2Ray. The MIT text is
+  reproduced in the appendix below.
+- Upstream: https://github.com/SagerNet/sing-geosite and
+  https://github.com/v2fly/domain-list-community
+
+### sing-geoip — MaxMind GeoLite2 data
+
+- Component: geoip-cn.srs (compiled Chinese IP rule set), built by
+  SagerNet/sing-geoip from MaxMind GeoLite2 country data.
+- Required attribution (must be preserved): This product includes GeoLite2
+  data created by MaxMind, available from https://www.maxmind.com
+- Upstream: https://github.com/SagerNet/sing-geoip
+
+---
+
+## 3. Application binary (Go) — permissive components
 
 Statically linked into the OpenRung desktop binary
 (union of the darwin/windows/linux production builds):
@@ -135,7 +173,7 @@ Statically linked into the OpenRung desktop binary
 
 ---
 
-## 3. Embedded web frontend
+## 4. Embedded web frontend
 
 Bundled by Vite into the application binary:
 

@@ -33,6 +33,7 @@ const realBridge: OpenRungVpnModule = {
   getState: () => wailsService()!.GetState(),
   getIdentity: () => wailsService()!.GetIdentity(),
   getProxyInfo: () => wailsService()!.GetProxyInfo(),
+  setSplitTunnelConfig: configJson => wailsService()!.SetSplitTunnelConfig(configJson),
 };
 
 /** The active VPN module: the Go bridge when running under Wails, else the mock. */
