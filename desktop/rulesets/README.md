@@ -31,6 +31,14 @@ head and fetch date, and update hashes with:
 shasum -a 256 desktop/rulesets/dist/*.srs
 ```
 
+The table above is documentation; the hashes the code actually enforces are the
+`sha256` constants in `countryAssets` in `rulesets.go`. **Update both.** A
+mismatch is not a build error — `stageAsset` rejects the embedded blob at
+runtime and the affected country silently drops toward the proxy while the
+Settings toggle still shows it on. `TestEmbeddedAssetsMatchPinnedHashes` is what
+catches this, and it runs in CI via the `./rulesets/...` entry in
+`.github/workflows/go-checks.yml`.
+
 Every file must decompile with the exact sing-box CLI revision bundled by the
 desktop release before it is committed:
 

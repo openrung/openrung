@@ -545,3 +545,239 @@ func (p *reapplySnapshotProxy) Restore(snapshot proxymode.Snapshot) error {
 	p.current = snapshot
 	return nil
 }
+
+// slowProxyController stands in for a platform controller whose OS calls block
+// (networksetup, the WinInet registry plus its change notification).
+type slowProxyController struct {
+	snap proxymode.Snapshot
+}
+
+func (f *slowProxyController) Supported() bool { return true }
+
+func (f *slowProxyController) Snapshot() (proxymode.Snapshot, error) {
+	time.Sleep(20 * time.Millisecond)
+	return f.snap, nil
+}
+
+func (f *slowProxyController) Set(host string, port int) error {
+	time.Sleep(20 * time.Millisecond)
+	return nil
+}
+
+func (f *slowProxyController) Restore(snap proxymode.Snapshot) error { return nil }
+
+// TestApplyProxyIsRaceFreeAgainstBridgeReads pins the locking discipline for the
+// per-connection proxy state. applyProxy runs on the runConnect goroutine while
+// currentProxySnapshot (user Connect) and SetSplitTunnelConfig read the same
+// fields from the Wails bridge goroutine, so an unguarded write there is a real
+// data race: a torn Snapshot is written back to the user's OS proxy settings.
+// Only meaningful under -race, which CI runs for this package.
+func TestApplyProxyIsRaceFreeAgainstBridgeReads(t *testing.T) {
+	s := New()
+	s.proxy = &slowProxyController{snap: proxymode.Snapshot{
+		Platform: "darwin",
+		Services: []proxymode.ServiceProxyState{{Name: "Wi-Fi"}},
+	}}
+	s.store = nil
+	conn := &connection{}
+	s.mu.Lock()
+	s.conn = conn
+	s.core.status = StatusConnected
+	s.mu.Unlock()
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		s.applyProxy(conn, 7890)
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			_ = s.currentProxySnapshot()
+			time.Sleep(100 * time.Microsecond)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			_ = s.connSplitTunnel(conn)
+			time.Sleep(100 * time.Microsecond)
+		}
+	}()
+	wg.Wait()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !conn.snapshotTaken || conn.snapshot.Platform != "darwin" || len(conn.snapshot.Services) != 1 {
+		t.Fatalf("snapshot not captured intact: taken=%t snap=%+v", conn.snapshotTaken, conn.snapshot)
+	}
+}
+
+// TestSplitTunnelChangeWhileConnectingAppliesAfterPromote covers the case where
+// no recovery ever happens. A preference persisted between the initial ladder's
+// snapshot and CONNECTED used to be dropped for the whole session, leaving the UI
+// showing one policy while sing-box enforced another. promote must reconcile it.
+func TestSplitTunnelChangeWhileConnectingAppliesAfterPromote(t *testing.T) {
+	fixtures := []relay.Descriptor{relayAt("relay-a", "JP", "Tokyo", "Japan", "127.0.0.10")}
+	s, _ := newLadderService(t, func() []relay.Descriptor { return fixtures })
+	s.store = persist.NewInDir(t.TempDir())
+	s.stageRuleSets = successfulRuleSetStager
+
+	initial := `{"version":1,"enabled":true,"bypass_lan":false,"bypass_countries":["ir"],"excluded_packages":[]}`
+	if err := s.SetSplitTunnelConfig(initial); err != nil {
+		t.Fatalf("initial SetSplitTunnelConfig: %v", err)
+	}
+
+	fetchEntered := make(chan struct{})
+	releaseFetch := make(chan struct{})
+	var fetchCalls atomic.Int32
+	s.fetchRelays = func(ctx context.Context, brokerURL string, limit int, clientID, sessionID string) (discovery.Fetch, error) {
+		if fetchCalls.Add(1) == 1 {
+			close(fetchEntered)
+			select {
+			case <-releaseFetch:
+			case <-ctx.Done():
+				return discovery.Fetch{}, ctx.Err()
+			}
+		}
+		return discovery.Fetch{BrokerURL: brokerURL, Response: listOf(fixtures...)}, nil
+	}
+
+	var configsMu sync.Mutex
+	var configs [][]byte
+	configDir := t.TempDir()
+	s.writeConfig = func(data []byte) (string, error) {
+		configsMu.Lock()
+		defer configsMu.Unlock()
+		configs = append(configs, append([]byte(nil), data...))
+		return filepath.Join(configDir, fmt.Sprintf("config-%d.json", len(configs))), nil
+	}
+	// Healthy throughout: the reapply must come from promote, not from a recovery.
+	s.healthTick = time.Millisecond
+	s.healthProbe = func(context.Context, int) error { return nil }
+	s.checkNetworkAlive = func(context.Context, []string) bool { return true }
+
+	if err := s.Connect("http://broker.example", "", "relay-a"); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	select {
+	case <-fetchEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("initial connect never reached broker fetch")
+	}
+
+	latest := `{"version":1,"enabled":true,"bypass_lan":false,"bypass_countries":["cn"],"excluded_packages":[]}`
+	if err := s.SetSplitTunnelConfig(latest); err != nil {
+		t.Fatalf("SetSplitTunnelConfig while connecting: %v", err)
+	}
+	close(releaseFetch)
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		configsMu.Lock()
+		count := len(configs)
+		configsMu.Unlock()
+		if count >= 2 && s.GetState().Status == StatusConnected {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	configsMu.Lock()
+	count := len(configs)
+	var lastConfig []byte
+	if count > 0 {
+		lastConfig = append([]byte(nil), configs[count-1]...)
+	}
+	configsMu.Unlock()
+	if count < 2 {
+		t.Fatalf("mid-connect change was never applied: %d config(s), status=%s logs=%v",
+			count, s.GetState().Status, s.GetState().LogLines)
+	}
+	if tags := configRuleSetTags(t, lastConfig); !reflect.DeepEqual(tags, []string{"geosite-cn", "geoip-cn"}) {
+		t.Fatalf("live config tags = %v, want the China snapshot the user asked for", tags)
+	}
+	waitForStatus(t, s, StatusConnected)
+
+	_ = s.Disconnect()
+	waitForStatus(t, s, StatusDisconnected)
+	waitIdle(t, s)
+}
+
+// TestSplitTunnelReapplySkipsIdenticalEmittedConfig: after fail-toward-proxy has
+// dropped a preset, turning that preset off changes the user's request but not
+// the emitted policy. Bouncing a proven tunnel for a byte-identical config is
+// pure downtime, so the reapply must recognise it and leave the session alone.
+func TestSplitTunnelReapplySkipsIdenticalEmittedConfig(t *testing.T) {
+	fixtures := []relay.Descriptor{relayAt("relay-a", "JP", "Tokyo", "Japan", "127.0.0.10")}
+	s, _ := newLadderService(t, func() []relay.Descriptor { return fixtures })
+	s.store = persist.NewInDir(t.TempDir())
+	// China's rule-set pair never validates, so it is always dropped.
+	s.stageRuleSets = func(directory string, requested []string) ruleSetStageResult {
+		result := ruleSetStageResult{directory: "/staged/rules"}
+		for _, country := range normalizedSplitTunnelCountryCodes(requested) {
+			if country == "cn" {
+				result.dropped = append(result.dropped, country)
+				continue
+			}
+			result.countries = append(result.countries, country)
+		}
+		return result
+	}
+
+	var configsMu sync.Mutex
+	var configs [][]byte
+	configDir := t.TempDir()
+	s.writeConfig = func(data []byte) (string, error) {
+		configsMu.Lock()
+		defer configsMu.Unlock()
+		configs = append(configs, append([]byte(nil), data...))
+		return filepath.Join(configDir, fmt.Sprintf("config-%d.json", len(configs))), nil
+	}
+	s.healthTick = time.Millisecond
+	s.healthProbe = func(context.Context, int) error { return nil }
+	s.checkNetworkAlive = func(context.Context, []string) bool { return true }
+
+	both := `{"version":1,"enabled":true,"bypass_lan":false,"bypass_countries":["ir","cn"],"excluded_packages":[]}`
+	if err := s.SetSplitTunnelConfig(both); err != nil {
+		t.Fatalf("SetSplitTunnelConfig: %v", err)
+	}
+	if err := s.Connect("http://broker.example", "", "relay-a"); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	waitForStatus(t, s, StatusConnected)
+	s.mu.Lock()
+	connected := s.conn
+	s.mu.Unlock()
+
+	// The user turns off the preset that was already unavailable.
+	onlyIran := `{"version":1,"enabled":true,"bypass_lan":false,"bypass_countries":["ir"],"excluded_packages":[]}`
+	if err := s.SetSplitTunnelConfig(onlyIran); err != nil {
+		t.Fatalf("SetSplitTunnelConfig: %v", err)
+	}
+
+	s.mu.Lock()
+	sameConn := s.conn == connected
+	notDisconnecting := !connected.disconnecting
+	reconciled := connected.splitTunnelRequestedSig == splitTunnelEffectiveSignature(onlyIran)
+	s.mu.Unlock()
+	if !sameConn || !notDisconnecting {
+		t.Fatal("an identical emitted config must not replace the live connection")
+	}
+	if !reconciled {
+		t.Fatal("the connection must record that it is reconciled to the new request")
+	}
+	configsMu.Lock()
+	count := len(configs)
+	configsMu.Unlock()
+	if count != 1 {
+		t.Fatalf("config builds = %d, want 1: a no-op change rebuilt the tunnel", count)
+	}
+	if status := s.GetState().Status; status != StatusConnected {
+		t.Fatalf("status = %s, want still connected", status)
+	}
+
+	_ = s.Disconnect()
+	waitForStatus(t, s, StatusDisconnected)
+	waitIdle(t, s)
+}

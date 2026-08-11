@@ -40,6 +40,14 @@ const (
 
 const logRingCapacity = 80
 
+// connectTrigger* label why a connect flow started. They are attached to
+// connection_attempted so an automatic settings reapply is separable from a user
+// connect in the connect-success metric used to watch censorship escalation.
+const (
+	connectTriggerUser     = "user"
+	connectTriggerSettings = "split_tunnel_settings"
+)
+
 type RecentNode struct {
 	CountryCode string  `json:"countryCode"`
 	Label       string  `json:"label"`
@@ -111,6 +119,14 @@ type connection struct {
 	// it once, before its fresh ladder begins, to pick up settings persisted while
 	// the prior pass was connecting or waiting for the network.
 	splitTunnel *client.SplitTunnelRules
+	// splitTunnelRequestedSig is the preference signature this connection has
+	// been reconciled to. promote compares it against the stored preference so a
+	// change persisted mid-connect is applied once the session settles instead of
+	// being dropped for the session's lifetime.
+	splitTunnelRequestedSig string
+	// connectTrigger distinguishes a user-initiated connect from an automatic
+	// settings reapply so the two are separable in connect telemetry.
+	connectTrigger string
 
 	// active is the promoted (live) candidate's resources; nil while the ladder
 	// is still trying candidates or after a teardown. Only the runConnect
@@ -453,6 +469,7 @@ func (s *Service) connectLocked(brokerURL, targetCountry, targetRelayID string) 
 		targetRelayID,
 		rules,
 		s.currentProxySnapshot(),
+		connectTriggerUser,
 	)
 	return nil
 }
@@ -475,17 +492,25 @@ func (s *Service) connectLockedWithSnapshot(
 	brokerURL, targetCountry, targetRelayID string,
 	rules *client.SplitTunnelRules,
 	inheritedProxySnapshot *proxymode.Snapshot,
+	trigger string,
 ) {
+	// Read the signature these rules were built from before teardown, so the new
+	// connection records what it is reconciled to and promote can tell whether the
+	// preference moved again while this connect was in flight.
+	requestedSig := s.splitTunnelEffectiveSignatureNow()
+
 	s.teardownExisting()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	conn := &connection{
-		cancel:                 cancel,
-		done:                   make(chan struct{}),
-		requestedBrokerURL:     brokerURL,
-		requestedTargetCountry: targetCountry,
-		requestedTargetRelayID: targetRelayID,
-		splitTunnel:            rules,
+		cancel:                  cancel,
+		done:                    make(chan struct{}),
+		requestedBrokerURL:      brokerURL,
+		requestedTargetCountry:  targetCountry,
+		requestedTargetRelayID:  targetRelayID,
+		splitTunnel:             rules,
+		splitTunnelRequestedSig: requestedSig,
+		connectTrigger:          trigger,
 	}
 	if inheritedProxySnapshot != nil {
 		// A relay switch or settings reapply is one logical proxy session. Carry
@@ -696,7 +721,11 @@ func (s *Service) connectFlow(ctx context.Context, conn *connection, brokerURL, 
 			s.sessionID = session.ID
 			s.mu.Unlock()
 		}
-		mgr.Record("connection_attempted", "", nil, nil)
+		trigger := conn.connectTrigger
+		if trigger == "" {
+			trigger = connectTriggerUser
+		}
+		mgr.Record("connection_attempted", "", map[string]string{"trigger": trigger}, nil)
 	}
 
 	port, err := s.localProxyPort()
@@ -913,7 +942,7 @@ func (s *Service) attemptDirectCandidate(ctx context.Context, conn *connection, 
 		Mode:               client.ModeProxy,
 		ProxyListenAddress: proxyconfig.Host,
 		ProxyListenPort:    port,
-		SplitTunnel:        conn.splitTunnel,
+		SplitTunnel:        s.connSplitTunnel(conn),
 	}
 	if est := s.maybePunch(candCtx, conn.mgr, cand); est != nil {
 		res.punch = est
@@ -1081,7 +1110,22 @@ func (s *Service) promote(ctx context.Context, conn *connection, res *candidateR
 		}
 		conn.heartbeatOnce.Do(func() { go conn.mgr.RunHeartbeatLoop(ctx) })
 	}
+	// The session is now CONNECTED, which is the only state a reapply will act on.
+	// If the preference moved while this ladder was in flight, apply it now rather
+	// than leaving the session running a policy the user has already changed.
+	// Own goroutine: the reapply may replace this very connection and waits for
+	// this goroutine to exit.
+	if s.splitTunnelDrifted(conn) {
+		go s.reapplySplitTunnelDrift()
+	}
 	return true
+}
+
+func (s *Service) splitTunnelDrifted(conn *connection) bool {
+	current := s.splitTunnelEffectiveSignatureNow()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return conn.splitTunnelRequestedSig != current
 }
 
 // recordRelayAttemptFailed dents the failing relay's broker ranking. attempt is
@@ -1116,24 +1160,36 @@ func (s *Service) applyProxy(conn *connection, port int) {
 		s.appendLog(fmt.Sprintf("system proxy unavailable here; set manual proxy %s:%d", proxyconfig.Host, port))
 		return
 	}
-	if !conn.snapshotTaken {
+	// snapshot/snapshotTaken/proxySet/splitTunnel are read from the Wails bridge
+	// goroutine (currentProxySnapshot, SetSplitTunnelConfig), so every access here
+	// is guarded even though only this goroutine writes them. The OS calls stay
+	// outside the lock: Snapshot/Set can block on networksetup or the registry.
+	s.mu.Lock()
+	snapshotTaken := conn.snapshotTaken
+	s.mu.Unlock()
+	if !snapshotTaken {
 		snap, err := s.proxy.Snapshot()
 		if err != nil {
 			s.appendLog("could not read current system proxy; leaving it unchanged")
 			return
 		}
+		s.mu.Lock()
 		conn.snapshot = snap
 		conn.snapshotTaken = true
+		s.mu.Unlock()
 		if s.store != nil {
 			_ = s.store.SaveProxySnapshot(snap) // persist for crash recovery
 		}
 	}
 	// Mark restoration pending before Set: platform controllers can mutate OS
 	// state and only then fail while notifying applications of the change.
+	s.mu.Lock()
 	conn.proxySet = true
+	snapshot := conn.snapshot
+	bypassLAN := conn.splitTunnel != nil && conn.splitTunnel.BypassLAN
+	s.mu.Unlock()
 	var setErr error
 	if optionController, ok := s.proxy.(proxymode.OptionController); ok {
-		bypassLAN := conn.splitTunnel != nil && conn.splitTunnel.BypassLAN
 		setErr = optionController.SetWithOptions(
 			proxyconfig.Host,
 			port,
@@ -1146,11 +1202,13 @@ func (s *Service) applyProxy(conn *connection, port int) {
 		s.appendLog(fmt.Sprintf("system proxy set failed; set manual proxy %s:%d", proxyconfig.Host, port))
 		// A failed Set may have partially applied: put the captured setting back
 		// so the user's proxy is never left pointing at us with nothing there.
-		if restoreErr := s.proxy.Restore(conn.snapshot); restoreErr != nil {
+		if restoreErr := s.proxy.Restore(snapshot); restoreErr != nil {
 			s.appendLog("system proxy restore after failed set failed; will retry on next launch")
 			return
 		}
+		s.mu.Lock()
 		conn.proxySet = false
+		s.mu.Unlock()
 		if s.store != nil {
 			_ = s.store.ClearProxySnapshot()
 		}
@@ -1164,7 +1222,7 @@ func (s *Service) applyProxy(conn *connection, port int) {
 	// recovery, even if an earlier Set failure cleared it (idempotent for the
 	// common first-Set-succeeds path).
 	if s.store != nil {
-		_ = s.store.SaveProxySnapshot(conn.snapshot)
+		_ = s.store.SaveProxySnapshot(snapshot)
 	}
 	s.appendLog(fmt.Sprintf("proxy listening on %s:%d", proxyconfig.Host, port))
 }
@@ -1173,12 +1231,18 @@ func (s *Service) applyProxy(conn *connection, port int) {
 // keeping the snapshot, so a mid-session recovery lets traffic fall back to the
 // normal network during the reconnect gap and a re-promote can re-point.
 func (s *Service) releaseProxy(conn *connection) bool {
-	if conn.proxySet {
-		if err := s.proxy.Restore(conn.snapshot); err != nil {
+	s.mu.Lock()
+	proxySet := conn.proxySet
+	snapshot := conn.snapshot
+	s.mu.Unlock()
+	if proxySet {
+		if err := s.proxy.Restore(snapshot); err != nil {
 			s.appendLog("system proxy restore failed; keeping the recovery snapshot for the next retry")
 			return false
 		}
+		s.mu.Lock()
 		conn.proxySet = false
+		s.mu.Unlock()
 	}
 	return true
 }

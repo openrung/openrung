@@ -296,13 +296,10 @@ func TestBuildSingBoxConfigSplitTunnelLANOnly(t *testing.T) {
 	decoded := decodeSingBoxConfig(t, cfg)
 	route := decoded["route"].(map[string]any)
 	rules := route["rules"].([]any)
-	if len(rules) != 3 {
-		t.Fatalf("route rules = %+v, want baseline + resolve + LAN rule", rules)
+	if len(rules) != 2 {
+		t.Fatalf("route rules = %+v, want baseline + LAN rule", rules)
 	}
-	if got := rules[1].(map[string]any); got["action"] != "resolve" {
-		t.Fatalf("hostname destinations must resolve before LAN matching: %+v", got)
-	}
-	if got := rules[2].(map[string]any); got["ip_is_private"] != true || got["outbound"] != "direct" {
+	if got := rules[1].(map[string]any); got["ip_is_private"] != true || got["outbound"] != "direct" {
 		t.Fatalf("unexpected LAN rule: %+v", got)
 	}
 	if _, ok := route["rule_set"]; ok {
@@ -334,8 +331,8 @@ func TestBuildSingBoxConfigSplitTunnelCountriesCanonicalAndPinned(t *testing.T) 
 
 	route := decoded["route"].(map[string]any)
 	routeRules := route["rules"].([]any)
-	if len(routeRules) != 7 {
-		t.Fatalf("route rule count = %d, want 7: %+v", len(routeRules), routeRules)
+	if len(routeRules) != 6 {
+		t.Fatalf("route rule count = %d, want 6: %+v", len(routeRules), routeRules)
 	}
 	if got := routeRules[1].(map[string]any)["action"]; got != "sniff" {
 		t.Fatalf("country rules must start with sniff, got %v", got)
@@ -344,14 +341,11 @@ func TestBuildSingBoxConfigSplitTunnelCountriesCanonicalAndPinned(t *testing.T) 
 	if pin["outbound"] != "proxy" || !reflect.DeepEqual(pin["domain_suffix"], []any{"www.gstatic.com", "cp.cloudflare.com"}) {
 		t.Fatalf("unexpected probe pin: %+v", pin)
 	}
-	if got := routeRules[3].(map[string]any); got["action"] != "resolve" {
-		t.Fatalf("hostname destinations must resolve before IP rule sets: %+v", got)
-	}
-	if got := routeRules[4].(map[string]any); got["ip_is_private"] != true || got["outbound"] != "direct" {
+	if got := routeRules[3].(map[string]any); got["ip_is_private"] != true || got["outbound"] != "direct" {
 		t.Fatalf("LAN rule should precede countries: %+v", got)
 	}
 	for index, want := range [][]any{{"geosite-ir", "geoip-ir"}, {"geosite-cn", "geoip-cn"}} {
-		got := routeRules[index+5].(map[string]any)
+		got := routeRules[index+4].(map[string]any)
 		if got["outbound"] != "direct" || !reflect.DeepEqual(got["rule_set"], want) {
 			t.Fatalf("country rule %d = %+v, want %v direct", index, got, want)
 		}
@@ -408,4 +402,50 @@ func decodeSingBoxConfig(t *testing.T, config []byte) map[string]any {
 		t.Fatalf("config should be valid JSON: %v", err)
 	}
 	return decoded
+}
+
+// TestBuildSingBoxConfigSplitTunnelNeverResolvesForRouting is a security
+// regression guard, not a style check. A route-level "resolve" action makes the
+// DNS answer decide direct vs. proxy: rule_set values are ORed, so an address
+// forged into geoip-XX alone selects the direct outbound. The resolver is
+// reached through the relay, so a hostile relay could use it to pull censored
+// traffic out of the tunnel onto the physical interface. No split-tunnel
+// combination may emit one.
+func TestBuildSingBoxConfigSplitTunnelNeverResolvesForRouting(t *testing.T) {
+	now := time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC)
+	ruleDirectory := filepath.Join(string(filepath.Separator), "var", "rulesets")
+	for _, tc := range []struct {
+		name  string
+		rules *SplitTunnelRules
+	}{
+		{"lan only", &SplitTunnelRules{BypassLAN: true}},
+		{"countries only", &SplitTunnelRules{
+			BypassCountries: []string{"ir", "cn"}, RuleSetDirectory: ruleDirectory,
+		}},
+		{"lan and countries", &SplitTunnelRules{
+			BypassLAN: true, BypassCountries: []string{"ir", "cn"}, RuleSetDirectory: ruleDirectory,
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, mode := range []InboundMode{ModeProxy, ModeTUN} {
+				cfg, err := BuildSingBoxConfig(SingBoxConfigInput{
+					Relay:           validRelay(now),
+					Mode:            mode,
+					ProxyListenPort: 7890,
+					SplitTunnel:     tc.rules,
+				})
+				if err != nil {
+					t.Fatalf("build %v: %v", mode, err)
+				}
+				if bytes.Contains(cfg, []byte(`"resolve"`)) {
+					t.Fatalf("%v config emits a resolve action:\n%s", mode, cfg)
+				}
+				for _, rule := range decodeSingBoxConfig(t, cfg)["route"].(map[string]any)["rules"].([]any) {
+					if action := rule.(map[string]any)["action"]; action == "resolve" {
+						t.Fatalf("%v route rule resolves: %+v", mode, rule)
+					}
+				}
+			}
+		})
+	}
 }

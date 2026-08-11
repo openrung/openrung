@@ -113,6 +113,23 @@ func splitTunnelEffectiveSignature(raw string) string {
 	return fmt.Sprintf("enabled|lan=%t|c=%s", parsed.BypassLAN, strings.Join(countries, ","))
 }
 
+// splitTunnelRulesSignature keys the rules actually handed to the config
+// generator, i.e. after staging dropped any country whose rule-set pair failed
+// validation. splitTunnelEffectiveSignature keys the user's *request*; the two
+// disagree exactly when fail-toward-proxy dropped a preset, which is why a
+// reapply compares this one before bouncing a working tunnel.
+func splitTunnelRulesSignature(rules *client.SplitTunnelRules) string {
+	if rules == nil {
+		return splitTunnelDisabledSignature
+	}
+	return fmt.Sprintf(
+		"enabled|lan=%t|c=%s|dir=%s",
+		rules.BypassLAN,
+		strings.Join(rules.BypassCountries, ","),
+		rules.RuleSetDirectory,
+	)
+}
+
 // makeSplitTunnelRules builds one immutable connection-pass snapshot after the
 // service has staged/validated the requested country rule-set pairs. Passing
 // only availableCountries is the fail-toward-proxy boundary: a missing pair silently
@@ -222,9 +239,10 @@ func (s *Service) splitTunnelSnapshot() *client.SplitTunnelRules {
 }
 
 // SetSplitTunnelConfig is the Wails/mobile-compatible native bridge method.
-// It always stores the raw payload, but reconnects only when the effective
-// desktop routing policy changed and the current tunnel is fully connected.
-// A connecting/recovering flow is deliberately left alone.
+// It always stores the raw payload, then reapplies it to a fully connected
+// tunnel. A connecting/recovering flow is deliberately not interrupted: it
+// reconciles itself once it settles (reladder for a recovery, promote for an
+// initial connect), so a change made mid-connect is never silently dropped.
 func (s *Service) SetSplitTunnelConfig(configJSON string) error {
 	s.connectMu.Lock()
 	defer s.connectMu.Unlock()
@@ -238,12 +256,29 @@ func (s *Service) SetSplitTunnelConfig(configJSON string) error {
 	}
 
 	s.mu.Lock()
-	oldRaw := s.splitTunnelRaw
 	s.splitTunnelRaw = configJSON
 	s.mu.Unlock()
-	if splitTunnelEffectiveSignature(oldRaw) == splitTunnelEffectiveSignature(configJSON) {
-		return persistErr
-	}
+
+	s.reapplySplitTunnelLocked()
+	return persistErr
+}
+
+// reapplySplitTunnelDrift is the post-promote reconciliation hook. It must run
+// on its own goroutine: it takes connectMu and can replace the connection whose
+// ladder called it, and connectLockedWithSnapshot waits for that connection's
+// goroutine to finish.
+func (s *Service) reapplySplitTunnelDrift() {
+	s.connectMu.Lock()
+	defer s.connectMu.Unlock()
+	s.reapplySplitTunnelLocked()
+}
+
+// reapplySplitTunnelLocked requires connectMu. It reconnects a fully connected
+// session when the stored preference no longer matches what that session was
+// built from. It is a no-op when nothing is connected, when the request has not
+// drifted, or when the request drifted but produces a byte-identical config.
+func (s *Service) reapplySplitTunnelLocked() {
+	requestedSig := s.splitTunnelEffectiveSignatureNow()
 
 	// Stage while the proven tunnel remains active. Revalidate the same
 	// connection afterwards: its supervisor can enter recovery concurrently,
@@ -251,16 +286,29 @@ func (s *Service) SetSplitTunnelConfig(configJSON string) error {
 	s.mu.Lock()
 	conn := s.conn
 	fullyConnected := conn != nil && s.core.status == StatusConnected && !conn.disconnecting && !conn.finalized
+	drifted := fullyConnected && conn.splitTunnelRequestedSig != requestedSig
 	s.mu.Unlock()
-	if !fullyConnected {
-		return persistErr
+	if !drifted {
+		return
 	}
 	rules := s.splitTunnelSnapshot()
 
 	s.mu.Lock()
 	if s.conn != conn || s.core.status != StatusConnected || conn.disconnecting || conn.finalized {
 		s.mu.Unlock()
-		return persistErr
+		return
+	}
+	// Record that this connection is now reconciled to the current request
+	// whatever we decide below, so a dropped preset cannot make promote and this
+	// path re-evaluate the same drift forever.
+	conn.splitTunnelRequestedSig = requestedSig
+	if splitTunnelRulesSignature(rules) == splitTunnelRulesSignature(conn.splitTunnel) {
+		// The request changed but the emitted policy did not — e.g. the user
+		// toggled off a country whose rule-set pair had already been dropped.
+		// Bouncing a working tunnel for an identical config is pure downtime.
+		conn.splitTunnel = rules
+		s.mu.Unlock()
+		return
 	}
 	brokerURL := conn.requestedBrokerURL
 	targetCountry := conn.requestedTargetCountry
@@ -282,6 +330,22 @@ func (s *Service) SetSplitTunnelConfig(configJSON string) error {
 		targetRelayID,
 		rules,
 		inheritedProxySnapshot,
+		connectTriggerSettings,
 	)
-	return persistErr
+}
+
+func (s *Service) splitTunnelEffectiveSignatureNow() string {
+	s.mu.Lock()
+	raw := s.splitTunnelRaw
+	s.mu.Unlock()
+	return splitTunnelEffectiveSignature(raw)
+}
+
+// connSplitTunnel reads the pass-immutable rule snapshot. reladder replaces the
+// pointer between passes, so every candidate builder goes through this accessor
+// rather than touching the field directly.
+func (s *Service) connSplitTunnel(conn *connection) *client.SplitTunnelRules {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return conn.splitTunnel
 }

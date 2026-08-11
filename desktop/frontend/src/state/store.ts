@@ -44,10 +44,15 @@ const INITIAL_NATIVE_STATE: NativeVpnState = {
   recents: [],
 };
 
+// LAN bypass on, country presets OFF. A country preset routes that country's
+// geosite domains to an in-country resolver over cleartext UDP outside the
+// tunnel, so enabling one for a country the user is not in hands their DNS to a
+// foreign state resolver and connects direct from their real IP. The presets are
+// opt-in for that reason; LAN-only reproduces the pre-split-tunnel behavior.
 const INITIAL_SPLIT_TUNNEL: SplitTunnelState = {
   enabled: true,
   bypassLan: true,
-  bypassCountries: ['ir', 'cn'],
+  bypassCountries: [],
   excludedApps: [],
 };
 

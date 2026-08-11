@@ -51,19 +51,40 @@ multi-user computer may still be able to reach the listener.
 
 ### Split tunneling
 
-Settings includes the same preset policy used by the mobile clients. New
-desktop installs enable direct routing for private LAN destinations plus
-Iranian and Chinese sites and address ranges. Each preset can be changed
-independently, and disabling the master switch sends all traffic that reaches
-OpenRung's local proxy through the relay.
+Settings offers the same preset policy as the mobile clients. Any install with
+no stored preference — including an upgrade from a build that predates this
+screen — starts with direct routing for private LAN destinations only. The
+Iranian and Chinese presets are **off by default and opt-in**: each one routes
+that country's `geosite` domains to an in-country resolver over cleartext UDP
+outside the tunnel, so enabling one for a country you are not in hands your DNS
+to a foreign state resolver and connects to those sites direct from your real
+IP. Enable a country preset only for the country you are actually in. Each
+preset changes independently, and disabling the master switch sends all traffic
+that reaches OpenRung's local proxy through the relay.
 
 Country presets use bundled, integrity-pinned sing-box `geosite` and `geoip`
 rule sets plus an in-country direct DNS resolver. OpenRung validates both files
 before enabling a country; missing or damaged data drops that preset toward
-the normal proxied route and never blocks a connection. Settings are persisted
-locally and flushed before Connect. An effective change to a fully connected
-session reconnects to the same requested relay target; an in-progress connect
-or recovery is not interrupted and reads the latest policy on its next pass.
+the normal proxied route and never blocks a connection.
+
+Routing decisions are made from the destination the application asked for,
+never from a DNS answer. The config deliberately emits no sing-box `resolve`
+action: `rule_set` values are ORed, so a resolved address landing in `geoip-XX`
+alone would select the direct outbound, and the resolver is reached through the
+relay. A hostile relay could then forge an answer to pull censored traffic out
+of the tunnel. Consequently the `geoip` half of a country preset and the LAN
+rule match only destinations an application supplied as a literal IP; hostnames
+are matched by domain. On Windows the system bypass list already keeps dotless
+and private-range hostnames out of the proxy before sing-box sees them.
+
+Settings are persisted locally and flushed before Connect. An effective change
+to a fully connected session reconnects to the same requested relay target,
+unless the emitted policy is unchanged (for example turning off a preset whose
+rule sets had already been dropped), in which case the tunnel is left alone. An
+in-progress connect or recovery is never interrupted; it reconciles to the
+latest stored policy as soon as it settles. Reconnects triggered this way are
+tagged `trigger=split_tunnel_settings` in connect telemetry so they stay
+separable from user-initiated connects.
 
 This remains proxy-only split tunneling. It affects HTTP/SOCKS requests that
 enter OpenRung's loopback proxy; applications that ignore the proxy are already

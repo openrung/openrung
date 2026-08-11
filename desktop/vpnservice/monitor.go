@@ -172,9 +172,11 @@ func (s *Service) reladder(ctx context.Context, conn *connection, port int, targ
 	// snapshot here cannot make two live candidates observe different rules.
 	// This is also how a change persisted while CONNECTING takes effect without
 	// aborting the in-flight recovery.
+	requestedSig := s.splitTunnelEffectiveSignatureNow()
 	rules := s.splitTunnelSnapshot()
 	s.mu.Lock()
 	conn.splitTunnel = rules
+	conn.splitTunnelRequestedSig = requestedSig
 	s.mu.Unlock()
 
 	brokerURL := s.connBrokerURL(conn)

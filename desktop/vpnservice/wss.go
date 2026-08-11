@@ -314,7 +314,7 @@ func (s *Service) attemptWSSCandidate(
 		Relay: candidate, Mode: client.ModeProxy,
 		ProxyListenAddress: proxyconfig.Host, ProxyListenPort: proxyPort,
 		BridgeHost: ip.String(), BridgePort: port,
-		SplitTunnel: conn.splitTunnel,
+		SplitTunnel: s.connSplitTunnel(conn),
 	})
 }
 

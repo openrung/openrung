@@ -6,9 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestCanonicalCountries(t *testing.T) {
@@ -174,5 +177,68 @@ func assertCountries(t *testing.T, got, want []string) {
 	t.Helper()
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("countries = %#v, want %#v", got, want)
+	}
+}
+
+// TestValidateRejectsFifoWithoutBlocking guards the connect path. os.Open on a
+// FIFO blocks until a writer appears, and Stage/Validate run synchronously while
+// the service holds connectMu, so opening before the regular-file check would let
+// one mkfifo in the cache directory wedge Connect forever.
+func TestValidateRejectsFifoWithoutBlocking(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no FIFOs on windows")
+	}
+	directory := t.TempDir()
+	if err := syscall.Mkfifo(filepath.Join(directory, "geosite-ir.srs"), 0o644); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+
+	done := make(chan Result, 1)
+	go func() { done <- Validate(directory, []string{"ir"}) }()
+
+	select {
+	case result := <-done:
+		if len(result.Countries) != 0 {
+			t.Fatalf("a FIFO must not validate: %+v", result.Countries)
+		}
+		if !reflect.DeepEqual(result.Dropped, []string{"ir"}) {
+			t.Fatalf("dropped = %v, want [ir]", result.Dropped)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Validate blocked on a FIFO; the connect path would hang holding connectMu")
+	}
+}
+
+// TestStageRejectsSymlinkedTarget keeps a pre-planted symlink from being treated
+// as a staged rule set, and from being written through to a path outside the
+// cache directory.
+func TestStageRejectsSymlinkedTarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation needs privileges on windows")
+	}
+	directory := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "elsewhere.srs")
+	if err := os.WriteFile(outside, []byte("not a rule set"), 0o644); err != nil {
+		t.Fatalf("seed outside file: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(directory, "geosite-ir.srs")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	// Staging replaces the symlink with the real embedded asset rather than
+	// following it, so Iran still ends up usable and the outside file is intact.
+	result := Stage(directory, []string{"ir"})
+	if !reflect.DeepEqual(result.Countries, []string{"ir"}) {
+		t.Fatalf("countries = %v, want [ir]; warnings=%v", result.Countries, result.Warnings)
+	}
+	if data, err := os.ReadFile(outside); err != nil || string(data) != "not a rule set" {
+		t.Fatalf("staging wrote through the symlink: data=%q err=%v", data, err)
+	}
+	info, err := os.Lstat(filepath.Join(directory, "geosite-ir.srs"))
+	if err != nil {
+		t.Fatalf("lstat staged asset: %v", err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("staged asset is still not a regular file: %s", info.Mode())
 	}
 }

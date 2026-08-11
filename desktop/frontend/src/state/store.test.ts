@@ -10,10 +10,13 @@ import {
   SPLIT_TUNNEL_STORAGE_KEY,
 } from './store';
 
+// Country presets are deliberately OFF by default: each one routes that
+// country's geosite domains to an in-country resolver over cleartext UDP
+// outside the tunnel, which is a leak for any user not in that country.
 const defaults = {
   enabled: true,
   bypassLan: true,
-  bypassCountries: ['ir', 'cn'],
+  bypassCountries: [] as string[],
   excludedApps: [],
 };
 
@@ -33,7 +36,7 @@ describe('split-tunnel store', () => {
     vi.useRealTimers();
   });
 
-  it('persists and pushes the enabled mobile defaults on a fresh install', async () => {
+  it('persists and pushes LAN-only defaults on a fresh install', async () => {
     hydrateSplitTunnel();
 
     expect(getSnapshot().splitTunnel).toEqual(defaults);
@@ -42,7 +45,7 @@ describe('split-tunnel store', () => {
 
     await vi.advanceTimersByTimeAsync(1200);
     expect(OpenRungVpn.setSplitTunnelConfig).toHaveBeenCalledWith(
-      '{"version":1,"enabled":true,"bypass_lan":true,"bypass_countries":["ir","cn"],"excluded_packages":[]}',
+      '{"version":1,"enabled":true,"bypass_lan":true,"bypass_countries":[],"excluded_packages":[]}',
     );
   });
 
@@ -106,7 +109,7 @@ describe('split-tunnel store', () => {
 
     expect(OpenRungVpn.setSplitTunnelConfig).toHaveBeenCalledTimes(1);
     expect(OpenRungVpn.setSplitTunnelConfig).toHaveBeenCalledWith(
-      '{"version":1,"enabled":true,"bypass_lan":true,"bypass_countries":["ir","cn"],"excluded_packages":[]}',
+      '{"version":1,"enabled":true,"bypass_lan":true,"bypass_countries":[],"excluded_packages":[]}',
     );
 
     await vi.advanceTimersByTimeAsync(1200);

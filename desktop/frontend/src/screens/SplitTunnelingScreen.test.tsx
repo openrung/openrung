@@ -45,7 +45,14 @@ describe('SplitTunnelingScreen', () => {
     expect(container.textContent).toContain('Apps that do not use the OpenRung proxy');
     expect(container.textContent).not.toContain('Bypassed apps');
     expect(switches()).toHaveLength(4);
-    expect(switches().every(control => control.getAttribute('aria-checked') === 'true')).toBe(true);
+    // Master + LAN on, both country presets off: a country preset leaks DNS for
+    // a user who is not in that country, so it must be opted into explicitly.
+    expect(switches().map(control => control.getAttribute('aria-checked'))).toEqual([
+      'true',
+      'true',
+      'false',
+      'false',
+    ]);
     expect(document.activeElement?.textContent).toBe('Split tunneling');
   });
 

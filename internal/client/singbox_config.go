@@ -193,25 +193,29 @@ func applySplitTunnelConfig(dns, route map[string]any, rules *SplitTunnelRules) 
 		return
 	}
 
+	probeSuffixes := normalizedDomainSuffixes(rules.ProxyDomainSuffixes)
+	if len(probeSuffixes) == 0 {
+		probeSuffixes = append([]string(nil), defaultProxyProbeDomainSuffixes...)
+	}
+
 	routeRules := route["rules"].([]any)
 	if len(countries) > 0 {
-		probeSuffixes := normalizedDomainSuffixes(rules.ProxyDomainSuffixes)
-		if len(probeSuffixes) == 0 {
-			probeSuffixes = append([]string(nil), defaultProxyProbeDomainSuffixes...)
-		}
+		// Sniffing recovers the domain from TLS SNI / the HTTP Host header so a
+		// geosite rule can still match a request that arrived as a bare IP.
 		routeRules = append(routeRules,
 			map[string]any{"action": "sniff"},
 			map[string]any{"domain_suffix": probeSuffixes, "outbound": "proxy"},
 		)
 	}
-	if rules.BypassLAN || len(countries) > 0 {
-		// Mixed HTTP/SOCKS requests commonly arrive with a hostname rather than
-		// an IP destination. Resolve it before IP-based LAN/geoip matching so the
-		// proxy-only desktop port preserves the mobile client's effective rules.
-		// The force-proxy probe rule above remains terminal and therefore cannot
-		// be diverted by an address learned here.
-		routeRules = append(routeRules, map[string]any{"action": "resolve"})
-	}
+	// Deliberately NO {"action":"resolve"} here, matching the mobile clients.
+	// A resolve action would make the DNS answer — not the destination the
+	// application asked for — decide direct vs. proxy: rule_set values are ORed,
+	// so a forged address inside geoip-XX alone selects the direct outbound. The
+	// resolver is reached through the relay, so a hostile relay could forge that
+	// answer and pull censored traffic out of the tunnel onto the physical
+	// interface. Without resolve, ip_is_private and geoip-XX match only
+	// destinations the application already supplied as a literal IP, and every
+	// domain decision is made from the domain itself.
 	if rules.BypassLAN {
 		routeRules = append(routeRules, map[string]any{
 			"ip_is_private": true,
@@ -253,10 +257,6 @@ func applySplitTunnelConfig(dns, route map[string]any, rules *SplitTunnelRules) 
 	}
 	dns["servers"] = dnsServers
 
-	probeSuffixes := normalizedDomainSuffixes(rules.ProxyDomainSuffixes)
-	if len(probeSuffixes) == 0 {
-		probeSuffixes = append([]string(nil), defaultProxyProbeDomainSuffixes...)
-	}
 	dnsRules := []any{
 		map[string]any{"domain_suffix": probeSuffixes, "server": "dns-0"},
 	}

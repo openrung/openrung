@@ -219,12 +219,25 @@ func stageAsset(directory string, bundledAsset asset) error {
 }
 
 func validateFile(path, expectedSHA256 string) error {
+	// Reject irregular files BEFORE opening. os.Open on a FIFO blocks until a
+	// writer appears, and this runs on the connect path while connectMu is held,
+	// so a single mkfifo in the cache directory would wedge Connect forever — an
+	// after-the-open IsRegular check can never fire for that case. Lstat also
+	// refuses a symlink outright rather than following it out of the cache.
+	if info, err := os.Lstat(path); err != nil {
+		return err
+	} else if !info.Mode().IsRegular() {
+		return fmt.Errorf("not a regular file (mode %s)", info.Mode())
+	}
+
 	file, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 
+	// Re-check after opening: the Lstat above is advisory, and this closes the
+	// window where the path was swapped between the two calls.
 	info, err := file.Stat()
 	if err != nil {
 		return err
