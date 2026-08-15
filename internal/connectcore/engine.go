@@ -230,11 +230,15 @@ type Engine struct {
 	SingBoxPath string
 
 	// PunchEnabled attempts a direct NAT-punched path to punch-capable
-	// relays before falling back to the relay hub's data plane.
-	// PunchInsecure skips TLS verification of the hub's self-signed punch
-	// coordination endpoint (relay hubs on bare IPs cannot get a CA cert);
-	// see punchHTTPClient for why that stays safe.
+	// relays before falling back to the relay hub's data plane. PunchURL
+	// overrides the hub punch coordinator base URL (else the relay's
+	// advertised punch_endpoint is used). PunchInsecure skips TLS
+	// verification of the hub's self-signed punch coordination endpoint
+	// (relay hubs on bare IPs cannot get a CA cert); it defaults to false,
+	// so a host opts out of hub TLS verification deliberately — see
+	// punchHTTPClient for why that stays safe.
 	PunchEnabled  bool
+	PunchURL      string
 	PunchInsecure bool
 
 	// connectMu serializes the Connect/Disconnect mutation surface. Hosts may
@@ -325,7 +329,9 @@ func (s *Engine) relayDialer() func(context.Context, string, int) (int64, error)
 	if s.dialRelay != nil {
 		return s.dialRelay
 	}
-	return relayTCPReachable
+	return func(ctx context.Context, host string, port int) (int64, error) {
+		return RelayTCPReachable(ctx, host, port, RelayTCPTimeout)
+	}
 }
 
 func (s *Engine) relayFetcher() func(context.Context, string, int, string, string) (discovery.Fetch, error) {
@@ -343,10 +349,9 @@ func (s *Engine) relayFetcher() func(context.Context, string, int, string, strin
 
 func New() *Engine {
 	return &Engine{
-		core:          coreState{status: StatusDisconnected},
-		directory:     newDirectoryCache(),
-		PunchEnabled:  true,
-		PunchInsecure: true,
+		core:         coreState{status: StatusDisconnected},
+		directory:    newDirectoryCache(),
+		PunchEnabled: true,
 	}
 }
 
@@ -602,7 +607,7 @@ func (s *Engine) fetchCandidates(ctx context.Context, conn *connection, brokerUR
 	s.appendLog(fmt.Sprintf("fetching relays from %s", displayURL))
 
 	limit := RelayLimit
-	if strings.TrimSpace(targetRelayID) != "" || strings.TrimSpace(targetCountry) != "" {
+	if (RelayTarget{Country: targetCountry, RelayID: targetRelayID}).Targeted() {
 		limit = DirectoryRelayLimit
 	}
 	started := time.Now()
@@ -627,7 +632,7 @@ func (s *Engine) candidatesFor(resp relay.ListResponse, targetCountry, targetRel
 		return nil, "relay_select", client.ErrNoUsableRelay
 	}
 
-	cands, stage, err := filterCandidates(usable, targetCountry, targetRelayID)
+	cands, stage, err := FilterCandidates(usable, RelayTarget{Country: targetCountry, RelayID: targetRelayID})
 	if err != nil {
 		return nil, stage, err
 	}
@@ -1072,7 +1077,7 @@ func (s *Engine) finalizeConn(conn *connection, stage string, err error) {
 			}
 			conn.mgr.Record("connection_failed", "", attrs, nil)
 			conn.mgr.EndSession("connection_failed")
-			flushOnShutdown(conn.mgr)
+			_ = FlushOnShutdown(conn.mgr)
 		}
 	}
 	s.clearConn(conn)

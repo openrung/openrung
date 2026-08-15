@@ -107,6 +107,13 @@ type Service struct {
 func New() *Service {
 	s := &Service{ring: newRingBuffer(logRingCapacity)}
 	engine := connectcore.New()
+	// FOR REVIEW (ADR-001 PR A2): the engine's punch-insecure option now
+	// defaults to false; this line preserves the value the desktop app has
+	// shipped with since punching landed. It skips TLS verification of the hub
+	// punch coordination API only (a relay hub on a bare IP cannot get a CA
+	// cert); the punched data path pins the relay's per-session cert either
+	// way. The CLI has always defaulted to verifying it (-punch-insecure).
+	engine.PunchInsecure = true
 	engine.Sink = &engineSink{s: s}
 	engine.OSProxy = osProxyAdapter{ctrl: proxymode.New()}
 	engine.ResolveProxyPort = func() (connectcore.ProxyPortResolution, error) {
