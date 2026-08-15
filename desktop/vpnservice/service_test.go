@@ -8,10 +8,10 @@ import (
 	"sync"
 	"testing"
 
-	"openrung/desktop/persist"
-	"openrung/desktop/proxyconfig"
-	"openrung/desktop/proxymode"
+	"openrung/internal/clientstate"
 	"openrung/internal/connectcore"
+	"openrung/internal/proxyconfig"
+	"openrung/internal/proxymode"
 )
 
 // capturingEmitter collects every emitted state for assertions.
@@ -78,7 +78,7 @@ func TestGetIdentityWithoutSession(t *testing.T) {
 func TestGetProxyInfoUsesStableConfiguredEndpoint(t *testing.T) {
 	t.Setenv(proxyconfig.PortEnv, "46685")
 	s := New()
-	s.store = persist.NewInDir(t.TempDir())
+	s.store = clientstate.NewInDir(t.TempDir())
 
 	info, err := s.GetProxyInfo()
 	if err != nil {
@@ -114,7 +114,7 @@ func TestGetProxyInfoKeepsEndpointWhenShellHelperCannotBeWritten(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := New()
-	s.store = persist.NewInDir(filepath.Join(blocker, "openrung"))
+	s.store = clientstate.NewInDir(filepath.Join(blocker, "openrung"))
 
 	info, err := s.GetProxyInfo()
 	if err != nil {
@@ -135,7 +135,7 @@ func TestGetProxyInfoSurfacesNonFatalPersistenceWarning(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := New()
-	s.store = persist.NewInDir(filepath.Join(blocker, "openrung"))
+	s.store = clientstate.NewInDir(filepath.Join(blocker, "openrung"))
 
 	info, err := s.GetProxyInfo()
 	if err != nil {
@@ -151,9 +151,9 @@ func TestGetProxyInfoSurfacesNonFatalPersistenceWarning(t *testing.T) {
 
 func TestStoreAdapterRoundTripsSnapshotAndRecents(t *testing.T) {
 	// The engine moves the proxy snapshot around as an opaque value; the
-	// adapter must hand desktop/persist the same proxymode shape (and on-disk
-	// format) it stored before the engine extraction.
-	adapter := storeAdapter{store: persist.NewInDir(t.TempDir())}
+	// adapter must hand internal/clientstate the same proxymode shape (and
+	// on-disk format) it stored before the engine extraction.
+	adapter := storeAdapter{store: clientstate.NewInDir(t.TempDir())}
 	snap := proxymode.Snapshot{
 		Platform: "windows",
 		Windows:  &proxymode.WindowsProxyState{ProxyEnable: true, ProxyServer: "10.0.0.1:3128"},

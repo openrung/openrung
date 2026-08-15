@@ -1,5 +1,5 @@
-// Package proxymode sets and restores the OS system proxy for the desktop
-// client's default (zero-privilege) connect mode. The GUI owns the proxy — it
+// Package proxymode sets and restores the OS system proxy for the end-user
+// client's default (zero-privilege) connect mode. The app owns the proxy — it
 // snapshots the user's prior settings before pointing them at the local
 // sing-box mixed inbound and restores them on disconnect, crash, or next
 // launch. This is deliberately NOT sing-box's own set_system_proxy, which does

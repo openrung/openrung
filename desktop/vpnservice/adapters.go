@@ -3,16 +3,16 @@ package vpnservice
 import (
 	"errors"
 
-	"openrung/desktop/persist"
-	"openrung/desktop/proxymode"
+	"openrung/internal/clientstate"
 	"openrung/internal/connectcore"
+	"openrung/internal/proxymode"
 )
 
-// storeAdapter implements connectcore.Persistence over desktop/persist,
+// storeAdapter implements connectcore.Persistence over internal/clientstate,
 // keeping the on-disk formats (recents.json, proxy-snapshot.json) exactly as
 // before the engine extraction. The engine treats the proxy snapshot as
-// opaque; this adapter is where it regains its desktop proxymode shape.
-type storeAdapter struct{ store *persist.Store }
+// opaque; this adapter is where it regains its proxymode shape.
+type storeAdapter struct{ store *clientstate.Store }
 
 func (a storeAdapter) LoadRecents() []connectcore.RecentNode {
 	stored := a.store.LoadRecents()
@@ -24,9 +24,9 @@ func (a storeAdapter) LoadRecents() []connectcore.RecentNode {
 }
 
 func (a storeAdapter) SaveRecents(recents []connectcore.RecentNode) error {
-	stored := make([]persist.RecentNode, 0, len(recents))
+	stored := make([]clientstate.RecentNode, 0, len(recents))
 	for _, r := range recents {
-		stored = append(stored, persist.RecentNode(r))
+		stored = append(stored, clientstate.RecentNode(r))
 	}
 	return a.store.SaveRecents(stored)
 }
@@ -52,7 +52,7 @@ func (a storeAdapter) ClearProxySnapshot() error {
 }
 
 // osProxyAdapter implements connectcore.OSProxy over the per-OS controllers in
-// desktop/proxymode.
+// internal/proxymode.
 type osProxyAdapter struct{ ctrl proxymode.Controller }
 
 func (a osProxyAdapter) Supported() bool { return a.ctrl.Supported() }

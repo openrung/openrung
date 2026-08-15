@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// Package proxyconfig owns the desktop client's stable local proxy endpoint
+// Package proxyconfig owns the end-user client's stable local proxy endpoint
 // and the opt-in shell integration that exposes it to command-line programs.
 package proxyconfig
 
@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	"openrung/desktop/persist"
+	"openrung/internal/clientstate"
 	"openrung/internal/connectcore"
 )
 
@@ -52,11 +52,11 @@ type PortResolution struct {
 // ResolvePort selects one port for this installation. An explicit environment
 // override wins but is not persisted; otherwise the stored port is reused, or
 // a kernel-selected loopback port is allocated and saved for future launches.
-func ResolvePort(store *persist.Store) (PortResolution, error) {
+func ResolvePort(store *clientstate.Store) (PortResolution, error) {
 	return resolvePort(store, os.LookupEnv, freeLoopbackPort)
 }
 
-func resolvePort(store *persist.Store, lookupEnv func(string) (string, bool), allocate func() (int, error)) (PortResolution, error) {
+func resolvePort(store *clientstate.Store, lookupEnv func(string) (string, bool), allocate func() (int, error)) (PortResolution, error) {
 	if raw, ok := lookupEnv(PortEnv); ok && strings.TrimSpace(raw) != "" {
 		port, err := strconv.Atoi(strings.TrimSpace(raw))
 		if err != nil || !validPort(port) {
@@ -95,7 +95,7 @@ func resolvePort(store *persist.Store, lookupEnv func(string) (string, bool), al
 }
 
 // SanitizeInheritedProxyEnvironment removes only proxy values installed by
-// OpenRung's generated helper. This must run at the very start of the desktop
+// OpenRung's generated helper. This must run at the very start of the client
 // process: launching OpenRung from an activated shell would otherwise send its
 // own broker bootstrap through a local proxy that cannot exist until bootstrap
 // finishes. Unrelated user-configured upstream proxies are left untouched.
@@ -141,7 +141,7 @@ func SanitizeInheritedProxyEnvironment() {
 
 // WriteShellHelper writes the sourceable helper for port and returns all
 // display/copy values derived from the same endpoint.
-func WriteShellHelper(store *persist.Store, port int) (Info, error) {
+func WriteShellHelper(store *clientstate.Store, port int) (Info, error) {
 	info, err := EndpointInfo(port)
 	if err != nil {
 		return Info{}, err

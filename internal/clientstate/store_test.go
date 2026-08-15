@@ -1,4 +1,4 @@
-package persist
+package clientstate
 
 import (
 	"bytes"
@@ -12,7 +12,7 @@ import (
 	"sync"
 	"testing"
 
-	"openrung/desktop/proxymode"
+	"openrung/internal/proxymode"
 )
 
 func TestRecentsRoundTrip(t *testing.T) {

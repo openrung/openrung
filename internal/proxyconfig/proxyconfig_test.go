@@ -11,11 +11,11 @@ import (
 	"strings"
 	"testing"
 
-	"openrung/desktop/persist"
+	"openrung/internal/clientstate"
 )
 
 func TestResolvePortUsesEnvironmentOverrideWithoutPersistingIt(t *testing.T) {
-	store := persist.NewInDir(t.TempDir())
+	store := clientstate.NewInDir(t.TempDir())
 	if err := store.SaveProxyPort(41111); err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func TestResolvePortUsesEnvironmentOverrideWithoutPersistingIt(t *testing.T) {
 
 func TestResolvePortReusesOrCreatesPersistedPort(t *testing.T) {
 	dir := t.TempDir()
-	store := persist.NewInDir(dir)
+	store := clientstate.NewInDir(dir)
 	lookup := func(string) (string, bool) { return "", false }
 	allocations := 0
 	allocate := func() (int, error) {
@@ -49,7 +49,7 @@ func TestResolvePortReusesOrCreatesPersistedPort(t *testing.T) {
 	if err != nil || first.Port != 46685 || first.PersistenceWarning != nil {
 		t.Fatalf("first resolvePort = %+v, %v", first, err)
 	}
-	second, err := resolvePort(persist.NewInDir(dir), lookup, func() (int, error) {
+	second, err := resolvePort(clientstate.NewInDir(dir), lookup, func() (int, error) {
 		t.Fatal("allocator called despite persisted port")
 		return 0, nil
 	})
@@ -63,7 +63,7 @@ func TestResolvePortKeepsWorkingWhenPersistenceFails(t *testing.T) {
 	if err := os.WriteFile(blocker, []byte("blocked"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	store := persist.NewInDir(filepath.Join(blocker, "openrung"))
+	store := clientstate.NewInDir(filepath.Join(blocker, "openrung"))
 	resolution, err := resolvePort(store, func(string) (string, bool) { return "", false }, func() (int, error) {
 		return 46685, nil
 	})
@@ -102,7 +102,7 @@ func TestWriteShellHelperQuotesPathAndBuildsEndpoint(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	info, err := WriteShellHelper(persist.NewInDir(dir), 46685)
+	info, err := WriteShellHelper(clientstate.NewInDir(dir), 46685)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func TestShellHelperPreservesAndRestoresProxyEnvironment(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("POSIX sh is unavailable")
 	}
-	store := persist.NewInDir(t.TempDir())
+	store := clientstate.NewInDir(t.TempDir())
 	info, err := WriteShellHelper(store, 46685)
 	if err != nil {
 		t.Fatal(err)
