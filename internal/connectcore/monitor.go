@@ -23,7 +23,7 @@ const networkRecoveryPollInterval = 5 * time.Second
 // the runConnect goroutine that owns conn and never touches s.conn — a user
 // disconnect always wins. Returns ("", nil) on a clean end, or the terminal
 // (stage, error) when a recovery pass is exhausted.
-func (s *Engine) supervise(ctx context.Context, conn *connection, cur *candidateResult, port int, targetCountry, targetRelayID string) (string, error) {
+func (s *Engine) supervise(ctx context.Context, conn *connection, cur *candidateResult, port int, target RelayTarget) (string, error) {
 	for {
 		healthFail := make(chan error, 1)
 		go s.healthLoop(cur.ctx, port, s.livenessFronts(conn), healthFail)
@@ -117,7 +117,7 @@ func (s *Engine) supervise(ctx context.Context, conn *connection, cur *candidate
 				return "", nil
 			}
 			var err error
-			next, fetchMS, _, err = s.reladder(ctx, conn, port, targetCountry, targetRelayID, failedRelayID)
+			next, fetchMS, _, err = s.reladder(ctx, conn, port, target, failedRelayID)
 			if err == nil {
 				break
 			}
@@ -166,9 +166,9 @@ func (s *Engine) supervise(ctx context.Context, conn *connection, cur *candidate
 // country target stays in-country — with the relay that just died demoted to
 // the end (never excluded: it may be the only relay there is), then the ladder.
 // The telemetry session survives: no BeginSession, no terminal events here.
-func (s *Engine) reladder(ctx context.Context, conn *connection, port int, targetCountry, targetRelayID, failedRelayID string) (*candidateResult, int64, string, error) {
+func (s *Engine) reladder(ctx context.Context, conn *connection, port int, target RelayTarget, failedRelayID string) (*candidateResult, int64, string, error) {
 	brokerURL := s.connBrokerURL(conn)
-	fetch, fetchMS, err := s.fetchCandidates(ctx, conn, brokerURL, targetCountry, targetRelayID)
+	fetch, fetchMS, err := s.fetchCandidates(ctx, conn, brokerURL, target)
 	var rateLimited *discovery.RateLimitedError
 	if errors.As(err, &rateLimited) {
 		wait := rateLimited.RetryAfter
@@ -184,13 +184,13 @@ func (s *Engine) reladder(ctx context.Context, conn *connection, port int, targe
 			return nil, 0, "", ctx.Err()
 		case <-time.After(wait):
 		}
-		fetch, fetchMS, err = s.fetchCandidates(ctx, conn, brokerURL, targetCountry, targetRelayID)
+		fetch, fetchMS, err = s.fetchCandidates(ctx, conn, brokerURL, target)
 	}
 	if err != nil {
 		return nil, 0, "broker_fetch", err
 	}
 
-	cands, stage, err := s.candidatesFor(fetch.Response, targetCountry, targetRelayID)
+	cands, stage, err := s.candidatesFor(fetch.Response, target)
 	if err != nil {
 		return nil, 0, stage, err
 	}
@@ -199,7 +199,7 @@ func (s *Engine) reladder(ctx context.Context, conn *connection, port int, targe
 	// the front. Demoting last keeps both invariants — the ladder is in client
 	// latency order, and the failed relay is still retried last. (Desktop-only:
 	// Android re-ranks by recursing into connect(), which has no demotion.)
-	order := s.rankLadder(ctx, cands, targetRelayID)
+	order := s.rankLadder(ctx, cands, target)
 	cands = demoteRelay(order.candidates(), failedRelayID)
 	s.mu.Lock()
 	conn.candidates = cands

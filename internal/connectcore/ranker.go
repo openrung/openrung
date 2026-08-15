@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -153,11 +152,12 @@ func rankByTCPLatency(
 // ranking that goes wrong must still leave a usable ladder. A racing disconnect
 // is caught by the ctx check runLadder does before its first rung.
 //
-// A pinned relay skips ranking: the user chose it, so there is nothing to
-// reorder. A country-targeted connect ranks within the filtered set.
-func (s *Engine) rankLadder(ctx context.Context, cands []relay.Descriptor, targetRelayID string) ladderOrder {
+// An identity target (a pinned relay id or label) skips ranking: the user
+// chose it, so there is nothing to reorder. A country-targeted connect ranks
+// within the filtered set.
+func (s *Engine) rankLadder(ctx context.Context, cands []relay.Descriptor, target RelayTarget) ladderOrder {
 	order := ladderOrder{brokerOrder: cands}
-	if strings.TrimSpace(targetRelayID) != "" || len(cands) < 2 {
+	if target.identity() || len(cands) < 2 {
 		order.ranked = unranked(cands)
 		return order
 	}
