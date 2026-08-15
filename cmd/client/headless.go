@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"openrung/internal/client"
@@ -102,7 +103,10 @@ func runConfig(args []string) error {
 // mid-session failover) in proxy mode, logs stream to stdout, and an interrupt
 // disconnects cleanly. Telemetry is the engine's own session lifecycle.
 func runHeadlessConnect(cfg connectConfig) error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	// SIGTERM is how kill, Docker, and service managers stop a process; it must
+	// tear down like an interrupt or the system proxy stays pointed at a dead
+	// port until the next launch's crash recovery. (No-op on Windows.)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	for _, warning := range legacyFlagWarnings(cfg) {

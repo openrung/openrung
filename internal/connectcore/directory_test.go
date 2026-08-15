@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -164,5 +165,80 @@ func TestRankedDirectoryOrdersUsableRelaysByLatency(t *testing.T) {
 	}
 	if ranked[0].ProbeMS == nil || *ranked[0].ProbeMS != 3 {
 		t.Fatalf("fast probe = %v, want 3ms", ranked[0].ProbeMS)
+	}
+}
+
+func TestDirectoryCacheKeyedByBrokerOverride(t *testing.T) {
+	// A fresh snapshot from one broker must not answer a request for another:
+	// a cross-broker cache hit would point targeted connects at relays the
+	// requested broker never listed.
+	now := time.Now()
+	var urls []string
+	var mu sync.Mutex
+	d := &directoryCache{
+		now: func() time.Time { return now },
+		fetcher: func(_ context.Context, brokerURL string, _ discovery.Options) (relay.ListResponse, error) {
+			mu.Lock()
+			urls = append(urls, brokerURL)
+			mu.Unlock()
+			return relay.ListResponse{Count: 1, NotAfter: now.Add(time.Hour), Relays: []relay.Descriptor{{ID: "from-" + brokerURL}}}, nil
+		},
+	}
+
+	if _, err := d.fetch(context.Background(), "a", discovery.Options{}); err != nil {
+		t.Fatalf("fetch a: %v", err)
+	}
+	resp, err := d.fetch(context.Background(), "b", discovery.Options{})
+	if err != nil {
+		t.Fatalf("fetch b: %v", err)
+	}
+	if len(urls) != 2 || urls[1] != "b" {
+		t.Fatalf("fetcher calls = %v, want a refetch for the new broker", urls)
+	}
+	if resp.Relays[0].ID != "from-b" {
+		t.Fatalf("served %q, want the new broker's list", resp.Relays[0].ID)
+	}
+
+	// The error fallback must not serve broker b's snapshot for broker c either.
+	d.fetcher = func(_ context.Context, _ string, _ discovery.Options) (relay.ListResponse, error) {
+		return relay.ListResponse{}, errors.New("broker unreachable")
+	}
+	if _, err := d.fetch(context.Background(), "c", discovery.Options{}); err == nil {
+		t.Fatal("fetch c served a different broker's stale snapshot")
+	}
+}
+
+func TestDirectoryCacheSingleFlight(t *testing.T) {
+	// Concurrent refreshes must collapse onto one broker request: the TUI's
+	// startup refresh and an eager r press race exactly like this.
+	now := time.Now()
+	var calls int32
+	release := make(chan struct{})
+	d := &directoryCache{
+		now: func() time.Time { return now },
+		fetcher: func(_ context.Context, _ string, _ discovery.Options) (relay.ListResponse, error) {
+			atomic.AddInt32(&calls, 1)
+			<-release
+			return relay.ListResponse{Count: 1, NotAfter: now.Add(time.Hour), Relays: []relay.Descriptor{{ID: "r1"}}}, nil
+		},
+	}
+
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := d.fetch(context.Background(), "", discovery.Options{}); err != nil {
+				t.Errorf("fetch: %v", err)
+			}
+		}()
+	}
+	// Let every goroutine reach the cache before the one in-flight fetch lands.
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("broker calls = %d, want 1: latecomers must wait for the in-flight fetch", got)
 	}
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -269,5 +270,68 @@ func TestLogRingCapsAndCoalesces(t *testing.T) {
 	}
 	if _, dirty := ring.snapshotIfDirty(); dirty {
 		t.Fatal("ring stayed dirty after a snapshot")
+	}
+}
+
+func TestFailoverKeepsSessionStart(t *testing.T) {
+	driver := &fakeDriver{}
+	m := newTestModel(driver)
+
+	label := "Tokyo, Japan"
+	connected := connectcore.State{Status: connectcore.StatusConnected, RelayLabel: &label}
+	m, _ = update(t, m, engineStateMsg(connected))
+	started := m.connectedAt
+
+	// An automatic failover re-promotes through connecting → connected without
+	// ending the session; the stamp must survive it.
+	m, _ = update(t, m, engineStateMsg(connectcore.State{Status: connectcore.StatusConnecting, RelayLabel: &label}))
+	m, _ = update(t, m, engineStateMsg(connected))
+	if !m.connectedAt.Equal(started) {
+		t.Fatalf("connectedAt = %v, want the original stamp %v across a failover", m.connectedAt, started)
+	}
+
+	// A disconnect ends the session; the next connect stamps fresh.
+	m, _ = update(t, m, engineStateMsg(connectcore.State{Status: connectcore.StatusDisconnected}))
+	if !m.connectedAt.IsZero() {
+		t.Fatalf("connectedAt = %v, want cleared after disconnect", m.connectedAt)
+	}
+}
+
+func TestCtrlCQuitsWhileEditingSettings(t *testing.T) {
+	driver := &fakeDriver{}
+	m := newTestModel(driver)
+	m.view = viewSettings
+
+	m, _ = update(t, m, keyMsg("enter")) // begin editing the broker field
+	_, msg := update(t, m, tea.KeyMsg{Type: tea.KeyCtrlC})
+	if _, ok := msg.(tea.QuitMsg); !ok {
+		t.Fatalf("ctrl+c while editing returned %T, want tea.QuitMsg", msg)
+	}
+}
+
+func TestRelaysWindowFollowsCursor(t *testing.T) {
+	driver := &fakeDriver{}
+	m := newTestModel(driver)
+	m.view = viewRelays
+	m.height = 12 // body of 8 rows: notice-free header + 7 relay rows visible
+	for i := 0; i < 30; i++ {
+		m.relays = append(m.relays, connectcore.DirectoryRelay{
+			Relay: relay.Descriptor{ID: fmt.Sprintf("relay_%02d", i), Label: fmt.Sprintf("node-%02d", i)},
+		})
+	}
+
+	m.relayCursor = len(m.relays) - 1
+	view := m.View()
+	if !strings.Contains(view, "node-29") {
+		t.Fatalf("last relay not visible with the cursor on it:\n%s", view)
+	}
+	if strings.Contains(view, "node-00") {
+		t.Fatalf("head of the list still rendered while the cursor sits at the tail:\n%s", view)
+	}
+
+	m.relayCursor = 0
+	view = m.View()
+	if !strings.Contains(view, "node-00") || strings.Contains(view, "node-29") {
+		t.Fatalf("window did not follow the cursor back to the head:\n%s", view)
 	}
 }

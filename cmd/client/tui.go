@@ -195,6 +195,10 @@ func newTUIModel(driver engineDriver, ring *logRing, cfg connectConfig) tuiModel
 		ring:   ring,
 		now:    time.Now(),
 		state:  connectcore.State{Status: connectcore.StatusDisconnected},
+		// Init issues the first directory refresh, so mark it in flight: the
+		// Relays view says "refreshing" instead of inviting an r that would
+		// race it.
+		refreshing: true,
 		settings: settingsState{
 			brokerURL: cfg.BrokerURL,
 			target:    cfg.target(),
@@ -271,10 +275,18 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case engineStateMsg:
-		prev := m.state.Status
 		m.state = connectcore.State(msg)
-		if m.state.Status == connectcore.StatusConnected && prev != connectcore.StatusConnected {
-			m.connectedAt = time.Now()
+		switch m.state.Status {
+		case connectcore.StatusConnected:
+			// Stamp only a fresh session: an automatic failover re-promotes
+			// through connecting → connected without ending the telemetry
+			// session, so an existing stamp is kept. A manual switch or a
+			// disconnect passes through disconnected, which clears it below.
+			if m.connectedAt.IsZero() {
+				m.connectedAt = time.Now()
+			}
+		case connectcore.StatusDisconnected, connectcore.StatusFailed:
+			m.connectedAt = time.Time{}
 		}
 		return m, m.pollCmd()
 
@@ -425,6 +437,10 @@ func (m tuiModel) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m tuiModel) handleSettingsEditKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "ctrl+c":
+		// The editor captures printable keys (so q stays typed text), but the
+		// quit chord must always work.
+		return m, tea.Quit
 	case "enter":
 		m.applySettingsField(m.settings.cursor, strings.TrimSpace(m.settings.input.Value()))
 		m.settings.editing = false

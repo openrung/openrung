@@ -243,7 +243,24 @@ func (m tuiModel) relaysView() string {
 	}
 
 	rows = append(rows, helpStyle.Render(fmt.Sprintf("   %-28s %-8s %-9s %s", "RELAY", "COUNTRY", "LATENCY", "CLASS")))
-	for i, entry := range m.relays {
+
+	// Window the list to the rows the body has left after any notice lines and
+	// the column header, following the cursor: fitLines hard-truncates the body,
+	// so without this the selection could sit on a relay the screen never shows.
+	visible := m.bodyHeight() - len(rows)
+	if visible < 1 {
+		visible = 1
+	}
+	start := 0
+	if m.relayCursor >= visible {
+		start = m.relayCursor - visible + 1
+	}
+	end := start + visible
+	if end > len(m.relays) {
+		end = len(m.relays)
+	}
+	for i := start; i < end; i++ {
+		entry := m.relays[i]
 		cursor := "  "
 		if i == m.relayCursor {
 			cursor = cursorStyle.Render("▸ ")

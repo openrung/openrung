@@ -27,8 +27,14 @@ type directoryCache struct {
 	// now is injectable so tests need not sleep. Nil means time.Now.
 	now func() time.Time
 
+	// flightMu serializes broker fetches (single-flight): concurrent refreshes
+	// wait for the one in flight and are then served from the cache it filled,
+	// so simultaneous requests cannot multiply broker load past the rate floor.
+	flightMu sync.Mutex
+
 	mu        sync.Mutex
 	cached    *relay.ListResponse
+	cachedURL string // broker override that produced the snapshot ("" = default fronts)
 	fetchedAt time.Time
 }
 
@@ -120,23 +126,21 @@ func (s *Engine) identityForDirectory() discovery.Options {
 }
 
 func (d *directoryCache) fetch(ctx context.Context, brokerURL string, opts discovery.Options) (relay.ListResponse, error) {
-	d.mu.Lock()
-	now := d.clock()
-	if directorySnapshotFresh(d.cached, now) && now.Sub(d.fetchedAt) < MinDirectoryRefreshInterval {
-		cached := *d.cached
-		d.mu.Unlock()
+	d.flightMu.Lock()
+	defer d.flightMu.Unlock()
+
+	if cached, ok := d.snapshotFor(brokerURL, true); ok {
 		return cached, nil
 	}
-	d.mu.Unlock()
 
 	response, err := d.fetcher(ctx, brokerURL, opts)
 	if err != nil {
 		// Serve the last good list on a transient broker failure (rate-limit,
-		// blocked edge) so the map does not empty out mid-session.
-		d.mu.Lock()
-		defer d.mu.Unlock()
-		if directorySnapshotFresh(d.cached, d.clock()) {
-			return *d.cached, nil
+		// blocked edge) so the map does not empty out mid-session — but never a
+		// list a different broker served: a stale cross-broker snapshot would
+		// point targeted connects at relays the requested broker never listed.
+		if cached, ok := d.snapshotFor(brokerURL, false); ok {
+			return cached, nil
 		}
 		return relay.ListResponse{}, err
 	}
@@ -144,8 +148,26 @@ func (d *directoryCache) fetch(ctx context.Context, brokerURL string, opts disco
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.cached = &response
+	d.cachedURL = brokerURL
 	d.fetchedAt = d.clock()
 	return response, nil
+}
+
+// snapshotFor returns the cached list when it was served for the same broker
+// override and is still within its not_after bound; withinInterval additionally
+// requires it to be inside the refresh-rate floor (the cache-hit condition,
+// versus the serve-stale-on-error fallback).
+func (d *directoryCache) snapshotFor(brokerURL string, withinInterval bool) (relay.ListResponse, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	now := d.clock()
+	if d.cachedURL != brokerURL || !directorySnapshotFresh(d.cached, now) {
+		return relay.ListResponse{}, false
+	}
+	if withinInterval && now.Sub(d.fetchedAt) >= MinDirectoryRefreshInterval {
+		return relay.ListResponse{}, false
+	}
+	return *d.cached, true
 }
 
 func directorySnapshotFresh(response *relay.ListResponse, now time.Time) bool {
