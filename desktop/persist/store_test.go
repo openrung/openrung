@@ -189,38 +189,6 @@ func TestProxyEnvScriptIsPrivateAndReplaceable(t *testing.T) {
 	}
 }
 
-func TestPrependRecentDedupesAndCaps(t *testing.T) {
-	var recents []RecentNode
-	add := func(cc string) {
-		recents = PrependRecent(recents, RecentNode{CountryCode: cc, Label: cc}, 3)
-	}
-	add("JP")
-	add("SG")
-	add("US")
-	add("DE") // exceeds cap 3 → oldest (JP) drops
-	if len(recents) != 3 {
-		t.Fatalf("expected cap 3, got %d: %+v", len(recents), recents)
-	}
-	if recents[0].CountryCode != "DE" {
-		t.Fatalf("newest should be first, got %q", recents[0].CountryCode)
-	}
-	// Re-adding an existing code moves it to front without duplicating.
-	add("US")
-	if len(recents) != 3 {
-		t.Fatalf("dedupe failed, len=%d: %+v", len(recents), recents)
-	}
-	if recents[0].CountryCode != "US" {
-		t.Fatalf("re-added code should move to front, got %q", recents[0].CountryCode)
-	}
-	seen := map[string]int{}
-	for _, r := range recents {
-		seen[r.CountryCode]++
-		if seen[r.CountryCode] > 1 {
-			t.Fatalf("duplicate country code %q", r.CountryCode)
-		}
-	}
-}
-
 func TestProxySnapshotLifecycle(t *testing.T) {
 	store := NewInDir(t.TempDir())
 	if _, ok := store.LoadProxySnapshot(); ok {

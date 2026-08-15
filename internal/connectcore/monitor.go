@@ -1,4 +1,4 @@
-package vpnservice
+package connectcore
 
 import (
 	"context"
@@ -9,10 +9,10 @@ import (
 	"net/url"
 	"time"
 
-	"openrung/desktop/config"
-	"openrung/desktop/discovery"
-	"openrung/desktop/proxyconfig"
+	"github.com/openrung/openrung/brokerapi"
+
 	"openrung/internal/clienttelemetry"
+	"openrung/internal/discovery"
 )
 
 const networkRecoveryPollInterval = 5 * time.Second
@@ -23,7 +23,7 @@ const networkRecoveryPollInterval = 5 * time.Second
 // the runConnect goroutine that owns conn and never touches s.conn — a user
 // disconnect always wins. Returns ("", nil) on a clean end, or the terminal
 // (stage, error) when a recovery pass is exhausted.
-func (s *Service) supervise(ctx context.Context, conn *connection, cur *candidateResult, port int, targetCountry, targetRelayID string) (string, error) {
+func (s *Engine) supervise(ctx context.Context, conn *connection, cur *candidateResult, port int, targetCountry, targetRelayID string) (string, error) {
 	for {
 		healthFail := make(chan error, 1)
 		go s.healthLoop(cur.ctx, port, s.livenessFronts(conn), healthFail)
@@ -81,7 +81,7 @@ func (s *Service) supervise(ctx context.Context, conn *connection, cur *candidat
 			} else {
 				trigger = probeErr
 			}
-			s.appendLog(fmt.Sprintf("tunnel health check failed %d times; reconnecting", config.HealthFailureThreshold))
+			s.appendLog(fmt.Sprintf("tunnel health check failed %d times; reconnecting", HealthFailureThreshold))
 		}
 
 		oldRelayID := cur.relay.ID
@@ -166,7 +166,7 @@ func (s *Service) supervise(ctx context.Context, conn *connection, cur *candidat
 // country target stays in-country — with the relay that just died demoted to
 // the end (never excluded: it may be the only relay there is), then the ladder.
 // The telemetry session survives: no BeginSession, no terminal events here.
-func (s *Service) reladder(ctx context.Context, conn *connection, port int, targetCountry, targetRelayID, failedRelayID string) (*candidateResult, int64, string, error) {
+func (s *Engine) reladder(ctx context.Context, conn *connection, port int, targetCountry, targetRelayID, failedRelayID string) (*candidateResult, int64, string, error) {
 	brokerURL := s.connBrokerURL(conn)
 	fetch, fetchMS, err := s.fetchCandidates(ctx, conn, brokerURL, targetCountry, targetRelayID)
 	var rateLimited *discovery.RateLimitedError
@@ -175,8 +175,8 @@ func (s *Service) reladder(ctx context.Context, conn *connection, port int, targ
 		if wait <= 0 {
 			wait = 10 * time.Second
 		}
-		if wait > config.MaxRecoveryBackoff {
-			wait = config.MaxRecoveryBackoff
+		if wait > MaxRecoveryBackoff {
+			wait = MaxRecoveryBackoff
 		}
 		s.appendLog(fmt.Sprintf("broker rate-limited; retrying in %s", wait))
 		select {
@@ -210,7 +210,7 @@ func (s *Service) reladder(ctx context.Context, conn *connection, port int, targ
 	// the last possible moment so a competing process that claimed it during
 	// that gap is reported as a local endpoint collision, not as a fleet of
 	// failed relays.
-	if err := proxyconfig.EnsureAvailable(port); err != nil {
+	if err := EnsureProxyPortAvailable(port); err != nil {
 		return nil, 0, "proxy_bind", err
 	}
 	res, err := s.runLadder(ctx, conn, cands, port)
@@ -228,10 +228,10 @@ func (s *Service) reladder(ctx context.Context, conn *connection, port int, targ
 // available than any single relay and independent of the tunnel. Network alive
 // means the tunnel itself is dead: report a failover trigger on failCh. Network
 // down (a wifi blip, sleep) means leave the tunnel alone and keep probing.
-func (s *Service) healthLoop(ctx context.Context, port int, fronts []string, failCh chan<- error) {
+func (s *Engine) healthLoop(ctx context.Context, port int, fronts []string, failCh chan<- error) {
 	base := s.healthTick
 	if base <= 0 {
-		base = config.HealthProbeInterval
+		base = HealthProbeInterval
 	}
 	timer := time.NewTimer(jitter(base))
 	defer timer.Stop()
@@ -253,7 +253,7 @@ func (s *Service) healthLoop(ctx context.Context, port int, fronts []string, fai
 			return
 		}
 		failures++
-		if failures < config.HealthFailureThreshold {
+		if failures < HealthFailureThreshold {
 			continue
 		}
 		if !s.networkAlive(ctx, fronts) {
@@ -275,12 +275,12 @@ func (s *Service) healthLoop(ctx context.Context, port int, fronts []string, fai
 // up. The fronts (Cloudflare + CloudFront, plus any user override) are highly
 // available and independent of the relay fleet, so unlike dialing the candidate
 // relays this never mistakes a single dead relay for a local outage.
-func (s *Service) networkAlive(ctx context.Context, fronts []string) bool {
+func (s *Engine) networkAlive(ctx context.Context, fronts []string) bool {
 	if s.checkNetworkAlive != nil {
 		return s.checkNetworkAlive(ctx, fronts)
 	}
 	for _, addr := range fronts {
-		dialer := net.Dialer{Timeout: config.RelayTCPTimeout}
+		dialer := net.Dialer{Timeout: RelayTCPTimeout}
 		conn, err := dialer.DialContext(ctx, "tcp", addr)
 		if err == nil {
 			_ = conn.Close()
@@ -297,7 +297,7 @@ func (s *Service) networkAlive(ctx context.Context, fronts []string) bool {
 // laptop sleep from becoming failover_exhausted. The dead local proxy has
 // already been released; recovery starts a fresh direct-first ladder only once
 // an independent HTTPS broker front is reachable again.
-func (s *Service) waitForNetworkRecovery(ctx context.Context, conn *connection) bool {
+func (s *Engine) waitForNetworkRecovery(ctx context.Context, conn *connection) bool {
 	fronts := s.livenessFronts(conn)
 	if s.networkAlive(ctx, fronts) {
 		return true
@@ -328,8 +328,8 @@ func (s *Service) waitForNetworkRecovery(ctx context.Context, conn *connection) 
 
 // livenessFronts is the broker-front host:port list used as the network-alive
 // reference, derived from the same candidates discovery races.
-func (s *Service) livenessFronts(conn *connection) []string {
-	cands := config.BrokerCandidates(s.connBrokerURL(conn))
+func (s *Engine) livenessFronts(conn *connection) []string {
+	cands := brokerapi.BrokerCandidates(s.connBrokerURL(conn))
 	seen := make(map[string]struct{}, len(cands.URLs))
 	fronts := make([]string, 0, len(cands.URLs))
 	for _, raw := range cands.URLs {
@@ -352,13 +352,13 @@ func (s *Service) livenessFronts(conn *connection) []string {
 	return fronts
 }
 
-func (s *Service) connBrokerURL(conn *connection) string {
+func (s *Engine) connBrokerURL(conn *connection) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return conn.brokerURL
 }
 
-func (s *Service) isDisconnecting(conn *connection) bool {
+func (s *Engine) isDisconnecting(conn *connection) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return conn.disconnecting

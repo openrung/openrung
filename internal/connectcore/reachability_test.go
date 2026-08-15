@@ -1,4 +1,4 @@
-package vpnservice
+package connectcore
 
 import (
 	"context"

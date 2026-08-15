@@ -1,4 +1,4 @@
-package vpnservice
+package connectcore
 
 import (
 	"context"
@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"net/url"
 	"time"
-
-	"openrung/desktop/config"
 )
 
 // proxyProbeClient builds an HTTP client routed through the sing-box mixed
@@ -18,7 +16,7 @@ import (
 // the candidate that served them; callers must closeIdle when done.
 func proxyProbeClient(proxyPort int) *http.Client {
 	return &http.Client{
-		Timeout: config.InternetProbeRequestTimeout,
+		Timeout: InternetProbeRequestTimeout,
 		Transport: &http.Transport{
 			Proxy:             http.ProxyURL(&url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", proxyPort)}),
 			DisableKeepAlives: true,
@@ -39,7 +37,7 @@ func closeIdle(client *http.Client) {
 // access. Mirrors one iteration of the mobile InternetProbe endpoint loop.
 func probeSweep(ctx context.Context, client *http.Client) error {
 	var lastErr error
-	for _, endpoint := range config.InternetProbeURLs {
+	for _, endpoint := range InternetProbeURLs {
 		if err := probeOnce(ctx, client, endpoint); err != nil {
 			lastErr = err
 			continue
@@ -82,7 +80,7 @@ func verifyInternetViaProxy(ctx context.Context, proxyPort int) (int64, error) {
 	defer closeIdle(client)
 
 	started := time.Now()
-	deadline := started.Add(config.InternetProbeOverallTimeout)
+	deadline := started.Add(InternetProbeOverallTimeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
 		if err := ctx.Err(); err != nil {
@@ -96,7 +94,7 @@ func verifyInternetViaProxy(ctx context.Context, proxyPort int) (int64, error) {
 		select {
 		case <-ctx.Done():
 			return 0, ctx.Err()
-		case <-time.After(config.InternetProbeRetryDelay):
+		case <-time.After(InternetProbeRetryDelay):
 		}
 	}
 	return 0, fmt.Errorf("VPN started, but the internet probe failed: %w", lastErr)

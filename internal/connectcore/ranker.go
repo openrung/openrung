@@ -1,4 +1,4 @@
-package vpnservice
+package connectcore
 
 import (
 	"context"
@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"openrung/desktop/config"
 	"openrung/internal/relay"
 )
 
@@ -156,23 +155,23 @@ func rankByTCPLatency(
 //
 // A pinned relay skips ranking: the user chose it, so there is nothing to
 // reorder. A country-targeted connect ranks within the filtered set.
-func (s *Service) rankLadder(ctx context.Context, cands []relay.Descriptor, targetRelayID string) ladderOrder {
+func (s *Engine) rankLadder(ctx context.Context, cands []relay.Descriptor, targetRelayID string) ladderOrder {
 	order := ladderOrder{brokerOrder: cands}
 	if strings.TrimSpace(targetRelayID) != "" || len(cands) < 2 {
 		order.ranked = unranked(cands)
 		return order
 	}
 	probes := len(cands)
-	if probes > config.RelayRankMaxProbes {
-		probes = config.RelayRankMaxProbes
+	if probes > RelayRankMaxProbes {
+		probes = RelayRankMaxProbes
 	}
 	s.appendLog(fmt.Sprintf("measuring TCP latency to %d relays", probes))
 	order.ranked = rankByTCPLatency(
 		ctx,
 		cands,
-		config.RelayRankMaxProbes,
-		config.RelayRankProbeTimeout,
-		config.RelayRankBucketMS,
+		RelayRankMaxProbes,
+		RelayRankProbeTimeout,
+		RelayRankBucketMS,
 		s.relayDialer(),
 	)
 	return order

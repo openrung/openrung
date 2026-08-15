@@ -1,4 +1,4 @@
-package vpnservice
+package connectcore
 
 import (
 	"context"
@@ -13,8 +13,6 @@ import (
 	"github.com/openrung/openrung/brokerapi"
 	"github.com/openrung/openrung/wsscore"
 
-	"openrung/desktop/config"
-	"openrung/desktop/proxyconfig"
 	"openrung/internal/client"
 	"openrung/internal/clienttelemetry"
 	"openrung/internal/relay"
@@ -128,7 +126,7 @@ func supportedWSSFronts(candidate relay.Descriptor) []relay.WSSFrontDescriptor {
 	return normalized
 }
 
-func (s *Service) wssTicketRequester() func(context.Context, string, relay.WSSSessionTicketRequest, string, string) (relay.WSSSessionTicketResponse, error) {
+func (s *Engine) wssTicketRequester() func(context.Context, string, relay.WSSSessionTicketRequest, string, string) (relay.WSSSessionTicketResponse, error) {
 	if s.requestWSSTicket != nil {
 		return s.requestWSSTicket
 	}
@@ -141,7 +139,7 @@ func (s *Service) wssTicketRequester() func(context.Context, string, relay.WSSSe
 	}
 }
 
-func (s *Service) wssDialer() func(context.Context, string, string) (wssBridge, error) {
+func (s *Engine) wssDialer() func(context.Context, string, string) (wssBridge, error) {
 	if s.dialWSS != nil {
 		return s.dialWSS
 	}
@@ -159,8 +157,8 @@ func (s *Service) wssDialer() func(context.Context, string, string) (wssBridge, 
 // confidentiality: ticket requests therefore require TLS authentication of
 // the exact broker endpoint and never use endpoint-unbound fronts.
 func wssTicketBrokerFronts(primary string) []string {
-	fronts := make([]string, 0, len(config.DefaultBrokerURLs)+1)
-	seen := make(map[string]struct{}, len(config.DefaultBrokerURLs)+1)
+	fronts := make([]string, 0, len(DefaultBrokerURLs)+1)
+	seen := make(map[string]struct{}, len(DefaultBrokerURLs)+1)
 	add := func(value string) {
 		value = strings.TrimSpace(value)
 		if value == "" || brokerapi.EndpointUnboundBrokerFront(value) {
@@ -173,13 +171,13 @@ func wssTicketBrokerFronts(primary string) []string {
 		fronts = append(fronts, value)
 	}
 	add(primary)
-	for _, fallback := range config.DefaultBrokerURLs {
+	for _, fallback := range DefaultBrokerURLs {
 		add(fallback)
 	}
 	return fronts
 }
 
-func (s *Service) requestWSSSessionTicket(
+func (s *Engine) requestWSSSessionTicket(
 	ctx context.Context,
 	conn *connection,
 	request relay.WSSSessionTicketRequest,
@@ -194,7 +192,7 @@ func (s *Service) requestWSSSessionTicket(
 		var retryAfter time.Duration
 		for index, brokerURL := range fronts {
 			attemptCtx, cancel := context.WithTimeout(ctx, wssTicketAttemptLimit)
-			ticket, err := requester(attemptCtx, brokerURL, request, managerClientID(conn.mgr), s.currentSessionID())
+			ticket, err := requester(attemptCtx, brokerURL, request, managerClientID(conn.mgr), s.SessionID())
 			cancel()
 			if err == nil {
 				return ticket, nil
@@ -243,7 +241,7 @@ func wssRetryAfter(err error) time.Duration {
 	}
 }
 
-func (s *Service) wssRetryWaiter() func(context.Context, time.Duration) error {
+func (s *Engine) wssRetryWaiter() func(context.Context, time.Duration) error {
 	if s.waitWSSRetry != nil {
 		return s.waitWSSRetry
 	}
@@ -259,7 +257,7 @@ func (s *Service) wssRetryWaiter() func(context.Context, time.Duration) error {
 	}
 }
 
-func (s *Service) attemptWSSCandidate(
+func (s *Engine) attemptWSSCandidate(
 	ctx context.Context,
 	conn *connection,
 	candidate relay.Descriptor,
@@ -312,7 +310,7 @@ func (s *Service) attemptWSSCandidate(
 	s.appendLog(fmt.Sprintf("connected through WSS front %s", front.ID))
 	return s.startCandidate(result, client.SingBoxConfigInput{
 		Relay: candidate, Mode: client.ModeProxy,
-		ProxyListenAddress: proxyconfig.Host, ProxyListenPort: proxyPort,
+		ProxyListenAddress: ProxyHost, ProxyListenPort: proxyPort,
 		BridgeHost: ip.String(), BridgePort: port,
 	})
 }
@@ -350,7 +348,7 @@ func gracefulWSSSessionEnd(err error) bool {
 	return ok && stage == wssSessionEndedStage
 }
 
-func (s *Service) recordTransportFallback(mgr *clienttelemetry.Manager, relayID string, directErr error) {
+func (s *Engine) recordTransportFallback(mgr *clienttelemetry.Manager, relayID string, directErr error) {
 	if mgr == nil {
 		return
 	}
@@ -363,7 +361,7 @@ func (s *Service) recordTransportFallback(mgr *clienttelemetry.Manager, relayID 
 
 // recordWSSTransportEnded reports an orderly session end on its own event, so
 // transport_failed keeps meaning "the path broke" and stays usable as a signal.
-func (s *Service) recordWSSTransportEnded(mgr *clienttelemetry.Manager, relayID string, err error) {
+func (s *Engine) recordWSSTransportEnded(mgr *clienttelemetry.Manager, relayID string, err error) {
 	if mgr == nil {
 		return
 	}
@@ -374,7 +372,7 @@ func (s *Service) recordWSSTransportEnded(mgr *clienttelemetry.Manager, relayID 
 	mgr.Record("transport_session_ended", relayID, attrs, nil)
 }
 
-func (s *Service) recordWSSTransportFailed(mgr *clienttelemetry.Manager, relayID string, err error) {
+func (s *Engine) recordWSSTransportFailed(mgr *clienttelemetry.Manager, relayID string, err error) {
 	if mgr == nil {
 		return
 	}

@@ -141,24 +141,6 @@ func (s *Store) SaveProxyEnvScript(port int, script []byte) (string, error) {
 	return path, nil
 }
 
-// PrependRecent inserts node at the front, de-duplicated by countryCode, capped
-// at max (matching the contract's cap-8 newest-first recents), and persists the
-// result. It returns the new list so the caller can mirror it into state.
-func PrependRecent(existing []RecentNode, node RecentNode, max int) []RecentNode {
-	out := make([]RecentNode, 0, len(existing)+1)
-	out = append(out, node)
-	for _, r := range existing {
-		if r.CountryCode == node.CountryCode {
-			continue
-		}
-		out = append(out, r)
-	}
-	if len(out) > max {
-		out = out[:max]
-	}
-	return out
-}
-
 // SaveProxySnapshot persists the OS proxy snapshot captured before a connect,
 // so a crash mid-session can be cleaned up on the next launch.
 func (s *Store) SaveProxySnapshot(snap proxymode.Snapshot) error {

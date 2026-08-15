@@ -1,6 +1,8 @@
-// Package config holds desktop-specific connection and discovery tuning.
-// Shared broker endpoints and candidate ordering come from brokerapi.
-package config
+package connectcore
+
+// Engine connection and discovery tuning, moved verbatim from desktop/config
+// (docs/adr/001 PR A1) so the engine carries its own policy. Shared broker
+// endpoints and candidate ordering come from brokerapi.
 
 import (
 	"time"
@@ -31,24 +33,9 @@ const (
 	// MaxRecents bounds the main-screen "Recents" row.
 	MaxRecents = 8
 
-	// SourceURL is the GPL-3.0 corresponding-source offer surfaced in the
-	// in-app licenses screen.
-	SourceURL = "https://github.com/openrung/openrung"
-
 	// MinDirectoryRefreshInterval throttles automatic map refreshes so the GUI
 	// cannot trip the broker's per-IP rate limit on its own (see broker PR #5).
 	MinDirectoryRefreshInterval = 30 * time.Second
-
-	// DiscoveryStagger is the head start each candidate gets over the next one
-	// within discovery.FirstReachable's current trust phase: candidate[0] starts
-	// immediately and, until an attempt succeeds, the next equally authenticated
-	// candidate joins every DiscoveryStagger. Endpoint-unbound candidates wait
-	// for the stronger phase to fail rather than joining on this timer. Long
-	// enough that a healthy primary almost always wins outright, short enough
-	// that a blocked primary does not serialize the other strong front. The
-	// shared brokerapi constant also drives mobile's native binding; platform
-	// AppConfig must not carry a second copy of this policy.
-	DiscoveryStagger = brokerapi.DefaultDiscoveryStagger
 
 	// RelayTCPTimeout bounds the pre-connect TCP reachability check against a
 	// relay's public endpoint (it feeds relay_tcp_ms). Must stay in sync with
@@ -58,8 +45,8 @@ const (
 
 	// Relay ranking: before the ladder runs, the client probes TCP connect
 	// latency to the head of the candidate list and reorders it by latency
-	// bucket (see vpnservice/ranker.go). Must stay in sync with the mobile
-	// RelayRanker constants so all three clients rank identically.
+	// bucket (see ranker.go). Must stay in sync with the mobile RelayRanker
+	// constants so all three clients rank identically.
 	//
 	// RelayRankMaxProbes caps how many relays are probed; the rest keep broker
 	// order behind the probed head. RelayRankProbeTimeout is deliberately far
@@ -82,8 +69,8 @@ const (
 	InternetProbeRetryDelay     = 500 * time.Millisecond
 
 	// LadderKillGrace bounds how long a failed connect-ladder candidate's
-	// sing-box gets between interrupt and hard kill. Desktop-only: os.Interrupt
-	// is unsupported on Windows, so without this every failed candidate's
+	// sing-box gets between interrupt and hard kill. os.Interrupt is
+	// unsupported on Windows, so without this every failed candidate's
 	// teardown would cost the engine's full 5s default. Proxy mode holds no TUN
 	// device, so a hard kill is safe.
 	LadderKillGrace = 500 * time.Millisecond
@@ -99,8 +86,8 @@ const (
 	// suspend reconnection (and leave traffic on the normal network) for long.
 	MaxRecoveryBackoff = 60 * time.Second
 
-	// Desktop mid-session health monitor; mobile clients own separate native
-	// health and recovery policies. One probe sweep through the tunnel runs every
+	// Mid-session health monitor; mobile clients own separate native health
+	// and recovery policies. One probe sweep through the tunnel runs every
 	// HealthProbeInterval. After HealthFailureThreshold consecutive failures AND
 	// proof the local network is alive (some known relay answers a TCP dial), the
 	// tunnel is declared dead and an automatic failover re-ladder runs. The
@@ -119,10 +106,10 @@ var InternetProbeURLs = []string{
 }
 
 // DefaultBrokerURLs are the ordered discovery candidates. Exact-endpoint fronts
-// are raced with a staggered start — each entry gets a DiscoveryStagger head
-// start over the next, and the first to return relays wins. An endpoint-unbound
-// front is a separate fallback phase and does not start until every stronger
-// candidate has failed (see discovery.FirstReachable).
+// are raced with a staggered start — each entry gets a stagger head start over
+// the next, and the first to return relays wins. An endpoint-unbound front is
+// a separate fallback phase and does not start until every stronger candidate
+// has failed (see discovery.FirstReachable).
 //
 // Every entry MUST be HTTPS. The relay list is Ed25519-signed (see
 // brokerapi/signing.go), which detaches its authenticity from the transport — but
@@ -138,23 +125,3 @@ var InternetProbeURLs = []string{
 // this list and its two-phase trust policy; mobile's native binding consumes the
 // same functions rather than duplicating either in platform AppConfig.
 var DefaultBrokerURLs = brokerapi.DefaultBrokerURLs()
-
-// Candidates are the ordered discovery endpoints for one request, plus
-// whether URLs[0] is a genuine user override. Built by BrokerCandidates and
-// consumed by discovery.FirstReachable; carrying the flag alongside the list
-// keeps the two from being computed inconsistently.
-type Candidates = brokerapi.Candidates
-
-// BrokerCandidates returns the ordered, de-duplicated discovery candidates for
-// a request: a genuine primary override first (with OverrideFirst set), then
-// the built-in defaults.
-//
-// This brokerapi policy is also used directly by the mobile native binding. A
-// non-blank primary is tried FIRST only when it is a genuine override, i.e. not
-// already one of the defaults — and only such an override sets OverrideFirst,
-// giving it the strict head phase described on Candidates. A persisted value
-// that merely echoes a default must not reorder the defaults' HTTPS-first
-// preference (or claim the override phase).
-func BrokerCandidates(primary string) Candidates {
-	return brokerapi.BrokerCandidates(primary)
-}

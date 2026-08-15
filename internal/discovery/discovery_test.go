@@ -11,7 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"openrung/desktop/config"
+	"github.com/openrung/openrung/brokerapi"
+
 	"openrung/internal/client"
 )
 
@@ -21,15 +22,15 @@ import (
 const relayBody = `{"count":1,"server_time":"2026-07-06T00:00:00Z","relays":[{"id":"r1","public_host":"1.2.3.4","public_port":443,"protocol":"vless-reality-vision","client_id":"client","reality_public_key":"key","short_id":"01","server_name":"example.com","flow":"xtls-rprx-vision","exit_mode":"direct","max_sessions":1,"max_mbps":10,"volunteer_version":"1.0.0","registered_at":"2026-07-06T00:00:00Z","last_heartbeat_at":"2026-07-06T00:00:00Z","expires_at":"2099-07-06T00:10:00Z"}]}`
 
 // noOverride wraps urls as a pure-race candidate list — what
-// config.BrokerCandidates builds when no genuine user override is set.
-func noOverride(urls ...string) config.Candidates {
-	return config.Candidates{URLs: urls}
+// brokerapi.BrokerCandidates builds when no genuine user override is set.
+func noOverride(urls ...string) brokerapi.Candidates {
+	return brokerapi.Candidates{URLs: urls}
 }
 
 // withOverride wraps urls as a candidate list whose FIRST entry is a genuine
-// user override, matching what config.BrokerCandidates builds for one.
-func withOverride(urls ...string) config.Candidates {
-	return config.Candidates{URLs: urls, OverrideFirst: true}
+// user override, matching what brokerapi.BrokerCandidates builds for one.
+func withOverride(urls ...string) brokerapi.Candidates {
+	return brokerapi.Candidates{URLs: urls, OverrideFirst: true}
 }
 
 func TestListRelaysSuccess(t *testing.T) {
@@ -256,7 +257,7 @@ func TestFirstReachableSingleCandidateBehavesSequentially(t *testing.T) {
 
 		begun := time.Now()
 		// Default stagger on purpose: a lone failing candidate must return
-		// immediately, not wait out config.DiscoveryStagger.
+		// immediately, not wait out brokerapi.DefaultDiscoveryStagger.
 		_, err := FirstReachable(context.Background(), noOverride(srv.URL), Options{})
 		elapsed := time.Since(begun)
 
@@ -578,7 +579,7 @@ func TestFirstReachableOverrideParentCancelMidRaceSurfacesCancellation(t *testin
 }
 
 func TestFirstReachableNoCandidates(t *testing.T) {
-	_, err := FirstReachable(context.Background(), config.Candidates{}, Options{})
+	_, err := FirstReachable(context.Background(), brokerapi.Candidates{}, Options{})
 	if err == nil {
 		t.Fatal("want error for empty candidate list")
 	}
