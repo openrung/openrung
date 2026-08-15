@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"openrung/internal/client"
 	"openrung/internal/relay"
 )
 
@@ -41,7 +42,7 @@ func candidateIDs(cands []relay.Descriptor) []string {
 
 func TestFilterCandidatesPinnedID(t *testing.T) {
 	usable := []relay.Descriptor{usableRelay("a", "JP", "Tokyo", "Japan"), usableRelay("b", "SG", "", "Singapore")}
-	got, stage, err := filterCandidates(usable, "JP", "b") // id wins over country
+	got, stage, err := FilterCandidates(usable, RelayTarget{Country: "JP", RelayID: "b"}) // id wins over country
 	if err != nil || stage != "" {
 		t.Fatalf("pinned id: stage %q err %v", stage, err)
 	}
@@ -53,9 +54,49 @@ func TestFilterCandidatesPinnedID(t *testing.T) {
 
 func TestFilterCandidatesPinnedIDAbsent(t *testing.T) {
 	usable := []relay.Descriptor{usableRelay("a", "JP", "Tokyo", "Japan")}
-	_, stage, err := filterCandidates(usable, "", "zz")
+	_, stage, err := FilterCandidates(usable, RelayTarget{RelayID: "zz"})
 	if err == nil || stage != "relay_id_filter" {
 		t.Fatalf("absent pinned id: stage %q err %v", stage, err)
+	}
+	if !errors.Is(err, client.ErrRelayNotInList) || !strings.Contains(err.Error(), `relay "zz"`) {
+		t.Fatalf("absent pinned id error = %v", err)
+	}
+}
+
+// A label may name several relays (the CLI's -relay-label), and it is an
+// identity target like an id: no silent fallback to an unlabelled relay.
+func TestFilterCandidatesLabel(t *testing.T) {
+	labelled := func(id, label string) relay.Descriptor {
+		r := usableRelay(id, "JP", "Tokyo", "Japan")
+		r.Label = label
+		return r
+	}
+	usable := []relay.Descriptor{labelled("a", "home"), labelled("b", "lab"), labelled("c", "home")}
+
+	got, stage, err := FilterCandidates(usable, RelayTarget{Label: "home"})
+	if err != nil || stage != "" {
+		t.Fatalf("label filter: stage %q err %v", stage, err)
+	}
+	if ids := candidateIDs(got); len(ids) != 2 || ids[0] != "a" || ids[1] != "c" {
+		t.Fatalf("label candidates = %v", ids)
+	}
+
+	// id and label together keep every relay matching either, as the CLI's
+	// two flags always have.
+	got, _, err = FilterCandidates(usable, RelayTarget{RelayID: "b", Label: "home"})
+	if err != nil {
+		t.Fatalf("id+label filter: %v", err)
+	}
+	if ids := candidateIDs(got); len(ids) != 3 {
+		t.Fatalf("id+label candidates = %v", ids)
+	}
+
+	_, stage, err = FilterCandidates(usable, RelayTarget{Label: "absent"})
+	if err == nil || stage != "relay_id_filter" {
+		t.Fatalf("absent label: stage %q err %v", stage, err)
+	}
+	if !errors.Is(err, client.ErrRelayNotInList) || !strings.Contains(err.Error(), `label "absent"`) {
+		t.Fatalf("absent label error = %v", err)
 	}
 }
 
@@ -66,7 +107,7 @@ func TestFilterCandidatesCountryKeepsBrokerOrder(t *testing.T) {
 		usableRelay("c", "sg", "", "Singapore"), // case-insensitive match
 		usableRelay("d", "", "", ""),            // geo-less: excluded from a targeted connect
 	}
-	got, stage, err := filterCandidates(usable, "sg", "")
+	got, stage, err := FilterCandidates(usable, RelayTarget{Country: "sg"})
 	if err != nil || stage != "" {
 		t.Fatalf("country filter: stage %q err %v", stage, err)
 	}
@@ -77,7 +118,7 @@ func TestFilterCandidatesCountryKeepsBrokerOrder(t *testing.T) {
 
 func TestFilterCandidatesCountryAbsent(t *testing.T) {
 	usable := []relay.Descriptor{usableRelay("a", "JP", "Tokyo", "Japan")}
-	_, stage, err := filterCandidates(usable, "US", "")
+	_, stage, err := FilterCandidates(usable, RelayTarget{Country: "US"})
 	if err == nil || stage != "relay_geo_filter" {
 		t.Fatalf("absent country: stage %q err %v", stage, err)
 	}
@@ -85,12 +126,30 @@ func TestFilterCandidatesCountryAbsent(t *testing.T) {
 
 func TestFilterCandidatesAutoKeepsWholeList(t *testing.T) {
 	usable := []relay.Descriptor{usableRelay("a", "JP", "Tokyo", "Japan"), usableRelay("b", "SG", "", "Singapore")}
-	got, stage, err := filterCandidates(usable, "", "")
+	got, stage, err := FilterCandidates(usable, RelayTarget{})
 	if err != nil || stage != "" {
 		t.Fatalf("auto: stage %q err %v", stage, err)
 	}
 	if ids := candidateIDs(got); len(ids) != 2 || ids[0] != "a" || ids[1] != "b" {
 		t.Fatalf("auto candidates = %v", ids)
+	}
+}
+
+func TestRelayTargetTargeted(t *testing.T) {
+	cases := []struct {
+		target RelayTarget
+		want   bool
+	}{
+		{RelayTarget{}, false},
+		{RelayTarget{RelayID: " "}, false},
+		{RelayTarget{RelayID: "relay_abc"}, true},
+		{RelayTarget{Label: "home"}, true},
+		{RelayTarget{Country: "jp"}, true},
+	}
+	for _, c := range cases {
+		if got := c.target.Targeted(); got != c.want {
+			t.Fatalf("Targeted(%+v) = %t, want %t", c.target, got, c.want)
+		}
 	}
 }
 

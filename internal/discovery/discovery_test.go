@@ -33,6 +33,16 @@ func withOverride(urls ...string) brokerapi.Candidates {
 	return brokerapi.Candidates{URLs: urls, OverrideFirst: true}
 }
 
+func TestDiscoveryStaggerSharedDefault(t *testing.T) {
+	// Lock the intended shared tuning value that FirstReachable falls back to
+	// (moved here with the rest of the deleted desktop/config package). Mobile
+	// consumes this same brokerapi constant through its native binding rather
+	// than copying it into AppConfig.
+	if brokerapi.DefaultDiscoveryStagger != 2500*time.Millisecond {
+		t.Fatalf("DefaultDiscoveryStagger = %v, want shared 2.5s default", brokerapi.DefaultDiscoveryStagger)
+	}
+}
+
 func TestListRelaysSuccess(t *testing.T) {
 	var gotVersion, gotPlatform string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

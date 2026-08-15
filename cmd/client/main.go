@@ -2,33 +2,25 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	_ "embed"
 	"errors"
 	"flag"
 	"fmt"
-	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"time"
 
-	"github.com/openrung/openrung/punchcore"
-
 	"openrung/internal/buildinfo"
 	"openrung/internal/client"
 	"openrung/internal/clienttelemetry"
+	"openrung/internal/connectcore"
 	"openrung/internal/punch"
 	"openrung/internal/relay"
 )
 
 //go:embed VERSION
 var baseVersion string
-
-// defaultPunchPort is the hub punch coordinator port assumed when -punch-url is
-// not given (the relay's public host is the hub for tunnel relays).
-const defaultPunchPort = "9444"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -137,7 +129,15 @@ func runConnect(args []string) error {
 	// Try a direct NAT-punched path first; on any failure fall back to the relay
 	// endpoint so the outcome is never worse than today.
 	connectHost, connectPort := selected.PublicHost, selected.PublicPort
-	if est, punchedConfig := maybePunch(ctx, cfg, mgr, selected, *punchEnabled, *punchURL, *punchInsecure); est != nil {
+	punchOpts := connectcore.PunchOptions{
+		Enabled:  *punchEnabled,
+		BaseURL:  *punchURL,
+		Insecure: *punchInsecure,
+		// The CLI has always reported the deliberate opt-out separately from a
+		// relay that simply cannot punch.
+		RecordSkipped: true,
+	}
+	if est, punchedConfig := punchedPath(ctx, cfg, mgr, selected, punchOpts); est != nil {
 		defer est.Close()
 		go func() { _ = est.Bridge.Serve(ctx) }()
 		configJSON = punchedConfig
@@ -145,7 +145,7 @@ func runConnect(args []string) error {
 		fmt.Fprintf(os.Stdout, "punched direct path to relay %s (peer %s, nat %s)\n", selected.ID, est.PeerIP, est.NATClass)
 	}
 
-	relayTCPMs, err := tcpReachMs(ctx, connectHost, connectPort)
+	relayTCPMs, err := connectcore.RelayTCPReachable(ctx, connectHost, connectPort, relayDialTimeout)
 	if err != nil {
 		attemptAttrs := map[string]string{"error_type": errorType(err)}
 		if reason := clienttelemetry.ClassifyError(err); reason != "" {
@@ -157,7 +157,8 @@ func runConnect(args []string) error {
 		mgr.Record("relay_attempt_failed", selected.ID, attemptAttrs,
 			map[string]int64{"attempt": 1})
 		recordConnectFailure(ctx, mgr, "relay_connect", selected.ID, err)
-		return fmt.Errorf("relay %s unreachable at %s:%d: %w", selected.ID, connectHost, connectPort, err)
+		// The shared check already names the endpoint it could not reach.
+		return fmt.Errorf("relay %s: %w", selected.ID, err)
 	}
 
 	configPath, cleanup, err := writeConnectConfig(*configOut, configJSON)
@@ -245,12 +246,10 @@ func recordConnectFailure(ctx context.Context, mgr *clienttelemetry.Manager, sta
 	flushOnShutdown(mgr)
 }
 
-// flushOnShutdown flushes remaining telemetry using a fresh, bounded context so
-// it still runs when the connect context has already been cancelled.
+// flushOnShutdown runs the shared shutdown flush and warns when it fails, the
+// one thing the CLI does differently from the engine's silent drop.
 func flushOnShutdown(mgr *clienttelemetry.Manager) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := mgr.Flush(ctx); err != nil {
+	if err := connectcore.FlushOnShutdown(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: telemetry flush failed: %v\n", err)
 	}
 }
@@ -291,9 +290,10 @@ func fetchSelectedRelay(ctx context.Context, cfg commonConfig, clientID, session
 	broker := client.BrokerClient{BaseURL: cfg.BrokerURL}
 	// When pinning a specific relay, fetch the full candidate set so the target
 	// isn't ranked out of a small -limit window.
+	target := connectcore.RelayTarget{RelayID: cfg.RelayID, Label: cfg.RelayLabel}
 	limit := cfg.Limit
-	if cfg.RelayID != "" || cfg.RelayLabel != "" {
-		limit = 20
+	if target.Targeted() {
+		limit = connectcore.DirectoryRelayLimit
 	}
 	fetchStarted := time.Now()
 	resp, err := broker.ListRelays(ctx, limit, clientID, sessionID)
@@ -302,18 +302,11 @@ func fetchSelectedRelay(ctx context.Context, cfg commonConfig, clientID, session
 		return relay.Descriptor{}, nil, brokerFetch, err
 	}
 
-	if cfg.RelayID != "" || cfg.RelayLabel != "" {
-		matched := make([]relay.Descriptor, 0, len(resp.Relays))
-		for _, r := range resp.Relays {
-			if (cfg.RelayID != "" && r.ID == cfg.RelayID) || (cfg.RelayLabel != "" && r.Label == cfg.RelayLabel) {
-				matched = append(matched, r)
-			}
-		}
-		if len(matched) == 0 {
-			return relay.Descriptor{}, nil, brokerFetch, fmt.Errorf("no relay matched -relay-id=%q / -relay-label=%q among %d candidates", cfg.RelayID, cfg.RelayLabel, len(resp.Relays))
-		}
-		resp.Relays = matched
+	matched, _, err := connectcore.FilterCandidates(resp.Relays, target)
+	if err != nil {
+		return relay.Descriptor{}, nil, brokerFetch, err
 	}
+	resp.Relays = matched
 
 	family, err := client.ParseRelayFamily(cfg.Family)
 	if err != nil {
@@ -335,77 +328,30 @@ func fetchSelectedRelay(ctx context.Context, cfg commonConfig, clientID, session
 	return selected, configJSON, brokerFetch, nil
 }
 
-// maybePunch attempts a direct NAT-punched path to the selected relay. On success
-// it returns a live Establishment (whose Bridge the caller must Serve) and a
-// sing-box config pointed at the loopback bridge. On any failure — including a
-// relay that is not punch-capable or punching disabled — it returns (nil, nil)
-// and the caller uses the relay endpoint. All outcomes are recorded as telemetry.
-func maybePunch(ctx context.Context, cfg commonConfig, mgr *clienttelemetry.Manager, selected relay.Descriptor, enabled bool, urlOverride string, insecure bool) (*punch.Establishment, []byte) {
-	if !enabled || !selected.PunchCapable {
-		if selected.PunchCapable && !enabled {
-			mgr.Record("punch_skipped", selected.ID, map[string]string{"reason": "disabled"}, nil)
-		}
+// punchedPath runs the shared punch attempt and, on success, generates the
+// TUN-mode sing-box config pointed at the loopback bridge (the CLI's own
+// config shape). It returns a live Establishment whose Bridge the caller must
+// Serve; on any failure it returns (nil, nil) and the caller uses the relay
+// endpoint.
+func punchedPath(ctx context.Context, cfg commonConfig, mgr *clienttelemetry.Manager, selected relay.Descriptor, opts connectcore.PunchOptions) (*punch.Establishment, []byte) {
+	est := connectcore.AttemptPunch(ctx, mgr, selected, opts)
+	if est == nil {
 		return nil, nil
 	}
 
-	mgr.Record("punch_attempted", selected.ID, nil, nil)
-	dialer := &punch.Dialer{
-		Hub:     punchcore.HubClient{BaseURL: punchBaseURL(urlOverride, selected), HTTPClient: punchHTTPClient(insecure)},
-		RelayID: selected.ID,
-	}
-	est, res, err := dialer.Establish(ctx)
-	if err != nil {
-		mgr.Record("punch_failed", selected.ID,
-			map[string]string{"reason": res.Reason, "nat_class": res.NATClass}, nil)
-		return nil, nil
-	}
-
-	punchedConfig, cErr := client.BuildSingBoxConfig(client.SingBoxConfigInput{
+	punchedConfig, err := client.BuildSingBoxConfig(client.SingBoxConfigInput{
 		Relay:                   selected,
 		MTU:                     cfg.MTU,
 		BridgeHost:              est.BridgeHost,
 		BridgePort:              est.BridgePort,
 		PunchPeerExcludeAddress: est.PeerIP,
 	})
-	if cErr != nil {
+	if err != nil {
 		_ = est.Close()
 		mgr.Record("punch_failed", selected.ID, map[string]string{"reason": "config"}, nil)
 		return nil, nil
 	}
-
-	mgr.Record("punch_succeeded", selected.ID,
-		map[string]string{"nat_class": res.NATClass},
-		map[string]int64{"punch_rtt_ms": res.RTTMillis})
 	return est, punchedConfig
-}
-
-// punchBaseURL resolves the hub punch coordinator base URL: an explicit override
-// wins, then the relay's advertised punch_endpoint (correct scheme/host/port),
-// then a legacy http://<relay-public-host>:9444 fallback.
-func punchBaseURL(override string, selected relay.Descriptor) string {
-	if override != "" {
-		return override
-	}
-	if selected.PunchEndpoint != "" {
-		return selected.PunchEndpoint
-	}
-	return "http://" + net.JoinHostPort(selected.PublicHost, defaultPunchPort)
-}
-
-// punchHTTPClient returns the HTTP client for the hub punch API. With insecure
-// set it skips TLS verification, for a hub serving a self-signed cert on its
-// HTTPS punch endpoint. The punched QUIC path is unaffected (it pins the
-// relay's per-session cert by fingerprint regardless).
-func punchHTTPClient(insecure bool) *http.Client {
-	if !insecure {
-		return nil // punchcore.HubClient uses its default client
-	}
-	return &http.Client{
-		Timeout: 10 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}, //nolint:gosec // gated behind -punch-insecure for a self-signed hub cert
-		},
-	}
 }
 
 func writeConnectConfig(configOut string, configJSON []byte) (string, func(), error) {

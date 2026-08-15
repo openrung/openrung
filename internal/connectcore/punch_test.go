@@ -9,14 +9,21 @@ import (
 
 func TestPunchBaseURL(t *testing.T) {
 	cases := []struct {
-		name  string
-		relay relay.Descriptor
-		want  string
+		name     string
+		override string
+		relay    relay.Descriptor
+		want     string
 	}{
 		{
-			name:  "advertised punch_endpoint wins",
+			name:  "advertised punch_endpoint wins over derivation",
 			relay: relay.Descriptor{PublicHost: "43.201.124.63", PunchEndpoint: "https://43.201.124.63:9444"},
 			want:  "https://43.201.124.63:9444",
+		},
+		{
+			name:     "explicit override beats everything",
+			override: "https://hub.example:8443",
+			relay:    relay.Descriptor{PublicHost: "43.201.124.63", PunchEndpoint: "https://43.201.124.63:9444"},
+			want:     "https://hub.example:8443",
 		},
 		{
 			name:  "legacy fallback when no endpoint advertised",
@@ -26,7 +33,7 @@ func TestPunchBaseURL(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := punchBaseURL(c.relay); got != c.want {
+			if got := punchBaseURL(c.override, c.relay); got != c.want {
 				t.Fatalf("punchBaseURL = %q, want %q", got, c.want)
 			}
 		})
@@ -44,6 +51,26 @@ func TestPunchHTTPClientInsecure(t *testing.T) {
 	tr, ok := c.Transport.(*http.Transport)
 	if !ok || tr.TLSClientConfig == nil || !tr.TLSClientConfig.InsecureSkipVerify {
 		t.Fatalf("insecure client should skip TLS verification: %+v", c.Transport)
+	}
+}
+
+func TestNewVerifiesPunchHubTLS(t *testing.T) {
+	// The engine default is secure; a host that talks to a self-signed hub
+	// (the desktop app) opts out explicitly.
+	if New().PunchInsecure {
+		t.Fatal("PunchInsecure should default to false")
+	}
+}
+
+func TestAttemptPunchSkipsWhenDisabledOrIncapable(t *testing.T) {
+	// Disabled globally.
+	if est := AttemptPunch(t.Context(), nil, relay.Descriptor{PunchCapable: true}, PunchOptions{Enabled: false}); est != nil {
+		t.Fatal("punch should be skipped when disabled")
+	}
+
+	// Enabled but relay is not punch-capable (a direct relay) — no hub call.
+	if est := AttemptPunch(t.Context(), nil, relay.Descriptor{PunchCapable: false}, PunchOptions{Enabled: true}); est != nil {
+		t.Fatal("punch should be skipped for a non-punch-capable relay")
 	}
 }
 

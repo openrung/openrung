@@ -3,9 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"net"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +14,9 @@ import (
 )
 
 const (
+	// relayDialTimeout is the CLI's historical reachability budget, passed to
+	// connectcore.RelayTCPReachable in place of its shorter mobile-matched
+	// default: a headless connect is worth waiting longer for than a GUI one.
 	relayDialTimeout = 10 * time.Second
 	probeWindow      = 5 * time.Second
 )
@@ -30,19 +31,6 @@ func newConnectManager(brokerURL string) *clienttelemetry.Manager {
 		return nil
 	}
 	return mgr
-}
-
-// tcpReachMs measures the time to open a TCP connection to the relay, the CLI
-// analog of Android's RelayReachability.checkTcp (relay_tcp_ms).
-func tcpReachMs(ctx context.Context, host string, port int) (int64, error) {
-	dialer := net.Dialer{Timeout: relayDialTimeout}
-	started := time.Now()
-	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
-	if err != nil {
-		return 0, err
-	}
-	_ = conn.Close()
-	return time.Since(started).Milliseconds(), nil
 }
 
 // probeInternet issues a best-effort HTTP probe to the broker health endpoint to

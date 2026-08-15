@@ -45,8 +45,11 @@ func TestLivePunchCGNAT(t *testing.T) {
 		target.ID, target.Label, target.PunchEndpoint, target.City)
 
 	sink := &testSink{}
-	s := New() // PunchEnabled=true, PunchInsecure=true by default
+	s := New() // PunchEnabled=true by default
 	s.Sink = sink
+	// Live relay hubs serve the punch API with a self-signed cert, so this
+	// check opts out of hub TLS verification the way the desktop app does.
+	s.PunchInsecure = true
 	est := s.maybePunch(ctx, nil, target)
 	if est == nil {
 		t.Fatalf("punch did NOT establish (see log lines): %s", strings.Join(sink.logs, " | "))
