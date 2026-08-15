@@ -1,0 +1,14 @@
+[
+  {
+    "countryCode": "JP",
+    "label": "Tokyo, Japan",
+    "latitude": 35.6895,
+    "longitude": 139.6917
+  },
+  {
+    "countryCode": "DE",
+    "label": "Falkenstein, Germany",
+    "latitude": 50.4779,
+    "longitude": 12.3713
+  }
+]

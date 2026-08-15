@@ -1,0 +1,23 @@
+{
+  "platform": "darwin",
+  "services": [
+    {
+      "name": "Wi-Fi",
+      "web_enabled": true,
+      "web_host": "10.0.0.1",
+      "web_port": 3128,
+      "secure_enabled": true,
+      "secure_host": "10.0.0.1",
+      "secure_port": 3128
+    },
+    {
+      "name": "Thunderbolt Bridge",
+      "web_enabled": false,
+      "web_host": "",
+      "web_port": 0,
+      "secure_enabled": false,
+      "secure_host": "",
+      "secure_port": 0
+    }
+  ]
+}

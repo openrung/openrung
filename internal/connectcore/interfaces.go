@@ -7,8 +7,8 @@ import (
 
 // This file owns the narrow interfaces the engine needs from its host
 // platform (docs/adr/001 PR A1). The desktop app implements them over its
-// webview event emission, desktop/persist, and desktop/proxymode; the TUI
-// client will bring its own implementations. The engine treats every one of
+// webview event emission, internal/clientstate, and internal/proxymode; the
+// TUI client will bring its own implementations. The engine treats every one of
 // them as optional unless noted, so a partially wired host degrades the same
 // way the desktop service always has (no persistence, no OS proxy control).
 

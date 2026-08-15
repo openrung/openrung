@@ -1,0 +1,9 @@
+{
+  "platform": "windows",
+  "windows": {
+    "proxy_enable": true,
+    "proxy_server": "10.0.0.1:3128",
+    "proxy_override": "localhost;127.*;<local>",
+    "auto_config_url": "http://wpad.example/wpad.dat"
+  }
+}

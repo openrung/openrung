@@ -2,7 +2,7 @@
 
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-package persist
+package clientstate
 
 import (
 	"os"

@@ -1,9 +1,11 @@
-// Package persist stores small pieces of desktop client state on disk: the
-// "recents" row, the stable local proxy endpoint, and, while connected, the OS
-// proxy snapshot used to recover after a crash. Files live under
+// Package clientstate stores small pieces of end-user client state on disk:
+// the "recents" row, the stable local proxy endpoint, and, while connected, the
+// OS proxy snapshot used to recover after a crash. Files live under
 // os.UserConfigDir()/openrung, next to the telemetry client-id, so all
-// per-install state is in one place.
-package persist
+// per-install state is in one place. The desktop app and the TUI client share
+// this directory, so the file names and formats here are a compatibility
+// contract with state written by earlier builds.
+package clientstate
 
 import (
 	"encoding/json"
@@ -11,7 +13,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"openrung/desktop/proxymode"
+	"openrung/internal/proxymode"
 )
 
 const (
@@ -104,7 +106,7 @@ func (s *Store) SaveProxyPort(port int) error {
 	return s.writeJSON(proxyPortFile, proxyEndpoint{Port: port})
 }
 
-// LoadOrSaveProxyPort serializes first-launch selection across desktop
+// LoadOrSaveProxyPort serializes first-launch selection across client
 // processes. If another process persisted a port while this caller was
 // allocating candidate, the existing winner is returned.
 func (s *Store) LoadOrSaveProxyPort(candidate int) (int, error) {
@@ -180,8 +182,8 @@ func (s *Store) writeJSON(name string, value any) error {
 
 func (s *Store) writeFile(name string, data []byte) error {
 	// Write-then-rename for atomicity, so a crash never leaves a half file.
-	// A unique temporary name also lets concurrent Wails calls safely refresh
-	// the same port-qualified helper.
+	// A unique temporary name also lets concurrent callers safely refresh the
+	// same port-qualified helper.
 	file, err := os.CreateTemp(s.dir, "."+name+".tmp-*")
 	if err != nil {
 		return err

@@ -11,8 +11,8 @@ import (
 // desktop/proxyconfig (docs/adr/001 PR A1): the engine owns the loopback
 // host, the override env name, the pre-ladder bind check, and the per-process
 // pinning of a resolved port. Resolution itself (env override, persisted
-// port, shell helper) stays platform-side behind ResolveProxyPort until PR A3
-// moves it into shared packages.
+// port, shell helper) stays behind ResolveProxyPort, in the shared
+// internal/proxyconfig package (PR A3).
 
 const (
 	// ProxyHost is intentionally fixed to IPv4 loopback. The mixed HTTP/SOCKS

@@ -7,8 +7,8 @@
 // punch attempt, health monitoring, directory cache — lives in
 // openrung/internal/connectcore (docs/adr/001). This package is the thin
 // desktop adapter over it: Wails event emission with the log ring and its
-// coalescing, plus the desktop/persist, desktop/proxymode, and
-// desktop/proxyconfig wiring behind the engine's platform interfaces.
+// coalescing, plus the internal/clientstate, internal/proxymode, and
+// internal/proxyconfig wiring behind the engine's platform interfaces.
 package vpnservice
 
 import (
@@ -17,11 +17,11 @@ import (
 	"sync"
 	"time"
 
-	"openrung/desktop/persist"
-	"openrung/desktop/proxyconfig"
-	"openrung/desktop/proxymode"
+	"openrung/internal/clientstate"
 	"openrung/internal/clienttelemetry"
 	"openrung/internal/connectcore"
+	"openrung/internal/proxyconfig"
+	"openrung/internal/proxymode"
 	"openrung/internal/relay"
 )
 
@@ -91,7 +91,7 @@ type Service struct {
 	SingBoxPath string
 
 	engine *connectcore.Engine
-	store  *persist.Store
+	store  *clientstate.Store
 
 	// mu guards the log ring, the engine-state mirror, and the dirty flag. The
 	// sink updates the mirror synchronously under the engine's own state lock,
@@ -135,7 +135,7 @@ func New() *Service {
 // frontend as callable bindings; they are lifecycle hooks for package main.
 func (s *Service) Startup(ctx context.Context) {
 	s.engine.SingBoxPath = s.SingBoxPath
-	if store, err := persist.New(); err == nil {
+	if store, err := clientstate.New(); err == nil {
 		s.store = store
 		s.engine.Persistence = storeAdapter{store: store}
 	}
