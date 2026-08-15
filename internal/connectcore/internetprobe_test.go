@@ -1,4 +1,4 @@
-package vpnservice
+package connectcore
 
 import (
 	"context"
@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"openrung/desktop/config"
 )
 
 // probeTarget serves as both the HTTP proxy and the origin: with an http://
@@ -32,9 +30,9 @@ func probeTarget(t *testing.T, handler http.HandlerFunc) (port int, url string) 
 
 func swapProbeURLs(t *testing.T, urls ...string) {
 	t.Helper()
-	restore := config.InternetProbeURLs
-	config.InternetProbeURLs = urls
-	t.Cleanup(func() { config.InternetProbeURLs = restore })
+	restore := InternetProbeURLs
+	InternetProbeURLs = urls
+	t.Cleanup(func() { InternetProbeURLs = restore })
 }
 
 func TestVerifyInternetViaProxyAccepts2xx(t *testing.T) {

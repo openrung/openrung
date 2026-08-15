@@ -4,7 +4,6 @@ package proxyconfig
 
 import (
 	"errors"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -95,23 +94,6 @@ func TestResolvePortRejectsInvalidOverrideAndAllocator(t *testing.T) {
 	})
 	if !errors.Is(err, want) {
 		t.Fatalf("allocator error = %v, want wrapped %v", err, want)
-	}
-}
-
-func TestEnsureAvailableReportsStablePortCollision(t *testing.T) {
-	listener, err := net.Listen("tcp", Host+":0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := listener.Addr().(*net.TCPAddr).Port
-	if err := EnsureAvailable(port); err == nil || !strings.Contains(err.Error(), PortEnv) {
-		t.Fatalf("occupied port error = %v", err)
-	}
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := EnsureAvailable(port); err != nil {
-		t.Fatalf("released port still unavailable: %v", err)
 	}
 }
 

@@ -1,4 +1,4 @@
-package vpnservice
+package connectcore
 
 import (
 	"context"
@@ -26,7 +26,7 @@ const defaultPunchPort = "9444"
 // punch-capable, symmetric NAT, hub declined, timeout) it returns nil and the
 // caller silently falls back to the hub relay path — the outcome is never worse
 // than not punching. Ported from cmd/client/main.go maybePunch.
-func (s *Service) maybePunch(ctx context.Context, mgr *clienttelemetry.Manager, selected relay.Descriptor) *punch.Establishment {
+func (s *Engine) maybePunch(ctx context.Context, mgr *clienttelemetry.Manager, selected relay.Descriptor) *punch.Establishment {
 	if !s.PunchEnabled || !selected.PunchCapable {
 		return nil
 	}

@@ -1,4 +1,4 @@
-package vpnservice
+package connectcore
 
 import (
 	"context"
@@ -14,9 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"openrung/desktop/discovery"
-	"openrung/desktop/proxyconfig"
 	"openrung/internal/clienttelemetry"
+	"openrung/internal/discovery"
 	"openrung/internal/relay"
 )
 
@@ -74,22 +73,37 @@ func relayAt(id, countryCode, city, country, host string) relay.Descriptor {
 	return r
 }
 
-// newLadderService builds a Service with every network seam faked out; the
-// returned service still runs the real ladder, telemetry manager, and state
+// allocateTestProxyPort stands in for desktop port resolution: a fresh
+// kernel-selected loopback port on every call, so a test that asserts endpoint
+// stability is exercising the engine's pinning, not the resolver.
+func allocateTestProxyPort() (ProxyPortResolution, error) {
+	listener, err := net.Listen("tcp", ProxyHost+":0")
+	if err != nil {
+		return ProxyPortResolution{}, err
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		return ProxyPortResolution{}, err
+	}
+	return ProxyPortResolution{Port: port}, nil
+}
+
+// newLadderService builds an Engine with every network seam faked out; the
+// returned engine still runs the real ladder, telemetry manager, and state
 // machine.
-func newLadderService(t *testing.T, relays func() []relay.Descriptor) (*Service, *capturingEmitter) {
+func newLadderService(t *testing.T, relays func() []relay.Descriptor) (*Engine, *testSink) {
 	t.Helper()
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
 	t.Setenv("XDG_CONFIG_HOME", tmp)
 	t.Setenv("AppData", tmp)
-	t.Setenv(proxyconfig.PortEnv, "")
 
-	cap := &capturingEmitter{}
+	sink := &testSink{}
 	s := New()
-	s.Emitter = cap.emit
+	s.Sink = sink
 	s.PunchEnabled = false
-	s.proxy = &fakeProxyController{supported: false}
+	s.OSProxy = &fakeProxyController{supported: false}
+	s.ResolveProxyPort = allocateTestProxyPort
 	s.fetchRelays = func(ctx context.Context, brokerURL string, limit int, clientID, sessionID string) (discovery.Fetch, error) {
 		return discovery.Fetch{BrokerURL: brokerURL, Response: listOf(relays()...)}, nil
 	}
@@ -105,27 +119,27 @@ func newLadderService(t *testing.T, relays func() []relay.Descriptor) (*Service,
 	// No real sing-box binds the loopback port in tests, so report readiness
 	// immediately instead of dialing it.
 	s.tunnelReady = func(ctx context.Context, proxyPort int) error { return nil }
-	return s, cap
+	return s, sink
 }
 
-func waitForStatus(t *testing.T, s *Service, want ConnectionStatus) NativeVpnState {
+func waitForStatus(t *testing.T, s *Engine, want Status) State {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		state := s.GetState()
+		state := s.State()
 		if state.Status == want {
 			return state
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatalf("timed out waiting for status %q; last state %+v", want, s.GetState())
-	return NativeVpnState{}
+	t.Fatalf("timed out waiting for status %q; last state %+v", want, s.State())
+	return State{}
 }
 
 func TestRecoveryReportsStableProxyPortCollisionBeforeBlamingRelays(t *testing.T) {
 	fixtures := []relay.Descriptor{relayAt("a", "JP", "Tokyo", "Japan", "127.0.0.10")}
 	s, _ := newLadderService(t, func() []relay.Descriptor { return fixtures })
-	listener, err := net.Listen("tcp", proxyconfig.Host+":0")
+	listener, err := net.Listen("tcp", ProxyHost+":0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +157,7 @@ func TestRecoveryReportsStableProxyPortCollisionBeforeBlamingRelays(t *testing.T
 	if result != nil {
 		result.teardown()
 	}
-	if err == nil || stage != "proxy_bind" || !strings.Contains(err.Error(), proxyconfig.PortEnv) {
+	if err == nil || stage != "proxy_bind" || !strings.Contains(err.Error(), ProxyPortEnv) {
 		t.Fatalf("reladder = result=%v stage=%q err=%v; want proxy_bind collision", result, stage, err)
 	}
 	if tunnelStarted.Load() {
@@ -156,7 +170,7 @@ func TestInitialConnectRechecksStableProxyPortAfterDiscovery(t *testing.T) {
 	fixtures := []relay.Descriptor{relayAt("a", "JP", "Tokyo", "Japan", "127.0.0.10")}
 	s, _ := newLadderService(t, func() []relay.Descriptor { return fixtures })
 
-	reservation, err := net.Listen("tcp", proxyconfig.Host+":0")
+	reservation, err := net.Listen("tcp", ProxyHost+":0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,12 +178,16 @@ func TestInitialConnectRechecksStableProxyPortAfterDiscovery(t *testing.T) {
 	if err := reservation.Close(); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(proxyconfig.PortEnv, strconv.Itoa(port))
+	// The stable endpoint resolves to a fixed port, standing in for a desktop
+	// OPENRUNG_PROXY_PORT override.
+	s.ResolveProxyPort = func() (ProxyPortResolution, error) {
+		return ProxyPortResolution{Port: port}, nil
+	}
 
 	var claimed net.Listener
 	s.fetchRelays = func(ctx context.Context, brokerURL string, limit int, clientID, sessionID string) (discovery.Fetch, error) {
 		var listenErr error
-		claimed, listenErr = net.Listen("tcp", net.JoinHostPort(proxyconfig.Host, strconv.Itoa(port)))
+		claimed, listenErr = net.Listen("tcp", net.JoinHostPort(ProxyHost, strconv.Itoa(port)))
 		if listenErr != nil {
 			return discovery.Fetch{}, listenErr
 		}
@@ -192,7 +210,7 @@ func TestInitialConnectRechecksStableProxyPortAfterDiscovery(t *testing.T) {
 	}
 	state := waitForStatus(t, s, StatusFailed)
 	waitIdle(t, s)
-	if state.LastError == nil || !strings.Contains(*state.LastError, proxyconfig.PortEnv) {
+	if state.LastError == nil || !strings.Contains(*state.LastError, ProxyPortEnv) {
 		t.Fatalf("lastError = %v; want stable proxy collision", state.LastError)
 	}
 	if tunnelStarted.Load() {
@@ -202,7 +220,7 @@ func TestInitialConnectRechecksStableProxyPortAfterDiscovery(t *testing.T) {
 
 // waitIdle waits for the connect goroutine to fully finish so tests never leak
 // a supervisor into the next test.
-func waitIdle(t *testing.T, s *Service) {
+func waitIdle(t *testing.T, s *Engine) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
@@ -217,8 +235,12 @@ func waitIdle(t *testing.T, s *Service) {
 	t.Fatal("timed out waiting for the connection to finish")
 }
 
-func logLines(s *Service) string {
-	return strings.Join(s.GetState().LogLines, "\n")
+func logLines(s *Engine) string {
+	sink, ok := s.Sink.(*testSink)
+	if !ok {
+		return ""
+	}
+	return sink.logLines()
 }
 
 func TestManualRelaySwitchReusesStableProxyPort(t *testing.T) {
@@ -555,13 +577,13 @@ func TestRecoveryRanksBeforeDemotingTheFailedRelay(t *testing.T) {
 
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		st := s.GetState()
+		st := s.State()
 		if st.Status == StatusConnected && st.RelayLabel != nil && *st.RelayLabel == "Singapore" {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	state := s.GetState()
+	state := s.State()
 	if state.Status != StatusConnected || state.RelayLabel == nil || *state.RelayLabel != "Singapore" {
 		t.Fatalf("failover landed on %+v, want relay b: the demoted relay must stay demoted however fast it measures", state)
 	}
@@ -624,13 +646,13 @@ func TestUnexpectedTunnelExitFailsOverMidSession(t *testing.T) {
 	// next relay (the dead one is demoted to the end of the fresh list).
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		st := s.GetState()
+		st := s.State()
 		if st.Status == StatusConnected && st.RelayLabel != nil && *st.RelayLabel == "Singapore" {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	state = s.GetState()
+	state = s.State()
 	if state.Status != StatusConnected || state.RelayLabel == nil || *state.RelayLabel != "Singapore" {
 		t.Fatalf("failover did not land on relay b: %+v", state)
 	}
@@ -692,7 +714,7 @@ func TestTerminalFailureRacingDisconnectNeverSticks(t *testing.T) {
 		// Race a disconnect against the self-terminating flow.
 		go func() { _ = s.Disconnect() }()
 		waitIdle(t, s)
-		if st := s.GetState().Status; st == StatusConnecting || st == StatusDisconnecting || st == StatusPreparing {
+		if st := s.State().Status; st == StatusConnecting || st == StatusDisconnecting || st == StatusPreparing {
 			t.Fatalf("iteration %d wedged on transient status %q", i, st)
 		}
 	}
@@ -731,8 +753,8 @@ func TestDisconnectDuringProbeDoesNotCommitConnected(t *testing.T) {
 	if succeeded := sink.named("connection_succeeded"); len(succeeded) != 0 {
 		t.Fatalf("cancelled connect recorded connection_succeeded: %+v", succeeded)
 	}
-	if s.GetState().Status != StatusDisconnected {
-		t.Fatalf("final status = %q, want disconnected", s.GetState().Status)
+	if s.State().Status != StatusDisconnected {
+		t.Fatalf("final status = %q, want disconnected", s.State().Status)
 	}
 }
 
@@ -741,7 +763,7 @@ func TestConcurrentConnectsLeaveOneLiveTunnel(t *testing.T) {
 	fixtures := []relay.Descriptor{relayAt("a", "JP", "Tokyo", "Japan", "127.0.0.10")}
 
 	var running int32
-	build := func() *Service {
+	build := func() *Engine {
 		s, _ := newLadderService(t, func() []relay.Descriptor { return fixtures })
 		// Each live tunnel increments a counter for its whole lifetime; an
 		// orphaned connection immune to Disconnect would leave it above zero.
@@ -856,7 +878,7 @@ func liveFront(t *testing.T) (live, dead string) {
 func TestHealthLoopGateRequiresLiveNetwork(t *testing.T) {
 	fixtures := []relay.Descriptor{relayAt("a", "JP", "", "Japan", "127.0.0.10")}
 	live, dead := liveFront(t)
-	newMonitorService := func() *Service {
+	newMonitorService := func() *Engine {
 		s, _ := newLadderService(t, func() []relay.Descriptor { return fixtures })
 		s.healthTick = 5 * time.Millisecond
 		s.healthProbe = func(ctx context.Context, proxyPort int) error {

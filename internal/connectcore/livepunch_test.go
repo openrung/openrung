@@ -1,4 +1,4 @@
-package vpnservice
+package connectcore
 
 import (
 	"context"
@@ -7,8 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"openrung/desktop/config"
-	"openrung/desktop/discovery"
+	"github.com/openrung/openrung/brokerapi"
+
+	"openrung/internal/discovery"
 	"openrung/internal/relay"
 )
 
@@ -16,7 +17,7 @@ import (
 // the cgnat-test relay's hub. Skipped by default (it needs network and a
 // punchable NAT on both ends); run explicitly:
 //
-//	OPENRUNG_LIVE_PUNCH=1 go test ./vpnservice/ -run TestLivePunchCGNAT -v
+//	OPENRUNG_LIVE_PUNCH=1 go test ./internal/connectcore/ -run TestLivePunchCGNAT -v
 func TestLivePunchCGNAT(t *testing.T) {
 	if os.Getenv("OPENRUNG_LIVE_PUNCH") == "" {
 		t.Skip("set OPENRUNG_LIVE_PUNCH=1 to run the live punch check")
@@ -25,7 +26,7 @@ func TestLivePunchCGNAT(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	fetch, err := discovery.FirstReachable(ctx, config.BrokerCandidates(""), discovery.Options{Limit: config.DirectoryRelayLimit})
+	fetch, err := discovery.FirstReachable(ctx, brokerapi.BrokerCandidates(""), discovery.Options{Limit: DirectoryRelayLimit})
 	if err != nil {
 		t.Fatalf("fetch relays: %v", err)
 	}
@@ -43,10 +44,12 @@ func TestLivePunchCGNAT(t *testing.T) {
 	t.Logf("target relay %q (label=%q) punch_endpoint=%q city=%q",
 		target.ID, target.Label, target.PunchEndpoint, target.City)
 
+	sink := &testSink{}
 	s := New() // PunchEnabled=true, PunchInsecure=true by default
+	s.Sink = sink
 	est := s.maybePunch(ctx, nil, target)
 	if est == nil {
-		t.Fatalf("punch did NOT establish (see log lines): %s", strings.Join(s.GetState().LogLines, " | "))
+		t.Fatalf("punch did NOT establish (see log lines): %s", strings.Join(sink.logs, " | "))
 	}
 	defer est.Close()
 

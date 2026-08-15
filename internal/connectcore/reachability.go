@@ -1,4 +1,4 @@
-package vpnservice
+package connectcore
 
 import (
 	"context"
@@ -7,8 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"openrung/desktop/config"
 )
 
 // relayTCPReachable measures the time to open a TCP connection to the relay's
@@ -17,7 +15,7 @@ import (
 // reachability and latency matter, the tunnel itself is sing-box's job.
 func relayTCPReachable(ctx context.Context, host string, port int) (int64, error) {
 	cleanHost := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(host), "["), "]")
-	dialer := net.Dialer{Timeout: config.RelayTCPTimeout}
+	dialer := net.Dialer{Timeout: RelayTCPTimeout}
 	started := time.Now()
 	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(cleanHost, strconv.Itoa(port)))
 	if err != nil {

@@ -1,4 +1,4 @@
-package vpnservice
+package connectcore
 
 import (
 	"context"
@@ -15,7 +15,6 @@ import (
 	"github.com/openrung/openrung/brokerapi"
 	"github.com/openrung/openrung/wsscore"
 
-	"openrung/desktop/config"
 	"openrung/internal/client"
 	"openrung/internal/relay"
 )
@@ -249,26 +248,26 @@ func TestWSSDirectSuccessNeverRequestsTicket(t *testing.T) {
 
 func TestWSSLocalSetupFailuresDoNotRequestTicketsOrDamageHealth(t *testing.T) {
 	fixture := relayWithWSS("relay-a", "JP", "Tokyo", "Japan", "127.0.0.10")
-	tests := map[string]func(*Service, chan struct{}) relay.Descriptor{
-		"config": func(_ *Service, _ chan struct{}) relay.Descriptor {
+	tests := map[string]func(*Engine, chan struct{}) relay.Descriptor{
+		"config": func(_ *Engine, _ chan struct{}) relay.Descriptor {
 			invalid := fixture
 			invalid.ClientID = ""
 			return invalid
 		},
-		"temp file": func(service *Service, _ chan struct{}) relay.Descriptor {
+		"temp file": func(service *Engine, _ chan struct{}) relay.Descriptor {
 			service.writeConfig = func([]byte) (string, error) { return "", errors.New("temporary config unavailable") }
 			return fixture
 		},
-		"start or bind": func(service *Service, _ chan struct{}) relay.Descriptor {
+		"start or bind": func(service *Engine, _ chan struct{}) relay.Descriptor {
 			service.runTunnel = func(context.Context, string) error { return errors.New("sing-box could not bind local inbound") }
 			return fixture
 		},
-		"ready timeout": func(service *Service, _ chan struct{}) relay.Descriptor {
+		"ready timeout": func(service *Engine, _ chan struct{}) relay.Descriptor {
 			service.tunnelReady = func(context.Context, int) error { return errors.New("local inbound not ready") }
 			service.tunnelReadyLimit = 30 * time.Millisecond
 			return fixture
 		},
-		"process exit during probe": func(service *Service, probeStarted chan struct{}) relay.Descriptor {
+		"process exit during probe": func(service *Engine, probeStarted chan struct{}) relay.Descriptor {
 			exit := make(chan struct{})
 			service.runTunnel = func(ctx context.Context, _ string) error {
 				select {
@@ -776,7 +775,7 @@ func TestWSSHealthProbeFailureIsTransportScoped(t *testing.T) {
 	s.checkNetworkAlive = func(context.Context, []string) bool { return true }
 	var probeCalls atomic.Int32
 	s.healthProbe = func(context.Context, int) error {
-		if probeCalls.Add(1) <= config.HealthFailureThreshold {
+		if probeCalls.Add(1) <= HealthFailureThreshold {
 			return errors.New("CDN path blackholed Reality bytes")
 		}
 		return nil

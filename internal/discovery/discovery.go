@@ -2,8 +2,8 @@
 // multi-URL failover (see FirstReachable) and 429/Retry-After awareness.
 //
 // Shared request, identity, caching, redirect, TLS, signature, and race policy
-// lives in brokerapi. This package owns only desktop relay decoding and the
-// compatibility types consumed by the UI and recovery path.
+// lives in brokerapi. This package owns only client relay decoding and the
+// compatibility types consumed by the engine's UI and recovery path.
 package discovery
 
 import (
@@ -15,7 +15,6 @@ import (
 
 	"github.com/openrung/openrung/brokerapi"
 
-	"openrung/desktop/config"
 	"openrung/internal/client"
 	"openrung/internal/relay"
 )
@@ -42,7 +41,7 @@ type Options struct {
 	HTTPClient *http.Client
 	// Stagger overrides the interval at which FirstReachable starts additional
 	// candidates (tests shorten it). Zero or negative means
-	// config.DiscoveryStagger.
+	// brokerapi.DefaultDiscoveryStagger.
 	Stagger time.Duration
 }
 
@@ -71,9 +70,9 @@ func ListRelays(ctx context.Context, brokerURL string, opts Options) (relay.List
 // start (happy-eyeballs style). The mobile native binding calls this same
 // brokerapi implementation rather than carrying a separate race policy.
 // candidate[0] starts immediately; every stagger interval
-// (config.DiscoveryStagger unless Options.Stagger overrides it) with no success
-// yet, the next candidate in that trust phase joins the race. The first SUCCESS
-// in the phase wins and every other in-flight attempt is canceled.
+// (brokerapi.DefaultDiscoveryStagger unless Options.Stagger overrides it) with
+// no success yet, the next candidate in that trust phase joins the race. The
+// first SUCCESS in the phase wins and every other in-flight attempt is canceled.
 //
 // Endpoint-unbound fronts are held in a separate fallback phase. They do not
 // start merely because a stagger elapsed; every exact-endpoint candidate must
@@ -85,7 +84,7 @@ func ListRelays(ctx context.Context, brokerURL string, opts Options) (relay.List
 // error propagates unchanged.
 //
 // When candidates.OverrideFirst is set, URLs[0] is a GENUINE user override
-// (see config.BrokerCandidates) and racing it would betray the user's choice:
+// (see brokerapi.BrokerCandidates) and racing it would betray the user's choice:
 // a custom broker that is merely slower than the stagger would silently lose
 // to a default front. The override is therefore attempted strictly first,
 // alone, with its full per-attempt timeout — no default is contacted while it
@@ -95,7 +94,7 @@ func ListRelays(ctx context.Context, brokerURL string, opts Options) (relay.List
 // fail, the override's error is surfaced — it is candidates.URLs[0], so the
 // all-fail diagnostic is unchanged — except when the caller's ctx was canceled
 // mid-race, which still surfaces the cancellation.
-func FirstReachable(ctx context.Context, candidates config.Candidates, opts Options) (Fetch, error) {
+func FirstReachable(ctx context.Context, candidates brokerapi.Candidates, opts Options) (Fetch, error) {
 	fetch, err := brokerapi.NewClient(opts.HTTPClient, brokerapi.Options{
 		AppVersion: client.AppVersion(),
 		Platform:   brokerapi.PlatformDesktop,

@@ -1,12 +1,13 @@
-package vpnservice
+package connectcore
 
 import (
 	"context"
 	"sync"
 	"time"
 
-	"openrung/desktop/config"
-	"openrung/desktop/discovery"
+	"github.com/openrung/openrung/brokerapi"
+
+	"openrung/internal/discovery"
 	"openrung/internal/relay"
 )
 
@@ -17,7 +18,7 @@ type relayFetcher func(ctx context.Context, opts discovery.Options) (relay.ListR
 // directoryCache serves the exit-node map's relay list with a hard floor on
 // broker request rate. The map auto-refreshes, so without this a chatty or
 // buggy frontend could trip the broker's per-IP 429 limit (broker PR #5); the
-// cache caps outbound requests at one per config.MinDirectoryRefreshInterval
+// cache caps outbound requests at one per MinDirectoryRefreshInterval
 // and hands back the last good list in between.
 type directoryCache struct {
 	fetcher relayFetcher
@@ -38,7 +39,7 @@ const directoryNotAfterSkewAllowance = 5 * time.Minute
 func newDirectoryCache() *directoryCache {
 	return &directoryCache{
 		fetcher: func(ctx context.Context, opts discovery.Options) (relay.ListResponse, error) {
-			fetch, err := discovery.FirstReachable(ctx, config.BrokerCandidates(""), opts)
+			fetch, err := discovery.FirstReachable(ctx, brokerapi.BrokerCandidates(""), opts)
 			if err != nil {
 				return relay.ListResponse{}, err
 			}
@@ -55,19 +56,19 @@ func (d *directoryCache) clock() time.Time {
 	return time.Now()
 }
 
-// ListRelaysForDirectory is Wails-bound. It returns the broker's relay list for
-// the frontend to aggregate into map regions (the TS loadExitNodeDirectory,
-// ported from mobile, does the grouping). Running the fetch in Go reuses the
+// ListRelaysForDirectory returns the broker's relay list for the host UI to
+// aggregate into map regions (the TS loadExitNodeDirectory, ported from
+// mobile, does the grouping). Running the fetch in the engine reuses the
 // failover/429 logic, attaches identity headers, and avoids a webview
 // cross-origin request to the broker.
-func (s *Service) ListRelaysForDirectory() (relay.ListResponse, error) {
+func (s *Engine) ListRelaysForDirectory() (relay.ListResponse, error) {
 	return s.directory.fetch(context.Background(), s.identityForDirectory())
 }
 
 // identityForDirectory reads the current identity without blocking on the
 // connect lock. sessionID is empty until a session begins (phase 2+), in which
 // case discovery omits the identity headers.
-func (s *Service) identityForDirectory() discovery.Options {
+func (s *Engine) identityForDirectory() discovery.Options {
 	s.mu.Lock()
 	sessionID := s.sessionID
 	s.mu.Unlock()
@@ -76,7 +77,7 @@ func (s *Service) identityForDirectory() discovery.Options {
 		id = ""
 	}
 	return discovery.Options{
-		Limit:     config.DirectoryRelayLimit,
+		Limit:     DirectoryRelayLimit,
 		ClientID:  id,
 		SessionID: sessionID,
 	}
@@ -85,7 +86,7 @@ func (s *Service) identityForDirectory() discovery.Options {
 func (d *directoryCache) fetch(ctx context.Context, opts discovery.Options) (relay.ListResponse, error) {
 	d.mu.Lock()
 	now := d.clock()
-	if directorySnapshotFresh(d.cached, now) && now.Sub(d.fetchedAt) < config.MinDirectoryRefreshInterval {
+	if directorySnapshotFresh(d.cached, now) && now.Sub(d.fetchedAt) < MinDirectoryRefreshInterval {
 		cached := *d.cached
 		d.mu.Unlock()
 		return cached, nil

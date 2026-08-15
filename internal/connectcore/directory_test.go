@@ -1,4 +1,4 @@
-package vpnservice
+package connectcore
 
 import (
 	"context"
@@ -7,8 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"openrung/desktop/config"
-	"openrung/desktop/discovery"
+	"openrung/internal/discovery"
 	"openrung/internal/relay"
 )
 
@@ -30,7 +29,7 @@ func TestDirectoryCacheThrottlesWithinInterval(t *testing.T) {
 		t.Fatalf("first fetch: %v", err)
 	}
 	// A second call inside the interval must be served from cache, not refetched.
-	now = now.Add(config.MinDirectoryRefreshInterval / 2)
+	now = now.Add(MinDirectoryRefreshInterval / 2)
 	if _, err := d.fetch(context.Background(), discovery.Options{}); err != nil {
 		t.Fatalf("second fetch: %v", err)
 	}
@@ -39,7 +38,7 @@ func TestDirectoryCacheThrottlesWithinInterval(t *testing.T) {
 	}
 
 	// Past the interval, a refetch is allowed.
-	now = now.Add(config.MinDirectoryRefreshInterval)
+	now = now.Add(MinDirectoryRefreshInterval)
 	if _, err := d.fetch(context.Background(), discovery.Options{}); err != nil {
 		t.Fatalf("third fetch: %v", err)
 	}
@@ -66,7 +65,7 @@ func TestDirectoryCacheServesStaleOnError(t *testing.T) {
 	}
 
 	// Interval elapses and the broker now fails: the last good list stands in.
-	now = now.Add(config.MinDirectoryRefreshInterval + time.Second)
+	now = now.Add(MinDirectoryRefreshInterval + time.Second)
 	fail = true
 	got, err := d.fetch(context.Background(), discovery.Options{})
 	if err != nil {

@@ -13,14 +13,16 @@ import (
 	"strings"
 
 	"openrung/desktop/persist"
+	"openrung/internal/connectcore"
 )
 
 const (
-	// Host is intentionally fixed to IPv4 loopback. The mixed HTTP/SOCKS
-	// inbound has no authentication and must never become a LAN-facing proxy.
-	Host = "127.0.0.1"
-	// PortEnv is the supported process-level override for the stable port.
-	PortEnv = "OPENRUNG_PROXY_PORT"
+	// Host and PortEnv are owned by the connection engine (which fixes the
+	// listen address to IPv4 loopback and honors the override before its bind
+	// check); re-exported here so the shell helper and resolution stay in
+	// lockstep with the endpoint the engine actually binds.
+	Host    = connectcore.ProxyHost
+	PortEnv = connectcore.ProxyPortEnv
 	// ShellProxyEnv marks an environment activated by OpenRung's generated
 	// helper. A child OpenRung process uses it to avoid proxying its own
 	// bootstrap requests through the not-yet-listening local endpoint.
@@ -135,21 +137,6 @@ func SanitizeInheritedProxyEnvironment() {
 			}
 		}
 	}
-}
-
-// EnsureAvailable performs an early, actionable bind check before relay
-// discovery. It deliberately does not choose another port: silently rotating a
-// stable endpoint would break browser and shell configuration. As before,
-// sing-box's later bind retains a small bind-and-close race window.
-func EnsureAvailable(port int) error {
-	if !validPort(port) {
-		return fmt.Errorf("proxy port %d is outside 1..65535", port)
-	}
-	listener, err := net.Listen("tcp", net.JoinHostPort(Host, strconv.Itoa(port)))
-	if err != nil {
-		return fmt.Errorf("local proxy port %d is unavailable; set %s to another unused port: %w", port, PortEnv, err)
-	}
-	return listener.Close()
 }
 
 // WriteShellHelper writes the sourceable helper for port and returns all

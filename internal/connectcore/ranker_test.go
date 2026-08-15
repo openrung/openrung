@@ -1,4 +1,4 @@
-package vpnservice
+package connectcore
 
 import (
 	"context"
@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"openrung/desktop/config"
 	"openrung/internal/relay"
 )
 
@@ -34,7 +33,7 @@ func probeTable(latencies map[string]int64) func(context.Context, string, int) (
 }
 
 func rank(cands []relay.Descriptor, maxProbes int, probe func(context.Context, string, int) (int64, error)) []rankedRelay {
-	return rankByTCPLatency(context.Background(), cands, maxProbes, time.Second, config.RelayRankBucketMS, probe)
+	return rankByTCPLatency(context.Background(), cands, maxProbes, time.Second, RelayRankBucketMS, probe)
 }
 
 func wantProbeMS(t *testing.T, r rankedRelay, want int64) {
@@ -51,7 +50,7 @@ func TestRankByTCPLatencySortsByLatencyBucket(t *testing.T) {
 	cands := []relay.Descriptor{rankRelay("a"), rankRelay("b"), rankRelay("c")}
 	probe := probeTable(map[string]int64{"host-a": 200, "host-b": 40, "host-c": 120})
 
-	ranked := rank(cands, config.RelayRankMaxProbes, probe)
+	ranked := rank(cands, RelayRankMaxProbes, probe)
 
 	if ids := rankedIDs(ranked); !equalIDs(ids, []string{"b", "c", "a"}) {
 		t.Fatalf("ranked = %v, want [b c a]", ids)
@@ -68,7 +67,7 @@ func TestRankByTCPLatencyKeepsBrokerOrderWithinBucket(t *testing.T) {
 	cands := []relay.Descriptor{rankRelay("a"), rankRelay("b"), rankRelay("c")}
 	probe := probeTable(map[string]int64{"host-a": 45, "host-b": 31, "host-c": 95})
 
-	ranked := rank(cands, config.RelayRankMaxProbes, probe)
+	ranked := rank(cands, RelayRankMaxProbes, probe)
 
 	if ids := rankedIDs(ranked); !equalIDs(ids, []string{"a", "b", "c"}) {
 		t.Fatalf("ranked = %v, want [a b c]", ids)
@@ -82,7 +81,7 @@ func TestRankByTCPLatencySinksFailedProbesWithoutDropping(t *testing.T) {
 	cands := []relay.Descriptor{rankRelay("dead"), rankRelay("slow"), rankRelay("fast")}
 	probe := probeTable(map[string]int64{"host-slow": 400, "host-fast": 20})
 
-	ranked := rank(cands, config.RelayRankMaxProbes, probe)
+	ranked := rank(cands, RelayRankMaxProbes, probe)
 
 	if ids := rankedIDs(ranked); !equalIDs(ids, []string{"fast", "slow", "dead"}) {
 		t.Fatalf("ranked = %v, want [fast slow dead]", ids)
@@ -97,7 +96,7 @@ func TestRankByTCPLatencyAllProbesFailingKeepsBrokerOrder(t *testing.T) {
 	// broker's list unchanged.
 	cands := []relay.Descriptor{rankRelay("a"), rankRelay("b"), rankRelay("c")}
 
-	ranked := rank(cands, config.RelayRankMaxProbes, probeTable(nil))
+	ranked := rank(cands, RelayRankMaxProbes, probeTable(nil))
 
 	if ids := rankedIDs(ranked); !equalIDs(ids, []string{"a", "b", "c"}) {
 		t.Fatalf("ranked = %v, want broker order [a b c]", ids)
@@ -142,7 +141,7 @@ func TestRankByTCPLatencySingleCandidateSkipsProbe(t *testing.T) {
 		return 10, nil
 	}
 
-	ranked := rank([]relay.Descriptor{rankRelay("only")}, config.RelayRankMaxProbes, probe)
+	ranked := rank([]relay.Descriptor{rankRelay("only")}, RelayRankMaxProbes, probe)
 
 	if ids := rankedIDs(ranked); !equalIDs(ids, []string{"only"}) {
 		t.Fatalf("ranked = %v, want [only]", ids)
@@ -162,7 +161,7 @@ func TestRankByTCPLatencyZeroMillisecondProbeRanksAsReachable(t *testing.T) {
 	cands := []relay.Descriptor{rankRelay("far"), rankRelay("near"), rankRelay("dead")}
 	probe := probeTable(map[string]int64{"host-far": 90, "host-near": 0})
 
-	ranked := rank(cands, config.RelayRankMaxProbes, probe)
+	ranked := rank(cands, RelayRankMaxProbes, probe)
 
 	if ids := rankedIDs(ranked); !equalIDs(ids, []string{"near", "far", "dead"}) {
 		t.Fatalf("ranked = %v, want [near far dead]", ids)
@@ -187,7 +186,7 @@ func TestRankByTCPLatencyProbesConcurrently(t *testing.T) {
 	}
 
 	done := make(chan []rankedRelay, 1)
-	go func() { done <- rank(cands, config.RelayRankMaxProbes, probe) }()
+	go func() { done <- rank(cands, RelayRankMaxProbes, probe) }()
 
 	for i := 0; i < want; i++ {
 		select {
@@ -219,7 +218,7 @@ func TestRankByTCPLatencyBoundsEveryProbeByTheRankTimeout(t *testing.T) {
 		return 0, ctx.Err()
 	}
 
-	ranked := rankByTCPLatency(context.Background(), cands, config.RelayRankMaxProbes, time.Millisecond, config.RelayRankBucketMS, probe)
+	ranked := rankByTCPLatency(context.Background(), cands, RelayRankMaxProbes, time.Millisecond, RelayRankBucketMS, probe)
 
 	if ids := rankedIDs(ranked); !equalIDs(ids, []string{"a", "b"}) {
 		t.Fatalf("ranked = %v, want broker order [a b]", ids)
@@ -234,7 +233,7 @@ func TestRankByTCPLatencyCancelledContextKeepsEveryCandidate(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	ranked := rankByTCPLatency(ctx, cands, config.RelayRankMaxProbes, time.Second, config.RelayRankBucketMS,
+	ranked := rankByTCPLatency(ctx, cands, RelayRankMaxProbes, time.Second, RelayRankBucketMS,
 		func(ctx context.Context, _ string, _ int) (int64, error) {
 			<-ctx.Done()
 			return 0, ctx.Err()
@@ -285,7 +284,7 @@ func TestLadderOrderAnnotateReportsBrokerIndexAndProbe(t *testing.T) {
 	cands := []relay.Descriptor{rankRelay("a"), rankRelay("b"), rankRelay("c")}
 	order := ladderOrder{
 		brokerOrder: cands,
-		ranked:      rank(cands, config.RelayRankMaxProbes, probeTable(map[string]int64{"host-a": 200, "host-b": 40, "host-c": 120})),
+		ranked:      rank(cands, RelayRankMaxProbes, probeTable(map[string]int64{"host-a": 200, "host-b": 40, "host-c": 120})),
 	}
 
 	res := &candidateResult{relay: rankRelay("b"), brokerIndex: -1}

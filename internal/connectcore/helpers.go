@@ -1,4 +1,4 @@
-package vpnservice
+package connectcore
 
 import (
 	"context"
@@ -9,8 +9,6 @@ import (
 
 	"github.com/openrung/openrung/brokerapi"
 
-	"openrung/desktop/config"
-	"openrung/desktop/persist"
 	"openrung/internal/client"
 	"openrung/internal/clienttelemetry"
 	"openrung/internal/relay"
@@ -21,7 +19,7 @@ import (
 // for nil so connecting never fails on telemetry.
 func newManager(brokerURL string) *clienttelemetry.Manager {
 	if brokerURL == "" {
-		brokerURL = config.TelemetryBrokerURL
+		brokerURL = TelemetryBrokerURL
 	}
 	mgr, err := clienttelemetry.NewWithPlatform(
 		brokerURL,
@@ -181,28 +179,30 @@ func recentFrom(r relay.Descriptor) *RecentNode {
 	}
 }
 
-func toRecentNodes(stored []persist.RecentNode) []RecentNode {
-	out := make([]RecentNode, 0, len(stored))
-	for _, r := range stored {
-		out = append(out, RecentNode(r))
-	}
-	return out
-}
-
-func toStoredRecents(nodes []RecentNode) []persist.RecentNode {
-	out := make([]persist.RecentNode, 0, len(nodes))
-	for _, r := range nodes {
-		out = append(out, persist.RecentNode(r))
-	}
-	return out
-}
-
 // persistPrepend adds node to the front of recents (deduped, capped) and writes
-// the result through, returning the new in-memory list.
-func persistPrepend(store *persist.Store, existing []RecentNode, node RecentNode) []RecentNode {
-	stored := persist.PrependRecent(toStoredRecents(existing), persist.RecentNode(node), config.MaxRecents)
-	if store != nil {
-		_ = store.SaveRecents(stored)
+// the result through Persistence, returning the new in-memory list.
+func (s *Engine) persistPrepend(existing []RecentNode, node RecentNode) []RecentNode {
+	recents := prependRecent(existing, node, MaxRecents)
+	if s.Persistence != nil {
+		_ = s.Persistence.SaveRecents(recents)
 	}
-	return toRecentNodes(stored)
+	return recents
+}
+
+// prependRecent inserts node at the front, de-duplicated by countryCode, capped
+// at max (matching the contract's cap-8 newest-first recents). It returns the
+// new list so the caller can mirror it into state.
+func prependRecent(existing []RecentNode, node RecentNode, max int) []RecentNode {
+	out := make([]RecentNode, 0, len(existing)+1)
+	out = append(out, node)
+	for _, r := range existing {
+		if r.CountryCode == node.CountryCode {
+			continue
+		}
+		out = append(out, r)
+	}
+	if len(out) > max {
+		out = out[:max]
+	}
+	return out
 }
