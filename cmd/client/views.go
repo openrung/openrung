@@ -143,6 +143,14 @@ func (m tuiModel) statusView() string {
 	}
 	rows = append(rows, row("Session", session))
 
+	if status == connectcore.StatusConnected {
+		rows = append(rows, row("Health", healthLabel(m.health)))
+	}
+	if m.activity.Kind != "" {
+		stamp := m.activityAt.Format("15:04:05")
+		rows = append(rows, row("Activity", noteStyle.Render("["+stamp+"] "+noticeLine(m.activity))))
+	}
+
 	proxy := m.proxyEndpoint
 	switch {
 	case m.proxyErr != "":
@@ -198,6 +206,44 @@ func nodeClassBadge(nodeClass string) string {
 	return volunteerBadge
 }
 
+// healthLabel renders the latest mid-session probe sweep. The engine only
+// probes while a candidate is promoted, so before the first sweep of a session
+// there is nothing to report yet.
+func healthLabel(health connectcore.Notice) string {
+	if health.Kind == "" {
+		return helpStyle.Render("probing every 30s…")
+	}
+	if health.Failures == 0 {
+		return "ok"
+	}
+	label := fmt.Sprintf("%d/%d probes failed", health.Failures, health.Threshold)
+	if health.Reason != "" {
+		label += " — " + health.Reason
+	}
+	return errorStyle.Render(label)
+}
+
+// noticeLine formats a typed engine notice for the Activity row.
+func noticeLine(n connectcore.Notice) string {
+	switch n.Kind {
+	case connectcore.NoticeFailoverStarted:
+		return fmt.Sprintf("failover: relay %s lost (%s); re-laddering", n.FromRelayID, n.Reason)
+	case connectcore.NoticeFailoverCompleted:
+		line := fmt.Sprintf("failover: relay %s → %s (%s)", n.FromRelayID, n.RelayID, n.Reason)
+		if n.FrontID != "" {
+			line += " via WSS front " + n.FrontID
+		}
+		return line
+	case connectcore.NoticeWSSFallback:
+		return fmt.Sprintf("WSS fallback: relay %s via front %s (direct path: %s)", n.RelayID, n.FrontID, n.Reason)
+	case connectcore.NoticeWSSTicketRetry:
+		return fmt.Sprintf("WSS tickets rate-limited; retrying front %s in %s", n.FrontID, n.Wait)
+	case connectcore.NoticePunchOutcome:
+		return fmt.Sprintf("punch %s: %s", n.RelayID, n.Reason)
+	}
+	return n.Reason
+}
+
 func describeTarget(target connectcore.RelayTarget) string {
 	parts := make([]string, 0, 3)
 	if strings.TrimSpace(target.RelayID) != "" {
@@ -230,6 +276,11 @@ func formatDuration(d time.Duration) string {
 
 func (m tuiModel) relaysView() string {
 	var rows []string
+	// The engine-persisted recents (internal/clientstate), newest first — the
+	// same row the desktop main screen shows.
+	if line := recentsLine(m.state.Recents); line != "" {
+		rows = append(rows, helpStyle.Render("recents ")+truncate(line, max(1, m.width-8)))
+	}
 	switch {
 	case m.refreshing:
 		rows = append(rows, helpStyle.Render("refreshing relay directory…"))
@@ -278,6 +329,23 @@ func (m tuiModel) relaysView() string {
 		rows = append(rows, line)
 	}
 	return strings.Join(rows, "\n")
+}
+
+// recentsLine renders the recents newest-first on one line, or "" when none
+// are stored.
+func recentsLine(recents []connectcore.RecentNode) string {
+	if len(recents) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(recents))
+	for _, r := range recents {
+		label := strings.TrimSpace(r.Label)
+		if label == "" {
+			label = r.CountryCode
+		}
+		parts = append(parts, label)
+	}
+	return strings.Join(parts, " · ")
 }
 
 // relayDisplayName is the list name for a relay: its geo label, with the
@@ -344,6 +412,7 @@ func (m tuiModel) settingsView() string {
 		{fieldRelayID, "Target relay id", orUnset(m.settings.target.RelayID)},
 		{fieldRelayLabel, "Target label", orUnset(m.settings.target.Label)},
 		{fieldCountry, "Target country", orUnset(m.settings.target.Country)},
+		{fieldShellHelper, "Shell proxy", m.shellHelperValue()},
 	}
 
 	rows := make([]string, 0, len(fields)+2)
@@ -358,10 +427,41 @@ func (m tuiModel) settingsView() string {
 		}
 		rows = append(rows, cursor+labelStyle.Width(18).Render(field.name)+" "+value)
 	}
+	if m.settings.shellOK {
+		// Copyable POSIX shell commands, exactly what desktop's Settings offers.
+		// The enable line points a shell at the local endpoint, which only
+		// answers while connected, so it is shown only then (desktop disables
+		// its copy button the same way); the restore line stays visible — its
+		// whole purpose is cleaning up a shell after the tunnel is gone.
+		rows = append(rows, "")
+		if m.state.Status == connectcore.StatusConnected {
+			rows = append(rows, "  "+labelStyle.Width(18).Render("Enable in a shell")+" "+m.settings.shell.EnableCommand)
+		} else {
+			rows = append(rows, "  "+labelStyle.Width(18).Render("Enable in a shell")+" "+helpStyle.Render("available while connected"))
+		}
+		rows = append(rows,
+			"  "+labelStyle.Width(18).Render("Restore that shell")+" "+m.settings.shell.DisableCommand,
+			"  "+helpStyle.Render("run the restore command after disconnect, failure, quit, or crash"),
+		)
+	}
 	if m.settings.note != "" {
 		rows = append(rows, "", noteStyle.Render(m.settings.note))
 	}
 	return strings.Join(rows, "\n")
+}
+
+// shellHelperValue is the Shell proxy row's summary cell.
+func (m tuiModel) shellHelperValue() string {
+	switch {
+	case m.settings.shellErr != "":
+		return errorStyle.Render(m.settings.shellErr)
+	case m.settings.shellOK:
+		return "commands below"
+	case m.state.Status == connectcore.StatusConnected:
+		return helpStyle.Render("press enter to show the shell commands")
+	default:
+		return helpStyle.Render("available while connected")
+	}
 }
 
 func orUnset(value string) string {

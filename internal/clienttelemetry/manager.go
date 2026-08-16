@@ -34,15 +34,16 @@ type Session struct {
 // single foreground session, so events are flushed on success, on each
 // heartbeat, and on shutdown rather than persisted to disk.
 type Manager struct {
-	mu         sync.Mutex
-	session    *Session
-	outbox     []Event
-	poster     HTTPClient
-	appVersion string
-	clientID   string
-	geo        map[string]string
-	traffic    TrafficCounters
-	now        func() time.Time
+	mu            sync.Mutex
+	session       *Session
+	outbox        []Event
+	poster        HTTPClient
+	appVersion    string
+	clientID      string
+	platformLabel string
+	geo           map[string]string
+	traffic       TrafficCounters
+	now           func() time.Time
 }
 
 // TrafficCounters reports the session's cumulative tunneled traffic in bytes:
@@ -113,6 +114,21 @@ func (m *Manager) BeginSession() (*Session, error) {
 	return &copied, nil
 }
 
+// SetPlatformLabel attaches attrs["platform"] to every event the manager
+// records, so dashboards can tell apart clients that share an operating_system
+// label (a terminal session and a GUI session on the same OS). The broker
+// stores it as an ordinary free-form attribute; no ingest change is needed.
+// Empty (the default) omits the attribute — the desktop app predates the label
+// and its events must stay unchanged.
+func (m *Manager) SetPlatformLabel(label string) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.platformLabel = label
+	m.mu.Unlock()
+}
+
 // SetGeoAttributes attaches public-IP geo attributes (country, city, isp, ...)
 // to every event the session reports, mirroring the Android TelemetryManager
 // geoAttributes. Best-effort: a nil/empty map is ignored.
@@ -173,6 +189,9 @@ func (m *Manager) Record(event, relayID string, attrs map[string]string, meas ma
 	}
 
 	merged := DeviceAttributes(m.appVersion)
+	if m.platformLabel != "" {
+		merged["platform"] = m.platformLabel
+	}
 	for k, v := range m.geo {
 		merged[k] = v
 	}
@@ -306,6 +325,9 @@ func (m *Manager) buildHeartbeatLocked() (Event, bool) {
 	}
 	now := m.now()
 	attrs := DeviceAttributes(m.appVersion)
+	if m.platformLabel != "" {
+		attrs["platform"] = m.platformLabel
+	}
 	for k, v := range m.geo {
 		attrs[k] = v
 	}

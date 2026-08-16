@@ -133,7 +133,7 @@ func (s *Engine) wssTicketRequester() func(context.Context, string, relay.WSSSes
 	return func(ctx context.Context, brokerURL string, request relay.WSSSessionTicketRequest, clientID, sessionID string) (relay.WSSSessionTicketResponse, error) {
 		brokerClient := client.BrokerClient{
 			BaseURL:  brokerURL,
-			Platform: brokerapi.PlatformDesktop,
+			Platform: s.telemetryPlatform(),
 		}
 		return brokerClient.RequestWSSSessionTicket(ctx, request, clientID, sessionID)
 	}
@@ -218,6 +218,7 @@ func (s *Engine) requestWSSSessionTicket(
 		}
 		conn.wssTicketRetryUsed = true
 		s.appendLog(fmt.Sprintf("broker fronts rate-limited WSS tickets; retrying once in %s", retryAfter))
+		s.notify(Notice{Kind: NoticeWSSTicketRetry, RelayID: request.RelayID, FrontID: request.FrontID, Wait: retryAfter})
 		if err := s.wssRetryWaiter()(ctx, retryAfter); err != nil {
 			return relay.WSSSessionTicketResponse{}, err
 		}

@@ -36,6 +36,10 @@ type Options struct {
 	Limit     int
 	ClientID  string
 	SessionID string
+	// Platform selects the brokerapi platform-identification header. Empty
+	// means PlatformDesktop: the desktop app predates this field and its wire
+	// behavior must stay unchanged.
+	Platform brokerapi.Platform
 	// HTTPClient overrides brokerapi's ECH-capable default client (tests inject
 	// a stub).
 	HTTPClient *http.Client
@@ -45,6 +49,14 @@ type Options struct {
 	Stagger time.Duration
 }
 
+// platform resolves the effective platform header selection for opts.
+func (o Options) platform() brokerapi.Platform {
+	if o.Platform == "" {
+		return brokerapi.PlatformDesktop
+	}
+	return o.Platform
+}
+
 // ListRelays fetches from a single broker endpoint. A 429 returns a
 // *RateLimitedError carrying Retry-After; other non-2xx statuses return a
 // plain error. brokerapi verifies every non-loopback relay list before exposing
@@ -52,7 +64,7 @@ type Options struct {
 func ListRelays(ctx context.Context, brokerURL string, opts Options) (relay.ListResponse, error) {
 	list, err := brokerapi.NewClient(opts.HTTPClient, brokerapi.Options{
 		AppVersion: client.AppVersion(),
-		Platform:   brokerapi.PlatformDesktop,
+		Platform:   opts.platform(),
 	}).ListRelays(ctx, brokerURL, brokerapi.ListOptions{
 		Limit: opts.Limit,
 		Identity: brokerapi.Identity{
@@ -97,7 +109,7 @@ func ListRelays(ctx context.Context, brokerURL string, opts Options) (relay.List
 func FirstReachable(ctx context.Context, candidates brokerapi.Candidates, opts Options) (Fetch, error) {
 	fetch, err := brokerapi.NewClient(opts.HTTPClient, brokerapi.Options{
 		AppVersion: client.AppVersion(),
-		Platform:   brokerapi.PlatformDesktop,
+		Platform:   opts.platform(),
 	}).FirstReachable(ctx, candidates, brokerapi.ListOptions{
 		Limit: opts.Limit,
 		Identity: brokerapi.Identity{

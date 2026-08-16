@@ -29,6 +29,7 @@ func (s *Engine) supervise(ctx context.Context, conn *connection, cur *candidate
 		go s.healthLoop(cur.ctx, port, s.livenessFronts(conn), healthFail)
 
 		var trigger error
+		var triggerReason string
 		transportFailure := false
 		select {
 		case <-ctx.Done():
@@ -53,6 +54,7 @@ func (s *Engine) supervise(ctx context.Context, conn *connection, cur *candidate
 				return "tunnel_process", markLocalCandidateError("active_tunnel_process", runErr)
 			}
 			trigger = runErr
+			triggerReason = "tunnel process exited unexpectedly"
 			s.appendLog("tunnel process exited unexpectedly; reconnecting")
 		case transportErr := <-cur.transportErr:
 			if ctx.Err() != nil || s.isDisconnecting(conn) {
@@ -64,8 +66,10 @@ func (s *Engine) supervise(ctx context.Context, conn *connection, cur *candidate
 			trigger = transportErr
 			transportFailure = true
 			if gracefulWSSSessionEnd(trigger) {
+				triggerReason = "WSS session ended"
 				s.appendLog("WSS access transport session ended; reconnecting")
 			} else {
+				triggerReason = "WSS transport stopped unexpectedly"
 				s.appendLog("WSS access transport stopped unexpectedly; reconnecting")
 			}
 		case probeErr := <-healthFail:
@@ -81,6 +85,7 @@ func (s *Engine) supervise(ctx context.Context, conn *connection, cur *candidate
 			} else {
 				trigger = probeErr
 			}
+			triggerReason = fmt.Sprintf("tunnel health check failed %d times", HealthFailureThreshold)
 			s.appendLog(fmt.Sprintf("tunnel health check failed %d times; reconnecting", HealthFailureThreshold))
 		}
 
@@ -99,6 +104,7 @@ func (s *Engine) supervise(ctx context.Context, conn *connection, cur *candidate
 			// ladder rung) is what dents the dying relay's broker ranking.
 			s.recordRelayAttemptFailed(conn.mgr, oldRelayID, trigger, 0)
 		}
+		s.notify(Notice{Kind: NoticeFailoverStarted, FromRelayID: oldRelayID, Reason: triggerReason})
 		// Keep the last relay label during recovery: the user sees connecting
 		// plus log lines, not a bogus disconnect.
 		s.setStatus(StatusConnecting, keepLabel, clearError)
@@ -156,6 +162,13 @@ func (s *Engine) supervise(ctx context.Context, conn *connection, cur *candidate
 			_ = conn.mgr.Flush(ctx)
 		}
 		s.appendLog(fmt.Sprintf("failed over from relay %s to %s", oldRelayID, next.relay.ID))
+		s.notify(Notice{
+			Kind:        NoticeFailoverCompleted,
+			FromRelayID: oldRelayID,
+			RelayID:     next.relay.ID,
+			FrontID:     next.frontID,
+			Reason:      triggerReason,
+		})
 		cur = next
 	}
 }
@@ -247,13 +260,18 @@ func (s *Engine) healthLoop(ctx context.Context, port int, fronts []string, fail
 		err := s.healthProber()(ctx, port)
 		if err == nil {
 			failures = 0
+			s.notify(Notice{Kind: NoticeHealthProbe, Threshold: HealthFailureThreshold})
 			continue
 		}
 		if ctx.Err() != nil {
 			return
 		}
 		failures++
+		// The internal count keeps growing during a prolonged local outage;
+		// the notice reads "N of threshold", so cap what hosts are shown.
+		notified := min(failures, HealthFailureThreshold)
 		if failures < HealthFailureThreshold {
+			s.notify(Notice{Kind: NoticeHealthProbe, Failures: notified, Threshold: HealthFailureThreshold})
 			continue
 		}
 		if !s.networkAlive(ctx, fronts) {
@@ -261,8 +279,13 @@ func (s *Engine) healthLoop(ctx context.Context, port int, fronts []string, fail
 				return
 			}
 			s.appendLog("health check failed but the network looks down; assuming a local outage, not failing over")
+			s.notify(Notice{
+				Kind: NoticeHealthProbe, Failures: notified, Threshold: HealthFailureThreshold,
+				Reason: "network looks down; assuming a local outage, not failing over",
+			})
 			continue
 		}
+		s.notify(Notice{Kind: NoticeHealthProbe, Failures: notified, Threshold: HealthFailureThreshold})
 		select {
 		case failCh <- fmt.Errorf("tunnel health probe failed %d times: %w", failures, err):
 		default:

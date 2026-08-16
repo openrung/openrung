@@ -140,7 +140,9 @@ Keys (interactive):
   c connect  d disconnect  r refresh relays  1-4/tab switch view  q quit
 
 Common flags:
-  -broker         Broker base URL (default http://localhost:8080).
+  -broker         Broker base URL override (e.g. http://localhost:8080 for a
+                  local broker). Empty (the default) races the built-in HTTPS
+                  broker fronts and uses the first that answers.
   -relay-id       Pin the connect target to this exact broker relay id.
   -relay-label    Pin the connect target to relay(s) with this label.
   -mtu            Override the generated TUN MTU (config subcommand).

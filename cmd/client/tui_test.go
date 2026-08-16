@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -11,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"openrung/internal/connectcore"
+	"openrung/internal/proxyconfig"
 	"openrung/internal/relay"
 )
 
@@ -333,5 +335,150 @@ func TestRelaysWindowFollowsCursor(t *testing.T) {
 	view = m.View()
 	if !strings.Contains(view, "node-00") || strings.Contains(view, "node-29") {
 		t.Fatalf("window did not follow the cursor back to the head:\n%s", view)
+	}
+}
+
+func TestEngineNoticesDriveActivityAndHealthRows(t *testing.T) {
+	driver := &fakeDriver{}
+	m := newTestModel(driver)
+
+	label := "Tokyo, Japan"
+	m, _ = update(t, m, engineStateMsg(connectcore.State{Status: connectcore.StatusConnected, RelayLabel: &label}))
+
+	m, _ = update(t, m, engineNoticeMsg(connectcore.Notice{
+		Kind:        connectcore.NoticeFailoverStarted,
+		FromRelayID: "relay_a",
+		Reason:      "tunnel process exited unexpectedly",
+	}))
+	m, _ = update(t, m, engineNoticeMsg(connectcore.Notice{
+		Kind:      connectcore.NoticeHealthProbe,
+		Failures:  2,
+		Threshold: 3,
+	}))
+
+	view := m.View()
+	for _, want := range []string{"failover: relay relay_a lost", "tunnel process exited unexpectedly", "2/3 probes failed"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("status view missing %q:\n%s", want, view)
+		}
+	}
+
+	// A WSS fallback replaces the activity line and names the front.
+	m, _ = update(t, m, engineNoticeMsg(connectcore.Notice{
+		Kind:    connectcore.NoticeWSSFallback,
+		RelayID: "relay_a",
+		FrontID: "front-a",
+		Reason:  "direct TCP blocked",
+	}))
+	view = m.View()
+	if !strings.Contains(view, "WSS fallback: relay relay_a via front front-a") {
+		t.Fatalf("status view missing the WSS fallback activity:\n%s", view)
+	}
+
+	// Disconnecting ends the session: health state goes with it, the last
+	// activity stays visible so the outcome remains explainable.
+	m, _ = update(t, m, engineStateMsg(connectcore.State{Status: connectcore.StatusDisconnected}))
+	if m.health.Kind != "" {
+		t.Fatalf("health notice survived disconnect: %+v", m.health)
+	}
+	if m.activity.Kind == "" {
+		t.Fatal("activity notice cleared on disconnect")
+	}
+
+	// A genuinely new connection (preparing — a failover recovery never passes
+	// through it) must not display the previous session's events.
+	m, _ = update(t, m, engineStateMsg(connectcore.State{Status: connectcore.StatusPreparing}))
+	if m.activity.Kind != "" {
+		t.Fatalf("old session's activity leaked into the new connection: %+v", m.activity)
+	}
+}
+
+func TestRecentsRenderInRelaysView(t *testing.T) {
+	driver := &fakeDriver{}
+	m := newTestModel(driver)
+	m.view = viewRelays
+	m.refreshing = false
+	m.state.Recents = []connectcore.RecentNode{
+		{CountryCode: "KR", Label: "Seoul, South Korea"},
+		{CountryCode: "JP", Label: "Tokyo, Japan"},
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "Seoul, South Korea · Tokyo, Japan") {
+		t.Fatalf("relays view missing the recents row:\n%s", view)
+	}
+}
+
+func TestShellHelperActionRequiresConnection(t *testing.T) {
+	driver := &fakeDriver{}
+	m := newTestModel(driver)
+	m.view = viewSettings
+	m.shellHelper = func() (proxyconfig.Info, error) {
+		return proxyconfig.Info{
+			EnableCommand:  ". '/home/u/.config/openrung/proxy-env.sh' && openrung_proxy_on",
+			DisableCommand: "openrung_proxy_off",
+		}, nil
+	}
+	for i := 0; i < int(fieldShellHelper); i++ {
+		m, _ = update(t, m, keyMsg("down"))
+	}
+
+	// Disconnected: the action explains itself instead of generating commands.
+	m, msg := update(t, m, keyMsg("enter"))
+	if msg != nil {
+		t.Fatalf("disconnected shell-helper action dispatched %T", msg)
+	}
+	if m.settings.note == "" || m.settings.shellOK {
+		t.Fatalf("disconnected action note=%q shellOK=%t", m.settings.note, m.settings.shellOK)
+	}
+
+	// Connected: enter generates and renders both copyable commands.
+	label := "Tokyo, Japan"
+	m, _ = update(t, m, engineStateMsg(connectcore.State{Status: connectcore.StatusConnected, RelayLabel: &label}))
+	m, msg = update(t, m, keyMsg("enter"))
+	m, _ = update(t, m, msg)
+	if !m.settings.shellOK {
+		t.Fatalf("shell helper not generated: %+v", m.settings)
+	}
+	view := m.View()
+	for _, want := range []string{"openrung_proxy_on", "openrung_proxy_off", "run the restore command"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("settings view missing %q:\n%s", want, view)
+		}
+	}
+
+	// After disconnect the enable command would point at a dead proxy, so it
+	// disappears; the restore command stays — that is exactly when a shell
+	// still carrying our variables needs it.
+	m, _ = update(t, m, engineStateMsg(connectcore.State{Status: connectcore.StatusDisconnected}))
+	view = m.View()
+	if strings.Contains(view, "openrung_proxy_on") {
+		t.Fatalf("enable command still shown while disconnected:\n%s", view)
+	}
+	if !strings.Contains(view, "openrung_proxy_off") {
+		t.Fatalf("restore command hidden while disconnected:\n%s", view)
+	}
+}
+
+func TestShellHelperErrorIsSurfaced(t *testing.T) {
+	driver := &fakeDriver{}
+	m := newTestModel(driver)
+	m.view = viewSettings
+	m.shellHelper = func() (proxyconfig.Info, error) {
+		return proxyconfig.Info{}, errors.New("proxy configuration directory is unavailable")
+	}
+	label := "Tokyo, Japan"
+	m, _ = update(t, m, engineStateMsg(connectcore.State{Status: connectcore.StatusConnected, RelayLabel: &label}))
+	for i := 0; i < int(fieldShellHelper); i++ {
+		m, _ = update(t, m, keyMsg("down"))
+	}
+
+	m, msg := update(t, m, keyMsg("enter"))
+	m, _ = update(t, m, msg)
+	if m.settings.shellOK || m.settings.shellErr == "" {
+		t.Fatalf("shell error not surfaced: %+v", m.settings)
+	}
+	if !strings.Contains(m.View(), "proxy configuration directory is unavailable") {
+		t.Fatalf("settings view missing the shell error:\n%s", m.View())
 	}
 }

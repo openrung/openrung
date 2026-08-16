@@ -318,3 +318,42 @@ func TestNilManagerIsNoOp(t *testing.T) {
 		t.Fatal("nil ClientID should be empty")
 	}
 }
+
+func TestSetPlatformLabelStampsEveryEvent(t *testing.T) {
+	m := testManager(&captureTransport{}, time.Now)
+	m.SetPlatformLabel("cli")
+	if _, err := m.BeginSession(); err != nil {
+		t.Fatal(err)
+	}
+	m.MarkConnected("relay-a")
+
+	m.Record("connection_attempted", "", nil, nil)
+	if got := m.outbox[0].Attributes["platform"]; got != "cli" {
+		t.Fatalf("recorded platform attribute = %q, want cli", got)
+	}
+	// A caller-supplied attribute still wins on conflict, like every merged
+	// device attribute.
+	m.Record("connection_attempted", "", map[string]string{"platform": "override"}, nil)
+	if got := m.outbox[1].Attributes["platform"]; got != "override" {
+		t.Fatalf("caller attribute lost to the label: %q", got)
+	}
+
+	heartbeat, ok := m.buildHeartbeatLocked()
+	if !ok {
+		t.Fatal("heartbeat not built for a connected session")
+	}
+	if got := heartbeat.Attributes["platform"]; got != "cli" {
+		t.Fatalf("heartbeat platform attribute = %q, want cli", got)
+	}
+}
+
+func TestNoPlatformLabelByDefault(t *testing.T) {
+	m := testManager(&captureTransport{}, time.Now)
+	if _, err := m.BeginSession(); err != nil {
+		t.Fatal(err)
+	}
+	m.Record("connection_attempted", "", nil, nil)
+	if _, present := m.outbox[0].Attributes["platform"]; present {
+		t.Fatalf("default manager stamped a platform attribute: %+v", m.outbox[0].Attributes)
+	}
+}

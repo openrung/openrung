@@ -32,6 +32,59 @@ type LogEntry struct {
 	Line string
 }
 
+// NoticeSink is an optional extension of EventSink for hosts that surface the
+// engine's mid-flow events as structured UI state rather than parsing log
+// lines. A sink that does not implement it (the desktop webview sink) simply
+// never receives notices; the same log lines still describe every one of
+// them. Notice is invoked synchronously from the emitting goroutine under the
+// same rules as Log: be fast, never call back into the engine.
+type NoticeSink interface {
+	Notice(notice Notice)
+}
+
+// NoticeKind names one typed engine event (see Notice for the fields each
+// kind fills in).
+type NoticeKind string
+
+const (
+	// NoticeFailoverStarted: the live tunnel was lost and the automatic
+	// recovery re-ladder is running. FromRelayID is the relay that carried the
+	// session; Reason says what triggered the failover.
+	NoticeFailoverStarted NoticeKind = "failover_started"
+	// NoticeFailoverCompleted: the recovery promoted a new relay. RelayID is
+	// the winner, FromRelayID the relay it replaced, and FrontID is set when
+	// the new path runs through a WSS front.
+	NoticeFailoverCompleted NoticeKind = "failover_completed"
+	// NoticeWSSFallback: the direct path to RelayID failed and its signed WSS
+	// front FrontID is being attempted. Reason carries the direct failure.
+	NoticeWSSFallback NoticeKind = "wss_fallback"
+	// NoticeWSSTicketRetry: every eligible broker front rate-limited the WSS
+	// session ticket; the one bounded retry is waiting Wait.
+	NoticeWSSTicketRetry NoticeKind = "wss_ticket_retry"
+	// NoticePunchOutcome: the NAT punch attempt against RelayID finished.
+	// Reason is the human-readable outcome (success includes the NAT class,
+	// failure the reason and the hub fallback).
+	NoticePunchOutcome NoticeKind = "punch_outcome"
+	// NoticeHealthProbe: one mid-session health sweep finished. Failures is
+	// the consecutive-failure count (0 means the sweep passed) out of
+	// Threshold; Reason is set when a failed sweep did not trigger a failover
+	// because the local network itself looks down.
+	NoticeHealthProbe NoticeKind = "health_probe"
+)
+
+// Notice is one typed mid-flow engine event for host status UIs. Only the
+// fields the Kind documents are meaningful; everything else is zero.
+type Notice struct {
+	Kind        NoticeKind
+	RelayID     string
+	FromRelayID string
+	FrontID     string
+	Reason      string
+	Wait        time.Duration
+	Failures    int
+	Threshold   int
+}
+
 // Persistence stores the small pieces of client state the engine reads and
 // writes across sessions: the "recents" row and, while connected, the OS
 // proxy snapshot used to recover after a crash. A nil Persistence disables

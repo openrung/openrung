@@ -17,18 +17,25 @@ import (
 // newManager builds a best-effort telemetry manager (parity with the mobile
 // apps). A nil result means telemetry is unavailable; every call site guards
 // for nil so connecting never fails on telemetry.
-func newManager(brokerURL string) *clienttelemetry.Manager {
+func (s *Engine) newManager(brokerURL string) *clienttelemetry.Manager {
 	if brokerURL == "" {
 		brokerURL = TelemetryBrokerURL
 	}
+	platform := s.telemetryPlatform()
 	mgr, err := clienttelemetry.NewWithPlatform(
 		brokerURL,
 		client.AppVersion(),
-		brokerapi.PlatformDesktop,
+		platform,
 		nil,
 	)
 	if err != nil {
 		return nil
+	}
+	// Desktop telemetry predates the platform attribute and must stay
+	// byte-identical; every later platform stamps its label on each event so
+	// dashboards can tell, say, a CLI session from a GUI session on one OS.
+	if platform != brokerapi.PlatformDesktop {
+		mgr.SetPlatformLabel(string(platform))
 	}
 	return mgr
 }
