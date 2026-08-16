@@ -94,7 +94,7 @@ func runConnect(args []string) error {
 	fs.StringVar(&cfg.PunchURL, "punch-url", "", "override the hub punch coordinator base URL (else use the relay's advertised punch_endpoint)")
 	fs.BoolVar(&cfg.PunchInsecure, "punch-insecure", false, "skip TLS verification of the hub punch API (for a self-signed hub cert; testing)")
 	fs.BoolVar(&cfg.Headless, "headless", false, "non-interactive connect: stream engine logs to stdout until interrupted")
-	fs.BoolVar(&cfg.TUN, "tun", false, "route the whole device through a TUN interface instead of the local proxy; needs root (rerun under sudo)")
+	fs.BoolVar(&cfg.TUN, "tun", false, "route the whole device through a TUN interface instead of the local proxy ("+tunModeSummary+")")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -136,7 +136,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, `Usage:
   %[1]s                    Launch the interactive terminal client.
   %[1]s connect            Same as bare invocation; flags seed the initial settings.
-  %[1]s connect --tun      Full-device routing instead of the local proxy (needs sudo).
+  %[1]s connect --tun      Full-device routing instead of the local proxy (%[2]s).
   %[1]s connect -headless  Non-interactive connect (old behavior, engine-backed).
   %[1]s check   -broker http://localhost:8080
   %[1]s config  -broker http://localhost:8080 -out openrung-sing-box.json
@@ -153,11 +153,10 @@ Keys (interactive):
   c connect  d disconnect  r refresh relays  1-4/tab switch view  q quit
 
 Connect flags:
-  --tun           Capture the whole device through a TUN interface. Needs root
-                  (rerun under sudo); Settings can also toggle it while
-                  disconnected. Without it the client runs the zero-privilege
-                  proxy mode: a loopback mixed HTTP/SOCKS inbound with the OS
-                  proxy pointed at it.
+  --tun           Capture the whole device through a TUN interface (%[2]s).
+                  Settings can also toggle it while disconnected. Without it
+                  the client runs the zero-privilege proxy mode: a loopback
+                  mixed HTTP/SOCKS inbound with the OS proxy pointed at it.
   -sing-box       Path to the sing-box binary (default: resolved via PATH).
   -punch          Attempt a direct NAT-punched path before the relay hub.
 
@@ -171,5 +170,5 @@ Common flags:
                   subcommand).
   -relay-family   Select relay family for check/config: auto, ipv4, or ipv6.
 
-`, program)
+`, program, tunModeSummary)
 }

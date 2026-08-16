@@ -88,7 +88,8 @@ copied command.
 
 ## Terminal Client
 
-`cmd/client` is an interactive terminal client for Linux, macOS, and Windows.
+`cmd/client` is an interactive terminal client for Linux, macOS, and Windows
+(proxy mode everywhere; TUN mode on macOS and Linux).
 It is a view over the same `internal/connectcore` engine the desktop app
 drives, so relay ranking, the connect ladder, direct-first WSS fallback, NAT
 punching, telemetry, and mid-session failover behave identically in both — with
@@ -105,8 +106,8 @@ view layer holds no connection logic.
   brew install sing-box
   ```
 
-- Nothing else for proxy mode. TUN mode additionally needs root (macOS and
-  Linux) or an elevated terminal (Windows) — see [Capture modes](#capture-modes).
+- Nothing else for proxy mode. TUN mode additionally needs root, and is macOS
+  and Linux only — see [Capture modes](#capture-modes).
 - Against the public fleet, no broker URL is needed: the client races the
   built-in HTTPS broker fronts. Working against a local deployment needs a
   running broker with at least one registered relay, selected with `-broker`.
@@ -155,8 +156,9 @@ override described under [Desktop App: Local Proxy](#desktop-app-local-proxy),
 and the shell helper under [POSIX shell applications](#posix-shell-applications).
 Only proxy-aware applications are carried.
 
-**TUN mode** captures the whole device instead. Pass `--tun`, or toggle the
-Settings Mode field while disconnected:
+**TUN mode** captures the whole device instead. It is available on macOS and
+Linux; see [Windows](#windows) below. Pass `--tun`, or toggle the Settings Mode
+field while disconnected:
 
 ```sh
 sudo go run ./cmd/client connect --tun
@@ -185,9 +187,31 @@ TUN mode needs root privileges to create the tunnel device: rerun as
 needed)
 ```
 
-On Windows the same refusal asks for a terminal started with *Run as
-administrator*. The capture mode is fixed for the length of a session: changing
-it while connected is refused, so disconnect first.
+The capture mode is fixed for the length of a session: changing it while
+connected is refused, so disconnect first.
+
+A connect is reported as connected only once the kernel actually routes
+internet-bound traffic out of the tunnel address — not merely once the device
+appears. The tunnel address sits in the range Docker carves bridge networks
+from, so "an interface holds this address" would be satisfied on a host that
+has never run OpenRung, and the end-to-end probe would then pass over the
+ordinary network and report an untunneled session as connected.
+
+#### Windows
+
+TUN mode is refused on Windows, whatever the process token. Elevation is not
+the blocker; graceful teardown is. Removing the routes and DNS settings
+sing-box installed requires asking it to stop, and this client has no way to do
+that on Windows: `os.Interrupt` is unsupported there, and the console control
+events that would substitute cannot reach a child started with
+`CREATE_NO_WINDOW`, which has no console. Every disconnect would end in a
+force-kill, leaving the host routing traffic at an interface that is gone.
+
+Proxy mode is unaffected — it holds no device and no routes, so a forced stop
+costs nothing — and remains the full-featured mode on Windows. The refusal will
+be lifted once the client can stop sing-box gracefully there.
+
+#### Divergences from proxy mode
 
 Two engine behaviors differ in TUN mode, both because a full-device tunnel owns
 the default route:

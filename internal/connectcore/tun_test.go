@@ -253,31 +253,84 @@ func TestTUNHealthFailoverSkipsTheNetworkAliveGate(t *testing.T) {
 	}
 }
 
-// Readiness in TUN mode is the tunnel device carrying the address the
-// generated config assigns it — there is no loopback inbound to dial.
+// Readiness in TUN mode is the kernel routing internet-bound traffic out of
+// the tunnel address — there is no loopback inbound to dial, and the device
+// existing is not the same as the device carrying the default path.
 func TestTUNInterfaceReady(t *testing.T) {
-	original := interfaceAddrs
-	t.Cleanup(func() { interfaceAddrs = original })
+	stubRoute := func(source net.IP, err error) {
+		routeSourceIP = func(string, string) (net.IP, error) { return source, err }
+	}
+	original := routeSourceIP
+	t.Cleanup(func() { routeSourceIP = original })
 
-	loopbackOnly := []net.Addr{&net.IPNet{IP: net.ParseIP("127.0.0.1"), Mask: net.CIDRMask(8, 32)}}
-	interfaceAddrs = func() ([]net.Addr, error) { return loopbackOnly, nil }
+	// Before sing-box installs its routes, traffic still leaves the physical
+	// interface.
+	stubRoute(net.ParseIP("192.168.0.71"), nil)
 	if err := tunInterfaceReady(t.Context(), 0); err == nil {
-		t.Fatal("reported ready with no tunnel interface")
+		t.Fatal("reported ready while traffic still leaves the physical interface")
 	}
 
-	interfaceAddrs = func() ([]net.Addr, error) {
-		return append(loopbackOnly, &net.IPNet{IP: tunnelAddressIPv4, Mask: net.CIDRMask(30, 32)}), nil
-	}
+	stubRoute(tunnelAddressIPv4, nil)
 	if err := tunInterfaceReady(t.Context(), 0); err != nil {
-		t.Fatalf("tunInterfaceReady with the tunnel address present: %v", err)
+		t.Fatalf("tunInterfaceReady once the tunnel owns the route: %v", err)
 	}
 
-	// The IPv6 tunnel address alone also proves the device is up.
-	interfaceAddrs = func() ([]net.Addr, error) {
-		return []net.Addr{&net.IPNet{IP: tunnelAddressIPv6, Mask: net.CIDRMask(126, 128)}}, nil
+	// A v6-only host answers on the second family; the v4 lookup has no route.
+	routeSourceIP = func(network, _ string) (net.IP, error) {
+		if network == "udp4" {
+			return nil, errors.New("no route to host")
+		}
+		return tunnelAddressIPv6, nil
 	}
 	if err := tunInterfaceReady(t.Context(), 0); err != nil {
-		t.Fatalf("tunInterfaceReady with the IPv6 tunnel address present: %v", err)
+		t.Fatalf("tunInterfaceReady on a v6-only route: %v", err)
+	}
+
+	// Every family unroutable is not readiness.
+	stubRoute(nil, errors.New("no route to host"))
+	if err := tunInterfaceReady(t.Context(), 0); err == nil {
+		t.Fatal("reported ready with no routable family")
+	}
+}
+
+// The regression this readiness check exists for: 172.19.0.1 lives in the
+// range Docker carves bridge networks from, so a host with a matching bridge
+// holds the tunnel address on an interface while the tunnel does not exist.
+// Readiness must not fire — otherwise the direct internet probe that follows
+// passes over the ordinary network and an untunneled session is published
+// CONNECTED.
+func TestTUNReadinessIgnoresAForeignHolderOfTheTunnelAddress(t *testing.T) {
+	original := routeSourceIP
+	t.Cleanup(func() { routeSourceIP = original })
+
+	// A docker0-style bridge owns 172.19.0.1, but internet-bound traffic still
+	// leaves via the LAN: exactly what the kernel reports here.
+	routeSourceIP = func(string, string) (net.IP, error) {
+		return net.ParseIP("192.168.0.71"), nil
+	}
+	if err := tunInterfaceReady(t.Context(), 0); err == nil {
+		t.Fatal("a foreign interface holding the tunnel address reported the tunnel ready")
+	} else if !strings.Contains(err.Error(), "192.168.0.71") {
+		t.Fatalf("readiness error = %v; want the source it actually found", err)
+	}
+}
+
+// The engine gives a TUN rung longer to come up than a proxy rung, because
+// readiness now waits for the routes and not just a bound socket.
+func TestTUNUsesTheLongerReadyTimeout(t *testing.T) {
+	s := New()
+	if s.readyLimit() != TunnelReadyTimeout {
+		t.Fatalf("proxy ready limit = %v; want %v", s.readyLimit(), TunnelReadyTimeout)
+	}
+	if err := s.SetMode(ModeTUN); err != nil {
+		t.Fatal(err)
+	}
+	if s.readyLimit() != TUNTunnelReadyTimeout {
+		t.Fatalf("TUN ready limit = %v; want %v", s.readyLimit(), TUNTunnelReadyTimeout)
+	}
+	s.tunnelReadyLimit = time.Second // an explicit override still wins
+	if s.readyLimit() != time.Second {
+		t.Fatalf("overridden ready limit = %v", s.readyLimit())
 	}
 }
 

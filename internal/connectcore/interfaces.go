@@ -141,6 +141,12 @@ type OSProxy interface {
 // client, which would have to re-exec itself under sudo and detach the tunnel
 // from the terminal that owns it — returns an error naming the way to rerun.
 // That error is what the user sees, so it carries the guidance.
+//
+// This is also where a host declares TUN mode unavailable for reasons other
+// than privilege. A platform on which the host cannot stop the tunnel process
+// gracefully must refuse here: a forced stop leaves the routes and DNS
+// sing-box installed pointing at a device that is gone, which is worse than
+// never having offered the mode (see TUNKillGrace).
 type Elevation interface {
 	// Elevate ensures the process may create a TUN device, prompting the user
 	// if the platform requires it.

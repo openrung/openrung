@@ -561,11 +561,7 @@ const tunnelReadyPollInterval = 25 * time.Millisecond
 // exit; on the crash path it marks the candidate reaped.
 func (s *Engine) awaitTunnelReady(ctx context.Context, res *candidateResult, port int) (int64, error) {
 	started := time.Now()
-	readyLimit := s.tunnelReadyLimit
-	if readyLimit <= 0 {
-		readyLimit = TunnelReadyTimeout
-	}
-	deadline := started.Add(readyLimit)
+	deadline := started.Add(s.readyLimit())
 	ticker := time.NewTicker(tunnelReadyPollInterval)
 	defer ticker.Stop()
 	for {
@@ -592,6 +588,19 @@ func (s *Engine) awaitTunnelReady(ctx context.Context, res *candidateResult, por
 			}
 		}
 	}
+}
+
+// readyLimit bounds how long a candidate has to come up. TUN mode gets the
+// longer window: its readiness waits for sing-box to install routes, not just
+// to bind a socket (see tunInterfaceReady).
+func (s *Engine) readyLimit() time.Duration {
+	if s.tunnelReadyLimit > 0 {
+		return s.tunnelReadyLimit
+	}
+	if s.tunMode() {
+		return TUNTunnelReadyTimeout
+	}
+	return TunnelReadyTimeout
 }
 
 // loopbackReady dials the mixed inbound once to confirm sing-box is accepting

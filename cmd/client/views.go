@@ -473,9 +473,11 @@ func (m tuiModel) shellHelperValue() string {
 }
 
 // modeLabel is the Settings Mode row: what the mode does and what it costs.
+// What TUN costs is platform-specific (sudo on Unix, unsupported on Windows),
+// so the wording comes from the same file as the check that enforces it.
 func modeLabel(mode connectcore.Mode) string {
 	if mode == connectcore.ModeTUN {
-		return "TUN — whole device (needs sudo)"
+		return "TUN — whole device (" + tunModeSummary + ")"
 	}
 	return "proxy — local mixed HTTP/SOCKS inbound (no privileges)"
 }
@@ -484,7 +486,7 @@ func modeLabel(mode connectcore.Mode) string {
 // applies it on the next connect.
 func modeNote(mode connectcore.Mode) string {
 	if mode == connectcore.ModeTUN {
-		return "TUN mode: the next connect captures every application — the client must be running under sudo"
+		return "TUN mode: the next connect captures every application — " + tunModeAdvice
 	}
 	return "proxy mode: the next connect serves a local mixed proxy and points the system proxy at it"
 }
