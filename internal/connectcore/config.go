@@ -75,11 +75,31 @@ const (
 	// device, so a hard kill is safe.
 	LadderKillGrace = 500 * time.Millisecond
 
+	// TUNKillGrace replaces LadderKillGrace in TUN mode. A TUN candidate holds
+	// a tunnel device plus the routes and DNS settings sing-box installed for
+	// it, and only sing-box's own interrupt handling puts those back. A hard
+	// kill after half a second would leave the host routing traffic at an
+	// interface that no longer exists, so the interrupt gets the room it needs.
+	//
+	// This grace is only worth anything where the interrupt is delivered at
+	// all. A host on a platform where it cannot stop the tunnel process
+	// gracefully must refuse TUN mode in its Elevation hook rather than rely on
+	// this window — see the terminal client's Windows implementation.
+	TUNKillGrace = 5 * time.Second
+
 	// TunnelReadyTimeout bounds how long a candidate's sing-box has to bind its
 	// mixed inbound before the rung is judged failed (a config or bind error).
 	// It replaces a fixed post-launch grace, so a healthy engine that binds in
 	// tens of ms is not made to wait the whole window.
 	TunnelReadyTimeout = 5 * time.Second
+
+	// TUNTunnelReadyTimeout replaces TunnelReadyTimeout in TUN mode, where
+	// readiness is a higher bar than binding a socket: sing-box has to create
+	// the tunnel device and install the routes (on Linux, policy rules and a
+	// routing table) that make it the default path, and only then does the
+	// engine consider the rung up. See tunInterfaceReady for why the routes,
+	// not the device, are what readiness tests.
+	TUNTunnelReadyTimeout = 15 * time.Second
 
 	// MaxRecoveryBackoff caps the Retry-After a rate-limited broker can impose on
 	// a mid-session recovery fetch, so a misbehaving or hostile front cannot

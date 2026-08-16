@@ -26,6 +26,8 @@ type fakeDriver struct {
 	directory   []connectcore.DirectoryRelay
 	info        connectcore.ConnectionInfo
 	infoOK      bool
+	modes       []connectcore.Mode
+	modeErr     error
 }
 
 func (d *fakeDriver) ConnectTarget(brokerURL string, target connectcore.RelayTarget) error {
@@ -57,6 +59,16 @@ func (d *fakeDriver) RankedDirectory(context.Context, string) ([]connectcore.Dir
 
 func (d *fakeDriver) LocalProxyPort() (int, error) { return 43210, nil }
 func (d *fakeDriver) LocalProxyPortWarning() error { return nil }
+
+func (d *fakeDriver) SetMode(mode connectcore.Mode) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.modeErr != nil {
+		return d.modeErr
+	}
+	d.modes = append(d.modes, mode)
+	return nil
+}
 
 func (d *fakeDriver) lastConnect(t *testing.T) (string, connectcore.RelayTarget) {
 	t.Helper()
@@ -215,18 +227,72 @@ func TestSettingsEditCommitsBrokerURL(t *testing.T) {
 	}
 }
 
-func TestModeFieldExplainsProxyOnly(t *testing.T) {
+func TestModeFieldTogglesCaptureModeThroughTheEngine(t *testing.T) {
 	driver := &fakeDriver{}
 	m := newTestModel(driver)
 	m.view = viewSettings
 
-	m, _ = update(t, m, keyMsg("down")) // onto the mode field
-	m, _ = update(t, m, keyMsg("enter"))
+	m, msg := update(t, m, keyMsg("down")) // onto the mode field
+	m, msg = update(t, m, keyMsg("enter"))
 	if m.settings.editing {
 		t.Fatal("mode field must not open a text editor")
 	}
+	// The engine owns the mode: the view adopts it only from the reply.
+	if m.settings.mode != connectcore.ModeProxy {
+		t.Fatalf("mode changed before the engine answered: %v", m.settings.mode)
+	}
+	if got := driver.modes; len(got) != 1 || got[0] != connectcore.ModeTUN {
+		t.Fatalf("SetMode calls = %v; want one ModeTUN", got)
+	}
+	m, _ = update(t, m, msg)
+	if m.settings.mode != connectcore.ModeTUN {
+		t.Fatalf("mode = %v after a clean SetMode; want TUN", m.settings.mode)
+	}
 	if m.settings.note == "" {
-		t.Fatal("mode field did not explain why TUN is unavailable")
+		t.Fatal("switching mode said nothing about what changes")
+	}
+
+	// Toggling again goes back to proxy.
+	m, msg = update(t, m, keyMsg("enter"))
+	m, _ = update(t, m, msg)
+	if m.settings.mode != connectcore.ModeProxy {
+		t.Fatalf("mode = %v after a second toggle; want proxy", m.settings.mode)
+	}
+}
+
+// A live session keeps the mode it started with, so the engine's refusal has
+// to reach the user instead of the view drifting out of sync with it.
+func TestModeToggleRefusalKeepsTheEngineMode(t *testing.T) {
+	driver := &fakeDriver{modeErr: errors.New("disconnect before changing the capture mode")}
+	m := newTestModel(driver)
+	m.view = viewSettings
+
+	m, _ = update(t, m, keyMsg("down"))
+	m, msg := update(t, m, keyMsg("enter"))
+	m, _ = update(t, m, msg)
+	if m.settings.mode != connectcore.ModeProxy {
+		t.Fatalf("mode = %v after a refused SetMode; want the engine's proxy mode", m.settings.mode)
+	}
+	if !strings.Contains(m.settings.note, "disconnect before") {
+		t.Fatalf("note = %q; want the engine's refusal", m.settings.note)
+	}
+}
+
+// TUN mode has no local endpoint, so the client must not resolve (and persist)
+// a stable proxy port for a listener that never opens.
+func TestTUNModeSkipsProxyPortResolution(t *testing.T) {
+	cfg := connectConfig{TUN: true}
+	m := newTUIModel(&fakeDriver{}, newLogRing(logRingCapacity), cfg)
+	if m.settings.mode != connectcore.ModeTUN {
+		t.Fatalf("mode = %v; want TUN from --tun", m.settings.mode)
+	}
+	m.width, m.height = 80, 24
+	m.view = viewStatus
+	if body := m.View(); !strings.Contains(body, "TUN — whole device") {
+		t.Fatalf("status view did not report TUN capture:\n%s", body)
+	}
+	if strings.Contains(m.View(), "resolving…") {
+		t.Fatal("TUN mode still advertises a local proxy endpoint")
 	}
 }
 

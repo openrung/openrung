@@ -123,6 +123,10 @@ func runHeadlessConnect(cfg connectConfig) error {
 	engine.PunchEnabled = cfg.PunchEnabled
 	engine.PunchURL = cfg.PunchURL
 	engine.PunchInsecure = cfg.PunchInsecure
+	engine.TunnelMTU = cfg.MTU
+	if err := engine.SetMode(cfg.mode()); err != nil {
+		return err
+	}
 	engine.Start()
 	// Graceful teardown on every exit: tunnel down, OS proxy restored,
 	// telemetry session ended and flushed.
