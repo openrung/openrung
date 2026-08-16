@@ -330,6 +330,31 @@ func TestValidateRejectsUnusableFlagValuesAtStart(t *testing.T) {
 	}
 }
 
+// EffectiveMode exists so a caller never layers its own rules on a Mode the
+// foundation posture is about to override.
+func TestEffectiveModeReportsThePostureOverride(t *testing.T) {
+	base := Config{BrokerURL: "https://broker.example", ListenPort: 443}
+	for name, test := range map[string]struct {
+		mutate func(*Config)
+		want   string
+	}{
+		"stated mode is kept":              {func(c *Config) { c.Mode = ModeTunnel; c.HubAddr = "hub.example:9443" }, ModeTunnel},
+		"unset mode defaults to auto":      {func(c *Config) {}, ModeAuto},
+		"foundation token forces direct":   {func(c *Config) { c.Mode = ModeAuto; c.FoundationToken = "fnd" }, ModeDirect},
+		"foundation class keeps its mode":  {func(c *Config) { c.Mode = ModeDirect; c.NodeClass = relay.NodeClassFoundation }, ModeDirect},
+		"contradictory posture has none":   {func(c *Config) { c.FoundationToken = "fnd"; c.NodeClass = relay.NodeClassVolunteer }, ""},
+		"foundation class barred from hub": {func(c *Config) { c.Mode = ModeTunnel; c.HubAddr = "h:1"; c.NodeClass = relay.NodeClassFoundation }, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := base
+			test.mutate(&cfg)
+			if got := cfg.EffectiveMode(); got != test.want {
+				t.Fatalf("EffectiveMode() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 // A real broker derives the relay ID from the identity key, so re-registering
 // after an expired lease returns the SAME ID. Status.Registrations is then the
 // only signal that it happened — a caller diffing RelayID would see nothing.

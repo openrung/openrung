@@ -328,6 +328,21 @@ func (c Config) effectiveConfig() (Config, error) {
 	return c, nil
 }
 
+// EffectiveMode reports the mode this config will actually run in, which is
+// not always Mode: a foundation token forces direct, so that its credential
+// can never reach a hub. A caller layering its own rules on the mode — the CLI
+// rejects a hubless auto config that the engine would instead degrade to
+// direct — must consult this, or it will judge a mode the posture is about to
+// override. A config whose posture is self-contradictory has no effective mode
+// and returns "", leaving that error for Start to report in full.
+func (c Config) EffectiveMode() string {
+	effective, err := c.withDefaults().effectiveConfig()
+	if err != nil {
+		return ""
+	}
+	return effective.Mode
+}
+
 // brokerClient builds the broker client for this config. A foundation token is
 // the bearer and, on its own, requires secure transport (https + redirect
 // refusal); the node-class check is case/space-insensitive so the guarantee

@@ -305,6 +305,43 @@ func TestMalformedFlagValuesAreRejected(t *testing.T) {
 	}
 }
 
+// The two CLI-only rules above are per-mode, and they must read the mode the
+// engine will actually run in: a foundation token forces direct, so an explicit
+// -mode auto beside one is not auto at all. Each of these was accepted before
+// the frontend rewrite and must stay accepted.
+func TestModeSpecificRulesRespectTheEffectiveMode(t *testing.T) {
+	for name, args := range map[string][]string{
+		// Forced to direct by the token, so the hub requirement does not apply.
+		"foundation token with auto and no hub": {"-foundation-token", "fnd", "-mode", "auto", "-broker", "https://broker.example"},
+		// Tunnel takes its endpoint from the hub, so the port is never read.
+		"tunnel ignores the public port": {"-mode", "tunnel", "-hub", "hub.example:9443", "-public-port", "0"},
+		// Auto takes its endpoint from the probe, so likewise.
+		"auto ignores the public port": {"-mode", "auto", "-hub", "hub.example:9443", "-public-port", "0"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseFlags(t, args...).engineConfig(); err != nil {
+				t.Fatalf("engineConfig(%v) error = %v, want acceptance", args, err)
+			}
+		})
+	}
+
+	// A foundation token that forces direct brings the public-port rule WITH
+	// it, since direct mode is what actually advertises the port.
+	if _, err := parseFlags(t, "-foundation-token", "fnd", "-mode", "auto", "-public-port", "0").engineConfig(); err == nil {
+		t.Fatal("engineConfig() error = nil, want the direct-mode public-port rule to follow the forced mode")
+	}
+
+	// A self-contradictory posture has no effective mode, so neither rule
+	// fires and the engine reports the real problem.
+	cfg, err := parseFlags(t, "-foundation-token", "fnd", "-node-class", "volunteer", "-mode", "auto").engineConfig()
+	if err != nil {
+		t.Fatalf("engineConfig() error = %v, want the posture conflict deferred to Start", err)
+	}
+	if err := engine.New(cfg, engine.Events{}).Start(); err == nil || !strings.Contains(err.Error(), "conflicts") {
+		t.Fatalf("Start() error = %v, want the node-class conflict", err)
+	}
+}
+
 // The posture rules live in the engine now; this checks the frontend really
 // hands it the fields they key off, rather than swallowing them.
 func TestPostureFlagsReachTheEngine(t *testing.T) {

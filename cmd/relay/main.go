@@ -180,21 +180,6 @@ func (f *cliFlags) register(fs *flag.FlagSet, identitySeed string) {
 // a malformed flag value; every posture rule (foundation, WSS, mode) belongs to
 // the engine and is enforced by Start.
 func (f *cliFlags) engineConfig() (engine.Config, error) {
-	mode := normalizeMode(f.mode, f.tunnel, f.hubAddr)
-	// The engine lets a hubless auto config degrade to direct, which suits a
-	// GUI whose user has not configured a hub yet. An operator who typed
-	// -mode auto asked for reachability probing, so say it cannot run rather
-	// than silently serving direct. (normalizeMode only returns auto for an
-	// explicit request or a configured hub, so this catches only the former.)
-	if mode == engine.ModeAuto && f.hubAddr == "" {
-		return engine.Config{}, fmt.Errorf("hub is required in auto mode for reachability probing (set -hub or use -mode direct)")
-	}
-	// Zero reads to the engine as "advertise the listen port", which is a
-	// sensible default for a programmatic caller but never what a flag that
-	// defaults to 443 meant.
-	if f.publicPort < 1 || f.publicPort > 65535 {
-		return engine.Config{}, fmt.Errorf("public-port must be between 1 and 65535")
-	}
 	fronts, err := parseWSSFrontsFlag(f.wssFronts)
 	if err != nil {
 		return engine.Config{}, fmt.Errorf("invalid wss-fronts: %w", err)
@@ -218,7 +203,7 @@ func (f *cliFlags) engineConfig() (engine.Config, error) {
 	if configPath == "" {
 		configPath = filepath.Join(os.TempDir(), "openrung-xray-config.json")
 	}
-	return engine.Config{
+	cfg := engine.Config{
 		BrokerURL:           f.broker,
 		Token:               f.registrationToken,
 		FoundationToken:     f.foundationToken,
@@ -229,7 +214,7 @@ func (f *cliFlags) engineConfig() (engine.Config, error) {
 		XrayPath:            f.xrayPath,
 		ListenHost:          f.listenHost,
 		ListenPort:          f.listenPort,
-		Mode:                mode,
+		Mode:                normalizeMode(f.mode, f.tunnel, f.hubAddr),
 		HubAddr:             f.hubAddr,
 		HubHTTPURL:          f.hubHTTP,
 		HubCertFingerprint:  f.hubCertFingerprint,
@@ -253,7 +238,33 @@ func (f *cliFlags) engineConfig() (engine.Config, error) {
 		Version:      reportedRelayVersion(),
 		PunchCapable: f.punch,
 		DisableXray:  f.skipXrayRun,
-	}, nil
+	}
+
+	// Two rules the engine deliberately does not apply, kept per-mode exactly
+	// as cmd/relay's own Validate had them. They key off the EFFECTIVE mode
+	// because a foundation token forces direct: -foundation-token -mode auto
+	// is not really auto and has always been accepted without a hub. An
+	// unresolvable posture yields no effective mode, so neither rule fires and
+	// Start reports the contradiction itself.
+	switch cfg.EffectiveMode() {
+	case engine.ModeAuto:
+		// The engine degrades a hubless auto config to direct, which suits a
+		// GUI whose user has not configured a hub yet. An operator who typed
+		// -mode auto asked for reachability probing; say it cannot run rather
+		// than silently serving direct.
+		if f.hubAddr == "" {
+			return engine.Config{}, fmt.Errorf("hub is required in auto mode for reachability probing (set -hub or use -mode direct)")
+		}
+	case engine.ModeDirect:
+		// Zero reads to the engine as "advertise the listen port", a sensible
+		// default for a programmatic caller but never what a flag defaulting
+		// to 443 meant. Only direct mode advertises it: tunnel takes its
+		// endpoint from the hub, and auto from the probe.
+		if f.publicPort < 1 || f.publicPort > 65535 {
+			return engine.Config{}, fmt.Errorf("public-port must be between 1 and 65535")
+		}
+	}
+	return cfg, nil
 }
 
 // normalizeMode resolves the requested mode. An explicit -mode wins; otherwise
