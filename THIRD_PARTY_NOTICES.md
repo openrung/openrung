@@ -168,6 +168,8 @@ apply to the Docker image channel only.
 Statically linked into the Go server binaries and the client CLI (union
 across the binaries; versions per the root `go.mod`):
 
+- `github.com/atotto/clipboard` v0.1.4 — Copyright (c) 2013 Ato Araki
+  (client TUI only, via `bubbles/textinput`)
 - `golang.org/x/crypto` v0.51.0 — Copyright (c) The Go Authors
 - `golang.org/x/net` v0.55.0 — Copyright (c) The Go Authors
 - `golang.org/x/sync` v0.20.0 — Copyright (c) The Go Authors
@@ -189,6 +191,29 @@ across the binaries; versions per the root `go.mod`):
 - `github.com/jackc/puddle/v2` v2.2.1 — Copyright (c) 2018 Jack Christensen
 - `musl` libc (Alpine) — Copyright (c) the musl contributors
 - `alpine-keys` (Alpine) — MIT
+
+Statically linked into the client CLI only (the interactive TUI stack, union
+across `GOOS={darwin,linux,windows}`; versions per the root `go.mod`):
+
+- `github.com/charmbracelet/bubbletea` v1.3.10, `…/bubbles` v1.0.0,
+  `…/lipgloss` v1.1.0, `…/colorprofile`, and `…/x/{ansi,cellbuf,term}` —
+  Copyright (c) 2020-2025 Charmbracelet, Inc
+- `github.com/aymanbagabas/go-osc52/v2` v2.0.1 — Copyright (c) 2022 Ayman
+  Bagabas
+- `github.com/clipperhouse/displaywidth` v0.9.0, `…/stringish` v0.1.1, and
+  `…/uax29/v2` v2.5.0 — Copyright (c) 2020-2025 Matt Sherman
+- `github.com/erikgeiser/coninput` — Copyright (c) 2021 Erik G. (Windows
+  console input; Windows builds only)
+- `github.com/lucasb-eyer/go-colorful` v1.3.0 — Copyright (c) 2013 Lucas Beyer
+- `github.com/mattn/go-isatty` v0.0.20 and `github.com/mattn/go-runewidth`
+  v0.0.19 — Copyright (c) Yasuhiro Matsumoto
+- `github.com/mattn/go-localereader` v0.0.1 — Copyright (c) Yasuhiro
+  Matsumoto (MIT per its README; upstream ships no LICENSE file)
+- `github.com/muesli/ansi`, `github.com/muesli/cancelreader` v0.2.2, and
+  `github.com/muesli/termenv` v0.16.0 — Copyright (c) 2019-2022 Christian
+  Muehlhaeuser (cancelreader: and Erik Geiser)
+- `github.com/rivo/uniseg` v0.4.7 — Copyright (c) 2019 Oliver Kuederle
+- `github.com/xo/terminfo` — Copyright (c) 2016 Anmol Sethi
 
 > Mobile-app dependencies (UI toolkit, MapLibre, libbox, and their NOTICE
 > files) are inventoried in the mobile app's own repository, alongside the

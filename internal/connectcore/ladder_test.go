@@ -153,7 +153,7 @@ func TestRecoveryReportsStableProxyPortCollisionBeforeBlamingRelays(t *testing.T
 		return nil
 	}
 	conn := &connection{brokerURL: "http://broker.example"}
-	result, _, stage, err := s.reladder(t.Context(), conn, port, "", "", "")
+	result, _, stage, err := s.reladder(t.Context(), conn, port, RelayTarget{}, "")
 	if result != nil {
 		result.teardown()
 	}
@@ -939,5 +939,72 @@ func TestHealthLoopResetsOnProbeSuccess(t *testing.T) {
 	case err := <-failCh:
 		t.Fatalf("health loop triggered despite periodic probe successes: %v", err)
 	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+func TestConnectTargetLabelPinsLabelledRelays(t *testing.T) {
+	// -relay-label is an identity target: only relays carrying the label are
+	// candidates, in broker order (identity targets skip ranking), and the
+	// unlabelled broker favorite is never attempted.
+	sink := newTelemetrySink(t)
+	labelled := func(id, host, label string) relay.Descriptor {
+		r := relayAt(id, "JP", "Tokyo", "Japan", host)
+		r.Label = label
+		return r
+	}
+	fixtures := []relay.Descriptor{
+		labelled("a", "127.0.0.10", ""),
+		labelled("b", "127.0.0.11", "home"),
+		labelled("c", "127.0.0.12", "home"),
+	}
+	s, _ := newLadderService(t, func() []relay.Descriptor { return fixtures })
+
+	if err := s.ConnectTarget(sink.srv.URL, RelayTarget{Label: "home"}); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	waitForStatus(t, s, StatusConnected)
+	if err := s.Disconnect(); err != nil {
+		t.Fatalf("disconnect: %v", err)
+	}
+	waitForStatus(t, s, StatusDisconnected)
+	waitIdle(t, s)
+
+	succeeded := sink.named("connection_succeeded")
+	if len(succeeded) != 1 || succeeded[0].RelayID != "b" {
+		t.Fatalf("connection_succeeded = %+v, want the first labelled relay b", succeeded)
+	}
+}
+
+func TestActiveConnectionInfoTracksPromotedCandidate(t *testing.T) {
+	sink := newTelemetrySink(t)
+	fixtures := []relay.Descriptor{relayAt("a", "JP", "Tokyo", "Japan", "127.0.0.10")}
+	s, _ := newLadderService(t, func() []relay.Descriptor { return fixtures })
+
+	if _, ok := s.ActiveConnectionInfo(); ok {
+		t.Fatal("idle engine reported an active connection")
+	}
+	if err := s.Connect(sink.srv.URL, "", ""); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	waitForStatus(t, s, StatusConnected)
+
+	info, ok := s.ActiveConnectionInfo()
+	if !ok {
+		t.Fatal("connected engine reported no active connection")
+	}
+	if info.Relay.ID != "a" || info.Transport != relay.TransportDirect || info.FrontID != "" {
+		t.Fatalf("info = %+v, want relay a over the direct transport", info)
+	}
+	if info.ProxyPort < 1 {
+		t.Fatalf("proxy port = %d, want the resolved local endpoint", info.ProxyPort)
+	}
+
+	if err := s.Disconnect(); err != nil {
+		t.Fatalf("disconnect: %v", err)
+	}
+	waitForStatus(t, s, StatusDisconnected)
+	waitIdle(t, s)
+	if _, ok := s.ActiveConnectionInfo(); ok {
+		t.Fatal("disconnected engine still reported an active connection")
 	}
 }

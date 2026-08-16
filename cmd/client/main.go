@@ -1,28 +1,29 @@
+// Command client is the OpenRung end-user terminal client (docs/adr/001
+// Track B): an interactive TUI over the shared connection engine in
+// internal/connectcore — the same engine the desktop GUI drives — plus thin
+// headless subcommands for scripts. The view layer holds no connection logic:
+// engine events in, engine commands out.
 package main
 
 import (
-	"context"
 	_ "embed"
-	"errors"
 	"flag"
 	"fmt"
 	"os"
-	"os/signal"
 	"path/filepath"
-	"time"
 
 	"openrung/internal/buildinfo"
-	"openrung/internal/client"
-	"openrung/internal/clienttelemetry"
-	"openrung/internal/connectcore"
-	"openrung/internal/punch"
-	"openrung/internal/relay"
+	"openrung/internal/proxyconfig"
 )
 
 //go:embed VERSION
 var baseVersion string
 
 func main() {
+	// Must run before anything can dial the broker: launched from a shell the
+	// generated proxy helper activated, our own bootstrap would otherwise be
+	// sent through the not-yet-listening local endpoint.
+	proxyconfig.SanitizeInheritedProxyEnvironment()
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -30,8 +31,9 @@ func main() {
 }
 
 func run(args []string) error {
+	// Bare invocation launches the interactive client, like the desktop app.
 	if len(args) == 0 {
-		return usageError()
+		return runConnect(nil)
 	}
 
 	switch args[0] {
@@ -56,343 +58,60 @@ func versionInfo() string {
 	return buildinfo.Info("client", baseVersion)
 }
 
-func runCheck(args []string) error {
-	cfg, err := parseCommonFlags("check", args)
-	if err != nil {
-		return err
-	}
-
-	selected, _, _, err := fetchSelectedRelay(context.Background(), cfg, "", "")
-	if err != nil {
-		return err
-	}
-	printSelectedRelay(os.Stdout, selected)
-	return nil
-}
-
-func runConfig(args []string) error {
-	fs := flag.NewFlagSet("config", flag.ContinueOnError)
-	cfg := commonConfig{}
-	addCommonFlags(fs, &cfg)
-	outPath := fs.String("out", "", "write generated sing-box config to this path; defaults to stdout")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
-	selected, configJSON, _, err := fetchSelectedRelay(context.Background(), cfg, "", "")
-	if err != nil {
-		return err
-	}
-
-	if *outPath == "" || *outPath == "-" {
-		fmt.Print(string(configJSON))
-		return nil
-	}
-	if err := os.WriteFile(*outPath, configJSON, 0o600); err != nil {
-		return fmt.Errorf("write config: %w", err)
-	}
-	fmt.Fprintf(os.Stdout, "wrote sing-box config for relay %s to %s\n", selected.ID, *outPath)
-	return nil
+// connectConfig is the connect subcommand's flag surface: the historical
+// common flags plus the tunnel-run flags. The legacy flags that the engine now
+// owns are still parsed (scripts pass them) and warned about instead of
+// breaking; see legacyFlagWarnings.
+type connectConfig struct {
+	commonConfig
+	SingBoxPath   string
+	ConfigOut     string
+	PunchEnabled  bool
+	PunchURL      string
+	PunchInsecure bool
+	Headless      bool
 }
 
 func runConnect(args []string) error {
 	fs := flag.NewFlagSet("connect", flag.ContinueOnError)
-	cfg := commonConfig{}
-	addCommonFlags(fs, &cfg)
-	singBoxPath := fs.String("sing-box", "sing-box", "path to sing-box binary")
-	configOut := fs.String("config-out", "", "optional path for generated sing-box config")
-	punchEnabled := fs.Bool("punch", true, "attempt a direct NAT-punched path before falling back to the relay")
-	punchURL := fs.String("punch-url", "", "override the hub punch coordinator base URL (else use the relay's advertised punch_endpoint)")
-	punchInsecure := fs.Bool("punch-insecure", false, "skip TLS verification of the hub punch API (for a self-signed hub cert; testing)")
+	cfg := connectConfig{}
+	addCommonFlags(fs, &cfg.commonConfig)
+	fs.StringVar(&cfg.SingBoxPath, "sing-box", "sing-box", "path to sing-box binary")
+	fs.StringVar(&cfg.ConfigOut, "config-out", "", "deprecated: the engine manages its own config; use the config subcommand")
+	fs.BoolVar(&cfg.PunchEnabled, "punch", true, "attempt a direct NAT-punched path before falling back to the relay")
+	fs.StringVar(&cfg.PunchURL, "punch-url", "", "override the hub punch coordinator base URL (else use the relay's advertised punch_endpoint)")
+	fs.BoolVar(&cfg.PunchInsecure, "punch-insecure", false, "skip TLS verification of the hub punch API (for a self-signed hub cert; testing)")
+	fs.BoolVar(&cfg.Headless, "headless", false, "non-interactive connect: stream engine logs to stdout until interrupted")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-
-	mgr := newConnectManager(cfg.BrokerURL)
-	session, _ := mgr.BeginSession()
-	clientID, sessionID := sessionIdentity(session)
-	// Resolve public-IP geo concurrently (don't block connect on it) so the
-	// broker dashboard can attribute country/city/ISP to the real client, the
-	// way the mobile apps do. Heartbeats and later events pick it up once ready.
-	go mgr.SetGeoAttributes(clienttelemetry.LookupGeoAttributes(ctx, nil))
-	mgr.Record("connection_attempted", "", nil, nil)
-
-	selected, configJSON, brokerFetch, err := fetchSelectedRelay(ctx, cfg, clientID, sessionID)
-	if err != nil {
-		recordConnectFailure(ctx, mgr, "broker_fetch", "", err)
-		return err
+	if cfg.Headless {
+		return runHeadlessConnect(cfg)
 	}
-
-	// Try a direct NAT-punched path first; on any failure fall back to the relay
-	// endpoint so the outcome is never worse than today.
-	connectHost, connectPort := selected.PublicHost, selected.PublicPort
-	punchOpts := connectcore.PunchOptions{
-		Enabled:  *punchEnabled,
-		BaseURL:  *punchURL,
-		Insecure: *punchInsecure,
-		// The CLI has always reported the deliberate opt-out separately from a
-		// relay that simply cannot punch.
-		RecordSkipped: true,
-	}
-	if est, punchedConfig := punchedPath(ctx, cfg, mgr, selected, punchOpts); est != nil {
-		defer est.Close()
-		go func() { _ = est.Bridge.Serve(ctx) }()
-		configJSON = punchedConfig
-		connectHost, connectPort = est.BridgeHost, est.BridgePort
-		fmt.Fprintf(os.Stdout, "punched direct path to relay %s (peer %s, nat %s)\n", selected.ID, est.PeerIP, est.NATClass)
-	}
-
-	relayTCPMs, err := connectcore.RelayTCPReachable(ctx, connectHost, connectPort, relayDialTimeout)
-	if err != nil {
-		attemptAttrs := map[string]string{"error_type": errorType(err)}
-		if reason := clienttelemetry.ClassifyError(err); reason != "" {
-			attemptAttrs["failure_reason"] = reason
-		}
-		if detail := clienttelemetry.ErrorDetail(err); detail != "" {
-			attemptAttrs["failure_detail"] = detail
-		}
-		mgr.Record("relay_attempt_failed", selected.ID, attemptAttrs,
-			map[string]int64{"attempt": 1})
-		recordConnectFailure(ctx, mgr, "relay_connect", selected.ID, err)
-		// The shared check already names the endpoint it could not reach.
-		return fmt.Errorf("relay %s: %w", selected.ID, err)
-	}
-
-	configPath, cleanup, err := writeConnectConfig(*configOut, configJSON)
-	if err != nil {
-		recordConnectFailure(ctx, mgr, "config_write", selected.ID, err)
-		return err
-	}
-	defer cleanup()
-
-	printSelectedRelay(os.Stdout, selected)
-	fmt.Fprintf(os.Stdout, "starting sing-box with config %s\n", configPath)
-
-	mgr.MarkConnected(selected.ID)
-	runner := client.SingBoxRunner{
-		Path:   *singBoxPath,
-		Stdout: os.Stdout,
-		Stderr: os.Stderr,
-	}
-
-	tunnelStarted := time.Now()
-	runErrCh := make(chan error, 1)
-	go func() { runErrCh <- runner.Run(ctx, configPath) }()
-
-	probeMs, probeOK := probeInternet(ctx, cfg.BrokerURL)
-	tunnelStartMs := time.Since(tunnelStarted).Milliseconds()
-
-	// If sing-box already exited, the tunnel never came up.
-	select {
-	case runErr := <-runErrCh:
-		recordConnectFailure(ctx, mgr, "tunnel_start", selected.ID, runErr)
-		return runErr
-	default:
-	}
-
-	measurements := map[string]int64{
-		"broker_fetch_ms": brokerFetch.Milliseconds(),
-		"relay_tcp_ms":    relayTCPMs,
-		"tunnel_start_ms": tunnelStartMs,
-		"relay_attempts":  1,
-	}
-	if probeOK {
-		measurements["internet_probe_ms"] = probeMs
-	}
-	mgr.Record("connection_succeeded", selected.ID, nil, measurements)
-	if err := mgr.Flush(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: telemetry flush failed: %v\n", err)
-	}
-
-	go mgr.RunHeartbeatLoop(ctx)
-
-	runErr := <-runErrCh
-	reason := "tunnel_exited"
-	if ctx.Err() != nil {
-		reason = "disconnect"
-	}
-	mgr.Record("tunnel_stopped", selected.ID, nil, nil)
-	mgr.EndSession(reason)
-	flushOnShutdown(mgr)
-	return runErr
+	return runTUI(cfg)
 }
 
-// sessionIdentity returns the client and session ids for a (possibly nil)
-// session, used to populate identity headers on the relay-list request.
-func sessionIdentity(session *clienttelemetry.Session) (clientID, sessionID string) {
-	if session == nil {
-		return "", ""
+// legacyFlagWarnings names the still-parsed connect flags the shared engine
+// deliberately no longer honors, so old scripts keep running and say why their
+// knob went quiet. The engine owns candidate paging, runs the zero-privilege
+// proxy mode (no TUN MTU until ADR-001 B3), walks its own ladder over every
+// address family, and manages its temp config lifecycle.
+func legacyFlagWarnings(cfg connectConfig) []string {
+	var warnings []string
+	if cfg.Limit != defaultRelayLimit {
+		warnings = append(warnings, "-limit is ignored: the connection engine manages the relay candidate page size")
 	}
-	return session.ClientID, session.ID
-}
-
-// recordConnectFailure emits connection_failed, ends the session, and flushes.
-func recordConnectFailure(ctx context.Context, mgr *clienttelemetry.Manager, stage, relayID string, err error) {
-	attrs := map[string]string{
-		"failure_stage": stage,
-		"error_type":    errorType(err),
+	if cfg.MTU != 0 {
+		warnings = append(warnings, "-mtu is ignored: connect runs in proxy mode (TUN mode returns in a later release; the config subcommand still honors -mtu)")
 	}
-	if reason := clienttelemetry.ClassifyError(err); reason != "" {
-		attrs["failure_reason"] = reason
+	if cfg.Family != defaultRelayFamily {
+		warnings = append(warnings, "-relay-family is ignored by connect: the engine tries every usable relay (check and config still honor it)")
 	}
-	if detail := clienttelemetry.ErrorDetail(err); detail != "" {
-		attrs["failure_detail"] = detail
+	if cfg.ConfigOut != "" {
+		warnings = append(warnings, "-config-out is ignored: the engine manages its own temp config; use the config subcommand to export one")
 	}
-	mgr.Record("connection_failed", relayID, attrs, nil)
-	mgr.EndSession("connection_failed")
-	flushOnShutdown(mgr)
-}
-
-// flushOnShutdown runs the shared shutdown flush and warns when it fails, the
-// one thing the CLI does differently from the engine's silent drop.
-func flushOnShutdown(mgr *clienttelemetry.Manager) {
-	if err := connectcore.FlushOnShutdown(mgr); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: telemetry flush failed: %v\n", err)
-	}
-}
-
-type commonConfig struct {
-	BrokerURL  string
-	Limit      int
-	MTU        int
-	Family     string
-	RelayID    string
-	RelayLabel string
-}
-
-func parseCommonFlags(name string, args []string) (commonConfig, error) {
-	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	cfg := commonConfig{}
-	addCommonFlags(fs, &cfg)
-	if err := fs.Parse(args); err != nil {
-		return commonConfig{}, err
-	}
-	return cfg, nil
-}
-
-func addCommonFlags(fs *flag.FlagSet, cfg *commonConfig) {
-	fs.StringVar(&cfg.BrokerURL, "broker", "http://localhost:8080", "broker base URL")
-	fs.IntVar(&cfg.Limit, "limit", 5, "relay candidate limit")
-	fs.IntVar(&cfg.MTU, "mtu", 0, "TUN MTU; defaults to sing-box config default")
-	fs.StringVar(&cfg.Family, "relay-family", string(client.RelayFamilyAuto), "relay address family: auto, ipv4, or ipv6")
-	fs.StringVar(&cfg.RelayID, "relay-id", "", "connect only to the relay with this exact broker relay id (e.g. relay_abc...)")
-	fs.StringVar(&cfg.RelayLabel, "relay-label", "", "connect only to the relay(s) with this label")
-}
-
-// fetchSelectedRelay fetches relay candidates and selects one. clientID and
-// sessionID, when set, are forwarded as identity headers so the broker records a
-// client_seen event. The returned duration is the time spent in the broker
-// relay-list call (broker_fetch_ms for telemetry).
-func fetchSelectedRelay(ctx context.Context, cfg commonConfig, clientID, sessionID string) (relay.Descriptor, []byte, time.Duration, error) {
-	broker := client.BrokerClient{BaseURL: cfg.BrokerURL}
-	// When pinning a specific relay, fetch the full candidate set so the target
-	// isn't ranked out of a small -limit window.
-	target := connectcore.RelayTarget{RelayID: cfg.RelayID, Label: cfg.RelayLabel}
-	limit := cfg.Limit
-	if target.Targeted() {
-		limit = connectcore.DirectoryRelayLimit
-	}
-	fetchStarted := time.Now()
-	resp, err := broker.ListRelays(ctx, limit, clientID, sessionID)
-	brokerFetch := time.Since(fetchStarted)
-	if err != nil {
-		return relay.Descriptor{}, nil, brokerFetch, err
-	}
-
-	matched, _, err := connectcore.FilterCandidates(resp.Relays, target)
-	if err != nil {
-		return relay.Descriptor{}, nil, brokerFetch, err
-	}
-	resp.Relays = matched
-
-	family, err := client.ParseRelayFamily(cfg.Family)
-	if err != nil {
-		return relay.Descriptor{}, nil, brokerFetch, err
-	}
-
-	selected, err := client.SelectRelayForFamily(resp, family)
-	if err != nil {
-		if errors.Is(err, client.ErrNoUsableRelay) {
-			return relay.Descriptor{}, nil, brokerFetch, fmt.Errorf("no usable relay returned by broker")
-		}
-		return relay.Descriptor{}, nil, brokerFetch, err
-	}
-
-	configJSON, err := client.BuildSingBoxConfig(client.SingBoxConfigInput{Relay: selected, MTU: cfg.MTU})
-	if err != nil {
-		return relay.Descriptor{}, nil, brokerFetch, err
-	}
-	return selected, configJSON, brokerFetch, nil
-}
-
-// punchedPath runs the shared punch attempt and, on success, generates the
-// TUN-mode sing-box config pointed at the loopback bridge (the CLI's own
-// config shape). It returns a live Establishment whose Bridge the caller must
-// Serve; on any failure it returns (nil, nil) and the caller uses the relay
-// endpoint.
-func punchedPath(ctx context.Context, cfg commonConfig, mgr *clienttelemetry.Manager, selected relay.Descriptor, opts connectcore.PunchOptions) (*punch.Establishment, []byte) {
-	est := connectcore.AttemptPunch(ctx, mgr, selected, opts)
-	if est == nil {
-		return nil, nil
-	}
-
-	punchedConfig, err := client.BuildSingBoxConfig(client.SingBoxConfigInput{
-		Relay:                   selected,
-		MTU:                     cfg.MTU,
-		BridgeHost:              est.BridgeHost,
-		BridgePort:              est.BridgePort,
-		PunchPeerExcludeAddress: est.PeerIP,
-	})
-	if err != nil {
-		_ = est.Close()
-		mgr.Record("punch_failed", selected.ID, map[string]string{"reason": "config"}, nil)
-		return nil, nil
-	}
-	return est, punchedConfig
-}
-
-func writeConnectConfig(configOut string, configJSON []byte) (string, func(), error) {
-	if configOut != "" {
-		if err := os.WriteFile(configOut, configJSON, 0o600); err != nil {
-			return "", func() {}, fmt.Errorf("write config: %w", err)
-		}
-		return configOut, func() {}, nil
-	}
-
-	file, err := os.CreateTemp("", "openrung-sing-box-*.json")
-	if err != nil {
-		return "", func() {}, fmt.Errorf("create temp config: %w", err)
-	}
-	path := file.Name()
-	cleanup := func() {
-		_ = os.Remove(path)
-	}
-
-	if _, err := file.Write(configJSON); err != nil {
-		_ = file.Close()
-		cleanup()
-		return "", func() {}, fmt.Errorf("write temp config: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		cleanup()
-		return "", func() {}, fmt.Errorf("close temp config: %w", err)
-	}
-	return path, cleanup, nil
-}
-
-func printSelectedRelay(out *os.File, selected relay.Descriptor) {
-	expires := selected.ExpiresAt.Format(time.RFC3339)
-	fmt.Fprintf(
-		out,
-		"selected relay %s at %s:%d, expires %s\n",
-		selected.ID,
-		selected.PublicHost,
-		selected.PublicPort,
-		expires,
-	)
+	return warnings
 }
 
 func usageError() error {
@@ -403,19 +122,29 @@ func usageError() error {
 func printUsage() {
 	program := filepath.Base(os.Args[0])
 	fmt.Fprintf(os.Stderr, `Usage:
+  %[1]s                    Launch the interactive terminal client.
+  %[1]s connect            Same as bare invocation; flags seed the initial settings.
+  %[1]s connect -headless  Non-interactive connect (old behavior, engine-backed).
   %[1]s check   -broker http://localhost:8080
   %[1]s config  -broker http://localhost:8080 -out openrung-sing-box.json
-  %[1]s connect -broker http://localhost:8080 -sing-box /opt/homebrew/bin/sing-box
 
 Commands:
+  connect  Interactive TUI by default: Status, Relays, Logs, and Settings views
+           over the shared connection engine (proxy mode, no privileges).
+           With -headless, connect and stream logs until interrupted.
   check    Fetch relay candidates and print the selected usable relay.
   config   Generate a sing-box TUN client config for the selected relay.
-  connect  Generate a config and run sing-box to route traffic through OpenRung.
   version  Print the client version and exit.
 
+Keys (interactive):
+  c connect  d disconnect  r refresh relays  1-4/tab switch view  q quit
+
 Common flags:
-  -mtu            Override the generated TUN MTU, e.g. -mtu 1280 for IPv6 path tests.
-  -relay-family   Select relay family: auto, ipv4, or ipv6.
+  -broker         Broker base URL (default http://localhost:8080).
+  -relay-id       Pin the connect target to this exact broker relay id.
+  -relay-label    Pin the connect target to relay(s) with this label.
+  -mtu            Override the generated TUN MTU (config subcommand).
+  -relay-family   Select relay family for check/config: auto, ipv4, or ipv6.
 
 `, program)
 }

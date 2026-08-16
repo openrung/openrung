@@ -395,11 +395,18 @@ func (s *Engine) Prepare() (bool, error) {
 // Connect starts (or switches) the tunnel. targetRelayID takes precedence over
 // targetCountry; empty strings stand in for the contract's nulls. It resolves
 // once the start has been dispatched — completion is reported via events.
+func (s *Engine) Connect(brokerURL, targetCountry, targetRelayID string) error {
+	return s.ConnectTarget(brokerURL, RelayTarget{Country: targetCountry, RelayID: targetRelayID})
+}
+
+// ConnectTarget is Connect with the full RelayTarget surface: the TUI and the
+// headless CLI driver target by label too (-relay-label may name several
+// relays), which the contract-shaped Connect signature cannot express.
 //
 // connectMu serializes the whole teardown-then-install so two overlapping
 // Connect calls can never both tear down the old connection and then race to
 // install, which would orphan a live connection with no way to cancel it.
-func (s *Engine) Connect(brokerURL, targetCountry, targetRelayID string) error {
+func (s *Engine) ConnectTarget(brokerURL string, target RelayTarget) error {
 	s.connectMu.Lock()
 	defer s.connectMu.Unlock()
 
@@ -412,7 +419,7 @@ func (s *Engine) Connect(brokerURL, targetCountry, targetRelayID string) error {
 	s.mu.Unlock()
 
 	s.setStatus(StatusPreparing, keepLabel, clearError)
-	go s.runConnect(ctx, conn, brokerURL, targetCountry, targetRelayID)
+	go s.runConnect(ctx, conn, brokerURL, target)
 	return nil
 }
 
@@ -446,6 +453,34 @@ func (s *Engine) State() State {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.stateLocked()
+}
+
+// ConnectionInfo describes the live tunnel's access path for host status UIs:
+// which relay carries the session, over which access transport, and where the
+// local mixed inbound listens. State stays the contract's NativeVpnState shape;
+// this is the host-facing detail view beside it.
+type ConnectionInfo struct {
+	Relay     relay.Descriptor
+	Transport string // relay.TransportDirect, "punch", or "wss"
+	FrontID   string // set only on the relay-local WSS fallback path
+	ProxyPort int
+}
+
+// ActiveConnectionInfo returns the promoted candidate's path details, or false
+// while no candidate is live (idle, mid-ladder, or a recovery gap).
+func (s *Engine) ActiveConnectionInfo() (ConnectionInfo, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.conn == nil || s.conn.active == nil {
+		return ConnectionInfo{}, false
+	}
+	active := s.conn.active
+	return ConnectionInfo{
+		Relay:     active.relay,
+		Transport: active.accessTransport,
+		FrontID:   active.frontID,
+		ProxyPort: active.proxyPort,
+	}, true
 }
 
 // SessionID returns the live telemetry session id, or "" when idle.
@@ -516,19 +551,19 @@ func loopbackReady(ctx context.Context, port int) error {
 // then mid-session supervision — finalized exactly once on exit. The ladder
 // semantics are ported from the mobile OpenRungVpnService.connect /
 // connectFirstAvailable (the contract's reference implementation).
-func (s *Engine) runConnect(ctx context.Context, conn *connection, brokerURL, targetCountry, targetRelayID string) {
+func (s *Engine) runConnect(ctx context.Context, conn *connection, brokerURL string, target RelayTarget) {
 	defer close(conn.done)
 	// Cancel the connect context on every exit — including a terminal failure,
 	// which neither Disconnect nor teardownExisting reaches — so the heartbeat
 	// loop goroutine (bound to this ctx) never outlives the session.
 	defer conn.cancel()
-	stage, err := s.connectFlow(ctx, conn, brokerURL, targetCountry, targetRelayID)
+	stage, err := s.connectFlow(ctx, conn, brokerURL, target)
 	s.finalizeConn(conn, stage, err)
 }
 
 // connectFlow runs the connect phases and returns ("", nil) on a clean end (a
 // user disconnect or shutdown, at any phase) or the terminal (stage, error).
-func (s *Engine) connectFlow(ctx context.Context, conn *connection, brokerURL, targetCountry, targetRelayID string) (string, error) {
+func (s *Engine) connectFlow(ctx context.Context, conn *connection, brokerURL string, target RelayTarget) (string, error) {
 	s.setStatus(StatusConnecting, keepLabel, clearError)
 
 	mgr := newManager(brokerURL)
@@ -550,7 +585,7 @@ func (s *Engine) connectFlow(ctx context.Context, conn *connection, brokerURL, t
 		return "proxy_port", err
 	}
 
-	fetch, fetchMS, err := s.fetchCandidates(ctx, conn, brokerURL, targetCountry, targetRelayID)
+	fetch, fetchMS, err := s.fetchCandidates(ctx, conn, brokerURL, target)
 	if err != nil {
 		if ctx.Err() != nil {
 			return "", nil
@@ -558,11 +593,11 @@ func (s *Engine) connectFlow(ctx context.Context, conn *connection, brokerURL, t
 		return "broker_fetch", err
 	}
 
-	cands, stage, err := s.candidatesFor(fetch.Response, targetCountry, targetRelayID)
+	cands, stage, err := s.candidatesFor(fetch.Response, target)
 	if err != nil {
 		return stage, err
 	}
-	order := s.rankLadder(ctx, cands, targetRelayID)
+	order := s.rankLadder(ctx, cands, target)
 	ladder := order.candidates()
 	s.mu.Lock()
 	conn.candidates = ladder
@@ -593,13 +628,13 @@ func (s *Engine) connectFlow(ctx context.Context, conn *connection, brokerURL, t
 		return "", nil // user disconnected as the winner came up
 	}
 
-	return s.supervise(ctx, conn, res, port, targetCountry, targetRelayID)
+	return s.supervise(ctx, conn, res, port, target)
 }
 
 // fetchCandidates fetches the relay list, using the full directory page size
 // for targeted connects so the target is present (the default page may miss
 // it), like the mobile client. Returns the fetch duration for broker_fetch_ms.
-func (s *Engine) fetchCandidates(ctx context.Context, conn *connection, brokerURL, targetCountry, targetRelayID string) (discovery.Fetch, int64, error) {
+func (s *Engine) fetchCandidates(ctx context.Context, conn *connection, brokerURL string, target RelayTarget) (discovery.Fetch, int64, error) {
 	displayURL := strings.TrimSpace(brokerURL)
 	if displayURL == "" {
 		displayURL = DefaultBrokerURL
@@ -607,7 +642,7 @@ func (s *Engine) fetchCandidates(ctx context.Context, conn *connection, brokerUR
 	s.appendLog(fmt.Sprintf("fetching relays from %s", displayURL))
 
 	limit := RelayLimit
-	if (RelayTarget{Country: targetCountry, RelayID: targetRelayID}).Targeted() {
+	if target.Targeted() {
 		limit = DirectoryRelayLimit
 	}
 	started := time.Now()
@@ -620,7 +655,7 @@ func (s *Engine) fetchCandidates(ctx context.Context, conn *connection, brokerUR
 
 // candidatesFor turns a broker response into the ordered candidate list for
 // this connect's target, logging the same lines the mobile console shows.
-func (s *Engine) candidatesFor(resp relay.ListResponse, targetCountry, targetRelayID string) ([]relay.Descriptor, string, error) {
+func (s *Engine) candidatesFor(resp relay.ListResponse, target RelayTarget) ([]relay.Descriptor, string, error) {
 	// Distinguish "broker returned nothing" from the narrower no-match cases
 	// below, so telemetry can tell them apart.
 	if len(resp.Relays) == 0 {
@@ -632,19 +667,19 @@ func (s *Engine) candidatesFor(resp relay.ListResponse, targetCountry, targetRel
 		return nil, "relay_select", client.ErrNoUsableRelay
 	}
 
-	cands, stage, err := FilterCandidates(usable, RelayTarget{Country: targetCountry, RelayID: targetRelayID})
+	cands, stage, err := FilterCandidates(usable, target)
 	if err != nil {
 		return nil, stage, err
 	}
 	switch {
-	case strings.TrimSpace(targetRelayID) != "":
+	case target.identity():
 		name := strings.TrimSpace(cands[0].Label)
 		if name == "" {
 			name = cands[0].ID
 		}
 		s.appendLog(fmt.Sprintf("connecting to relay %s", name))
-	case strings.TrimSpace(targetCountry) != "":
-		s.appendLog(fmt.Sprintf("connecting to a relay in %s", strings.ToUpper(strings.TrimSpace(targetCountry))))
+	case strings.TrimSpace(target.Country) != "":
+		s.appendLog(fmt.Sprintf("connecting to a relay in %s", strings.ToUpper(strings.TrimSpace(target.Country))))
 	}
 	return cands, "", nil
 }

@@ -256,7 +256,7 @@ func TestRankLadderSkipsPinnedRelay(t *testing.T) {
 	}
 	cands := []relay.Descriptor{rankRelay("a"), rankRelay("b")}
 
-	order := s.rankLadder(context.Background(), cands, "b")
+	order := s.rankLadder(context.Background(), cands, RelayTarget{RelayID: "b"})
 
 	if ids := candidateIDs(order.candidates()); !equalIDs(ids, []string{"a", "b"}) {
 		t.Fatalf("pinned ladder = %v, want broker order [a b]", ids)
@@ -272,7 +272,7 @@ func TestRankLadderRanksCountryTargetedConnect(t *testing.T) {
 	s.dialRelay = probeTable(map[string]int64{"host-a": 200, "host-b": 20})
 	cands := []relay.Descriptor{rankRelay("a"), rankRelay("b")}
 
-	order := s.rankLadder(context.Background(), cands, "")
+	order := s.rankLadder(context.Background(), cands, RelayTarget{Country: "JP"})
 
 	if ids := candidateIDs(order.candidates()); !equalIDs(ids, []string{"b", "a"}) {
 		t.Fatalf("ranked ladder = %v, want [b a]", ids)
