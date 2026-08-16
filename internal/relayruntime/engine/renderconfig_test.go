@@ -1,9 +1,13 @@
 package engine
 
 import (
+	"bytes"
 	"encoding/json"
 	"net"
+	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 )
 
 type renderedXrayConfig struct {
@@ -88,8 +92,85 @@ func TestRenderXrayConfigValidatesFirst(t *testing.T) {
 	}
 }
 
-// Rendering while running is refused: it would let prepareIdentity's
-// generate-and-report flow race the live session's.
+// Concurrent renders on an idle engine must converge on ONE generated
+// identity: prepareIdentity serializes generation and always starts from the
+// freshest stored identity, so every returned config matches the identity a
+// subsequent Start registers with.
+func TestConcurrentRendersConvergeOnOneIdentity(t *testing.T) {
+	// Reality keys present so generation never shells out to xray; the
+	// missing client ID, short ID, and seed are what the racers would fork.
+	partial := testIdentity
+	partial.ClientID = ""
+	partial.ShortID = ""
+	partial.IdentitySeed = ""
+
+	var mu sync.Mutex
+	var persisted []Identity
+	broker := &fakeBroker{}
+	ts := httptest.NewServer(broker.handler())
+	defer ts.Close()
+
+	eng := New(Config{
+		BrokerURL:   ts.URL,
+		Mode:        ModeDirect,
+		PublicHost:  "203.0.113.7",
+		ListenPort:  freePort(t),
+		Identity:    partial,
+		DisableXray: true,
+		ConfigDir:   t.TempDir(),
+	}, Events{OnIdentity: func(id Identity) {
+		mu.Lock()
+		persisted = append(persisted, id)
+		mu.Unlock()
+	}})
+
+	const renders = 16
+	configs := make([][]byte, renders)
+	errs := make([]error, renders)
+	var wg sync.WaitGroup
+	wg.Add(renders)
+	for i := 0; i < renders; i++ {
+		go func(i int) {
+			defer wg.Done()
+			configs[i], errs[i] = eng.RenderXrayConfig()
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("render %d: %v", i, err)
+		}
+		if !bytes.Equal(configs[i], configs[0]) {
+			t.Fatalf("render %d produced a different config: one identity must win\n%s\nvs\n%s", i, configs[i], configs[0])
+		}
+	}
+	mu.Lock()
+	if len(persisted) != 1 {
+		mu.Unlock()
+		t.Fatalf("OnIdentity fired %d times across %d concurrent renders, want exactly 1", len(persisted), renders)
+	}
+	winner := persisted[0]
+	mu.Unlock()
+
+	// The identity a subsequent Start registers with is the rendered one.
+	if err := eng.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer eng.Stop()
+	eventually(t, 5*time.Second, "relay online", func() bool {
+		return eng.Status().Phase == PhaseOnline
+	})
+	_, _, last := broker.stats()
+	if last.ClientID != winner.ClientID || last.ShortID != winner.ShortID {
+		t.Fatalf("registered identity (%s/%s) does not match the rendered one (%s/%s)",
+			last.ClientID, last.ShortID, winner.ClientID, winner.ShortID)
+	}
+}
+
+// Rendering while running is refused: a live direct session rebinds xray to a
+// runtime-reserved loopback port, so a mid-session render would not describe
+// the running relay.
 func TestRenderXrayConfigRefusesWhileRunning(t *testing.T) {
 	_, addr := startTestHub(t)
 	eng := New(Config{

@@ -419,6 +419,13 @@ type Engine struct {
 	cfg    Config
 	events Events
 
+	// identityMu serializes prepareIdentity end-to-end. Generation cannot run
+	// under mu (Reality keys shell out to xray, and OnIdentity is a caller
+	// callback), so without this lock two concurrent callers — renders, or a
+	// render racing a starting session — could each generate a different
+	// identity for the same missing fields and the last writeback would win.
+	identityMu sync.Mutex
+
 	cancel context.CancelFunc
 	done   chan struct{}
 
@@ -826,9 +833,18 @@ func (e *Engine) currentConfig() Config {
 
 // prepareIdentity fills any missing identity parts (generating Reality keys via
 // `xray x25519`), reports the result once, and caches it back into the config
-// so later sessions reuse it even if the caller does not persist it.
+// so later sessions reuse it even if the caller does not persist it. The whole
+// flow is serialized (identityMu) and always starts from the freshest stored
+// identity rather than the caller's config snapshot, so concurrent callers
+// converge on one identity: the first to arrive generates, everyone after
+// reads what it cached. cfg contributes only XrayPath.
 func (e *Engine) prepareIdentity(cfg Config) (Identity, error) {
-	id := cfg.Identity
+	e.identityMu.Lock()
+	defer e.identityMu.Unlock()
+
+	e.mu.Lock()
+	id := e.cfg.Identity
+	e.mu.Unlock()
 	generated := false
 
 	if id.ClientID == "" {
@@ -949,10 +965,11 @@ func (e *Engine) startXray(ctx context.Context, cfg Config, identity Identity, l
 // Tunnel mode renders a freshly reserved loopback binding for the same reason
 // cmd/relay does.
 func (e *Engine) RenderXrayConfig() ([]byte, error) {
-	// Refuse while running: prepareIdentity's generate-and-report flow must
-	// not race a live session's — both could mint identities for the same
-	// missing fields and the last writeback would win, splitting the persisted
-	// seed from the one the session registered with.
+	// Refuse while running. Identity forking is prevented structurally by
+	// prepareIdentity's serialization, but a live direct session binds xray to
+	// a runtime-reserved loopback port, so a mid-session render would describe
+	// a binding the running relay does not use; refusing keeps the method's
+	// "matches a subsequent Start" promise unambiguous.
 	if e.Running() {
 		return nil, errors.New("cannot render the xray config while the relay is running")
 	}

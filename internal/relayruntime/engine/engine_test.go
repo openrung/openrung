@@ -365,11 +365,13 @@ func TestPrepareIdentityBackfillsSeed(t *testing.T) {
 
 	// A corrupt persisted seed regenerates (a GUI volunteer cannot hand-reset
 	// identity.json) and reports the fresh identity for persistence, rather
-	// than bricking the app.
+	// than bricking the app. prepareIdentity reads the stored identity, so
+	// corrupt the engine's copy, as loading a mangled identity.json would.
 	persisted = nil
-	corrupt := eng.cfg
-	corrupt.Identity.IdentitySeed = "!!!not-base64!!!"
-	healed, err := eng.prepareIdentity(corrupt)
+	eng.mu.Lock()
+	eng.cfg.Identity.IdentitySeed = "!!!not-base64!!!"
+	eng.mu.Unlock()
+	healed, err := eng.prepareIdentity(eng.currentConfig())
 	if err != nil {
 		t.Fatalf("corrupt seed must regenerate, not fail: %v", err)
 	}
