@@ -27,6 +27,7 @@ import (
 	"openrung/internal/client"
 	"openrung/internal/clienttelemetry"
 	"openrung/internal/discovery"
+	"openrung/internal/proxyconfig"
 	"openrung/internal/punch"
 	"openrung/internal/relay"
 )
@@ -210,7 +211,7 @@ func (c *candidateResult) teardown() {
 }
 
 // Engine is the connection engine. The platform hooks (Sink, Persistence,
-// OSProxy, Elevation, ResolveProxyPort) and options must be assigned before
+// OSProxy, Elevation) and options must be assigned before
 // Start or the first Connect; the engine never mutates them. The capture mode
 // is the one setting a host may change later, through SetMode (see mode.go),
 // which the TUI's Settings toggle uses.
@@ -233,10 +234,6 @@ type Engine struct {
 	// TunnelMTU overrides the generated TUN inbound's MTU. Zero keeps the
 	// sing-box config default. Proxy mode has no TUN device and ignores it.
 	TunnelMTU int
-
-	// ResolveProxyPort resolves the stable local proxy port; the engine pins
-	// the first successful resolution for the process (see LocalProxyPort).
-	ResolveProxyPort func() (ProxyPortResolution, error)
 
 	// SingBoxPath overrides the sing-box binary path (defaults to "sing-box"
 	// resolved via PATH). Packaging points this at the bundled binary.
@@ -280,7 +277,7 @@ type Engine struct {
 
 	// proxyPortMu pins only a successfully resolved endpoint for this process.
 	// A transient resolution failure remains retryable on the next call.
-	// ResolveProxyPort persists automatic selections across launches.
+	// Persistence carries automatic selections across launches.
 	proxyPortMu   sync.Mutex
 	proxyPort     int
 	proxyPortWarn error
@@ -912,7 +909,7 @@ func (s *Engine) candidateConfigInput(cand relay.Descriptor, port int) client.Si
 		input.MTU = s.TunnelMTU
 		return input
 	}
-	input.ProxyListenAddress = ProxyHost
+	input.ProxyListenAddress = proxyconfig.Host
 	input.ProxyListenPort = port
 	return input
 }
@@ -1112,7 +1109,7 @@ func (s *Engine) applyProxy(conn *connection, port int) {
 		return
 	}
 	if s.OSProxy == nil || !s.OSProxy.Supported() {
-		s.appendLog(fmt.Sprintf("system proxy unavailable here; set manual proxy %s:%d", ProxyHost, port))
+		s.appendLog(fmt.Sprintf("system proxy unavailable here; set manual proxy %s:%d", proxyconfig.Host, port))
 		return
 	}
 	if !conn.snapshotTaken {
@@ -1130,8 +1127,8 @@ func (s *Engine) applyProxy(conn *connection, port int) {
 	// Mark restoration pending before Set: platform controllers can mutate OS
 	// state and only then fail while notifying applications of the change.
 	conn.proxySet = true
-	if err := s.OSProxy.Set(ProxyHost, port); err != nil {
-		s.appendLog(fmt.Sprintf("system proxy set failed; set manual proxy %s:%d", ProxyHost, port))
+	if err := s.OSProxy.Set(proxyconfig.Host, port); err != nil {
+		s.appendLog(fmt.Sprintf("system proxy set failed; set manual proxy %s:%d", proxyconfig.Host, port))
 		// A failed Set may have partially applied: put the captured setting back
 		// so the user's proxy is never left pointing at us with nothing there.
 		if restoreErr := s.OSProxy.Restore(conn.snapshot); restoreErr != nil {
@@ -1154,7 +1151,7 @@ func (s *Engine) applyProxy(conn *connection, port int) {
 	if s.Persistence != nil {
 		_ = s.Persistence.SaveProxySnapshot(conn.snapshot)
 	}
-	s.appendLog(fmt.Sprintf("proxy listening on %s:%d", ProxyHost, port))
+	s.appendLog(fmt.Sprintf("proxy listening on %s:%d", proxyconfig.Host, port))
 }
 
 // releaseProxy points the OS proxy back at the user's captured setting while

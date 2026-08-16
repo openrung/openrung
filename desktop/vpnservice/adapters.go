@@ -5,6 +5,7 @@ import (
 
 	"openrung/internal/clientstate"
 	"openrung/internal/connectcore"
+	"openrung/internal/proxyconfig"
 	"openrung/internal/proxymode"
 )
 
@@ -31,6 +32,12 @@ func (a storeAdapter) SaveRecents(recents []connectcore.RecentNode) error {
 	return a.store.SaveRecents(stored)
 }
 
+func (a storeAdapter) LoadProxyPort() (int, bool) { return a.store.LoadProxyPort() }
+
+func (a storeAdapter) LoadOrSaveProxyPort(candidate int) (int, error) {
+	return a.store.LoadOrSaveProxyPort(candidate)
+}
+
 func (a storeAdapter) SaveProxySnapshot(snap connectcore.OSProxySnapshot) error {
 	typed, ok := snap.(proxymode.Snapshot)
 	if !ok {
@@ -49,6 +56,15 @@ func (a storeAdapter) LoadProxySnapshot() (connectcore.OSProxySnapshot, bool) {
 
 func (a storeAdapter) ClearProxySnapshot() error {
 	return a.store.ClearProxySnapshot()
+}
+
+// helperStore must return a nil interface, never a nil pointer inside one, which
+// proxyconfig's nil check cannot see through.
+func (s *Service) helperStore() proxyconfig.HelperStore {
+	if s.store == nil {
+		return nil
+	}
+	return s.store
 }
 
 // osProxyAdapter implements connectcore.OSProxy over the per-OS controllers in

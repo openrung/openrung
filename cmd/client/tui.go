@@ -315,7 +315,7 @@ func (m tuiModel) resolveProxyCmd() tea.Cmd {
 		if err != nil {
 			return proxyInfoMsg{err: err.Error()}
 		}
-		msg := proxyInfoMsg{endpoint: connectcore.ProxyHost + ":" + strconv.Itoa(port)}
+		msg := proxyInfoMsg{endpoint: proxyconfig.Host + ":" + strconv.Itoa(port)}
 		if warning := driver.LocalProxyPortWarning(); warning != nil {
 			msg.warn = warning.Error()
 		}

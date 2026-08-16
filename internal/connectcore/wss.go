@@ -15,6 +15,7 @@ import (
 
 	"openrung/internal/client"
 	"openrung/internal/clienttelemetry"
+	"openrung/internal/proxyconfig"
 	"openrung/internal/relay"
 )
 
@@ -311,7 +312,7 @@ func (s *Engine) attemptWSSCandidate(
 	s.appendLog(fmt.Sprintf("connected through WSS front %s", front.ID))
 	return s.startCandidate(result, client.SingBoxConfigInput{
 		Relay: candidate, Mode: client.ModeProxy,
-		ProxyListenAddress: ProxyHost, ProxyListenPort: proxyPort,
+		ProxyListenAddress: proxyconfig.Host, ProxyListenPort: proxyPort,
 		BridgeHost: ip.String(), BridgePort: port,
 	})
 }

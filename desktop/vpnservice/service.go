@@ -116,16 +116,6 @@ func New() *Service {
 	engine.PunchInsecure = true
 	engine.Sink = &engineSink{s: s}
 	engine.OSProxy = osProxyAdapter{ctrl: proxymode.New()}
-	engine.ResolveProxyPort = func() (connectcore.ProxyPortResolution, error) {
-		resolution, err := proxyconfig.ResolvePort(s.store)
-		if err != nil {
-			return connectcore.ProxyPortResolution{}, err
-		}
-		return connectcore.ProxyPortResolution{
-			Port:               resolution.Port,
-			PersistenceWarning: resolution.PersistenceWarning,
-		}, nil
-	}
 	s.engine = engine
 	s.state = engine.State()
 	return s
@@ -228,7 +218,7 @@ func (s *Service) GetProxyInfo() (NativeProxyInfo, error) {
 	if !native.ShellIntegration {
 		return native, nil
 	}
-	info, err = proxyconfig.WriteShellHelper(s.store, port)
+	info, err = proxyconfig.WriteShellHelper(s.helperStore(), port)
 	if err != nil {
 		message := err.Error()
 		native.ShellIntegrationError = &message

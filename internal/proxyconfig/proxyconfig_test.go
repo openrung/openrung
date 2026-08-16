@@ -14,6 +14,13 @@ import (
 	"openrung/internal/clientstate"
 )
 
+// Only a test may name the concrete store: the package itself must not depend
+// on it.
+var (
+	_ PortStore   = (*clientstate.Store)(nil)
+	_ HelperStore = (*clientstate.Store)(nil)
+)
+
 func TestResolvePortUsesEnvironmentOverrideWithoutPersistingIt(t *testing.T) {
 	store := clientstate.NewInDir(t.TempDir())
 	if err := store.SaveProxyPort(41111); err != nil {

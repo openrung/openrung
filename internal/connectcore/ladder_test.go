@@ -16,6 +16,7 @@ import (
 
 	"openrung/internal/clienttelemetry"
 	"openrung/internal/discovery"
+	"openrung/internal/proxyconfig"
 	"openrung/internal/relay"
 )
 
@@ -73,21 +74,6 @@ func relayAt(id, countryCode, city, country, host string) relay.Descriptor {
 	return r
 }
 
-// allocateTestProxyPort stands in for desktop port resolution: a fresh
-// kernel-selected loopback port on every call, so a test that asserts endpoint
-// stability is exercising the engine's pinning, not the resolver.
-func allocateTestProxyPort() (ProxyPortResolution, error) {
-	listener, err := net.Listen("tcp", ProxyHost+":0")
-	if err != nil {
-		return ProxyPortResolution{}, err
-	}
-	port := listener.Addr().(*net.TCPAddr).Port
-	if err := listener.Close(); err != nil {
-		return ProxyPortResolution{}, err
-	}
-	return ProxyPortResolution{Port: port}, nil
-}
-
 // newLadderService builds an Engine with every network seam faked out; the
 // returned engine still runs the real ladder, telemetry manager, and state
 // machine.
@@ -103,7 +89,8 @@ func newLadderService(t *testing.T, relays func() []relay.Descriptor) (*Engine, 
 	s.Sink = sink
 	s.PunchEnabled = false
 	s.OSProxy = &fakeProxyController{supported: false}
-	s.ResolveProxyPort = allocateTestProxyPort
+	// No Persistence: each engine allocates a fresh loopback port, so tests
+	// asserting endpoint stability exercise the engine's own pinning.
 	s.fetchRelays = func(ctx context.Context, brokerURL string, limit int, clientID, sessionID string) (discovery.Fetch, error) {
 		return discovery.Fetch{BrokerURL: brokerURL, Response: listOf(relays()...)}, nil
 	}
@@ -139,7 +126,7 @@ func waitForStatus(t *testing.T, s *Engine, want Status) State {
 func TestRecoveryReportsStableProxyPortCollisionBeforeBlamingRelays(t *testing.T) {
 	fixtures := []relay.Descriptor{relayAt("a", "JP", "Tokyo", "Japan", "127.0.0.10")}
 	s, _ := newLadderService(t, func() []relay.Descriptor { return fixtures })
-	listener, err := net.Listen("tcp", ProxyHost+":0")
+	listener, err := net.Listen("tcp", proxyconfig.Host+":0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +144,7 @@ func TestRecoveryReportsStableProxyPortCollisionBeforeBlamingRelays(t *testing.T
 	if result != nil {
 		result.teardown()
 	}
-	if err == nil || stage != "proxy_bind" || !strings.Contains(err.Error(), ProxyPortEnv) {
+	if err == nil || stage != "proxy_bind" || !strings.Contains(err.Error(), proxyconfig.PortEnv) {
 		t.Fatalf("reladder = result=%v stage=%q err=%v; want proxy_bind collision", result, stage, err)
 	}
 	if tunnelStarted.Load() {
@@ -170,7 +157,7 @@ func TestInitialConnectRechecksStableProxyPortAfterDiscovery(t *testing.T) {
 	fixtures := []relay.Descriptor{relayAt("a", "JP", "Tokyo", "Japan", "127.0.0.10")}
 	s, _ := newLadderService(t, func() []relay.Descriptor { return fixtures })
 
-	reservation, err := net.Listen("tcp", ProxyHost+":0")
+	reservation, err := net.Listen("tcp", proxyconfig.Host+":0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,16 +165,13 @@ func TestInitialConnectRechecksStableProxyPortAfterDiscovery(t *testing.T) {
 	if err := reservation.Close(); err != nil {
 		t.Fatal(err)
 	}
-	// The stable endpoint resolves to a fixed port, standing in for a desktop
-	// OPENRUNG_PROXY_PORT override.
-	s.ResolveProxyPort = func() (ProxyPortResolution, error) {
-		return ProxyPortResolution{Port: port}, nil
-	}
+	// The stable endpoint resolves to a fixed port through the real override.
+	t.Setenv(proxyconfig.PortEnv, strconv.Itoa(port))
 
 	var claimed net.Listener
 	s.fetchRelays = func(ctx context.Context, brokerURL string, limit int, clientID, sessionID string) (discovery.Fetch, error) {
 		var listenErr error
-		claimed, listenErr = net.Listen("tcp", net.JoinHostPort(ProxyHost, strconv.Itoa(port)))
+		claimed, listenErr = net.Listen("tcp", net.JoinHostPort(proxyconfig.Host, strconv.Itoa(port)))
 		if listenErr != nil {
 			return discovery.Fetch{}, listenErr
 		}
@@ -210,7 +194,7 @@ func TestInitialConnectRechecksStableProxyPortAfterDiscovery(t *testing.T) {
 	}
 	state := waitForStatus(t, s, StatusFailed)
 	waitIdle(t, s)
-	if state.LastError == nil || !strings.Contains(*state.LastError, ProxyPortEnv) {
+	if state.LastError == nil || !strings.Contains(*state.LastError, proxyconfig.PortEnv) {
 		t.Fatalf("lastError = %v; want stable proxy collision", state.LastError)
 	}
 	if tunnelStarted.Load() {

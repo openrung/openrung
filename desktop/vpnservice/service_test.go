@@ -128,14 +128,22 @@ func TestGetProxyInfoKeepsEndpointWhenShellHelperCannotBeWritten(t *testing.T) {
 	}
 }
 
+// withStore wires a store the way Startup does: one value backs both the shell
+// helper and the engine's persistence hook.
+func withStore(s *Service, store *clientstate.Store) *Service {
+	s.store = store
+	s.engine.Persistence = storeAdapter{store: store}
+	return s
+}
+
 func TestGetProxyInfoSurfacesNonFatalPersistenceWarning(t *testing.T) {
 	t.Setenv(proxyconfig.PortEnv, "")
 	blocker := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(blocker, []byte("blocked"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	s := New()
-	s.store = clientstate.NewInDir(filepath.Join(blocker, "openrung"))
+	// The configuration directory cannot be created.
+	s := withStore(New(), clientstate.NewInDir(filepath.Join(blocker, "openrung")))
 
 	info, err := s.GetProxyInfo()
 	if err != nil {
@@ -146,6 +154,35 @@ func TestGetProxyInfoSurfacesNonFatalPersistenceWarning(t *testing.T) {
 	}
 	if info.PersistenceWarning == nil || !strings.Contains(*info.PersistenceWarning, "may change next launch") {
 		t.Fatalf("missing persistence warning: %+v", info)
+	}
+}
+
+// The desktop app must offer the same address on the next launch, since users
+// configure it in a browser.
+func TestGetProxyInfoReusesThePersistedEndpointOnTheNextLaunch(t *testing.T) {
+	t.Setenv(proxyconfig.PortEnv, "")
+	dir := t.TempDir()
+
+	first := withStore(New(), clientstate.NewInDir(dir))
+	info, err := first.GetProxyInfo()
+	if err != nil {
+		t.Fatalf("first launch: %v", err)
+	}
+	if info.Port <= 0 {
+		t.Fatalf("no endpoint allocated: %+v", info)
+	}
+	if info.PersistenceWarning != nil {
+		t.Fatalf("writable store still warned: %s", *info.PersistenceWarning)
+	}
+
+	// A second Service over the same directory stands in for the next launch.
+	next := withStore(New(), clientstate.NewInDir(dir))
+	again, err := next.GetProxyInfo()
+	if err != nil {
+		t.Fatalf("next launch: %v", err)
+	}
+	if again.Port != info.Port {
+		t.Fatalf("endpoint changed across launches: %d -> %d", info.Port, again.Port)
 	}
 }
 

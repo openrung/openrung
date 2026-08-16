@@ -13,8 +13,7 @@ import (
 // engineHost bundles the connection engine with the CLI host wiring the TUI
 // and the headless connect driver share: internal/clientstate persistence
 // (recents, crash-recovery proxy snapshot, and the stable proxy port — the
-// same on-disk state the desktop app reads), per-OS system proxy control, and
-// the stable proxy-port resolver (OPENRUNG_PROXY_PORT honored, not persisted).
+// same on-disk state the desktop app reads) and per-OS system proxy control.
 type engineHost struct {
 	engine *connectcore.Engine
 	store  *clientstate.Store // nil when the config directory is unavailable
@@ -37,17 +36,16 @@ func newEngineHost(sink connectcore.EventSink, singBoxPath string) *engineHost {
 		host.store = store
 		engine.Persistence = storeAdapter{store: store}
 	}
-	engine.ResolveProxyPort = func() (connectcore.ProxyPortResolution, error) {
-		resolution, err := proxyconfig.ResolvePort(host.store)
-		if err != nil {
-			return connectcore.ProxyPortResolution{}, err
-		}
-		return connectcore.ProxyPortResolution{
-			Port:               resolution.Port,
-			PersistenceWarning: resolution.PersistenceWarning,
-		}, nil
-	}
 	return host
+}
+
+// helperStore must return a nil interface, never a nil pointer inside one, which
+// proxyconfig's nil check cannot see through.
+func (h *engineHost) helperStore() proxyconfig.HelperStore {
+	if h.store == nil {
+		return nil
+	}
+	return h.store
 }
 
 // shellProxyHelper resolves the stable local endpoint and writes the
@@ -63,7 +61,7 @@ func (h *engineHost) shellProxyHelper() (proxyconfig.Info, error) {
 	if err != nil {
 		return proxyconfig.Info{}, err
 	}
-	return proxyconfig.WriteShellHelper(h.store, port)
+	return proxyconfig.WriteShellHelper(h.helperStore(), port)
 }
 
 // The adapters below mirror desktop/vpnservice/adapters.go over the shared
@@ -90,6 +88,12 @@ func (a storeAdapter) SaveRecents(recents []connectcore.RecentNode) error {
 		stored = append(stored, clientstate.RecentNode(r))
 	}
 	return a.store.SaveRecents(stored)
+}
+
+func (a storeAdapter) LoadProxyPort() (int, bool) { return a.store.LoadProxyPort() }
+
+func (a storeAdapter) LoadOrSaveProxyPort(candidate int) (int, error) {
+	return a.store.LoadOrSaveProxyPort(candidate)
 }
 
 func (a storeAdapter) SaveProxySnapshot(snap connectcore.OSProxySnapshot) error {
