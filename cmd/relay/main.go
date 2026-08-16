@@ -1,38 +1,37 @@
+// Command relay runs an OpenRung relay from the command line. It is a
+// flag-parsing frontend: every flag and OPENRUNG_* variable maps onto an
+// internal/relayruntime/engine Config, the engine owns all orchestration
+// (probing, xray supervision, registration, heartbeat, tunnelling), and this
+// package only renders its status back to the console.
 package main
 
 import (
 	"context"
-	"crypto/ed25519"
-	cryptorand "crypto/rand"
-	"crypto/tls"
 	_ "embed"
-	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
-	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"openrung/internal/buildinfo"
 	"openrung/internal/relay"
 	"openrung/internal/relayruntime"
-	"openrung/internal/tunnel"
+	"openrung/internal/relayruntime/engine"
 )
 
 //go:embed VERSION
 var baseVersion string
 
 func main() {
-	var cfg cliConfig
 	identitySeed := os.Getenv(relayruntime.IdentitySeedEnvironmentVariable)
 	// Retain environment-based configuration without leaving the long-lived
 	// identity seed available to Xray or any other child process. Explicit
@@ -41,102 +40,231 @@ func main() {
 		slog.Error("clear relay identity seed from environment", "error", err)
 		os.Exit(1)
 	}
-	showVersion := flag.Bool("version", false, "print relay version and exit")
-	printLabel := flag.Bool("print-label", false, "print one random adjective-noun label and exit; provisioning scripts use this to name a relay from the binary's own vocabulary instead of keeping a copy of the word lists")
-	flag.StringVar(&cfg.BrokerURL, "broker", "http://localhost:8080", "broker base URL")
-	flag.StringVar(&cfg.RegistrationToken, "registration-token", os.Getenv("OPENRUNG_VOLUNTEER_TOKEN"), "volunteer-class relay registration token")
-	flag.StringVar(&cfg.Label, "label", os.Getenv("OPENRUNG_LABEL"), "human-readable relay label shown in the broker; a random adjective-noun is generated when empty")
-	flag.StringVar(&cfg.NodeClass, "node-class", os.Getenv("OPENRUNG_NODE_CLASS"), "relay operator class: volunteer (default) or foundation. For a foundation relay prefer -foundation-token, which sets this and forces direct mode / https automatically; a bare -node-class=foundation still needs direct mode, the foundation token as the bearer, and an https broker")
-	flag.StringVar(&cfg.FoundationToken, "foundation-token", os.Getenv("OPENRUNG_FOUNDATION_TOKEN"), "foundation registration token; presenting it runs this as a foundation relay — it forces foundation class, direct mode, an https broker, and redirect refusal, so no separate -node-class is needed")
-	flag.StringVar(&cfg.XrayPath, "xray", "xray", "path to xray binary")
-	flag.StringVar(&cfg.ListenHost, "listen-host", "::", "local listen host; with connection logging, :: listens on both IPv6 and IPv4 through the observer")
-	flag.IntVar(&cfg.ListenPort, "listen-port", 443, "local listen port")
-	flag.StringVar(&cfg.PublicHost, "public-host", "", "public hostname or IP clients can reach; defaults to the relay host's first global IPv6 address")
-	flag.IntVar(&cfg.PublicPort, "public-port", 443, "public port clients can reach")
-	flag.StringVar(&cfg.ServerName, "server-name", "www.cloudflare.com", "Reality server name")
-	flag.StringVar(&cfg.RealityDest, "reality-dest", "www.cloudflare.com:443", "Reality dest")
-	flag.StringVar(&cfg.ClientID, "client-id", "", "VLESS client UUID; generated when empty")
-	flag.StringVar(&cfg.RealityPrivateKey, "reality-private-key", "", "Reality private key; generated with xray x25519 when empty")
-	flag.StringVar(&cfg.RealityPublicKey, "reality-public-key", "", "Reality public key; generated with xray x25519 when empty")
-	flag.StringVar(&cfg.ShortID, "short-id", "", "Reality short ID; generated when empty")
-	flag.StringVar(&cfg.IdentitySeed, "identity-seed", identitySeed, "base64 32-byte Ed25519 seed for the relay's stable identity (spec openrung-relay-identity-v1); the broker derives the relay ID from it, so a pinned seed keeps the same ID across restarts. Generated per process when empty")
-	flag.StringVar(&cfg.WSSFrontsRaw, "wss-fronts", os.Getenv("OPENRUNG_WSS_FRONTS"), "comma-separated per-relay CDN fronts as front-id=wss://cdn.example/api/v1/wss-bridge (Foundation direct mode on port 443 with an explicit identity seed only)")
-	flag.IntVar(&cfg.MaxSessions, "max-sessions", relayruntime.DefaultMaxSessions, "advertised max client sessions")
-	flag.IntVar(&cfg.MaxMbps, "max-mbps", relayruntime.DefaultMaxMbps, "advertised max Mbps")
-	flag.DurationVar(&cfg.HeartbeatInterval, "heartbeat-interval", 30*time.Second, "broker heartbeat interval")
-	flag.StringVar(&cfg.ConfigOut, "config-out", "", "write generated Xray config to this path")
-	flag.BoolVar(&cfg.ConnectionLog, "connection-log", true, "print colored client connect and disconnect events")
-	flag.BoolVar(&cfg.PrintConfigOnly, "print-config-only", false, "print generated Xray config and exit")
-	flag.BoolVar(&cfg.SkipXrayRun, "skip-xray-run", false, "register and heartbeat without launching xray")
-	flag.StringVar(&cfg.Mode, "mode", os.Getenv("OPENRUNG_MODE"), "connection mode: auto (probe reachability and pick direct/tunnel), direct, or tunnel; defaults to auto when -hub is set, else direct")
-	flag.BoolVar(&cfg.TunnelMode, "tunnel", boolEnv("OPENRUNG_TUNNEL"), "force CGNAT reverse-tunnel mode (alias for -mode tunnel)")
-	flag.StringVar(&cfg.HubAddr, "hub", os.Getenv("OPENRUNG_HUB_ADDR"), "relay hub control address (host:port) for tunnel/auto mode")
-	flag.StringVar(&cfg.HubHTTP, "hub-http", os.Getenv("OPENRUNG_HUB_HTTP_URL"), "relay hub HTTP API base URL for reachability probing; defaults to http://<hub-host>:9444")
-	flag.BoolVar(&cfg.HubTLS, "hub-tls", true, "dial the relay hub over TLS in tunnel mode")
-	flag.BoolVar(&cfg.HubInsecure, "hub-insecure", false, "skip TLS certificate verification when dialing the relay hub (testing only)")
-	flag.BoolVar(&cfg.Punch, "punch", !boolEnv("OPENRUNG_PUNCH_DISABLE"), "offer NAT hole punching so clients can connect directly (tunnel mode; requires a punch-capable hub)")
-	flag.Parse()
-	if *showVersion {
+
+	flags := &cliFlags{}
+	fs := flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+	flags.register(fs, identitySeed)
+	_ = fs.Parse(os.Args[1:])
+
+	if flags.showVersion {
 		fmt.Println(versionInfo())
 		return
 	}
-	if *printLabel {
+	if flags.printLabel {
 		fmt.Println(relayruntime.GenerateLabel())
 		return
 	}
 
-	cfg.Mode = normalizeMode(cfg.Mode, cfg.TunnelMode, cfg.HubAddr)
-
-	if err := cfg.ApplyDefaults(); err != nil {
+	cfg, err := flags.engineConfig()
+	if err != nil {
 		slog.Error("invalid relay config", "error", err)
 		os.Exit(2)
 	}
-	if err := cfg.Validate(); err != nil {
+	eng := engine.New(cfg, engine.Events{
+		// Engine progress and xray's own output go to stderr alongside the
+		// structured log; the observer's per-connection lines stay on stdout,
+		// where cmd/relay has always printed them.
+		Log:      os.Stderr,
+		OnStatus: (&consoleReporter{}).observe,
+	})
+
+	if flags.printConfigOnly {
+		rendered, err := eng.RenderXrayConfig()
+		if err != nil {
+			slog.Error("invalid relay config", "error", err)
+			os.Exit(2)
+		}
+		fmt.Println(string(rendered))
+		return
+	}
+
+	// Arm the signal handler before anything starts, so a SIGTERM that lands
+	// during startup still reaches Stop and reaps xray instead of killing the
+	// relay and orphaning its child.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	slog.Info("starting relay", "version", buildinfo.Version(baseVersion), "revision", buildinfo.Revision())
+	if err := eng.Start(); err != nil {
 		slog.Error("invalid relay config", "error", err)
 		os.Exit(2)
 	}
 
-	if err := run(cfg); err != nil {
-		slog.Error("relay stopped", "error", err)
-		os.Exit(1)
-	}
+	<-ctx.Done()
+	stop()
+	eng.Stop()
 }
 
-type cliConfig struct {
-	BrokerURL         string
-	RegistrationToken string
-	FoundationToken   string
-	Label             string
-	NodeClass         string
-	XrayPath          string
-	ListenHost        string
-	ListenPort        int
-	PublicHost        string
-	PublicPort        int
-	ServerName        string
-	RealityDest       string
-	ClientID          string
-	RealityPrivateKey string
-	RealityPublicKey  string
-	ShortID           string
-	IdentitySeed      string
-	WSSFrontsRaw      string
-	WSSFronts         []relay.WSSFrontDescriptor
-	MaxSessions       int
-	MaxMbps           int
-	HeartbeatInterval time.Duration
-	HTTPClient        *http.Client
-	ConfigOut         string
-	ConnectionLog     bool
-	PrintConfigOnly   bool
-	SkipXrayRun       bool
-	Mode              string
-	TunnelMode        bool
-	HubAddr           string
-	HubHTTP           string
-	HubTLS            bool
-	HubInsecure       bool
-	Punch             bool
+// cliFlags is the relay's command-line surface. Deployment scripts under
+// deploy/ and the volunteer one-liner consume these flags and the OPENRUNG_*
+// variables behind them, so the set is a compatibility contract: names,
+// defaults, and meanings only ever gain members.
+type cliFlags struct {
+	showVersion     bool
+	printLabel      bool
+	printConfigOnly bool
+
+	broker             string
+	registrationToken  string
+	foundationToken    string
+	label              string
+	nodeClass          string
+	xrayPath           string
+	listenHost         string
+	listenPort         int
+	publicHost         string
+	publicPort         int
+	serverName         string
+	realityDest        string
+	clientID           string
+	realityPrivateKey  string
+	realityPublicKey   string
+	shortID            string
+	identitySeed       string
+	wssFronts          string
+	maxSessions        int
+	maxMbps            int
+	heartbeatInterval  time.Duration
+	configOut          string
+	connectionLog      bool
+	skipXrayRun        bool
+	mode               string
+	tunnel             bool
+	hubAddr            string
+	hubHTTP            string
+	hubCertFingerprint string
+	hubTLS             bool
+	hubInsecure        bool
+	punch              bool
+}
+
+func (f *cliFlags) register(fs *flag.FlagSet, identitySeed string) {
+	fs.BoolVar(&f.showVersion, "version", false, "print relay version and exit")
+	fs.BoolVar(&f.printLabel, "print-label", false, "print one random adjective-noun label and exit; provisioning scripts use this to name a relay from the binary's own vocabulary instead of keeping a copy of the word lists")
+	fs.StringVar(&f.broker, "broker", "http://localhost:8080", "broker base URL")
+	fs.StringVar(&f.registrationToken, "registration-token", os.Getenv("OPENRUNG_VOLUNTEER_TOKEN"), "volunteer-class relay registration token")
+	fs.StringVar(&f.label, "label", os.Getenv("OPENRUNG_LABEL"), "human-readable relay label shown in the broker; a random adjective-noun is generated when empty")
+	fs.StringVar(&f.nodeClass, "node-class", os.Getenv("OPENRUNG_NODE_CLASS"), "relay operator class: volunteer (default) or foundation. For a foundation relay prefer -foundation-token, which sets this and forces direct mode / https automatically; a bare -node-class=foundation still needs direct mode, the foundation token as the bearer, and an https broker")
+	fs.StringVar(&f.foundationToken, "foundation-token", os.Getenv("OPENRUNG_FOUNDATION_TOKEN"), "foundation registration token; presenting it runs this as a foundation relay — it forces foundation class, direct mode, an https broker, and redirect refusal, so no separate -node-class is needed")
+	fs.StringVar(&f.xrayPath, "xray", "xray", "path to xray binary")
+	fs.StringVar(&f.listenHost, "listen-host", "::", "local listen host; with connection logging, :: listens on both IPv6 and IPv4 through the observer")
+	fs.IntVar(&f.listenPort, "listen-port", 443, "local listen port")
+	fs.StringVar(&f.publicHost, "public-host", "", "public hostname or IP clients can reach; defaults to the relay host's first global IPv6 address")
+	fs.IntVar(&f.publicPort, "public-port", 443, "public port clients can reach")
+	fs.StringVar(&f.serverName, "server-name", "www.cloudflare.com", "Reality server name")
+	fs.StringVar(&f.realityDest, "reality-dest", "www.cloudflare.com:443", "Reality dest")
+	fs.StringVar(&f.clientID, "client-id", "", "VLESS client UUID; generated when empty")
+	fs.StringVar(&f.realityPrivateKey, "reality-private-key", "", "Reality private key; generated with xray x25519 when empty")
+	fs.StringVar(&f.realityPublicKey, "reality-public-key", "", "Reality public key; generated with xray x25519 when empty")
+	fs.StringVar(&f.shortID, "short-id", "", "Reality short ID; generated when empty")
+	fs.StringVar(&f.identitySeed, "identity-seed", identitySeed, "base64 32-byte Ed25519 seed for the relay's stable identity (spec openrung-relay-identity-v1); the broker derives the relay ID from it, so a pinned seed keeps the same ID across restarts. Generated per process when empty")
+	fs.StringVar(&f.wssFronts, "wss-fronts", os.Getenv("OPENRUNG_WSS_FRONTS"), "comma-separated per-relay CDN fronts as front-id=wss://cdn.example/api/v1/wss-bridge (Foundation direct mode on port 443 with an explicit identity seed only)")
+	fs.IntVar(&f.maxSessions, "max-sessions", relayruntime.DefaultMaxSessions, "advertised max client sessions")
+	fs.IntVar(&f.maxMbps, "max-mbps", relayruntime.DefaultMaxMbps, "advertised max Mbps")
+	fs.DurationVar(&f.heartbeatInterval, "heartbeat-interval", 30*time.Second, "broker heartbeat interval")
+	fs.StringVar(&f.configOut, "config-out", "", "write generated Xray config to this path")
+	fs.BoolVar(&f.connectionLog, "connection-log", true, "print colored client connect and disconnect events")
+	fs.BoolVar(&f.printConfigOnly, "print-config-only", false, "print generated Xray config and exit")
+	fs.BoolVar(&f.skipXrayRun, "skip-xray-run", false, "register and heartbeat without launching xray")
+	fs.StringVar(&f.mode, "mode", os.Getenv("OPENRUNG_MODE"), "connection mode: auto (probe reachability and pick direct/tunnel), direct, or tunnel; defaults to auto when -hub is set, else direct")
+	fs.BoolVar(&f.tunnel, "tunnel", boolEnv("OPENRUNG_TUNNEL"), "force CGNAT reverse-tunnel mode (alias for -mode tunnel)")
+	fs.StringVar(&f.hubAddr, "hub", os.Getenv("OPENRUNG_HUB_ADDR"), "relay hub control address (host:port) for tunnel/auto mode")
+	fs.StringVar(&f.hubHTTP, "hub-http", os.Getenv("OPENRUNG_HUB_HTTP_URL"), "relay hub HTTP API base URL for reachability probing; defaults to http://<hub-host>:9444")
+	fs.StringVar(&f.hubCertFingerprint, "hub-cert-fingerprint", os.Getenv("OPENRUNG_HUB_CERT_FINGERPRINT"), "pin the relay hub's TLS leaf certificate to this SHA-256 fingerprint (hex; colons and case ignored). A hub on a bare IP self-signs, so CA verification cannot succeed; pinning the exact leaf is MITM-proof without a CA and is the production-safe alternative to -hub-insecure. Empty keeps standard verification")
+	fs.BoolVar(&f.hubTLS, "hub-tls", true, "dial the relay hub over TLS in tunnel mode")
+	fs.BoolVar(&f.hubInsecure, "hub-insecure", false, "skip TLS certificate verification when dialing the relay hub (testing only)")
+	fs.BoolVar(&f.punch, "punch", !boolEnv("OPENRUNG_PUNCH_DISABLE"), "offer NAT hole punching so clients can connect directly (tunnel mode; requires a punch-capable hub)")
+}
+
+// engineConfig maps the parsed flags onto the engine. Everything it rejects is
+// a malformed flag value; every posture rule (foundation, WSS, mode) belongs to
+// the engine and is enforced by Start.
+func (f *cliFlags) engineConfig() (engine.Config, error) {
+	fronts, err := parseWSSFrontsFlag(f.wssFronts)
+	if err != nil {
+		return engine.Config{}, fmt.Errorf("invalid wss-fronts: %w", err)
+	}
+	// The engine regenerates an unreadable identity seed rather than failing,
+	// which is right for a GUI volunteer who cannot hand-repair identity.json
+	// but wrong for a server: a mistyped -identity-seed would silently churn
+	// the relay ID. Reject it here, while it is still a bad flag value.
+	if strings.TrimSpace(f.identitySeed) != "" {
+		if _, err := relay.ParseIdentitySeed(f.identitySeed); err != nil {
+			return engine.Config{}, fmt.Errorf("parse identity seed: %w", err)
+		}
+	}
+	// Per-connection lines carry client addresses, so -connection-log=false
+	// must leave the engine with nowhere to write them at all.
+	var connectionLog io.Writer
+	if f.connectionLog {
+		connectionLog = os.Stdout
+	}
+	configPath := f.configOut
+	if configPath == "" {
+		configPath = filepath.Join(os.TempDir(), "openrung-xray-config.json")
+	}
+	cfg := engine.Config{
+		BrokerURL:           f.broker,
+		Token:               f.registrationToken,
+		FoundationToken:     f.foundationToken,
+		NodeClass:           f.nodeClass,
+		Label:               f.label,
+		PublicHost:          f.publicHost,
+		PublicPort:          f.publicPort,
+		XrayPath:            f.xrayPath,
+		ListenHost:          f.listenHost,
+		ListenPort:          f.listenPort,
+		Mode:                normalizeMode(f.mode, f.tunnel, f.hubAddr),
+		HubAddr:             f.hubAddr,
+		HubHTTPURL:          f.hubHTTP,
+		HubCertFingerprint:  f.hubCertFingerprint,
+		HubInsecure:         f.hubInsecure,
+		HubPlaintext:        !f.hubTLS,
+		ServerName:          f.serverName,
+		RealityDest:         f.realityDest,
+		MaxSessions:         f.maxSessions,
+		MaxMbps:             f.maxMbps,
+		HeartbeatInterval:   f.heartbeatInterval,
+		WSSFronts:           fronts,
+		ConnectionLogOutput: connectionLog,
+		Identity: engine.Identity{
+			ClientID:          f.clientID,
+			RealityPrivateKey: f.realityPrivateKey,
+			RealityPublicKey:  f.realityPublicKey,
+			ShortID:           f.shortID,
+			IdentitySeed:      f.identitySeed,
+		},
+		ConfigPath:   configPath,
+		Version:      reportedRelayVersion(),
+		PunchCapable: f.punch,
+		DisableXray:  f.skipXrayRun,
+	}
+
+	// Two rules the engine deliberately does not apply, kept per-mode exactly
+	// as cmd/relay's own Validate had them. They key off the EFFECTIVE mode
+	// because a foundation token forces direct: -foundation-token -mode auto
+	// is not really auto and has always been accepted without a hub. An
+	// unresolvable posture yields no effective mode, so neither rule fires and
+	// Start reports the contradiction itself.
+	switch cfg.EffectiveMode() {
+	case engine.ModeAuto:
+		// The engine degrades a hubless auto config to direct, which suits a
+		// GUI whose user has not configured a hub yet. An operator who typed
+		// -mode auto asked for reachability probing; say it cannot run rather
+		// than silently serving direct.
+		if f.hubAddr == "" {
+			return engine.Config{}, fmt.Errorf("hub is required in auto mode for reachability probing (set -hub or use -mode direct)")
+		}
+	case engine.ModeDirect:
+		// Zero reads to the engine as "advertise the listen port", a sensible
+		// default for a programmatic caller but never what a flag defaulting
+		// to 443 meant. Only direct mode advertises it: tunnel takes its
+		// endpoint from the hub, and auto from the probe.
+		if f.publicPort < 1 || f.publicPort > 65535 {
+			return engine.Config{}, fmt.Errorf("public-port must be between 1 and 65535")
+		}
+	}
+	return cfg, nil
 }
 
 // normalizeMode resolves the requested mode. An explicit -mode wins; otherwise
@@ -144,58 +272,24 @@ type cliConfig struct {
 // fallback is direct (preserving the historical default for hubless setups).
 func normalizeMode(mode string, tunnelFlag bool, hubAddr string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "direct":
-		return "direct"
-	case "tunnel":
-		return "tunnel"
-	case "auto":
-		return "auto"
+	case engine.ModeDirect:
+		return engine.ModeDirect
+	case engine.ModeTunnel:
+		return engine.ModeTunnel
+	case engine.ModeAuto:
+		return engine.ModeAuto
 	case "":
 		switch {
 		case tunnelFlag:
-			return "tunnel"
+			return engine.ModeTunnel
 		case hubAddr != "":
-			return "auto"
+			return engine.ModeAuto
 		default:
-			return "direct"
+			return engine.ModeDirect
 		}
 	default:
-		return mode // invalid; rejected by Validate
+		return mode // invalid; rejected by the engine
 	}
-}
-
-// requireDirectModeForFoundation prevents a foundation credential from ever
-// entering the hub-based auto/tunnel paths. Auto probing sends the registration
-// token to the hub before it chooses a mode, so even an eventually-direct result
-// is not safe for the foundation token.
-func requireDirectModeForFoundation(nodeClass, mode string) error {
-	if nodeClass == relay.NodeClassFoundation && mode != "direct" {
-		return fmt.Errorf("node-class foundation requires direct mode: auto and tunnel send the registration token to the relay hub. Use -mode direct against a TLS broker, or set -foundation-token, which forces direct mode")
-	}
-	return nil
-}
-
-// applyFoundationTokenPosture makes a foundation token a self-contained relay
-// posture: presenting it forces foundation class and direct mode (HTTPS and
-// redirect refusal follow from the foundation bearer in brokerClient). Setting
-// OPENRUNG_FOUNDATION_TOKEN is therefore sufficient — no separate
-// OPENRUNG_NODE_CLASS. An explicit non-foundation node-class is a contradiction
-// and rejected; a non-direct mode is overridden to direct (direct is the only
-// mode that never routes the token through a hub). Called from both
-// ApplyDefaults and run so the posture holds even for a caller that skips
-// ApplyDefaults.
-func applyFoundationTokenPosture(c *cliConfig) error {
-	if c.FoundationToken == "" {
-		return nil
-	}
-	switch strings.ToLower(strings.TrimSpace(c.NodeClass)) {
-	case "", relay.NodeClassFoundation:
-	default:
-		return fmt.Errorf("node-class %q conflicts with a foundation token, which already forces foundation class; unset -node-class/OPENRUNG_NODE_CLASS", c.NodeClass)
-	}
-	c.NodeClass = relay.NodeClassFoundation
-	c.Mode = "direct"
-	return nil
 }
 
 func parseWSSFrontsFlag(raw string) ([]relay.WSSFrontDescriptor, error) {
@@ -216,510 +310,7 @@ func parseWSSFrontsFlag(raw string) ([]relay.WSSFrontDescriptor, error) {
 			ProtocolVersion: relay.WSSProtocolVersion,
 		})
 	}
-	normalized, err := relay.NormalizeWSSFronts(fronts)
-	if err != nil {
-		return nil, err
-	}
-	return normalized, nil
-}
-
-func (c *cliConfig) applyWSSFronts() error {
-	var (
-		fronts []relay.WSSFrontDescriptor
-		err    error
-	)
-	if strings.TrimSpace(c.WSSFrontsRaw) != "" {
-		fronts, err = parseWSSFrontsFlag(c.WSSFrontsRaw)
-	} else {
-		fronts, err = relay.NormalizeWSSFronts(c.WSSFronts)
-	}
-	if err != nil {
-		return err
-	}
-	c.WSSFronts = fronts
-	if len(fronts) > 0 && strings.TrimSpace(c.ListenHost) == "" {
-		// WSS relays bypass the per-connection observer so opaque fallback
-		// streams cannot create address/byte-count records. Pin the direct Xray
-		// listener to an IPv4 wildcard that also accepts 127.0.0.1:443.
-		c.ListenHost = "0.0.0.0"
-	}
-	return nil
-}
-
-func wssListenHostIncludesIPv4Loopback(c cliConfig) bool {
-	host := strings.ToLower(strings.TrimSpace(c.ListenHost))
-	if host == "" {
-		host = "0.0.0.0"
-	}
-	switch host {
-	case "0.0.0.0", "127.0.0.1":
-		return true
-	default:
-		return false
-	}
-}
-
-func validateWSSRelayConfig(c cliConfig, mode string) error {
-	copyForParsing := c
-	if err := copyForParsing.applyWSSFronts(); err != nil {
-		return fmt.Errorf("invalid wss-fronts: %w", err)
-	}
-	if len(copyForParsing.WSSFronts) == 0 {
-		return nil
-	}
-	if copyForParsing.NodeClass != relay.NodeClassFoundation {
-		return errors.New("wss-fronts require node-class foundation")
-	}
-	if mode != "direct" {
-		return errors.New("wss-fronts require direct mode")
-	}
-	if copyForParsing.PublicPort != 443 || copyForParsing.ListenPort != 443 {
-		return errors.New("wss-fronts require both public-port and listen-port 443 so the sidecar can reach only its local Reality listener")
-	}
-	if copyForParsing.ConnectionLog {
-		return errors.New("wss-fronts require connection-log=false so relay-local WSS streams produce no per-connection address or byte-count records")
-	}
-	if !wssListenHostIncludesIPv4Loopback(copyForParsing) {
-		return errors.New("wss-fronts require an IPv4-loopback-reachable listen-host: 0.0.0.0 (production) or 127.0.0.1 (testing)")
-	}
-	if strings.TrimSpace(copyForParsing.IdentitySeed) == "" {
-		return errors.New("wss-fronts require an explicit stable identity seed in -identity-seed or OPENRUNG_IDENTITY_SEED")
-	}
-	if _, err := relay.ParseIdentitySeed(copyForParsing.IdentitySeed); err != nil {
-		return errors.New("wss-fronts require a valid base64 32-byte stable identity seed")
-	}
-	return nil
-}
-
-func (c *cliConfig) ApplyDefaults() error {
-	if err := applyFoundationTokenPosture(c); err != nil {
-		return err
-	}
-	if c.Mode == "" {
-		c.Mode = normalizeMode("", c.TunnelMode, c.HubAddr)
-	}
-	if c.Label == "" {
-		c.Label = relayruntime.GenerateLabel()
-	} else {
-		normalized, err := relay.NormalizeLabel(c.Label)
-		if err != nil {
-			return fmt.Errorf("invalid label: %w", err)
-		}
-		c.Label = normalized
-	}
-	nodeClass, err := relay.NormalizeNodeClass(c.NodeClass)
-	if err != nil {
-		return fmt.Errorf("invalid node-class: %w", err)
-	}
-	c.NodeClass = nodeClass
-	if err := c.applyWSSFronts(); err != nil {
-		return fmt.Errorf("invalid wss-fronts: %w", err)
-	}
-	if c.Mode == "tunnel" || c.Mode == "auto" {
-		// Tunnel mode gets its public endpoint from the hub; auto mode resolves it
-		// at runtime from the reachability probe. Neither needs a public host now.
-		return nil
-	}
-	if c.PublicHost != "" || c.PrintConfigOnly {
-		return nil
-	}
-	publicIPv6, err := relayruntime.DefaultPublicIPv6Address()
-	if err != nil {
-		return fmt.Errorf("public-host is required when no global IPv6 address can be auto-detected: %w", err)
-	}
-	c.PublicHost = publicIPv6
-	return nil
-}
-
-func (c cliConfig) Validate() error {
-	mode := c.Mode
-	if mode == "" {
-		mode = normalizeMode("", c.TunnelMode, c.HubAddr)
-	}
-	if err := requireDirectModeForFoundation(c.NodeClass, mode); err != nil {
-		return err
-	}
-	if err := validateWSSRelayConfig(c, mode); err != nil {
-		return err
-	}
-	switch mode {
-	case "tunnel":
-		if c.HubAddr == "" {
-			return fmt.Errorf("hub is required in tunnel mode (set -hub or OPENRUNG_HUB_ADDR)")
-		}
-		if c.MaxSessions < 1 {
-			return fmt.Errorf("max-sessions must be at least 1")
-		}
-		if c.MaxMbps < 1 {
-			return fmt.Errorf("max-mbps must be at least 1")
-		}
-		return nil
-	case "auto":
-		if c.HubAddr == "" {
-			return fmt.Errorf("hub is required in auto mode for reachability probing (set -hub or use -mode direct)")
-		}
-		if c.BrokerURL == "" {
-			return fmt.Errorf("broker is required")
-		}
-		if c.ListenPort < 1 || c.ListenPort > 65535 {
-			return fmt.Errorf("listen-port must be between 1 and 65535")
-		}
-		if c.MaxSessions < 1 {
-			return fmt.Errorf("max-sessions must be at least 1")
-		}
-		if c.MaxMbps < 1 {
-			return fmt.Errorf("max-mbps must be at least 1")
-		}
-		if c.HeartbeatInterval < 5*time.Second {
-			return fmt.Errorf("heartbeat-interval must be at least 5s")
-		}
-		// Auto can resolve to direct, which reuses the observer's listen host.
-		if isDualListenHost(c.ListenHost) && (!c.ConnectionLog || c.PrintConfigOnly || c.SkipXrayRun) {
-			return fmt.Errorf("listen-host=dual requires connection-log=true and a running xray process")
-		}
-		return nil
-	case "direct":
-		if c.BrokerURL == "" {
-			return fmt.Errorf("broker is required")
-		}
-		if c.PublicHost == "" && !c.PrintConfigOnly {
-			return fmt.Errorf("public-host is required")
-		}
-		if c.ListenPort < 1 || c.ListenPort > 65535 {
-			return fmt.Errorf("listen-port must be between 1 and 65535")
-		}
-		if c.PublicPort < 1 || c.PublicPort > 65535 {
-			return fmt.Errorf("public-port must be between 1 and 65535")
-		}
-		if c.MaxSessions < 1 {
-			return fmt.Errorf("max-sessions must be at least 1")
-		}
-		if c.MaxMbps < 1 {
-			return fmt.Errorf("max-mbps must be at least 1")
-		}
-		if c.HeartbeatInterval < 5*time.Second {
-			return fmt.Errorf("heartbeat-interval must be at least 5s")
-		}
-		if isDualListenHost(c.ListenHost) && (!c.ConnectionLog || c.PrintConfigOnly || c.SkipXrayRun) {
-			return fmt.Errorf("listen-host=dual requires connection-log=true and a running xray process")
-		}
-		return nil
-	default:
-		return fmt.Errorf("mode must be auto, direct, or tunnel")
-	}
-}
-
-func run(cfg cliConfig) error {
-	if err := applyFoundationTokenPosture(&cfg); err != nil {
-		return err
-	}
-	nodeClass, err := relay.NormalizeNodeClass(cfg.NodeClass)
-	if err != nil {
-		return fmt.Errorf("invalid node-class: %w", err)
-	}
-	cfg.NodeClass = nodeClass
-	if err := cfg.applyWSSFronts(); err != nil {
-		return fmt.Errorf("invalid wss-fronts: %w", err)
-	}
-
-	mode := cfg.Mode
-	if mode == "" {
-		mode = normalizeMode("", cfg.TunnelMode, cfg.HubAddr)
-	}
-	if err := requireDirectModeForFoundation(cfg.NodeClass, mode); err != nil {
-		// Keep this guard in the runtime path as well as Validate. Besides making
-		// run safe for programmatic callers, it guarantees rejection before
-		// resolveAutoMode can transmit the foundation token in a hub probe.
-		return err
-	}
-	if err := validateWSSRelayConfig(cfg, mode); err != nil {
-		return err
-	}
-	cfg.Mode = mode
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	switch {
-	case cfg.Mode == "auto" && cfg.PrintConfigOnly:
-		// Skip probing for a config dump; print the direct-form config. (Tunnel
-		// mode would rebind Xray to a loopback port at runtime, but that is
-		// resolved live, not knowable at print time.)
-		cfg.TunnelMode = false
-	case cfg.Mode == "auto":
-		resolveAutoMode(ctx, &cfg)
-	default:
-		cfg.TunnelMode = cfg.Mode == "tunnel"
-	}
-	if !cfg.PrintConfigOnly {
-		slog.Info("starting relay", "version", buildinfo.Version(baseVersion), "revision", buildinfo.Revision())
-	}
-
-	if cfg.TunnelMode {
-		return runTunnelMode(ctx, cfg)
-	}
-
-	xrayCfg := cfg
-	if cfg.ConnectionLog && !cfg.SkipXrayRun && !cfg.PrintConfigOnly {
-		targetHost, targetPort, err := relayruntime.ReserveLoopbackTCPPort()
-		if err != nil {
-			return err
-		}
-		xrayCfg.ListenHost = targetHost
-		xrayCfg.ListenPort = targetPort
-	}
-
-	prepared, err := prepareRuntime(xrayCfg)
-	if err != nil {
-		return err
-	}
-
-	if cfg.PrintConfigOnly {
-		fmt.Println(string(prepared.XrayConfig))
-		return nil
-	}
-
-	configPath := cfg.ConfigOut
-	if configPath == "" {
-		configPath = filepath.Join(os.TempDir(), "openrung-xray-config.json")
-	}
-	if err := os.WriteFile(configPath, prepared.XrayConfig, 0o600); err != nil {
-		return fmt.Errorf("write xray config: %w", err)
-	}
-	slog.Info("wrote xray config", "path", configPath)
-
-	var xrayCmd *exec.Cmd
-	var errCh <-chan error
-	var observerErrCh <-chan error
-	if !cfg.SkipXrayRun {
-		xrayCmd = relayruntime.NewXrayCommand(ctx, cfg.XrayPath, "run", "-config", configPath)
-		xrayCmd.Stdout = os.Stdout
-		xrayCmd.Stderr = os.Stderr
-		if err := xrayCmd.Start(); err != nil {
-			return fmt.Errorf("start xray: %w", err)
-		}
-		waitCh := make(chan error, 1)
-		go func() {
-			waitCh <- xrayCmd.Wait()
-		}()
-		errCh = waitCh
-		slog.Info("started xray", "pid", xrayCmd.Process.Pid)
-
-		if cfg.ConnectionLog {
-			observer := &relayruntime.ConnectionObserver{
-				ListenHost: cfg.ListenHost,
-				ListenPort: cfg.ListenPort,
-				TargetHost: xrayCfg.ListenHost,
-				TargetPort: xrayCfg.ListenPort,
-				Output:     os.Stdout,
-			}
-			observerErrCh, err = observer.Start(ctx)
-			if err != nil {
-				stopProcess(xrayCmd, errCh)
-				return fmt.Errorf("start connection observer: %w", err)
-			}
-			slog.Info(
-				"started connection observer",
-				"listen",
-				strings.Join(relayruntime.ListenAddressesForHost(cfg.ListenHost, cfg.ListenPort), ","),
-				"target",
-				fmt.Sprintf("%s:%d", xrayCfg.ListenHost, xrayCfg.ListenPort),
-				"note",
-				"observer owns the public listen port and forwards to xray",
-			)
-		}
-	}
-
-	// Register only after xray and the public listener are up, so the broker
-	// never advertises a relay that cannot serve: a port conflict or xray
-	// failure aborts above, before any lease exists, which is what stops a
-	// restart loop from perpetually refreshing a dead row. This applies to
-	// foundation relays too — registration (with its node_class attestation)
-	// stays here rather than gating the listener, because registering first
-	// would publish a live foundation lease that a subsequent bind failure
-	// could strand. Any registration failure, including a rejected foundation
-	// attestation, tears the relay down below.
-	broker := cfg.brokerClient()
-	desc, err := register(ctx, broker, cfg, prepared)
-	if err != nil {
-		if xrayCmd != nil {
-			stopProcess(xrayCmd, errCh)
-		}
-		return err
-	}
-	slog.Info("registered relay", "id", desc.ID, "label", desc.Label, "public", fmt.Sprintf("%s:%d", desc.PublicHost, desc.PublicPort))
-
-	ticker := time.NewTicker(cfg.HeartbeatInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			if xrayCmd != nil {
-				stopProcess(xrayCmd, errCh)
-			}
-			return nil
-		case err := <-errCh:
-			if err == nil {
-				return fmt.Errorf("xray exited")
-			}
-			return fmt.Errorf("xray exited: %w", err)
-		case err, ok := <-observerErrCh:
-			if !ok {
-				observerErrCh = nil
-				continue
-			}
-			if err != nil {
-				if xrayCmd != nil {
-					stopProcess(xrayCmd, errCh)
-				}
-				return fmt.Errorf("connection observer stopped: %w", err)
-			}
-		case <-ticker.C:
-			updatedDesc, reRegistered, err := heartbeatOrRegister(ctx, broker, cfg, prepared, desc)
-			if err != nil {
-				slog.Warn("heartbeat failed", "error", err)
-				continue
-			}
-			desc = updatedDesc
-			if reRegistered {
-				slog.Info("re-registered relay", "id", desc.ID, "label", desc.Label, "public", fmt.Sprintf("%s:%d", desc.PublicHost, desc.PublicPort))
-				continue
-			}
-			slog.Info("heartbeat ok", "id", desc.ID)
-		}
-	}
-}
-
-// runTunnelMode binds Xray to a loopback port and serves client traffic through
-// a reverse tunnel to the relay hub. The hub registers the relay with the broker
-// on the relay's behalf, so the relay never exposes a public port and
-// never calls the broker directly.
-func runTunnelMode(parent context.Context, cfg cliConfig) error {
-	ctx, cancel := context.WithCancel(parent)
-	defer cancel()
-
-	// Foundation never reaches tunnel mode: requireDirectModeForFoundation
-	// (Validate and run) rejects any non-direct mode before dispatch.
-
-	loopHost, loopPort, err := relayruntime.ReserveLoopbackTCPPort()
-	if err != nil {
-		return err
-	}
-	xrayCfg := cfg
-	xrayCfg.ListenHost = loopHost
-	xrayCfg.ListenPort = loopPort
-
-	prepared, err := prepareRuntime(xrayCfg)
-	if err != nil {
-		return err
-	}
-
-	if cfg.PrintConfigOnly {
-		fmt.Println(string(prepared.XrayConfig))
-		return nil
-	}
-
-	configPath := cfg.ConfigOut
-	if configPath == "" {
-		configPath = filepath.Join(os.TempDir(), "openrung-xray-config.json")
-	}
-	if err := os.WriteFile(configPath, prepared.XrayConfig, 0o600); err != nil {
-		return fmt.Errorf("write xray config: %w", err)
-	}
-	slog.Info("wrote xray config", "path", configPath)
-
-	var xrayCmd *exec.Cmd
-	xrayErr := make(chan error, 1)
-	if !cfg.SkipXrayRun {
-		xrayCmd = relayruntime.NewXrayCommand(ctx, cfg.XrayPath, "run", "-config", configPath)
-		xrayCmd.Stdout = os.Stdout
-		xrayCmd.Stderr = os.Stderr
-		if err := xrayCmd.Start(); err != nil {
-			return fmt.Errorf("start xray: %w", err)
-		}
-		go func() { xrayErr <- xrayCmd.Wait() }()
-		slog.Info("started xray", "pid", xrayCmd.Process.Pid, "listen", net.JoinHostPort(loopHost, strconv.Itoa(loopPort)))
-	}
-
-	hello := tunnel.HelloFrame{
-		Token:            cfg.RegistrationToken,
-		RealityPublicKey: prepared.RealityPublicKey,
-		ShortID:          prepared.ShortID,
-		ServerName:       cfg.ServerName,
-		ClientID:         prepared.ClientID,
-		Flow:             relay.FlowVision,
-		ExitMode:         relay.ExitModeDirect,
-		MaxSessions:      cfg.MaxSessions,
-		MaxMbps:          cfg.MaxMbps,
-		Label:            cfg.Label,
-		RelayVersion:     reportedRelayVersion(),
-		// A current relay always understands the stream-type discriminator;
-		// PunchCapable additionally asks the hub to advertise a direct path.
-		StreamTyping: true,
-		PunchCapable: cfg.Punch,
-	}
-	client := &tunnel.Client{
-		HubAddr:   cfg.HubAddr,
-		TLSConfig: hubTLSConfig(cfg),
-		Hello:     hello,
-		// Each reconnect signs a fresh identity proof, so the hub always holds
-		// one with the full tunnel TTL ahead of it.
-		RefreshHello: func() tunnel.HelloFrame {
-			signed := hello
-			tunnel.SignHello(prepared.IdentityKey, &signed, time.Now().Add(relay.IdentityProofTTLTunnel))
-			return signed
-		},
-		TargetHost: loopHost,
-		TargetPort: loopPort,
-		OnRegistered: func(ack tunnel.HelloAckFrame) {
-			slog.Info("relay published via hub", "public", net.JoinHostPort(ack.PublicHost, strconv.Itoa(ack.PublicPort)), "relay_id", ack.RelayID)
-		},
-	}
-	clientDone := make(chan error, 1)
-	go func() { clientDone <- client.Run(ctx) }()
-	slog.Info("connecting to relay hub", "hub", cfg.HubAddr, "tls", cfg.HubTLS, "label", cfg.Label)
-
-	select {
-	case <-ctx.Done():
-		if xrayCmd != nil {
-			stopProcess(xrayCmd, xrayErr)
-		}
-		<-clientDone
-		return nil
-	case err := <-xrayErr:
-		cancel()
-		<-clientDone
-		if err != nil {
-			return fmt.Errorf("xray exited: %w", err)
-		}
-		return fmt.Errorf("xray exited")
-	case err := <-clientDone:
-		if xrayCmd != nil {
-			stopProcess(xrayCmd, xrayErr)
-		}
-		if err != nil {
-			return fmt.Errorf("tunnel client stopped: %w", err)
-		}
-		return nil
-	}
-}
-
-// hubTLSConfig builds the TLS config used to dial the relay hub, or nil for a
-// plaintext dial (local development against a non-TLS hub).
-func hubTLSConfig(cfg cliConfig) *tls.Config {
-	if !cfg.HubTLS {
-		return nil
-	}
-	host, _, err := net.SplitHostPort(cfg.HubAddr)
-	if err != nil {
-		host = cfg.HubAddr
-	}
-	return &tls.Config{
-		ServerName:         host,
-		InsecureSkipVerify: cfg.HubInsecure, //nolint:gosec // gated behind the -hub-insecure flag for testing only
-		MinVersion:         tls.VersionTLS12,
-	}
+	return relay.NormalizeWSSFronts(fronts)
 }
 
 func boolEnv(key string) bool {
@@ -731,184 +322,46 @@ func boolEnv(key string) bool {
 	}
 }
 
-func heartbeatOrRegister(ctx context.Context, broker *relayruntime.BrokerClient, cfg cliConfig, prepared preparedRuntime, desc relay.Descriptor) (relay.Descriptor, bool, error) {
-	if err := heartbeat(ctx, broker, desc.ID, desc.LeaseToken); err != nil {
-		if !relayruntime.IsRelayNotFound(err) {
-			return desc, false, err
-		}
-
-		updatedDesc, registerErr := register(ctx, broker, cfg, prepared)
-		if registerErr != nil {
-			return desc, false, fmt.Errorf("re-register relay after broker forgot %s: %w", desc.ID, registerErr)
-		}
-		return updatedDesc, true, nil
-	}
-
-	return desc, false, nil
+// consoleReporter renders engine status transitions as the operator-facing log
+// lines cmd/relay has always printed. deploy/relay/foundation-up.sh and
+// foundation-wss-host.sh poll container logs for "registered relay", so that
+// message is a deployment contract rather than decoration.
+type consoleReporter struct {
+	mu sync.Mutex
+	// registrations is the engine's count as last seen while online. The relay
+	// ID cannot stand in for it: the broker derives the ID from the identity
+	// key, so re-registering after an expired lease returns the same one and a
+	// diff of RelayID would report nothing.
+	registrations uint64
+	lastPhase     engine.Phase
 }
 
-func isDualListenHost(host string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(host))
-	return normalized == "dual" || normalized == "both"
-}
+func (c *consoleReporter) observe(status engine.Status) {
+	c.mu.Lock()
+	previous, previousPhase := c.registrations, c.lastPhase
+	// Leaving online ends the registration: whatever comes back is a fresh one,
+	// not a renewal of the lease that just lapsed.
+	c.registrations = 0
+	if status.Phase == engine.PhaseOnline {
+		c.registrations = status.Registrations
+	}
+	c.lastPhase = status.Phase
+	c.mu.Unlock()
 
-type preparedRuntime struct {
-	ClientID         string
-	RealityPublicKey string
-	ShortID          string
-	IdentityKey      ed25519.PrivateKey
-	XrayConfig       []byte
-}
-
-func prepareRuntime(cfg cliConfig) (preparedRuntime, error) {
-	clientID := cfg.ClientID
-	if clientID == "" {
-		generated, err := relayruntime.GenerateUUID()
-		if err != nil {
-			return preparedRuntime{}, fmt.Errorf("generate client ID: %w", err)
+	switch {
+	case status.Phase == engine.PhaseOnline && status.Registrations > previous:
+		public := net.JoinHostPort(status.PublicHost, strconv.Itoa(status.PublicPort))
+		switch {
+		case status.Transport == relay.TransportTunnel:
+			slog.Info("relay published via hub", "relay_id", status.RelayID, "label", status.Label, "public", public)
+		case previous == 0:
+			slog.Info("registered relay", "id", status.RelayID, "label", status.Label, "public", public)
+		default:
+			slog.Info("re-registered relay", "id", status.RelayID, "label", status.Label, "public", public)
 		}
-		clientID = generated
+	case status.Phase == engine.PhaseRetrying && previousPhase != engine.PhaseRetrying:
+		slog.Warn("relay stopped, retrying", "error", status.LastError)
 	}
-
-	shortID := cfg.ShortID
-	if shortID == "" {
-		generated, err := relayruntime.GenerateShortID()
-		if err != nil {
-			return preparedRuntime{}, fmt.Errorf("generate short ID: %w", err)
-		}
-		shortID = generated
-	}
-
-	privateKey := cfg.RealityPrivateKey
-	publicKey := cfg.RealityPublicKey
-	if privateKey == "" || publicKey == "" {
-		keyPair, err := relayruntime.GenerateRealityKeyPair(cfg.XrayPath)
-		if err != nil {
-			return preparedRuntime{}, err
-		}
-		privateKey = keyPair.PrivateKey
-		publicKey = keyPair.PublicKey
-	}
-
-	// The identity key outlives individual registrations: within this process
-	// every register call — including a re-register after the broker forgot
-	// the lease — signs with the same key and keeps the same relay ID. Pin the
-	// seed (-identity-seed / OPENRUNG_IDENTITY_SEED) to also keep it across
-	// restarts.
-	var identityKey ed25519.PrivateKey
-	if cfg.IdentitySeed != "" {
-		parsed, err := relay.ParseIdentitySeed(cfg.IdentitySeed)
-		if err != nil {
-			return preparedRuntime{}, fmt.Errorf("parse identity seed: %w", err)
-		}
-		identityKey = parsed
-	} else {
-		_, generated, err := ed25519.GenerateKey(cryptorand.Reader)
-		if err != nil {
-			return preparedRuntime{}, fmt.Errorf("generate identity key: %w", err)
-		}
-		identityKey = generated
-	}
-
-	xrayConfig, err := relayruntime.BuildXrayConfig(relayruntime.XrayConfigInput{
-		ListenHost:        cfg.ListenHost,
-		ListenPort:        cfg.ListenPort,
-		ClientID:          clientID,
-		Flow:              relay.FlowVision,
-		Dest:              cfg.RealityDest,
-		ServerName:        cfg.ServerName,
-		RealityPrivateKey: privateKey,
-		ShortID:           shortID,
-	})
-	if err != nil {
-		return preparedRuntime{}, err
-	}
-
-	return preparedRuntime{
-		ClientID:         clientID,
-		RealityPublicKey: publicKey,
-		ShortID:          shortID,
-		IdentityKey:      identityKey,
-		XrayConfig:       xrayConfig,
-	}, nil
-}
-
-func register(ctx context.Context, broker *relayruntime.BrokerClient, cfg cliConfig, prepared preparedRuntime) (relay.Descriptor, error) {
-	// The foundation token's cleartext-transport guard lives in BrokerClient
-	// (RequireSecureTransport, set by brokerClient() for foundation), so it
-	// covers heartbeat as well as registration and also refuses redirects.
-	if err := cfg.applyWSSFronts(); err != nil {
-		return relay.Descriptor{}, fmt.Errorf("invalid wss-fronts: %w", err)
-	}
-	mode := cfg.Mode
-	if mode == "" {
-		mode = normalizeMode("", cfg.TunnelMode, cfg.HubAddr)
-	}
-	if err := validateWSSRelayConfig(cfg, mode); err != nil {
-		return relay.Descriptor{}, err
-	}
-	fronts, err := relay.NormalizeWSSFronts(cfg.WSSFronts)
-	if err != nil {
-		return relay.Descriptor{}, fmt.Errorf("normalize WSS fronts: %w", err)
-	}
-	if !slices.Equal(fronts, cfg.WSSFronts) {
-		return relay.Descriptor{}, errors.New("WSS fronts must be normalized before registration")
-	}
-	if len(fronts) > 0 {
-		configuredIdentity, err := relay.ParseIdentitySeed(cfg.IdentitySeed)
-		if err != nil || !configuredIdentity.Equal(prepared.IdentityKey) {
-			return relay.Descriptor{}, errors.New("prepared WSS relay identity does not match the explicit stable identity seed")
-		}
-	}
-	req := relay.RegisterRequest{
-		PublicHost:       cfg.PublicHost,
-		PublicPort:       cfg.PublicPort,
-		Protocol:         relay.ProtocolVLESSRealityVision,
-		ClientID:         prepared.ClientID,
-		RealityPublicKey: prepared.RealityPublicKey,
-		ShortID:          prepared.ShortID,
-		ServerName:       cfg.ServerName,
-		Flow:             relay.FlowVision,
-		ExitMode:         relay.ExitModeDirect,
-		MaxSessions:      cfg.MaxSessions,
-		MaxMbps:          cfg.MaxMbps,
-		RelayVersion:     reportedRelayVersion(),
-		Label:            cfg.Label,
-		NodeClass:        cfg.NodeClass,
-		Transport:        relay.TransportDirect,
-		WSSFronts:        slices.Clone(cfg.WSSFronts),
-	}
-	// Signed after every other field is final: the statement binds them.
-	proofExpiresAt := time.Now().Add(relay.IdentityProofTTLDirect)
-	req.IdentityPublicKey, req.IdentityProof, req.IdentityExpiresAt =
-		relay.SignIdentity(prepared.IdentityKey, req, proofExpiresAt)
-	if len(req.WSSFronts) > 0 {
-		req.WSSCapabilityProof, req.WSSCapabilityExpiresAt, err =
-			relay.SignWSSCapability(prepared.IdentityKey, req, proofExpiresAt)
-		if err != nil {
-			return relay.Descriptor{}, fmt.Errorf("sign WSS capability: %w", err)
-		}
-	}
-	desc, err := broker.Register(ctx, req)
-	if err != nil {
-		return relay.Descriptor{}, err
-	}
-	// A broker that predates node_class drops the field and answers 201 with
-	// no class attested; without this check the relay would silently serve
-	// mislabeled as a volunteer-class relay.
-	if req.NodeClass == relay.NodeClassFoundation && desc.NodeClass != relay.NodeClassFoundation {
-		return relay.Descriptor{}, fmt.Errorf("broker attested node_class %q instead of %q: the broker likely predates node_class support; upgrade it, or drop -node-class to serve as a volunteer-class relay", desc.NodeClass, relay.NodeClassFoundation)
-	}
-	if !slices.Equal(desc.WSSFronts, req.WSSFronts) {
-		return relay.Descriptor{}, errors.New("broker did not echo the exact signed per-relay WSS fronts; refusing to start WSS advertisement")
-	}
-	if len(req.WSSFronts) > 0 {
-		expectedRelayID := relay.DeriveRelayID(prepared.IdentityKey.Public().(ed25519.PublicKey))
-		if desc.ID != expectedRelayID {
-			return relay.Descriptor{}, errors.New("broker returned a relay ID that does not match the stable WSS relay identity")
-		}
-	}
-	return desc, nil
 }
 
 // reportedRelayVersion is the relay_version identity sent to the broker and
@@ -919,44 +372,4 @@ func reportedRelayVersion() string {
 
 func versionInfo() string {
 	return fmt.Sprintf("%s revision=%s", reportedRelayVersion(), buildinfo.Revision())
-}
-
-func heartbeat(ctx context.Context, broker *relayruntime.BrokerClient, id, leaseToken string) error {
-	return broker.Heartbeat(ctx, id, leaseToken)
-}
-
-func (c cliConfig) brokerClient() *relayruntime.BrokerClient {
-	// A foundation token is the bearer and, on its own, requires secure
-	// transport (https + redirect refusal), so the guarantee holds even if the
-	// posture normalization above has not run for this config.
-	token := c.RegistrationToken
-	if c.FoundationToken != "" {
-		token = c.FoundationToken
-	}
-	return &relayruntime.BrokerClient{
-		BaseURL:                c.BrokerURL,
-		Token:                  token,
-		HTTPClient:             c.HTTPClient,
-		RequireSecureTransport: c.FoundationToken != "" || c.NodeClass == relay.NodeClassFoundation,
-	}
-}
-
-func stopProcess(cmd *exec.Cmd, errCh <-chan error) {
-	if cmd.Process == nil {
-		return
-	}
-
-	_ = cmd.Process.Signal(os.Interrupt)
-
-	select {
-	case <-errCh:
-		return
-	case <-time.After(2 * time.Second):
-		_ = cmd.Process.Kill()
-	}
-
-	select {
-	case <-errCh:
-	case <-time.After(time.Second):
-	}
 }

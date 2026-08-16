@@ -108,8 +108,21 @@ type Config struct {
 	// comes from the hub. A WSS relay binds xray to the IPv4 wildcard, so it
 	// should set this to the IPv4 address the directory must advertise.
 	PublicHost string
+	// PublicPort is the port a direct registration advertises (cmd/relay's
+	// -public-port). Zero means ListenPort, which is right whenever no port
+	// mapping sits in front of the relay. Auto mode ignores it: the probe
+	// confirms one specific port, and that port is the one to advertise.
+	// Tunnel mode's endpoint comes from the hub.
+	PublicPort int
 	// XrayPath locates the xray binary. Defaults to "xray" via PATH.
 	XrayPath string
+	// ListenHost is the host the direct-mode public listener binds (cmd/relay's
+	// -listen-host): "::" and the aliases "dual"/"both" bind both families, any
+	// other value binds that address alone. Empty keeps the engine's own
+	// default — "::" for a direct-only relay, the generic wildcard for a
+	// probe-selected one (which must reproduce the probe's bind), and the IPv4
+	// wildcard for a WSS relay, whose xray owns the public port itself.
+	ListenHost string
 	// ListenPort is the direct-only public/listen port and the sole automatic
 	// candidate when AutomaticPortCandidates is empty. Defaults to 443.
 	ListenPort int
@@ -163,6 +176,9 @@ type Config struct {
 	// ConfigDir is where the generated xray config (which contains the Reality
 	// private key) is written, 0600. Defaults to os.TempDir().
 	ConfigDir string
+	// ConfigPath writes that config to this exact path instead (cmd/relay's
+	// -config-out), overriding ConfigDir.
+	ConfigPath string
 	// Version is reported to the broker/hub as the relay runtime version.
 	Version string
 	// PunchCapable offers NAT hole punching in tunnel mode.
@@ -252,9 +268,8 @@ func requireDirectModeForFoundation(c Config) error {
 }
 
 // validateWSSFronts enforces the WSS registration posture on a config whose
-// fronts and node class are already normalized. It mirrors cmd/relay's
-// validateWSSRelayConfig, minus the listen-host cases: the engine owns its
-// listen host and pins a WSS relay's xray to the IPv4 wildcard itself.
+// fronts and node class are already normalized (cmd/relay's
+// validateWSSRelayConfig).
 func (c Config) validateWSSFronts() error {
 	if len(c.WSSFronts) == 0 {
 		return nil
@@ -265,8 +280,11 @@ func (c Config) validateWSSFronts() error {
 	if !c.resolvesToDirect() {
 		return errors.New("WSS fronts require direct mode")
 	}
-	if c.ListenPort != 443 {
-		return errors.New("WSS fronts require listen port 443 so the sidecar can reach only its local Reality listener")
+	if c.ListenPort != 443 || c.publicPort() != 443 {
+		return errors.New("WSS fronts require both listen port and public port 443 so the sidecar can reach only its local Reality listener")
+	}
+	if !wssListenHostReachesIPv4Loopback(c.ListenHost) {
+		return errors.New("WSS fronts require an IPv4-loopback-reachable listen host: 0.0.0.0 (production) or 127.0.0.1 (testing)")
 	}
 	if c.ConnectionLogOutput != nil {
 		return errors.New("WSS fronts require connection logging disabled so relay-local WSS streams produce no per-connection address or byte-count records")
@@ -283,19 +301,19 @@ func (c Config) validateWSSFronts() error {
 // effectiveConfig applies the foundation-token posture and normalizes the node
 // class and WSS fronts. validate and every session start from its result, so
 // the posture and the foundation/WSS guards hold on the runtime path too, not
-// just at Start. An empty node class deliberately stays empty (unstated) so
-// the registration wire request is unchanged for existing callers.
+// just at Start. An empty node class normalizes to volunteer and is claimed
+// explicitly, as cmd/relay has always done; the broker canonicalizes an absent
+// field to the same value, and the signed identity statement binds the
+// canonical form either way, so the two are indistinguishable to it.
 func (c Config) effectiveConfig() (Config, error) {
 	if err := applyFoundationTokenPosture(&c); err != nil {
 		return Config{}, err
 	}
-	if strings.TrimSpace(c.NodeClass) != "" {
-		nodeClass, err := relay.NormalizeNodeClass(c.NodeClass)
-		if err != nil {
-			return Config{}, fmt.Errorf("invalid node class: %w", err)
-		}
-		c.NodeClass = nodeClass
+	nodeClass, err := relay.NormalizeNodeClass(c.NodeClass)
+	if err != nil {
+		return Config{}, fmt.Errorf("invalid node class: %w", err)
 	}
+	c.NodeClass = nodeClass
 	fronts, err := relay.NormalizeWSSFronts(c.WSSFronts)
 	if err != nil {
 		return Config{}, fmt.Errorf("invalid WSS fronts: %w", err)
@@ -308,6 +326,21 @@ func (c Config) effectiveConfig() (Config, error) {
 		return Config{}, err
 	}
 	return c, nil
+}
+
+// EffectiveMode reports the mode this config will actually run in, which is
+// not always Mode: a foundation token forces direct, so that its credential
+// can never reach a hub. A caller layering its own rules on the mode — the CLI
+// rejects a hubless auto config that the engine would instead degrade to
+// direct — must consult this, or it will judge a mode the posture is about to
+// override. A config whose posture is self-contradictory has no effective mode
+// and returns "", leaving that error for Start to report in full.
+func (c Config) EffectiveMode() string {
+	effective, err := c.withDefaults().effectiveConfig()
+	if err != nil {
+		return ""
+	}
+	return effective.Mode
 }
 
 // brokerClient builds the broker client for this config. A foundation token is
@@ -359,6 +392,15 @@ func (c Config) validate() error {
 	if c.ListenPort < 1 || c.ListenPort > 65535 {
 		return fmt.Errorf("listen port must be between 1 and 65535")
 	}
+	// Zero means "advertise ListenPort", so only a stated port is range-checked.
+	if c.PublicPort < 0 || c.PublicPort > 65535 {
+		return fmt.Errorf("public port must be between 1 and 65535")
+	}
+	// A label the broker would reject fails the session on every attempt, so
+	// surface it at Start rather than as an endless retry loop.
+	if _, err := relay.NormalizeLabel(c.Label); err != nil {
+		return fmt.Errorf("invalid label: %w", err)
+	}
 	if c.Mode == ModeAuto {
 		for _, port := range c.AutomaticPortCandidates {
 			if port < 1 || port > 65535 {
@@ -390,7 +432,14 @@ type Status struct {
 	PublicPort int    `json:"publicPort,omitempty"`
 	LastError  string `json:"lastError,omitempty"`
 	// StartedAtMs is when the engine went online (unix ms), 0 when not online.
-	StartedAtMs       int64  `json:"startedAtMs"`
+	StartedAtMs int64 `json:"startedAtMs"`
+	// Registrations counts successful broker registrations and hub
+	// publications across the engine's lifetime. It increments even when
+	// RelayID does not change — the broker derives the ID from the relay's
+	// identity key, so re-registering after an expired lease returns the same
+	// one — which is why a caller that reports each registration must watch
+	// this rather than diffing RelayID.
+	Registrations     uint64 `json:"registrations"`
 	ActiveConnections int64  `json:"activeConnections"`
 	TotalConnections  uint64 `json:"totalConnections"`
 	// BytesFromClients/BytesToClients count relayed traffic in both directions
@@ -449,6 +498,10 @@ type Engine struct {
 	bytesFrom   atomic.Uint64
 	bytesTo     atomic.Uint64
 	tunnelStats tunnel.TrafficStats
+
+	// registrations counts every successful broker registration and hub
+	// publication, so callers can see a re-registration that kept the same ID.
+	registrations atomic.Uint64
 
 	probeDirect func(context.Context, string, string, string, int, *http.Client) relayruntime.DirectProbeResult
 }
@@ -549,6 +602,7 @@ func (e *Engine) statusLocked() Status {
 		PublicPort:        e.publicPort,
 		LastError:         e.lastErr,
 		StartedAtMs:       startedMs,
+		Registrations:     e.registrations.Load(),
 		ActiveConnections: e.active.Load() + ts.ActiveStreams,
 		TotalConnections:  e.total.Load() + ts.TotalStreams,
 		BytesFromClients:  e.bytesFrom.Load() + ts.BytesFromClients,
@@ -684,6 +738,62 @@ const (
 	wssDirectListenHost = "0.0.0.0"
 )
 
+// directListenHost is the bind host for a direct session's public listener.
+// automatic reports whether the transport came from a positive reachability
+// probe: the listener must then reproduce the probe's own bind strategy, so
+// both callers resolve it through this one function.
+func (c Config) directListenHost(automatic bool) string {
+	if host := strings.TrimSpace(c.ListenHost); host != "" {
+		return host
+	}
+	if automatic {
+		return automaticDirectListenHost
+	}
+	return directOnlyListenHost
+}
+
+// wssListenHost is where a WSS relay's xray binds. It owns the public port
+// itself, so a configured listen host applies to it directly; validateWSSFronts
+// restricts that to the values the colocated sidecar's 127.0.0.1 dial reaches.
+func (c Config) wssListenHost() string {
+	if host := strings.TrimSpace(c.ListenHost); host != "" {
+		return host
+	}
+	return wssDirectListenHost
+}
+
+// publicPort is the port a direct registration advertises.
+func (c Config) publicPort() int {
+	if c.PublicPort > 0 {
+		return c.PublicPort
+	}
+	return c.ListenPort
+}
+
+// isDualListenHost reports whether host is one of the aliases the connection
+// listener expands into a separate IPv6 and IPv4 listener. Xray binds exactly
+// one address, so these never reach it.
+func isDualListenHost(host string) bool {
+	switch strings.ToLower(strings.TrimSpace(host)) {
+	case "dual", "both":
+		return true
+	default:
+		return false
+	}
+}
+
+// wssListenHostReachesIPv4Loopback reports whether a WSS relay's xray bind
+// accepts the colocated sidecar's 127.0.0.1:443 dial. Empty is the engine's own
+// IPv4 wildcard default.
+func wssListenHostReachesIPv4Loopback(host string) bool {
+	switch strings.ToLower(strings.TrimSpace(host)) {
+	case "", "0.0.0.0", "127.0.0.1":
+		return true
+	default:
+		return false
+	}
+}
+
 // automaticPortCandidates returns auto mode's effective ordered list. An empty
 // explicit list deliberately preserves the historic generic behavior of probing
 // ListenPort only.
@@ -717,7 +827,7 @@ func (e *Engine) autoResolve(ctx context.Context, cfg Config) (mode, publicHost 
 		probe = relayruntime.ProbeDirectReachability
 	}
 	for _, port := range cfg.automaticPortCandidates() {
-		result := probe(ctx, hubHTTP, cfg.Token, automaticDirectListenHost, port, e.probeClient(cfg))
+		result := probe(ctx, hubHTTP, cfg.Token, cfg.directListenHost(true), port, e.probeClient(cfg))
 		if ctx.Err() != nil {
 			return "", "", 0
 		}
@@ -807,7 +917,7 @@ func (e *Engine) runSession(ctx context.Context, broker *relayruntime.BrokerClie
 
 	mode := cfg.Mode
 	publicHost := ""
-	directListenHost := directOnlyListenHost
+	automatic := false
 	if mode == ModeAuto {
 		if cfg.HubAddr == "" {
 			// No hub configured: direct is the only option.
@@ -820,8 +930,11 @@ func (e *Engine) runSession(ctx context.Context, broker *relayruntime.BrokerClie
 				return ctx.Err()
 			}
 			if mode == ModeDirect {
-				cfg.ListenPort = selectedPort
-				directListenHost = automaticDirectListenHost
+				// The probed port is the one confirmed reachable, so it is also
+				// the one to advertise; a configured PublicPort described a
+				// different, unprobed endpoint.
+				cfg.ListenPort, cfg.PublicPort = selectedPort, selectedPort
+				automatic = true
 				e.logf("directly reachable at %s — using direct mode", net.JoinHostPort(publicHost, strconv.Itoa(cfg.ListenPort)))
 			} else {
 				e.logf("no automatic direct candidate was positively reachable — using tunnel mode via RelayHub")
@@ -832,7 +945,7 @@ func (e *Engine) runSession(ctx context.Context, broker *relayruntime.BrokerClie
 	if mode == ModeTunnel {
 		return e.runTunnelSession(ctx, cfg, label, identity)
 	}
-	return e.runDirectSession(ctx, broker, cfg, label, identity, publicHost, directListenHost)
+	return e.runDirectSession(ctx, broker, cfg, label, identity, publicHost, cfg.directListenHost(automatic))
 }
 
 func (e *Engine) currentConfig() Config {
@@ -942,10 +1055,14 @@ func (e *Engine) startXray(ctx context.Context, cfg Config, identity Identity, l
 		return nil, nil, err
 	}
 
-	configPath := filepath.Join(cfg.ConfigDir, "openrung-volunteer-xray.json")
+	configPath := cfg.ConfigPath
+	if configPath == "" {
+		configPath = filepath.Join(cfg.ConfigDir, "openrung-volunteer-xray.json")
+	}
 	if err := os.WriteFile(configPath, xrayConfig, 0o600); err != nil {
 		return nil, nil, fmt.Errorf("write xray config: %w", err)
 	}
+	e.logf("wrote xray config to %s", configPath)
 
 	if cfg.DisableXray {
 		return nil, make(chan error), nil
@@ -994,7 +1111,7 @@ func (e *Engine) RenderXrayConfig() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	listenHost, listenPort := directOnlyListenHost, cfg.ListenPort
+	listenHost, listenPort := cfg.directListenHost(false), cfg.ListenPort
 	switch {
 	case cfg.Mode == ModeTunnel:
 		host, port, err := relayruntime.ReserveLoopbackTCPPort()
@@ -1003,7 +1120,11 @@ func (e *Engine) RenderXrayConfig() ([]byte, error) {
 		}
 		listenHost, listenPort = host, port
 	case len(cfg.WSSFronts) > 0:
-		listenHost = wssDirectListenHost
+		listenHost = cfg.wssListenHost()
+	case isDualListenHost(listenHost):
+		// The dual-family aliases name two listeners, which only the connection
+		// listener can open; xray binds exactly one address.
+		return nil, fmt.Errorf("cannot render an xray config for listen host %q: it names two listeners", cfg.ListenHost)
 	}
 	return relayruntime.BuildXrayConfig(relayruntime.XrayConfigInput{
 		ListenHost:        listenHost,
@@ -1042,7 +1163,7 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 		// cmd/relay): opaque fallback streams must never create address or
 		// byte-count records, so xray owns the public listener directly and the
 		// engine's per-connection counters stay at zero.
-		xrayListenHost, xrayListenPort = wssDirectListenHost, cfg.ListenPort
+		xrayListenHost, xrayListenPort = cfg.wssListenHost(), cfg.ListenPort
 	} else {
 		// The observer owns the public port and forwards to xray on loopback; it
 		// is also the traffic-counter source.
@@ -1114,7 +1235,7 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 	}
 	req := relay.RegisterRequest{
 		PublicHost:       publicHost,
-		PublicPort:       cfg.ListenPort,
+		PublicPort:       cfg.publicPort(),
 		Protocol:         relay.ProtocolVLESSRealityVision,
 		ClientID:         identity.ClientID,
 		RealityPublicKey: identity.RealityPublicKey,
@@ -1127,6 +1248,7 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 		RelayVersion:     cfg.Version,
 		Label:            label,
 		NodeClass:        cfg.NodeClass,
+		Transport:        relay.TransportDirect,
 		WSSFronts:        slices.Clone(cfg.WSSFronts),
 	}
 	// Every register call — initial and after an expired lease — signs a fresh
@@ -1161,6 +1283,7 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 	}
 	e.logf("registered with the broker as %q (%s) at %s", desc.Label, desc.ID,
 		net.JoinHostPort(desc.PublicHost, strconv.Itoa(desc.PublicPort)))
+	e.registrations.Add(1)
 	e.setStatus(func() {
 		e.phase = PhaseOnline
 		e.transport = relay.TransportDirect
@@ -1241,6 +1364,9 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 				}
 				desc = updated
 				e.logf("re-registered with the broker as %q (%s)", desc.Label, desc.ID)
+				// The ID is derived from the identity key and so is unchanged
+				// here; the counter is what tells a caller this happened.
+				e.registrations.Add(1)
 				e.setStatus(func() { e.relayID = desc.ID })
 			}
 		}
@@ -1353,6 +1479,7 @@ func (e *Engine) runTunnelSession(ctx context.Context, cfg Config, label string,
 		Stats:      &e.tunnelStats,
 		OnRegistered: func(ack tunnel.HelloAckFrame) {
 			e.logf("relay published via hub at %s", net.JoinHostPort(ack.PublicHost, strconv.Itoa(ack.PublicPort)))
+			e.registrations.Add(1)
 			e.setStatus(func() {
 				e.phase = PhaseOnline
 				e.transport = relay.TransportTunnel
