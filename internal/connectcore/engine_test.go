@@ -346,8 +346,7 @@ func TestLocalProxyPortRetriesAfterResolutionFailure(t *testing.T) {
 	s := New()
 	s.Persistence = &fakePersistence{}
 
-	// An unusable override is the real transient failure: resolution reports it
-	// and pins nothing, so correcting it and calling again still works.
+	// An unusable override reports an error and pins nothing.
 	t.Setenv(proxyconfig.PortEnv, "not-a-port")
 	if _, err := s.LocalProxyPort(); err == nil {
 		t.Fatal("first failed resolution unexpectedly succeeded")
@@ -359,8 +358,7 @@ func TestLocalProxyPortRetriesAfterResolutionFailure(t *testing.T) {
 		t.Fatalf("retry = %d, %v; want 46685, nil", port, err)
 	}
 
-	// Once resolution succeeds, later calls keep that endpoint even though
-	// resolving again would now hand out a different one.
+	// Later calls keep that endpoint even though resolving again would not.
 	t.Setenv(proxyconfig.PortEnv, "46686")
 	pinned, err := s.LocalProxyPort()
 	if err != nil || pinned != port {
@@ -399,9 +397,7 @@ func (f *fakeProxyController) Restore(snap OSProxySnapshot) error {
 	return f.restoreErr
 }
 
-// fakePersistence is an in-memory Persistence for engine tests. It counts the
-// proxy-port calls so a test can assert the engine consulted persistence, or
-// (in TUN mode) that it never did.
+// fakePersistence is an in-memory Persistence for engine tests.
 type fakePersistence struct {
 	mu      sync.Mutex
 	recents []RecentNode
@@ -409,9 +405,8 @@ type fakePersistence struct {
 	hasSnap bool
 
 	port int // the persisted port; 0 means none stored yet
-	// winner stands in for another process that persisted first between this
-	// one's load and its save: the locked store then reports that port instead
-	// of the candidate offered.
+	// winner stands in for another process that persisted first, which the
+	// locked store reports instead of the candidate offered.
 	winner    int
 	saveErr   error
 	loadCalls int
@@ -438,8 +433,6 @@ func (f *fakePersistence) LoadProxyPort() (int, bool) {
 	return f.port, f.port != 0
 }
 
-// LoadOrSaveProxyPort mirrors the real store: the first writer wins and every
-// later caller is told the winner, so concurrent first launches agree.
 func (f *fakePersistence) LoadOrSaveProxyPort(candidate int) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -26,12 +26,8 @@ func TestEnsureProxyPortAvailableReportsStablePortCollision(t *testing.T) {
 	}
 }
 
-// The engine resolves its endpoint through proxyconfig using its own
-// Persistence hook, with no host-supplied callback in between. These pin the
-// invariants that survived collapsing that seam.
-
-// An explicit override is this launch's choice, not the installation's: it
-// wins over anything stored and is never written back.
+// An override is this launch's choice, not the installation's: it wins over
+// anything stored and is never written back.
 func TestLocalProxyPortOverrideWinsAndIsNotPersisted(t *testing.T) {
 	store := &fakePersistence{port: 51000}
 	s := New()
@@ -53,9 +49,8 @@ func TestLocalProxyPortOverrideWinsAndIsNotPersisted(t *testing.T) {
 	}
 }
 
-// Automatic selection is stable across launches and across processes: the
-// first launch allocates and persists, and every later engine — in this or
-// another process — is handed the same endpoint by the store.
+// Without an override the endpoint is chosen once and reused on later
+// launches.
 func TestLocalProxyPortAutomaticSelectionIsStableAcrossEngines(t *testing.T) {
 	t.Setenv(proxyconfig.PortEnv, "")
 	store := &fakePersistence{}
@@ -82,9 +77,8 @@ func TestLocalProxyPortAutomaticSelectionIsStableAcrossEngines(t *testing.T) {
 	}
 }
 
-// Two first launches at once must not end up on different endpoints. The store
-// is nothing to load from when each of them looks, so both allocate; the
-// locked save reports whichever landed first, and the loser adopts it.
+// Two simultaneous first launches must not end up on different endpoints: both
+// allocate, and the one that loses the locked save adopts the winner's port.
 func TestLocalProxyPortAdoptsAnotherProcessWinner(t *testing.T) {
 	t.Setenv(proxyconfig.PortEnv, "")
 	store := &fakePersistence{winner: 51234}
@@ -103,9 +97,8 @@ func TestLocalProxyPortAdoptsAnotherProcessWinner(t *testing.T) {
 	}
 }
 
-// Losing persistence must never deny access: the endpoint still resolves and
-// stays put for this process, and the failure is reported as a warning beside
-// it rather than as an error.
+// Losing persistence must never deny access: the endpoint still resolves, stays
+// put for this process, and reports a warning rather than an error.
 func TestLocalProxyPortPersistenceFailureIsANonFatalWarning(t *testing.T) {
 	t.Setenv(proxyconfig.PortEnv, "")
 

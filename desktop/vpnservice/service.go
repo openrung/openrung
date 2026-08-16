@@ -125,10 +125,6 @@ func New() *Service {
 // frontend as callable bindings; they are lifecycle hooks for package main.
 func (s *Service) Startup(ctx context.Context) {
 	s.engine.SingBoxPath = s.SingBoxPath
-	// The one storage hook: recents, the crash-recovery proxy snapshot, and the
-	// stable proxy port the engine resolves through internal/proxyconfig. Left
-	// nil when the config directory is unavailable, which the engine degrades
-	// on rather than fails.
 	if store, err := clientstate.New(); err == nil {
 		s.store = store
 		s.engine.Persistence = storeAdapter{store: store}

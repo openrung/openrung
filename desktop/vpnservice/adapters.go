@@ -32,8 +32,6 @@ func (a storeAdapter) SaveRecents(recents []connectcore.RecentNode) error {
 	return a.store.SaveRecents(stored)
 }
 
-// The proxy-port half needs no translation: the store already speaks
-// proxyconfig's shape, which is why the engine can resolve through it directly.
 func (a storeAdapter) LoadProxyPort() (int, bool) { return a.store.LoadProxyPort() }
 
 func (a storeAdapter) LoadOrSaveProxyPort(candidate int) (int, error) {
@@ -60,9 +58,8 @@ func (a storeAdapter) ClearProxySnapshot() error {
 	return a.store.ClearProxySnapshot()
 }
 
-// helperStore narrows the store for proxyconfig's shell helper, as a nil
-// interface when the config directory was unavailable: a nil *clientstate.Store
-// inside a non-nil interface would slip past proxyconfig's own nil check.
+// helperStore must return a nil interface, never a nil pointer inside one, which
+// proxyconfig's nil check cannot see through.
 func (s *Service) helperStore() proxyconfig.HelperStore {
 	if s.store == nil {
 		return nil

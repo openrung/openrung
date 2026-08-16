@@ -128,10 +128,8 @@ func TestGetProxyInfoKeepsEndpointWhenShellHelperCannotBeWritten(t *testing.T) {
 	}
 }
 
-// withStore wires a store the way Startup does: the same value backs the shell
-// helper and the engine's persistence hook, through which the engine resolves
-// the stable port. A test that set only one of the two would no longer be
-// exercising the path the app runs.
+// withStore wires a store the way Startup does: one value backs both the shell
+// helper and the engine's persistence hook.
 func withStore(s *Service, store *clientstate.Store) *Service {
 	s.store = store
 	s.engine.Persistence = storeAdapter{store: store}
@@ -144,8 +142,7 @@ func TestGetProxyInfoSurfacesNonFatalPersistenceWarning(t *testing.T) {
 	if err := os.WriteFile(blocker, []byte("blocked"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// A store whose configuration directory cannot be created: resolution still
-	// yields a usable endpoint, and the failure to persist it is a warning.
+	// The configuration directory cannot be created.
 	s := withStore(New(), clientstate.NewInDir(filepath.Join(blocker, "openrung")))
 
 	info, err := s.GetProxyInfo()
@@ -160,10 +157,8 @@ func TestGetProxyInfoSurfacesNonFatalPersistenceWarning(t *testing.T) {
 	}
 }
 
-// With no override, the endpoint is chosen once and then reused: the desktop
-// app must offer the same address on the next launch, since users configure it
-// in a browser. The engine reaches the store through its persistence hook —
-// there is no separate port-resolution callback to wire.
+// The desktop app must offer the same address on the next launch, since users
+// configure it in a browser.
 func TestGetProxyInfoReusesThePersistedEndpointOnTheNextLaunch(t *testing.T) {
 	t.Setenv(proxyconfig.PortEnv, "")
 	dir := t.TempDir()

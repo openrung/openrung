@@ -8,16 +8,9 @@ import (
 	"openrung/internal/proxyconfig"
 )
 
-// The engine's use of the stable local proxy endpoint. internal/proxyconfig
-// owns the endpoint itself — the loopback host, the OPENRUNG_PROXY_PORT
-// override, the port-validity rule, and the resolution policy (env override,
-// persisted port, fresh allocation). What lives here is the engine's own
-// policy on top of it: when to check the port is free, and pinning a resolved
-// endpoint for the process.
+// internal/proxyconfig owns the endpoint and its resolution policy; the engine
+// adds only when to check the port is free and how long a resolution sticks.
 
-// Persistence carries proxyconfig's port-store shape, which is what lets
-// LocalProxyPort hand the engine's own storage hook straight to the shared
-// resolution policy instead of taking a callback from each host.
 var _ proxyconfig.PortStore = Persistence(nil)
 
 // EnsureProxyPortAvailable performs an early, actionable bind check before
@@ -35,15 +28,10 @@ func EnsureProxyPortAvailable(port int) error {
 	return listener.Close()
 }
 
-// LocalProxyPort resolves the stable endpoint through proxyconfig, pinning
-// only a successfully resolved endpoint for this process. A transient
-// resolution failure (an unusable override, an allocation that failed) remains
-// retryable on the next call.
-//
-// Persistence is the engine's one storage hook and satisfies
-// proxyconfig.PortStore, so it is handed over as-is: a nil hook means no
-// configuration directory, which resolves to a fresh port plus the non-fatal
-// warning that it may change next launch.
+// LocalProxyPort pins only a successfully resolved endpoint for this process,
+// so a transient failure (an unusable override, a failed allocation) stays
+// retryable on the next call. A nil Persistence means no configuration
+// directory: a fresh port plus a non-fatal warning that it may change.
 func (s *Engine) LocalProxyPort() (int, error) {
 	s.proxyPortMu.Lock()
 	defer s.proxyPortMu.Unlock()
@@ -59,10 +47,8 @@ func (s *Engine) LocalProxyPort() (int, error) {
 	return s.proxyPort, nil
 }
 
-// portStore narrows the persistence hook to the half proxyconfig needs. The
-// explicit nil check keeps a nil Persistence a nil interface rather than a
-// non-nil one holding a nil value, which proxyconfig's own nil check could not
-// see through.
+// portStore must return a nil interface, never a nil pointer inside one, which
+// proxyconfig's nil check cannot see through.
 func (s *Engine) portStore() proxyconfig.PortStore {
 	if s.Persistence == nil {
 		return nil

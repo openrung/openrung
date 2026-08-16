@@ -134,8 +134,8 @@ func TestTUNConnectSkipsProxyPortAndOSProxy(t *testing.T) {
 	if proxy.sets != 0 {
 		t.Fatalf("TUN mode set the OS proxy %d times", proxy.sets)
 	}
-	// The stable endpoint is never resolved, so TUN mode also never allocates
-	// or persists a port for a listener that will not exist.
+	// TUN mode never allocates or persists a port for a listener that will not
+	// exist.
 	if loads, saves := store.portCalls(); loads != 0 || saves != 0 {
 		t.Fatalf("TUN mode touched proxy-port persistence: %d loads, %d saves", loads, saves)
 	}

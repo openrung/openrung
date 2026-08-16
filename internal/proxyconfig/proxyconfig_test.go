@@ -14,10 +14,8 @@ import (
 	"openrung/internal/clientstate"
 )
 
-// The real store satisfies both narrow interfaces, which is what keeps this
-// package free of a dependency on it — and with it, free of the import cycle
-// that once forced the loopback host and override constants to be re-exported
-// from the connection engine. Only a test may name clientstate here.
+// Only a test may name the concrete store: the package itself must not depend
+// on it.
 var (
 	_ PortStore   = (*clientstate.Store)(nil)
 	_ HelperStore = (*clientstate.Store)(nil)

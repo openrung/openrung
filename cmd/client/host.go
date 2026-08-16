@@ -13,8 +13,7 @@ import (
 // engineHost bundles the connection engine with the CLI host wiring the TUI
 // and the headless connect driver share: internal/clientstate persistence
 // (recents, crash-recovery proxy snapshot, and the stable proxy port — the
-// same on-disk state the desktop app reads), per-OS system proxy control, and
-// the stable proxy-port resolver (OPENRUNG_PROXY_PORT honored, not persisted).
+// same on-disk state the desktop app reads) and per-OS system proxy control.
 type engineHost struct {
 	engine *connectcore.Engine
 	store  *clientstate.Store // nil when the config directory is unavailable
@@ -33,10 +32,6 @@ func newEngineHost(sink connectcore.EventSink, singBoxPath string) *engineHost {
 	engine.OSProxy = osProxyAdapter{ctrl: proxymode.New()}
 	// TUN mode is gated on this hook; proxy mode never invokes it.
 	engine.Elevation = elevation{}
-	// The one storage hook: recents, the crash-recovery proxy snapshot, and the
-	// stable proxy port the engine resolves through internal/proxyconfig. Left
-	// nil when the config directory is unavailable, which the engine degrades
-	// on rather than fails.
 	if store, err := clientstate.New(); err == nil {
 		host.store = store
 		engine.Persistence = storeAdapter{store: store}
@@ -44,9 +39,8 @@ func newEngineHost(sink connectcore.EventSink, singBoxPath string) *engineHost {
 	return host
 }
 
-// helperStore narrows the store for proxyconfig's shell helper, as a nil
-// interface when the config directory was unavailable: a nil *clientstate.Store
-// inside a non-nil interface would slip past proxyconfig's own nil check.
+// helperStore must return a nil interface, never a nil pointer inside one, which
+// proxyconfig's nil check cannot see through.
 func (h *engineHost) helperStore() proxyconfig.HelperStore {
 	if h.store == nil {
 		return nil
@@ -96,8 +90,6 @@ func (a storeAdapter) SaveRecents(recents []connectcore.RecentNode) error {
 	return a.store.SaveRecents(stored)
 }
 
-// The proxy-port half needs no translation: the store already speaks
-// proxyconfig's shape, which is why the engine can resolve through it directly.
 func (a storeAdapter) LoadProxyPort() (int, bool) { return a.store.LoadProxyPort() }
 
 func (a storeAdapter) LoadOrSaveProxyPort(candidate int) (int, error) {

@@ -89,11 +89,8 @@ func newLadderService(t *testing.T, relays func() []relay.Descriptor) (*Engine, 
 	s.Sink = sink
 	s.PunchEnabled = false
 	s.OSProxy = &fakeProxyController{supported: false}
-	// No Persistence: the engine resolves its endpoint through the real
-	// proxyconfig policy, which with no store allocates a fresh kernel-selected
-	// loopback port (and warns that it will not survive the next launch). Tests
-	// asserting endpoint stability are therefore exercising the engine's own
-	// pinning.
+	// No Persistence: each engine allocates a fresh loopback port, so tests
+	// asserting endpoint stability exercise the engine's own pinning.
 	s.fetchRelays = func(ctx context.Context, brokerURL string, limit int, clientID, sessionID string) (discovery.Fetch, error) {
 		return discovery.Fetch{BrokerURL: brokerURL, Response: listOf(relays()...)}, nil
 	}

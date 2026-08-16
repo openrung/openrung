@@ -18,9 +18,8 @@ const (
 	// IPv4 loopback: the mixed HTTP/SOCKS inbound has no authentication, so a
 	// LAN-facing bind address would turn the client into an open proxy.
 	Host = "127.0.0.1"
-	// PortEnv is the supported process-level override for the stable port. An
-	// explicit value wins over the persisted one and is never persisted itself
-	// (see ResolvePort).
+	// PortEnv overrides the stable port for one launch: an explicit value wins
+	// over the persisted one and is never persisted itself.
 	PortEnv = "OPENRUNG_PROXY_PORT"
 	// ShellProxyEnv marks an environment activated by OpenRung's generated
 	// helper. A child OpenRung process uses it to avoid proxying its own
@@ -28,24 +27,10 @@ const (
 	ShellProxyEnv = "OPENRUNG_SHELL_PROXY"
 )
 
-// This package is the single owner of the stable local endpoint: the host, the
-// override variable, the port-validity rule, and the resolution policy. It
-// depends on no other openrung package, so the connection engine can resolve
-// its endpoint through it directly rather than through a host-supplied
-// callback (docs/adr/001; the callback seam and the constant re-export that
-// forced it are gone).
-
-// PortStore is the persistence ResolvePort needs, and HelperStore the
-// persistence WriteShellHelper needs. Both are satisfied by
-// *clientstate.Store; keeping them as interfaces here is what lets the engine
-// pass its own persistence hook straight through without this package
-// depending on the concrete store.
-//
-// A caller with no usable configuration directory passes a nil interface —
-// never a nil *clientstate.Store, which would be a non-nil interface holding a
-// nil pointer and would defeat the nil checks below.
+// A caller with no usable configuration directory passes a nil PortStore or
+// HelperStore — never a nil concrete store, which would be a non-nil interface
+// holding a nil pointer and would defeat the nil checks below.
 type PortStore interface {
-	// LoadProxyPort returns the persisted port and whether one was stored.
 	LoadProxyPort() (int, bool)
 	// LoadOrSaveProxyPort persists candidate and returns the port that won,
 	// which is another process's choice when two first launches race.
@@ -53,8 +38,6 @@ type PortStore interface {
 }
 
 type HelperStore interface {
-	// SaveProxyEnvScript writes the port-qualified shell helper and returns
-	// its path.
 	SaveProxyEnvScript(port int, script []byte) (string, error)
 }
 
@@ -91,8 +74,6 @@ func resolvePort(store PortStore, lookupEnv func(string) (string, bool), allocat
 		if err != nil || !ValidPort(port) {
 			return PortResolution{}, fmt.Errorf("%s must be an integer from 1 to 65535 (got %q)", PortEnv, raw)
 		}
-		// An override is deliberately not persisted: it is a property of this
-		// launch, not of the installation.
 		return PortResolution{Port: port}, nil
 	}
 	if store != nil {
@@ -215,9 +196,7 @@ func freeLoopbackPort() (int, error) {
 	return listener.Addr().(*net.TCPAddr).Port, nil
 }
 
-// ValidPort reports whether port is a usable TCP port. It is exported because
-// the connection engine's pre-ladder bind check applies the same rule to the
-// same endpoint.
+// ValidPort reports whether port is a usable TCP port.
 func ValidPort(port int) bool {
 	return port >= 1 && port <= 65535
 }
