@@ -59,7 +59,7 @@ func (b *BrokerClient) postJSON(ctx context.Context, path string, body any, out 
 
 	requestURL := strings.TrimRight(b.BaseURL, "/") + path
 	if b.RequireSecureTransport {
-		if err := requireSecureBrokerURL(requestURL); err != nil {
+		if err := ValidateSecureBrokerURL(requestURL); err != nil {
 			return err
 		}
 	}
@@ -118,7 +118,12 @@ func (b *BrokerClient) postJSON(ctx context.Context, path string, body any, out 
 	return nil
 }
 
-func requireSecureBrokerURL(rawURL string) error {
+// ValidateSecureBrokerURL enforces the secure-transport broker policy on a
+// URL: https anywhere, plaintext http only on loopback. BrokerClient applies
+// it per request when RequireSecureTransport is set; config validators call
+// it directly so the misconfiguration fails at startup instead of on the
+// first request.
+func ValidateSecureBrokerURL(rawURL string) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return fmt.Errorf("parse broker URL %q: %w", rawURL, err)

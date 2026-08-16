@@ -2,7 +2,10 @@
 // Start/Stop lifecycle, status/identity callbacks, and live traffic counters
 // instead of the one-shot, signal-driven flow in cmd/relay. GUI apps (the
 // OpenRung Volunteer desktop app) bind it to their bridge layer; the orchestration
-// mirrors cmd/relay/main.go run/runTunnelMode.
+// mirrors cmd/relay/main.go run/runTunnelMode and also carries the operator
+// features that historically lived only there: foundation node-class posture,
+// per-relay WSS front registration, per-connection console logging, and
+// config-only rendering (RenderXrayConfig).
 package engine
 
 import (
@@ -22,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -81,8 +85,29 @@ type Config struct {
 	BrokerURL string
 	// Token optionally authenticates registration and hub attachment.
 	Token string
+	// FoundationToken is the foundation registration token. Presenting it runs
+	// this as a foundation relay: it forces foundation class and direct mode,
+	// becomes the broker bearer (over Token), and requires secure broker
+	// transport (https + redirect refusal). It is never sent to a relay hub —
+	// direct mode is the only mode that has no hub path. An explicit
+	// non-foundation NodeClass conflicts with it and fails validation.
+	FoundationToken string
+	// NodeClass declares the relay operator class: relay.NodeClassVolunteer or
+	// relay.NodeClassFoundation. Empty means unstated (the broker treats it as
+	// volunteer). Foundation requires direct mode: auto and tunnel send the
+	// registration token to the relay hub. Prefer FoundationToken, which sets
+	// this automatically.
+	NodeClass string
 	// Label is the public relay name; generated (adjective-noun) when empty.
 	Label string
+	// PublicHost is the public hostname or IP clients can reach (cmd/relay's
+	// -public-host). Direct mode uses it verbatim; when empty, the host's
+	// first global IPv6 address is auto-detected and periodically re-checked
+	// for rotation (an explicit host is pinned, so no recheck runs). Auto
+	// mode prefers the probe-observed address, and tunnel mode's endpoint
+	// comes from the hub. A WSS relay binds xray to the IPv4 wildcard, so it
+	// should set this to the IPv4 address the directory must advertise.
+	PublicHost string
 	// XrayPath locates the xray binary. Defaults to "xray" via PATH.
 	XrayPath string
 	// ListenPort is the direct-only public/listen port and the sole automatic
@@ -119,6 +144,20 @@ type Config struct {
 	MaxMbps     int
 	// HeartbeatInterval is the direct-mode broker heartbeat cadence (min 5s).
 	HeartbeatInterval time.Duration
+	// WSSFronts are per-relay CDN front descriptors advertised at registration
+	// (see relay.WSSFrontDescriptor). Foundation direct mode on port 443 with
+	// an explicit stable identity seed only; a non-foundation config with
+	// fronts fails validation rather than registering. A WSS relay's xray owns
+	// the public listener directly — no per-connection observer runs, so
+	// relay-local WSS streams produce no address or byte-count records.
+	WSSFronts []relay.WSSFrontDescriptor
+	// ConnectionLogOutput, when non-nil, receives the observer's colored
+	// per-connection connect/disconnect lines — which include client IPs — as
+	// cmd/relay prints to stdout. Nil (the default, and the GUI posture) keeps
+	// them out of every log; aggregate counters remain in Status either way.
+	// The engine serializes writes (one line per Write call), so the writer
+	// itself does not need to be goroutine-safe.
+	ConnectionLogOutput io.Writer
 	// Identity seeds the relay identity; missing parts are generated.
 	Identity Identity
 	// ConfigDir is where the generated xray config (which contains the Reality
@@ -137,6 +176,9 @@ type Config struct {
 func (c Config) withDefaults() Config {
 	if c.AutomaticPortCandidates != nil {
 		c.AutomaticPortCandidates = append([]int(nil), c.AutomaticPortCandidates...)
+	}
+	if c.WSSFronts != nil {
+		c.WSSFronts = append([]relay.WSSFrontDescriptor(nil), c.WSSFronts...)
 	}
 	if c.Mode == "" {
 		c.Mode = ModeAuto
@@ -171,7 +213,129 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
+// applyFoundationTokenPosture makes a foundation token a self-contained relay
+// posture, mirroring cmd/relay: presenting it forces foundation class and
+// direct mode (the bearer choice and secure-transport requirement follow from
+// the token in brokerClient). An explicit non-foundation node class is a
+// contradiction and rejected; a non-direct mode is overridden to direct, the
+// only mode that never routes anything through a hub.
+func applyFoundationTokenPosture(c *Config) error {
+	if c.FoundationToken == "" {
+		return nil
+	}
+	switch strings.ToLower(strings.TrimSpace(c.NodeClass)) {
+	case "", relay.NodeClassFoundation:
+	default:
+		return fmt.Errorf("node class %q conflicts with a foundation token, which already forces foundation class", c.NodeClass)
+	}
+	c.NodeClass = relay.NodeClassFoundation
+	c.Mode = ModeDirect
+	return nil
+}
+
+// resolvesToDirect reports whether cfg can only ever serve directly. Auto mode
+// without a hub never probes and always degrades to direct in runSession, so
+// it counts; auto with a hub does not, because the probe path exists.
+func (c Config) resolvesToDirect() bool {
+	return c.Mode == ModeDirect || (c.Mode == ModeAuto && c.HubAddr == "")
+}
+
+// requireDirectModeForFoundation prevents a foundation-class relay from ever
+// entering the hub-based auto/tunnel paths. Auto probing sends the
+// registration token to the hub before it chooses a mode, so even an
+// eventually-direct result is not safe for a foundation posture.
+func requireDirectModeForFoundation(c Config) error {
+	if c.NodeClass == relay.NodeClassFoundation && !c.resolvesToDirect() {
+		return errors.New("node class foundation requires direct mode: auto and tunnel send the registration token to the relay hub; use direct mode against a TLS broker, or set FoundationToken, which forces direct mode")
+	}
+	return nil
+}
+
+// validateWSSFronts enforces the WSS registration posture on a config whose
+// fronts and node class are already normalized. It mirrors cmd/relay's
+// validateWSSRelayConfig, minus the listen-host cases: the engine owns its
+// listen host and pins a WSS relay's xray to the IPv4 wildcard itself.
+func (c Config) validateWSSFronts() error {
+	if len(c.WSSFronts) == 0 {
+		return nil
+	}
+	if c.NodeClass != relay.NodeClassFoundation {
+		return errors.New("WSS fronts require node class foundation")
+	}
+	if !c.resolvesToDirect() {
+		return errors.New("WSS fronts require direct mode")
+	}
+	if c.ListenPort != 443 {
+		return errors.New("WSS fronts require listen port 443 so the sidecar can reach only its local Reality listener")
+	}
+	if c.ConnectionLogOutput != nil {
+		return errors.New("WSS fronts require connection logging disabled so relay-local WSS streams produce no per-connection address or byte-count records")
+	}
+	if strings.TrimSpace(c.Identity.IdentitySeed) == "" {
+		return errors.New("WSS fronts require an explicit stable identity seed")
+	}
+	if _, err := relay.ParseIdentitySeed(c.Identity.IdentitySeed); err != nil {
+		return errors.New("WSS fronts require a valid base64 32-byte stable identity seed")
+	}
+	return nil
+}
+
+// effectiveConfig applies the foundation-token posture and normalizes the node
+// class and WSS fronts. validate and every session start from its result, so
+// the posture and the foundation/WSS guards hold on the runtime path too, not
+// just at Start. An empty node class deliberately stays empty (unstated) so
+// the registration wire request is unchanged for existing callers.
+func (c Config) effectiveConfig() (Config, error) {
+	if err := applyFoundationTokenPosture(&c); err != nil {
+		return Config{}, err
+	}
+	if strings.TrimSpace(c.NodeClass) != "" {
+		nodeClass, err := relay.NormalizeNodeClass(c.NodeClass)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid node class: %w", err)
+		}
+		c.NodeClass = nodeClass
+	}
+	fronts, err := relay.NormalizeWSSFronts(c.WSSFronts)
+	if err != nil {
+		return Config{}, fmt.Errorf("invalid WSS fronts: %w", err)
+	}
+	c.WSSFronts = fronts
+	if err := requireDirectModeForFoundation(c); err != nil {
+		return Config{}, err
+	}
+	if err := c.validateWSSFronts(); err != nil {
+		return Config{}, err
+	}
+	return c, nil
+}
+
+// brokerClient builds the broker client for this config. A foundation token is
+// the bearer and, on its own, requires secure transport (https + redirect
+// refusal); the node-class check is case/space-insensitive so the guarantee
+// also holds for a config that skipped posture normalization. All broker
+// requests use only the canonical registration and heartbeat routes and
+// refuse every redirect (see relayruntime.BrokerClient).
+func (c Config) brokerClient() *relayruntime.BrokerClient {
+	token := c.Token
+	if c.FoundationToken != "" {
+		token = c.FoundationToken
+	}
+	nodeClass := strings.ToLower(strings.TrimSpace(c.NodeClass))
+	return &relayruntime.BrokerClient{
+		BaseURL:                c.BrokerURL,
+		Token:                  token,
+		HTTPClient:             c.HTTPClient,
+		RequireSecureTransport: c.FoundationToken != "" || nodeClass == relay.NodeClassFoundation,
+	}
+}
+
 func (c Config) validate() error {
+	effective, err := c.effectiveConfig()
+	if err != nil {
+		return err
+	}
+	c = effective
 	switch c.Mode {
 	case ModeAuto, ModeDirect, ModeTunnel:
 	default:
@@ -182,6 +346,15 @@ func (c Config) validate() error {
 	}
 	if c.Mode != ModeTunnel && c.BrokerURL == "" {
 		return fmt.Errorf("broker URL is required")
+	}
+	// A foundation posture refuses plaintext non-loopback brokers on every
+	// request (BrokerClient.RequireSecureTransport), so a bad URL can never
+	// succeed; rejecting it here surfaces the misconfiguration at Start
+	// instead of as an endless register-retry loop.
+	if c.Mode != ModeTunnel && (c.FoundationToken != "" || c.NodeClass == relay.NodeClassFoundation) {
+		if err := relayruntime.ValidateSecureBrokerURL(c.BrokerURL); err != nil {
+			return err
+		}
 	}
 	if c.ListenPort < 1 || c.ListenPort > 65535 {
 		return fmt.Errorf("listen port must be between 1 and 65535")
@@ -245,6 +418,17 @@ type Engine struct {
 	mu     sync.Mutex
 	cfg    Config
 	events Events
+
+	// identityMu serializes prepareIdentity end-to-end, and UpdateConfig with
+	// it. Generation cannot run under mu (Reality keys shell out to xray, and
+	// OnIdentity is a caller callback), so without this lock two concurrent
+	// callers — renders, or a render racing a starting session — could each
+	// generate a different identity for the same missing fields, and a
+	// preparation in flight across an UpdateConfig would write its stale
+	// result over the just-installed configuration. Lock order: identityMu
+	// before mu; Events callbacks run with identityMu held and so must not
+	// call UpdateConfig.
+	identityMu sync.Mutex
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -326,8 +510,14 @@ func (e *Engine) Running() bool {
 }
 
 // UpdateConfig replaces the engine configuration. It only applies while
-// stopped; calling it on a running engine returns an error.
+// stopped; calling it on a running engine returns an error. It waits for any
+// in-flight identity preparation (a concurrent RenderXrayConfig generating
+// keys) to finish first, so the installed configuration always wins: without
+// that, the preparation's writeback would overwrite the new identity with one
+// generated from the replaced config.
 func (e *Engine) UpdateConfig(cfg Config) error {
+	e.identityMu.Lock()
+	defer e.identityMu.Unlock()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.cancel != nil {
@@ -404,11 +594,13 @@ func (e *Engine) run(ctx context.Context, done chan struct{}) {
 
 	const backoffMin, backoffMax = 2 * time.Second, time.Minute
 	brokerConfig := e.currentConfig()
-	broker := &relayruntime.BrokerClient{
-		BaseURL:    brokerConfig.BrokerURL,
-		Token:      brokerConfig.Token,
-		HTTPClient: brokerConfig.HTTPClient,
+	if effective, err := brokerConfig.effectiveConfig(); err == nil {
+		// Start already validated this exact config, so the error path is
+		// unreachable; falling back to the raw config would still keep the
+		// foundation bearer/transport guarantees (they key off FoundationToken).
+		brokerConfig = effective
 	}
+	broker := brokerConfig.brokerClient()
 	backoff := backoffMin
 	for {
 		sessionStart := time.Now()
@@ -485,6 +677,11 @@ const (
 	// Direct-only mode did not run a nonce probe. Preserve its historical
 	// explicit dual-family listener semantics.
 	directOnlyListenHost = "::"
+	// wssDirectListenHost pins a WSS relay's xray listener to the IPv4
+	// wildcard: the colocated sidecar reaches only 127.0.0.1:443, and because
+	// WSS bypasses the per-connection observer, xray must own the public
+	// listener itself (mirrors cmd/relay's applyWSSFronts default).
+	wssDirectListenHost = "0.0.0.0"
 )
 
 // automaticPortCandidates returns auto mode's effective ordered list. An empty
@@ -577,7 +774,14 @@ func (e *Engine) watchForModeChange(ctx context.Context, cfg Config, current str
 }
 
 func (e *Engine) runSession(ctx context.Context, broker *relayruntime.BrokerClient) error {
-	cfg := e.currentConfig()
+	// Re-derive the effective config here as well as in Start's validation:
+	// the guard that keeps a foundation posture out of the hub paths (and WSS
+	// fronts away from non-foundation registrations) must hold on the runtime
+	// path, before autoResolve can transmit anything to a hub.
+	cfg, err := e.currentConfig().effectiveConfig()
+	if err != nil {
+		return err
+	}
 
 	e.setStatus(func() {
 		e.phase = PhaseStarting
@@ -639,9 +843,18 @@ func (e *Engine) currentConfig() Config {
 
 // prepareIdentity fills any missing identity parts (generating Reality keys via
 // `xray x25519`), reports the result once, and caches it back into the config
-// so later sessions reuse it even if the caller does not persist it.
+// so later sessions reuse it even if the caller does not persist it. The whole
+// flow is serialized (identityMu) and always starts from the freshest stored
+// identity rather than the caller's config snapshot, so concurrent callers
+// converge on one identity: the first to arrive generates, everyone after
+// reads what it cached. cfg contributes only XrayPath.
 func (e *Engine) prepareIdentity(cfg Config) (Identity, error) {
-	id := cfg.Identity
+	e.identityMu.Lock()
+	defer e.identityMu.Unlock()
+
+	e.mu.Lock()
+	id := e.cfg.Identity
+	e.mu.Unlock()
 	generated := false
 
 	if id.ClientID == "" {
@@ -752,7 +965,67 @@ func (e *Engine) startXray(ctx context.Context, cfg Config, identity Identity, l
 	return cmd, waitCh, nil
 }
 
+// RenderXrayConfig builds and returns the xray config JSON without starting
+// anything — the engine form of cmd/relay's -print-config-only. Missing
+// identity parts are generated (and reported through OnIdentity) exactly as a
+// real session would, so the rendered config matches a subsequent Start. Like
+// cmd/relay, it renders the canonical direct-form binding: a live direct
+// session actually rebinds xray to a reserved loopback port behind the
+// observer, which is resolved at runtime and not knowable at render time.
+// Tunnel mode renders a freshly reserved loopback binding for the same reason
+// cmd/relay does.
+func (e *Engine) RenderXrayConfig() ([]byte, error) {
+	// Refuse while running. Identity forking is prevented structurally by
+	// prepareIdentity's serialization, but a live direct session binds xray to
+	// a runtime-reserved loopback port, so a mid-session render would describe
+	// a binding the running relay does not use; refusing keeps the method's
+	// "matches a subsequent Start" promise unambiguous.
+	if e.Running() {
+		return nil, errors.New("cannot render the xray config while the relay is running")
+	}
+	cfg, err := e.currentConfig().effectiveConfig()
+	if err != nil {
+		return nil, err
+	}
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
+	identity, err := e.prepareIdentity(cfg)
+	if err != nil {
+		return nil, err
+	}
+	listenHost, listenPort := directOnlyListenHost, cfg.ListenPort
+	switch {
+	case cfg.Mode == ModeTunnel:
+		host, port, err := relayruntime.ReserveLoopbackTCPPort()
+		if err != nil {
+			return nil, err
+		}
+		listenHost, listenPort = host, port
+	case len(cfg.WSSFronts) > 0:
+		listenHost = wssDirectListenHost
+	}
+	return relayruntime.BuildXrayConfig(relayruntime.XrayConfigInput{
+		ListenHost:        listenHost,
+		ListenPort:        listenPort,
+		ClientID:          identity.ClientID,
+		Flow:              relay.FlowVision,
+		Dest:              cfg.RealityDest,
+		ServerName:        cfg.ServerName,
+		RealityPrivateKey: identity.RealityPrivateKey,
+		ShortID:           identity.ShortID,
+	})
+}
+
 func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.BrokerClient, cfg Config, label string, identity Identity, publicHost, listenHost string) error {
+	// A probe-observed address (auto mode) wins; otherwise an explicitly
+	// configured public host is used verbatim, and only as a last resort is
+	// the host's global IPv6 auto-detected.
+	usedConfiguredHost := false
+	if publicHost == "" && cfg.PublicHost != "" {
+		publicHost = cfg.PublicHost
+		usedConfiguredHost = true
+	}
 	if publicHost == "" {
 		detected, err := detectPublicIPv6()
 		if err != nil {
@@ -761,52 +1034,83 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 		publicHost = detected
 	}
 
-	// The observer owns the public port and forwards to xray on loopback; it is
-	// also the traffic-counter source.
-	targetHost, targetPort, err := relayruntime.ReserveLoopbackTCPPort()
-	if err != nil {
-		return err
+	wss := len(cfg.WSSFronts) > 0
+	var xrayListenHost string
+	var xrayListenPort int
+	if wss {
+		// WSS relays bypass the per-connection observer entirely (mirroring
+		// cmd/relay): opaque fallback streams must never create address or
+		// byte-count records, so xray owns the public listener directly and the
+		// engine's per-connection counters stay at zero.
+		xrayListenHost, xrayListenPort = wssDirectListenHost, cfg.ListenPort
+	} else {
+		// The observer owns the public port and forwards to xray on loopback; it
+		// is also the traffic-counter source.
+		targetHost, targetPort, err := relayruntime.ReserveLoopbackTCPPort()
+		if err != nil {
+			return err
+		}
+		xrayListenHost, xrayListenPort = targetHost, targetPort
 	}
 
-	xrayCmd, xrayErr, err := e.startXray(ctx, cfg, identity, targetHost, targetPort)
+	xrayCmd, xrayErr, err := e.startXray(ctx, cfg, identity, xrayListenHost, xrayListenPort)
 	if err != nil {
 		return err
 	}
 	defer stopProcess(xrayCmd, xrayErr)
 
-	observer := &relayruntime.ConnectionObserver{
-		ListenHost: listenHost,
-		ListenPort: cfg.ListenPort,
-		TargetHost: targetHost,
-		TargetPort: targetPort,
-		// Per-connection lines include client IPs; the engine keeps them out of
-		// the UI log and surfaces aggregate counters instead.
-		Output: io.Discard,
-		Events: &relayruntime.ConnectionEvents{
-			Opened: func(uint64, string) {
-				e.active.Add(1)
-				e.total.Add(1)
+	var observerErr <-chan error
+	if !wss {
+		// Per-connection lines include client IPs; unless the caller opted into
+		// console connection logging (ConnectionLogOutput) they go nowhere, and
+		// the engine surfaces aggregate counters instead. The observer writes
+		// from one goroutine per connection, so the caller's writer is wrapped
+		// in a lock to honour the field's no-concurrency-requirement contract.
+		output := io.Writer(io.Discard)
+		if cfg.ConnectionLogOutput != nil {
+			output = &lockedWriter{w: cfg.ConnectionLogOutput}
+		}
+		observer := &relayruntime.ConnectionObserver{
+			ListenHost: listenHost,
+			ListenPort: cfg.ListenPort,
+			TargetHost: xrayListenHost,
+			TargetPort: xrayListenPort,
+			Output:     output,
+			Events: &relayruntime.ConnectionEvents{
+				Opened: func(uint64, string) {
+					e.active.Add(1)
+					e.total.Add(1)
+				},
+				Closed: func(_ uint64, _ string, _ time.Duration, fromClient, toClient int64) {
+					e.active.Add(-1)
+					e.bytesFrom.Add(uint64(fromClient))
+					e.bytesTo.Add(uint64(toClient))
+				},
 			},
-			Closed: func(_ uint64, _ string, _ time.Duration, fromClient, toClient int64) {
-				e.active.Add(-1)
-				e.bytesFrom.Add(uint64(fromClient))
-				e.bytesTo.Add(uint64(toClient))
-			},
-		},
+		}
+		observerCtx, cancelObserver := context.WithCancel(ctx)
+		defer cancelObserver()
+		observerErr, err = observer.Start(observerCtx)
+		if err != nil {
+			return fmt.Errorf("listen on port %d: %w", cfg.ListenPort, err)
+		}
+		e.logf("listening for direct connections on TCP %d", cfg.ListenPort)
 	}
-	observerCtx, cancelObserver := context.WithCancel(ctx)
-	defer cancelObserver()
-	observerErr, err := observer.Start(observerCtx)
-	if err != nil {
-		return fmt.Errorf("listen on port %d: %w", cfg.ListenPort, err)
-	}
-	e.logf("listening for direct connections on TCP %d", cfg.ListenPort)
 
 	e.setStatus(func() { e.phase = PhaseRegistering })
 
 	identityKey, err := identity.identityKey()
 	if err != nil {
 		return err
+	}
+	if wss {
+		// The broker derives the relay ID the colocated sidecar is pinned to
+		// from the identity seed, so a WSS registration must use exactly the
+		// explicit stable seed — never a healed or regenerated identity.
+		configured, seedErr := relay.ParseIdentitySeed(cfg.Identity.IdentitySeed)
+		if seedErr != nil || !configured.Equal(identityKey) {
+			return errors.New("prepared WSS relay identity does not match the explicit stable identity seed")
+		}
 	}
 	req := relay.RegisterRequest{
 		PublicHost:       publicHost,
@@ -822,18 +1126,37 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 		MaxMbps:          cfg.MaxMbps,
 		RelayVersion:     cfg.Version,
 		Label:            label,
+		NodeClass:        cfg.NodeClass,
+		WSSFronts:        slices.Clone(cfg.WSSFronts),
 	}
 	// Every register call — initial and after an expired lease — signs a fresh
 	// proof over the final request fields, so the proof never ages out within
-	// a session.
-	signedReq := func() relay.RegisterRequest {
+	// a session. A WSS registration additionally signs the capability proof
+	// with the same expiry, binding the exact front list to this identity.
+	signedReq := func() (relay.RegisterRequest, error) {
 		signed := req
+		expiresAt := time.Now().Add(relay.IdentityProofTTLDirect)
 		signed.IdentityPublicKey, signed.IdentityProof, signed.IdentityExpiresAt =
-			relay.SignIdentity(identityKey, signed, time.Now().Add(relay.IdentityProofTTLDirect))
-		return signed
+			relay.SignIdentity(identityKey, signed, expiresAt)
+		if len(signed.WSSFronts) > 0 {
+			var signErr error
+			signed.WSSCapabilityProof, signed.WSSCapabilityExpiresAt, signErr =
+				relay.SignWSSCapability(identityKey, signed, expiresAt)
+			if signErr != nil {
+				return relay.RegisterRequest{}, fmt.Errorf("sign WSS capability: %w", signErr)
+			}
+		}
+		return signed, nil
 	}
-	desc, err := registerWithRetry(ctx, broker, signedReq())
+	signed, err := signedReq()
 	if err != nil {
+		return err
+	}
+	desc, err := registerWithRetry(ctx, broker, signed)
+	if err != nil {
+		return err
+	}
+	if err := verifyRegisteredDescriptor(signed, desc, identityKey); err != nil {
 		return err
 	}
 	e.logf("registered with the broker as %q (%s) at %s", desc.Label, desc.ID,
@@ -859,7 +1182,13 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 	// we baseline against the same source the recheck uses, and only when it
 	// yields an address at all (no global IPv6 ⇒ nothing to watch here).
 	const ipRecheckInterval = 5 * time.Minute
-	ipBaseline, _ := detectPublicIPv6()
+	// An explicitly configured public host is pinned — rotation of the host's
+	// auto-detected IPv6 addresses is irrelevant to it — so the recheck only
+	// arms when the registered address actually came from detection.
+	ipBaseline := ""
+	if !usedConfiguredHost {
+		ipBaseline, _ = detectPublicIPv6()
+	}
 	ipRecheck := time.NewTicker(ipRecheckInterval)
 	defer ipRecheck.Stop()
 
@@ -892,10 +1221,23 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 					e.logf("heartbeat failed: %v", err)
 					continue
 				}
-				updated, regErr := broker.Register(ctx, signedReq())
+				reSigned, signErr := signedReq()
+				if signErr != nil {
+					e.logf("re-register after expired lease failed: %v", signErr)
+					continue
+				}
+				updated, regErr := broker.Register(ctx, reSigned)
 				if regErr != nil {
 					e.logf("re-register after expired lease failed: %v", regErr)
 					continue
+				}
+				if verifyErr := verifyRegisteredDescriptor(reSigned, updated, identityKey); verifyErr != nil {
+					// Fail closed like the initial registration: the broker-side
+					// lease now exists in a state this relay refuses to serve in
+					// (unattested class, tampered fronts), so end the session and
+					// surface the error instead of staying online mislabeled and
+					// re-registering at heartbeat cadence forever.
+					return fmt.Errorf("re-register after expired lease: %w", verifyErr)
 				}
 				desc = updated
 				e.logf("re-registered with the broker as %q (%s)", desc.Label, desc.ID)
@@ -935,6 +1277,28 @@ func registerWithRetry(ctx context.Context, broker *relayruntime.BrokerClient, r
 		backoff *= 2
 	}
 	return relay.Descriptor{}, fmt.Errorf("register with broker: %w", lastErr)
+}
+
+// verifyRegisteredDescriptor applies cmd/relay's fail-closed checks to a
+// successful registration response, for the initial registration and every
+// re-registration after an expired lease alike.
+func verifyRegisteredDescriptor(req relay.RegisterRequest, desc relay.Descriptor, identityKey ed25519.PrivateKey) error {
+	// A broker that predates node_class drops the field and answers 201 with
+	// no class attested; without this check the relay would silently serve
+	// mislabeled as a volunteer-class relay.
+	if req.NodeClass == relay.NodeClassFoundation && desc.NodeClass != relay.NodeClassFoundation {
+		return fmt.Errorf("broker attested node_class %q instead of %q: the broker likely predates node_class support; upgrade it, or drop the foundation class to serve as a volunteer-class relay", desc.NodeClass, relay.NodeClassFoundation)
+	}
+	if !slices.Equal(desc.WSSFronts, req.WSSFronts) {
+		return errors.New("broker did not echo the exact signed per-relay WSS fronts; refusing to start WSS advertisement")
+	}
+	if len(req.WSSFronts) > 0 {
+		expectedRelayID := relay.DeriveRelayID(identityKey.Public().(ed25519.PublicKey))
+		if desc.ID != expectedRelayID {
+			return errors.New("broker returned a relay ID that does not match the stable WSS relay identity")
+		}
+	}
+	return nil
 }
 
 func (e *Engine) runTunnelSession(ctx context.Context, cfg Config, label string, identity Identity) error {
@@ -1125,6 +1489,21 @@ func pinnedLeafVerifier(want string) func([][]byte, [][]*x509.Certificate) error
 		}
 		return nil
 	}
+}
+
+// lockedWriter serializes writes from the observer's per-connection
+// goroutines onto the caller-supplied ConnectionLogOutput, so the caller's
+// writer does not need to be goroutine-safe. Each observer line arrives as a
+// single Write call, so lines never interleave.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
 }
 
 // stopProcess interrupts the xray child and escalates to Kill; nil cmd (xray
