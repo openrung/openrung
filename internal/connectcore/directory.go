@@ -122,6 +122,7 @@ func (s *Engine) identityForDirectory() discovery.Options {
 		Limit:     DirectoryRelayLimit,
 		ClientID:  id,
 		SessionID: sessionID,
+		Platform:  s.telemetryPlatform(),
 	}
 }
 

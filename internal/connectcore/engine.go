@@ -66,6 +66,13 @@ type State struct {
 // os.UserConfigDir()/openrung/client-id with correct per-OS paths.
 var clientID = clienttelemetry.ClientID
 
+// PlatformCLI identifies the terminal client (cmd/client) on the engine's
+// broker traffic. brokerapi maps only the GUI/mobile platforms to fixed
+// identification headers, so CLI requests carry no platform header; the label
+// instead rides every telemetry event as a "platform" attribute (see
+// newManager), which the broker stores as an ordinary free-form attribute.
+const PlatformCLI = brokerapi.Platform("cli")
+
 // coreState is the mutable slice of State the engine owns directly.
 type coreState struct {
 	status     Status
@@ -229,6 +236,12 @@ type Engine struct {
 	// resolved via PATH). Packaging points this at the bundled binary.
 	SingBoxPath string
 
+	// Platform identifies this host on every broker request the engine makes
+	// (relay-list fetches, WSS session tickets, telemetry). Empty means
+	// PlatformDesktop: the desktop app predates the field and its wire
+	// behavior must stay unchanged.
+	Platform brokerapi.Platform
+
 	// PunchEnabled attempts a direct NAT-punched path to punch-capable
 	// relays before falling back to the relay hub's data plane. PunchURL
 	// overrides the hub punch coordinator base URL (else the relay's
@@ -343,7 +356,26 @@ func (s *Engine) relayFetcher() func(context.Context, string, int, string, strin
 			Limit:     limit,
 			ClientID:  clientID,
 			SessionID: sessionID,
+			Platform:  s.telemetryPlatform(),
 		})
+	}
+}
+
+// telemetryPlatform resolves the platform identity for the engine's broker
+// requests. Empty defaults to PlatformDesktop (see the Platform field).
+func (s *Engine) telemetryPlatform() brokerapi.Platform {
+	if s.Platform == "" {
+		return brokerapi.PlatformDesktop
+	}
+	return s.Platform
+}
+
+// notify hands a typed Notice to the sink when it implements NoticeSink. The
+// desktop sink predates notices and keeps receiving only state and log events;
+// every notice is also described by a log line, so no host loses information.
+func (s *Engine) notify(notice Notice) {
+	if sink, ok := s.Sink.(NoticeSink); ok {
+		sink.Notice(notice)
 	}
 }
 
@@ -566,7 +598,7 @@ func (s *Engine) runConnect(ctx context.Context, conn *connection, brokerURL str
 func (s *Engine) connectFlow(ctx context.Context, conn *connection, brokerURL string, target RelayTarget) (string, error) {
 	s.setStatus(StatusConnecting, keepLabel, clearError)
 
-	mgr := newManager(brokerURL)
+	mgr := s.newManager(brokerURL)
 	conn.mgr = mgr
 	if mgr != nil {
 		if session, err := mgr.BeginSession(); err == nil && session != nil {
@@ -748,6 +780,12 @@ func (s *Engine) attemptCandidate(ctx context.Context, conn *connection, cand re
 	s.appendLog(fmt.Sprintf("direct path to relay %s failed; trying its WSS fronts", cand.ID))
 	lastErr := directErr
 	for _, front := range fronts {
+		s.notify(Notice{
+			Kind:    NoticeWSSFallback,
+			RelayID: cand.ID,
+			FrontID: front.ID,
+			Reason:  directErr.Error(),
+		})
 		result, err := s.attemptWSSCandidate(ctx, conn, cand, front, port, attempt)
 		if err == nil {
 			return result, nil

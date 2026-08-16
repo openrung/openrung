@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"openrung/internal/connectcore"
+	"openrung/internal/proxyconfig"
 )
 
 // The interactive client is a pure view over the shared connection engine
@@ -64,6 +65,18 @@ func (s *tuiSink) Log(entry connectcore.LogEntry) {
 	s.ring.push(stampLog(entry.Time, entry.Line))
 }
 
+// Notice forwards the engine's typed mid-flow events (failover, WSS fallback,
+// punch outcome, health probes) like a state change: immediately, since each
+// one is rare and drives a dedicated Status-view row.
+func (s *tuiSink) Notice(notice connectcore.Notice) {
+	s.mu.Lock()
+	p := s.p
+	s.mu.Unlock()
+	if p != nil {
+		p.Send(engineNoticeMsg(notice))
+	}
+}
+
 func stampLog(at time.Time, line string) string {
 	return "[" + at.Format("15:04:05") + "] " + line
 }
@@ -91,7 +104,13 @@ func runTUI(cfg connectConfig) error {
 	engine.Start()
 	defer engine.Stop()
 
-	p := tea.NewProgram(newTUIModel(engine, ring, cfg), tea.WithAltScreen())
+	model := newTUIModel(engine, ring, cfg)
+	// Start ran above, so the persisted recents are already in the engine
+	// state; seed the model with them (events only arrive on changes).
+	model.state = engine.State()
+	model.shellHelper = host.shellProxyHelper
+
+	p := tea.NewProgram(model, tea.WithAltScreen())
 	sink.attach(p)
 	_, err := p.Run()
 	return err
@@ -100,6 +119,15 @@ func runTUI(cfg connectConfig) error {
 // ---- messages ----
 
 type engineStateMsg connectcore.State
+
+type engineNoticeMsg connectcore.Notice
+
+// shellHelperMsg carries the generated shell-helper commands (or why they are
+// unavailable) back from the host closure.
+type shellHelperMsg struct {
+	info proxyconfig.Info
+	err  string
+}
 
 type tickMsg time.Time
 
@@ -143,6 +171,7 @@ const (
 	fieldRelayID
 	fieldRelayLabel
 	fieldCountry
+	fieldShellHelper
 	settingsFieldCount
 )
 
@@ -154,11 +183,21 @@ type settingsState struct {
 	editing bool
 	input   textinput.Model
 	note    string
+
+	// Generated shell-helper commands (the desktop Settings "LOCAL PROXY"
+	// section); populated by the shell-helper action while connected.
+	shell    proxyconfig.Info
+	shellOK  bool
+	shellErr string
 }
 
 type tuiModel struct {
 	driver engineDriver
 	ring   *logRing
+
+	// shellHelper generates the copyable shell proxy commands (host wiring,
+	// not an engine call); nil means shell integration is unavailable.
+	shellHelper func() (proxyconfig.Info, error)
 
 	view          viewID
 	width, height int
@@ -168,6 +207,13 @@ type tuiModel struct {
 	infoOK      bool
 	connectedAt time.Time
 	now         time.Time
+
+	// Latest typed engine notices: activity is the last connection event
+	// (failover, WSS fallback, punch, ticket retry), health the last
+	// mid-session probe sweep.
+	activity   connectcore.Notice
+	activityAt time.Time
+	health     connectcore.Notice
 
 	proxyEndpoint string
 	proxyWarn     string
@@ -265,6 +311,20 @@ func (m tuiModel) disconnectCmd() tea.Cmd {
 	}
 }
 
+func (m tuiModel) shellHelperCmd() tea.Cmd {
+	helper := m.shellHelper
+	return func() tea.Msg {
+		if helper == nil {
+			return shellHelperMsg{err: "shell integration is unavailable in this build"}
+		}
+		info, err := helper()
+		if err != nil {
+			return shellHelperMsg{err: err.Error()}
+		}
+		return shellHelperMsg{info: info}
+	}
+}
+
 // ---- update ----
 
 func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -287,8 +347,25 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case connectcore.StatusDisconnected, connectcore.StatusFailed:
 			m.connectedAt = time.Time{}
+			// Health probes belong to the session that just ended; the last
+			// activity notice stays visible so a failure remains explainable.
+			m.health = connectcore.Notice{}
 		}
 		return m, m.pollCmd()
+
+	case engineNoticeMsg:
+		notice := connectcore.Notice(msg)
+		if notice.Kind == connectcore.NoticeHealthProbe {
+			m.health = notice
+		} else {
+			m.activity = notice
+			m.activityAt = time.Now()
+		}
+		return m, nil
+
+	case shellHelperMsg:
+		m.settings.shell, m.settings.shellOK, m.settings.shellErr = msg.info, msg.err == "", msg.err
+		return m, nil
 
 	case tickMsg:
 		m.now = time.Time(msg)
@@ -425,6 +502,16 @@ func (m tuiModel) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// elevation hook; surface why the toggle does nothing yet.
 			m.settings.note = "TUN mode arrives in a later release; proxy mode needs no privileges"
 			return m, nil
+		}
+		if m.settings.cursor == fieldShellHelper {
+			// Mirrors the desktop Settings gating: the enable command points a
+			// shell at the local endpoint, which only answers while connected.
+			if m.state.Status != connectcore.StatusConnected {
+				m.settings.note = "connect first — the shell proxy only works while connected"
+				return m, nil
+			}
+			m.settings.note = ""
+			return m, m.shellHelperCmd()
 		}
 		m.settings.editing = true
 		m.settings.note = ""

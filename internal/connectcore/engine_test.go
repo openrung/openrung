@@ -234,11 +234,13 @@ func TestPrependRecentDedupesAndCaps(t *testing.T) {
 	}
 }
 
-// testSink captures every engine event for assertions.
+// testSink captures every engine event for assertions. It implements
+// NoticeSink so tests can assert the typed notices alongside states and logs.
 type testSink struct {
-	mu     sync.Mutex
-	states []State
-	logs   []string
+	mu      sync.Mutex
+	states  []State
+	logs    []string
+	notices []Notice
 }
 
 func (c *testSink) StateChanged(state State) {
@@ -251,6 +253,24 @@ func (c *testSink) Log(entry LogEntry) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.logs = append(c.logs, entry.Line)
+}
+
+func (c *testSink) Notice(notice Notice) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.notices = append(c.notices, notice)
+}
+
+func (c *testSink) noticesOf(kind NoticeKind) []Notice {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []Notice
+	for _, notice := range c.notices {
+		if notice.Kind == kind {
+			out = append(out, notice)
+		}
+	}
+	return out
 }
 
 func (c *testSink) last() State {

@@ -8,12 +8,16 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/openrung/openrung/brokerapi"
+
 	"openrung/internal/client"
 	"openrung/internal/connectcore"
+	"openrung/internal/discovery"
 	"openrung/internal/relay"
 )
 
@@ -47,7 +51,7 @@ func parseCommonFlags(name string, args []string) (commonConfig, error) {
 }
 
 func addCommonFlags(fs *flag.FlagSet, cfg *commonConfig) {
-	fs.StringVar(&cfg.BrokerURL, "broker", "http://localhost:8080", "broker base URL")
+	fs.StringVar(&cfg.BrokerURL, "broker", "", "broker base URL override; empty races the built-in HTTPS fronts")
 	fs.IntVar(&cfg.Limit, "limit", defaultRelayLimit, "relay candidate limit (check/config)")
 	fs.IntVar(&cfg.MTU, "mtu", 0, "TUN MTU; defaults to sing-box config default (config)")
 	fs.StringVar(&cfg.Family, "relay-family", defaultRelayFamily, "relay address family: auto, ipv4, or ipv6 (check/config)")
@@ -193,7 +197,6 @@ func (s *consoleSink) Log(entry connectcore.LogEntry) {
 // fetch-and-print subcommands. It sends no identity headers: check and config
 // begin no telemetry session, exactly as before the rewrite.
 func fetchSelectedRelay(ctx context.Context, cfg commonConfig) (relay.Descriptor, []byte, error) {
-	broker := client.BrokerClient{BaseURL: cfg.BrokerURL}
 	// When pinning a specific relay, fetch the full candidate set so the target
 	// isn't ranked out of a small -limit window.
 	target := cfg.target()
@@ -201,7 +204,7 @@ func fetchSelectedRelay(ctx context.Context, cfg commonConfig) (relay.Descriptor
 	if target.Targeted() {
 		limit = connectcore.DirectoryRelayLimit
 	}
-	resp, err := broker.ListRelays(ctx, limit, "", "")
+	resp, err := fetchRelayList(ctx, cfg.BrokerURL, limit)
 	if err != nil {
 		return relay.Descriptor{}, nil, err
 	}
@@ -230,6 +233,25 @@ func fetchSelectedRelay(ctx context.Context, cfg commonConfig) (relay.Descriptor
 		return relay.Descriptor{}, nil, err
 	}
 	return selected, configJSON, nil
+}
+
+// fetchRelayList resolves the discovery endpoint the way the engine does: an
+// explicit -broker is a single deterministic endpoint (scripts depend on that),
+// while an empty one races the built-in HTTPS fronts via the same
+// brokerapi.BrokerCandidates/FirstReachable policy the connect path uses.
+func fetchRelayList(ctx context.Context, brokerURL string, limit int) (relay.ListResponse, error) {
+	if strings.TrimSpace(brokerURL) != "" {
+		broker := client.BrokerClient{BaseURL: brokerURL}
+		return broker.ListRelays(ctx, limit, "", "")
+	}
+	fetch, err := discovery.FirstReachable(ctx, brokerapi.BrokerCandidates(""), discovery.Options{
+		Limit:    limit,
+		Platform: connectcore.PlatformCLI,
+	})
+	if err != nil {
+		return relay.ListResponse{}, err
+	}
+	return fetch.Response, nil
 }
 
 func printSelectedRelay(out io.Writer, selected relay.Descriptor) {

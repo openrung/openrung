@@ -43,6 +43,10 @@ type PunchOptions struct {
 	// Log receives one human-readable line when an attempt fails. Nil drops
 	// it (the CLI keeps its stdout quiet on a silent fallback).
 	Log func(string)
+
+	// Notify receives a typed NoticePunchOutcome for every attempted punch,
+	// success or failure. Nil drops it.
+	Notify func(Notice)
 }
 
 // AttemptPunch attempts a direct NAT-punched path to a punch-capable relay,
@@ -71,11 +75,25 @@ func AttemptPunch(ctx context.Context, mgr *clienttelemetry.Manager, selected re
 		if opts.Log != nil {
 			opts.Log(fmt.Sprintf("punch failed (%s); using relay hub", punchReason(res.Reason)))
 		}
+		if opts.Notify != nil {
+			opts.Notify(Notice{
+				Kind:    NoticePunchOutcome,
+				RelayID: selected.ID,
+				Reason:  fmt.Sprintf("failed (%s); using relay hub", punchReason(res.Reason)),
+			})
+		}
 		mgr.Record("punch_failed", selected.ID,
 			map[string]string{"reason": res.Reason, "nat_class": res.NATClass}, nil)
 		return nil
 	}
 
+	if opts.Notify != nil {
+		opts.Notify(Notice{
+			Kind:    NoticePunchOutcome,
+			RelayID: selected.ID,
+			Reason:  fmt.Sprintf("punched direct path (nat %s)", res.NATClass),
+		})
+	}
 	mgr.Record("punch_succeeded", selected.ID,
 		map[string]string{"nat_class": res.NATClass},
 		map[string]int64{"punch_rtt_ms": res.RTTMillis})
@@ -89,6 +107,7 @@ func (s *Engine) maybePunch(ctx context.Context, mgr *clienttelemetry.Manager, s
 		BaseURL:  s.PunchURL,
 		Insecure: s.PunchInsecure,
 		Log:      s.appendLog,
+		Notify:   s.notify,
 	})
 }
 

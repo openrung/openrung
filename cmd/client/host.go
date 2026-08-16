@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"runtime"
 
 	"openrung/internal/clientstate"
 	"openrung/internal/connectcore"
@@ -24,6 +25,11 @@ func newEngineHost(sink connectcore.EventSink, singBoxPath string) *engineHost {
 	engine := host.engine
 	engine.Sink = sink
 	engine.SingBoxPath = singBoxPath
+	// The CLI identifies itself distinctly from the desktop GUI: telemetry
+	// events carry platform="cli" so dashboards can tell the two apart on the
+	// same OS (the broker stores unknown platform strings as ordinary
+	// attributes and sends no platform header for them).
+	engine.Platform = connectcore.PlatformCLI
 	engine.OSProxy = osProxyAdapter{ctrl: proxymode.New()}
 	if store, err := clientstate.New(); err == nil {
 		host.store = store
@@ -40,6 +46,22 @@ func newEngineHost(sink connectcore.EventSink, singBoxPath string) *engineHost {
 		}, nil
 	}
 	return host
+}
+
+// shellProxyHelper resolves the stable local endpoint and writes the
+// sourceable shell helper, returning the copyable enable/restore commands —
+// the same proxyconfig surface the desktop Settings screen exposes through
+// GetProxyInfo. The engine call and the file write both happen here, so the
+// TUI invokes it from a tea.Cmd, never from Update.
+func (h *engineHost) shellProxyHelper() (proxyconfig.Info, error) {
+	if runtime.GOOS == "windows" {
+		return proxyconfig.Info{}, errors.New("shell integration is not available on Windows")
+	}
+	port, err := h.engine.LocalProxyPort()
+	if err != nil {
+		return proxyconfig.Info{}, err
+	}
+	return proxyconfig.WriteShellHelper(h.store, port)
 }
 
 // The adapters below mirror desktop/vpnservice/adapters.go over the shared
