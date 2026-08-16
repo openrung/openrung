@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"openrung/internal/client"
+	"openrung/internal/proxyconfig"
 	"openrung/internal/relay"
 )
 
@@ -343,28 +344,24 @@ func TestFailedStatusCarriesError(t *testing.T) {
 
 func TestLocalProxyPortRetriesAfterResolutionFailure(t *testing.T) {
 	s := New()
-	fail := true
-	next := 46685
-	s.ResolveProxyPort = func() (ProxyPortResolution, error) {
-		if fail {
-			return ProxyPortResolution{}, errors.New("resolution unavailable")
-		}
-		port := next
-		next++ // a later resolution would hand out a different endpoint
-		return ProxyPortResolution{Port: port}, nil
-	}
+	s.Persistence = &fakePersistence{}
+
+	// An unusable override is the real transient failure: resolution reports it
+	// and pins nothing, so correcting it and calling again still works.
+	t.Setenv(proxyconfig.PortEnv, "not-a-port")
 	if _, err := s.LocalProxyPort(); err == nil {
 		t.Fatal("first failed resolution unexpectedly succeeded")
 	}
 
-	fail = false
+	t.Setenv(proxyconfig.PortEnv, "46685")
 	port, err := s.LocalProxyPort()
 	if err != nil || port != 46685 {
 		t.Fatalf("retry = %d, %v; want 46685, nil", port, err)
 	}
 
-	// Once resolution succeeds, later calls keep that endpoint even though the
-	// resolver would now hand out a different one.
+	// Once resolution succeeds, later calls keep that endpoint even though
+	// resolving again would now hand out a different one.
+	t.Setenv(proxyconfig.PortEnv, "46686")
 	pinned, err := s.LocalProxyPort()
 	if err != nil || pinned != port {
 		t.Fatalf("successful endpoint was not pinned: %d, %v", pinned, err)
@@ -402,12 +399,23 @@ func (f *fakeProxyController) Restore(snap OSProxySnapshot) error {
 	return f.restoreErr
 }
 
-// fakePersistence is an in-memory Persistence for engine tests.
+// fakePersistence is an in-memory Persistence for engine tests. It counts the
+// proxy-port calls so a test can assert the engine consulted persistence, or
+// (in TUN mode) that it never did.
 type fakePersistence struct {
 	mu      sync.Mutex
 	recents []RecentNode
 	snap    OSProxySnapshot
 	hasSnap bool
+
+	port int // the persisted port; 0 means none stored yet
+	// winner stands in for another process that persisted first between this
+	// one's load and its save: the locked store then reports that port instead
+	// of the candidate offered.
+	winner    int
+	saveErr   error
+	loadCalls int
+	saveCalls int
 }
 
 func (f *fakePersistence) LoadRecents() []RecentNode {
@@ -421,6 +429,36 @@ func (f *fakePersistence) SaveRecents(recents []RecentNode) error {
 	defer f.mu.Unlock()
 	f.recents = append([]RecentNode(nil), recents...)
 	return nil
+}
+
+func (f *fakePersistence) LoadProxyPort() (int, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.loadCalls++
+	return f.port, f.port != 0
+}
+
+// LoadOrSaveProxyPort mirrors the real store: the first writer wins and every
+// later caller is told the winner, so concurrent first launches agree.
+func (f *fakePersistence) LoadOrSaveProxyPort(candidate int) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.saveCalls++
+	if f.saveErr != nil {
+		return 0, f.saveErr
+	}
+	if f.winner != 0 {
+		f.port = f.winner
+	} else if f.port == 0 {
+		f.port = candidate
+	}
+	return f.port, nil
+}
+
+func (f *fakePersistence) portCalls() (int, int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.loadCalls, f.saveCalls
 }
 
 func (f *fakePersistence) SaveProxySnapshot(snap OSProxySnapshot) error {

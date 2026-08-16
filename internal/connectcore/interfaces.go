@@ -86,10 +86,16 @@ type Notice struct {
 }
 
 // Persistence stores the small pieces of client state the engine reads and
-// writes across sessions: the "recents" row and, while connected, the OS
-// proxy snapshot used to recover after a crash. A nil Persistence disables
-// persistence; the engine still runs (recents are session-local, crash
-// recovery is skipped).
+// writes across sessions: the "recents" row, the stable local proxy port, and,
+// while connected, the OS proxy snapshot used to recover after a crash. A nil
+// Persistence disables persistence; the engine still runs (recents are
+// session-local, crash recovery is skipped, and the local endpoint is picked
+// fresh each launch with a warning).
+//
+// The proxy-port half is exactly proxyconfig.PortStore, which is how the
+// engine resolves its endpoint through the shared policy without a
+// host-supplied callback: hosts implement this one hook and the engine passes
+// it straight through (see LocalProxyPort).
 type Persistence interface {
 	// LoadRecents returns the persisted recents (newest first), or an empty
 	// slice when none are stored or the data is unreadable — recents are a
@@ -97,6 +103,13 @@ type Persistence interface {
 	LoadRecents() []RecentNode
 	// SaveRecents persists the recents list (best-effort).
 	SaveRecents(recents []RecentNode) error
+	// LoadProxyPort returns the persisted stable local proxy port and whether
+	// one was stored.
+	LoadProxyPort() (int, bool)
+	// LoadOrSaveProxyPort persists candidate and returns the port that won —
+	// another process's choice when two first launches race, so every process
+	// agrees on the endpoint.
+	LoadOrSaveProxyPort(candidate int) (int, error)
 	// SaveProxySnapshot persists the OS proxy snapshot captured before a
 	// connect, so a crash mid-session can be cleaned up on the next launch.
 	SaveProxySnapshot(snap OSProxySnapshot) error

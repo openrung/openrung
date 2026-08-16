@@ -33,21 +33,25 @@ func newEngineHost(sink connectcore.EventSink, singBoxPath string) *engineHost {
 	engine.OSProxy = osProxyAdapter{ctrl: proxymode.New()}
 	// TUN mode is gated on this hook; proxy mode never invokes it.
 	engine.Elevation = elevation{}
+	// The one storage hook: recents, the crash-recovery proxy snapshot, and the
+	// stable proxy port the engine resolves through internal/proxyconfig. Left
+	// nil when the config directory is unavailable, which the engine degrades
+	// on rather than fails.
 	if store, err := clientstate.New(); err == nil {
 		host.store = store
 		engine.Persistence = storeAdapter{store: store}
 	}
-	engine.ResolveProxyPort = func() (connectcore.ProxyPortResolution, error) {
-		resolution, err := proxyconfig.ResolvePort(host.store)
-		if err != nil {
-			return connectcore.ProxyPortResolution{}, err
-		}
-		return connectcore.ProxyPortResolution{
-			Port:               resolution.Port,
-			PersistenceWarning: resolution.PersistenceWarning,
-		}, nil
-	}
 	return host
+}
+
+// helperStore narrows the store for proxyconfig's shell helper, as a nil
+// interface when the config directory was unavailable: a nil *clientstate.Store
+// inside a non-nil interface would slip past proxyconfig's own nil check.
+func (h *engineHost) helperStore() proxyconfig.HelperStore {
+	if h.store == nil {
+		return nil
+	}
+	return h.store
 }
 
 // shellProxyHelper resolves the stable local endpoint and writes the
@@ -63,7 +67,7 @@ func (h *engineHost) shellProxyHelper() (proxyconfig.Info, error) {
 	if err != nil {
 		return proxyconfig.Info{}, err
 	}
-	return proxyconfig.WriteShellHelper(h.store, port)
+	return proxyconfig.WriteShellHelper(h.helperStore(), port)
 }
 
 // The adapters below mirror desktop/vpnservice/adapters.go over the shared
@@ -90,6 +94,14 @@ func (a storeAdapter) SaveRecents(recents []connectcore.RecentNode) error {
 		stored = append(stored, clientstate.RecentNode(r))
 	}
 	return a.store.SaveRecents(stored)
+}
+
+// The proxy-port half needs no translation: the store already speaks
+// proxyconfig's shape, which is why the engine can resolve through it directly.
+func (a storeAdapter) LoadProxyPort() (int, bool) { return a.store.LoadProxyPort() }
+
+func (a storeAdapter) LoadOrSaveProxyPort(candidate int) (int, error) {
+	return a.store.LoadOrSaveProxyPort(candidate)
 }
 
 func (a storeAdapter) SaveProxySnapshot(snap connectcore.OSProxySnapshot) error {

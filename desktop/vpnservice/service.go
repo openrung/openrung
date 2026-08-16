@@ -116,16 +116,6 @@ func New() *Service {
 	engine.PunchInsecure = true
 	engine.Sink = &engineSink{s: s}
 	engine.OSProxy = osProxyAdapter{ctrl: proxymode.New()}
-	engine.ResolveProxyPort = func() (connectcore.ProxyPortResolution, error) {
-		resolution, err := proxyconfig.ResolvePort(s.store)
-		if err != nil {
-			return connectcore.ProxyPortResolution{}, err
-		}
-		return connectcore.ProxyPortResolution{
-			Port:               resolution.Port,
-			PersistenceWarning: resolution.PersistenceWarning,
-		}, nil
-	}
 	s.engine = engine
 	s.state = engine.State()
 	return s
@@ -135,6 +125,10 @@ func New() *Service {
 // frontend as callable bindings; they are lifecycle hooks for package main.
 func (s *Service) Startup(ctx context.Context) {
 	s.engine.SingBoxPath = s.SingBoxPath
+	// The one storage hook: recents, the crash-recovery proxy snapshot, and the
+	// stable proxy port the engine resolves through internal/proxyconfig. Left
+	// nil when the config directory is unavailable, which the engine degrades
+	// on rather than fails.
 	if store, err := clientstate.New(); err == nil {
 		s.store = store
 		s.engine.Persistence = storeAdapter{store: store}
@@ -228,7 +222,7 @@ func (s *Service) GetProxyInfo() (NativeProxyInfo, error) {
 	if !native.ShellIntegration {
 		return native, nil
 	}
-	info, err = proxyconfig.WriteShellHelper(s.store, port)
+	info, err = proxyconfig.WriteShellHelper(s.helperStore(), port)
 	if err != nil {
 		message := err.Error()
 		native.ShellIntegrationError = &message
