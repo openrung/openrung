@@ -178,6 +178,40 @@ func TestDirectSessionRegistersAndRecovers(t *testing.T) {
 	}
 }
 
+// An explicitly configured public host is registered verbatim, with no
+// dependency on (or rotation recheck of) the host's auto-detected IPv6.
+func TestDirectSessionUsesConfiguredPublicHost(t *testing.T) {
+	stubIPv6(t, "", fmt.Errorf("no global IPv6 on this host"))
+
+	broker := &fakeBroker{}
+	ts := httptest.NewServer(broker.handler())
+	defer ts.Close()
+
+	eng := New(Config{
+		BrokerURL:   ts.URL,
+		Mode:        ModeDirect,
+		PublicHost:  "203.0.113.7",
+		Label:       "pinned-host-relay",
+		ListenPort:  freePort(t),
+		Identity:    testIdentity,
+		DisableXray: true,
+		ConfigDir:   t.TempDir(),
+	}, Events{})
+	if err := eng.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer eng.Stop()
+
+	eventually(t, 5*time.Second, "pinned-host relay online", func() bool {
+		s := eng.Status()
+		return s.Phase == PhaseOnline && s.PublicHost == "203.0.113.7"
+	})
+	_, _, last := broker.stats()
+	if last.PublicHost != "203.0.113.7" {
+		t.Fatalf("registered public host = %q, want the configured 203.0.113.7", last.PublicHost)
+	}
+}
+
 func TestEngineLifecycleStartStop(t *testing.T) {
 	broker := &fakeBroker{}
 	ts := httptest.NewServer(broker.handler())

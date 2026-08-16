@@ -100,6 +100,14 @@ type Config struct {
 	NodeClass string
 	// Label is the public relay name; generated (adjective-noun) when empty.
 	Label string
+	// PublicHost is the public hostname or IP clients can reach (cmd/relay's
+	// -public-host). Direct mode uses it verbatim; when empty, the host's
+	// first global IPv6 address is auto-detected and periodically re-checked
+	// for rotation (an explicit host is pinned, so no recheck runs). Auto
+	// mode prefers the probe-observed address, and tunnel mode's endpoint
+	// comes from the hub. A WSS relay binds xray to the IPv4 wildcard, so it
+	// should set this to the IPv4 address the directory must advertise.
+	PublicHost string
 	// XrayPath locates the xray binary. Defaults to "xray" via PATH.
 	XrayPath string
 	// ListenPort is the direct-only public/listen port and the sole automatic
@@ -147,6 +155,8 @@ type Config struct {
 	// per-connection connect/disconnect lines — which include client IPs — as
 	// cmd/relay prints to stdout. Nil (the default, and the GUI posture) keeps
 	// them out of every log; aggregate counters remain in Status either way.
+	// The engine serializes writes (one line per Write call), so the writer
+	// itself does not need to be goroutine-safe.
 	ConnectionLogOutput io.Writer
 	// Identity seeds the relay identity; missing parts are generated.
 	Identity Identity
@@ -302,19 +312,21 @@ func (c Config) effectiveConfig() (Config, error) {
 
 // brokerClient builds the broker client for this config. A foundation token is
 // the bearer and, on its own, requires secure transport (https + redirect
-// refusal), so that guarantee holds even for a config that skipped posture
-// normalization. All broker requests use only the canonical registration and
-// heartbeat routes and refuse every redirect (see relayruntime.BrokerClient).
+// refusal); the node-class check is case/space-insensitive so the guarantee
+// also holds for a config that skipped posture normalization. All broker
+// requests use only the canonical registration and heartbeat routes and
+// refuse every redirect (see relayruntime.BrokerClient).
 func (c Config) brokerClient() *relayruntime.BrokerClient {
 	token := c.Token
 	if c.FoundationToken != "" {
 		token = c.FoundationToken
 	}
+	nodeClass := strings.ToLower(strings.TrimSpace(c.NodeClass))
 	return &relayruntime.BrokerClient{
 		BaseURL:                c.BrokerURL,
 		Token:                  token,
 		HTTPClient:             c.HTTPClient,
-		RequireSecureTransport: c.FoundationToken != "" || c.NodeClass == relay.NodeClassFoundation,
+		RequireSecureTransport: c.FoundationToken != "" || nodeClass == relay.NodeClassFoundation,
 	}
 }
 
@@ -334,6 +346,15 @@ func (c Config) validate() error {
 	}
 	if c.Mode != ModeTunnel && c.BrokerURL == "" {
 		return fmt.Errorf("broker URL is required")
+	}
+	// A foundation posture refuses plaintext non-loopback brokers on every
+	// request (BrokerClient.RequireSecureTransport), so a bad URL can never
+	// succeed; rejecting it here surfaces the misconfiguration at Start
+	// instead of as an endless register-retry loop.
+	if c.Mode != ModeTunnel && (c.FoundationToken != "" || c.NodeClass == relay.NodeClassFoundation) {
+		if err := relayruntime.ValidateSecureBrokerURL(c.BrokerURL); err != nil {
+			return err
+		}
 	}
 	if c.ListenPort < 1 || c.ListenPort > 65535 {
 		return fmt.Errorf("listen port must be between 1 and 65535")
@@ -928,6 +949,13 @@ func (e *Engine) startXray(ctx context.Context, cfg Config, identity Identity, l
 // Tunnel mode renders a freshly reserved loopback binding for the same reason
 // cmd/relay does.
 func (e *Engine) RenderXrayConfig() ([]byte, error) {
+	// Refuse while running: prepareIdentity's generate-and-report flow must
+	// not race a live session's — both could mint identities for the same
+	// missing fields and the last writeback would win, splitting the persisted
+	// seed from the one the session registered with.
+	if e.Running() {
+		return nil, errors.New("cannot render the xray config while the relay is running")
+	}
 	cfg, err := e.currentConfig().effectiveConfig()
 	if err != nil {
 		return nil, err
@@ -963,6 +991,14 @@ func (e *Engine) RenderXrayConfig() ([]byte, error) {
 }
 
 func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.BrokerClient, cfg Config, label string, identity Identity, publicHost, listenHost string) error {
+	// A probe-observed address (auto mode) wins; otherwise an explicitly
+	// configured public host is used verbatim, and only as a last resort is
+	// the host's global IPv6 auto-detected.
+	usedConfiguredHost := false
+	if publicHost == "" && cfg.PublicHost != "" {
+		publicHost = cfg.PublicHost
+		usedConfiguredHost = true
+	}
 	if publicHost == "" {
 		detected, err := detectPublicIPv6()
 		if err != nil {
@@ -1000,10 +1036,12 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 	if !wss {
 		// Per-connection lines include client IPs; unless the caller opted into
 		// console connection logging (ConnectionLogOutput) they go nowhere, and
-		// the engine surfaces aggregate counters instead.
+		// the engine surfaces aggregate counters instead. The observer writes
+		// from one goroutine per connection, so the caller's writer is wrapped
+		// in a lock to honour the field's no-concurrency-requirement contract.
 		output := io.Writer(io.Discard)
 		if cfg.ConnectionLogOutput != nil {
-			output = cfg.ConnectionLogOutput
+			output = &lockedWriter{w: cfg.ConnectionLogOutput}
 		}
 		observer := &relayruntime.ConnectionObserver{
 			ListenHost: listenHost,
@@ -1117,7 +1155,13 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 	// we baseline against the same source the recheck uses, and only when it
 	// yields an address at all (no global IPv6 ⇒ nothing to watch here).
 	const ipRecheckInterval = 5 * time.Minute
-	ipBaseline, _ := detectPublicIPv6()
+	// An explicitly configured public host is pinned — rotation of the host's
+	// auto-detected IPv6 addresses is irrelevant to it — so the recheck only
+	// arms when the registered address actually came from detection.
+	ipBaseline := ""
+	if !usedConfiguredHost {
+		ipBaseline, _ = detectPublicIPv6()
+	}
 	ipRecheck := time.NewTicker(ipRecheckInterval)
 	defer ipRecheck.Stop()
 
@@ -1161,8 +1205,12 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 					continue
 				}
 				if verifyErr := verifyRegisteredDescriptor(reSigned, updated, identityKey); verifyErr != nil {
-					e.logf("re-register after expired lease failed: %v", verifyErr)
-					continue
+					// Fail closed like the initial registration: the broker-side
+					// lease now exists in a state this relay refuses to serve in
+					// (unattested class, tampered fronts), so end the session and
+					// surface the error instead of staying online mislabeled and
+					// re-registering at heartbeat cadence forever.
+					return fmt.Errorf("re-register after expired lease: %w", verifyErr)
 				}
 				desc = updated
 				e.logf("re-registered with the broker as %q (%s)", desc.Label, desc.ID)
@@ -1414,6 +1462,21 @@ func pinnedLeafVerifier(want string) func([][]byte, [][]*x509.Certificate) error
 		}
 		return nil
 	}
+}
+
+// lockedWriter serializes writes from the observer's per-connection
+// goroutines onto the caller-supplied ConnectionLogOutput, so the caller's
+// writer does not need to be goroutine-safe. Each observer line arrives as a
+// single Write call, so lines never interleave.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
 }
 
 // stopProcess interrupts the xray child and escalates to Kill; nil cmd (xray

@@ -87,3 +87,30 @@ func TestRenderXrayConfigValidatesFirst(t *testing.T) {
 		t.Fatal("RenderXrayConfig() error = nil, want a validation error")
 	}
 }
+
+// Rendering while running is refused: it would let prepareIdentity's
+// generate-and-report flow race the live session's.
+func TestRenderXrayConfigRefusesWhileRunning(t *testing.T) {
+	_, addr := startTestHub(t)
+	eng := New(Config{
+		Mode:         ModeTunnel,
+		HubAddr:      addr,
+		HubPlaintext: true,
+		Identity:     testIdentity,
+		DisableXray:  true,
+		ConfigDir:    t.TempDir(),
+	}, Events{})
+	if err := eng.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer eng.Stop()
+
+	if _, err := eng.RenderXrayConfig(); err == nil {
+		t.Fatal("RenderXrayConfig() error = nil, want a running-engine refusal")
+	}
+
+	eng.Stop()
+	if _, err := eng.RenderXrayConfig(); err != nil {
+		t.Fatalf("RenderXrayConfig after Stop: %v", err)
+	}
+}

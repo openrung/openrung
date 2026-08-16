@@ -283,6 +283,92 @@ func TestRunSessionRejectsFoundationAutoBeforeProbe(t *testing.T) {
 	}
 }
 
+// A foundation posture against a plaintext non-loopback broker can never
+// register (every request is refused pre-flight), so validation must reject
+// it at Start instead of letting the supervisor retry it forever.
+func TestValidateRejectsFoundationPlaintextBroker(t *testing.T) {
+	for name, cfg := range map[string]Config{
+		"token":      {FoundationToken: "fnd-secret", BrokerURL: "http://broker.example"},
+		"class-only": {NodeClass: relay.NodeClassFoundation, Mode: ModeDirect, BrokerURL: "http://broker.example"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := cfg.withDefaults().validate()
+			if err == nil || !strings.Contains(err.Error(), "https") {
+				t.Fatalf("validate() error = %v, want a plaintext-broker rejection", err)
+			}
+		})
+	}
+
+	// Loopback http (local integration tests) and https both stay valid.
+	for name, brokerURL := range map[string]string{
+		"loopback http": "http://127.0.0.1:9999",
+		"https":         "https://broker.openrung.org",
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := Config{FoundationToken: "fnd-secret", BrokerURL: brokerURL}
+			if err := cfg.withDefaults().validate(); err != nil {
+				t.Fatalf("validate() rejected %s: %v", name, err)
+			}
+		})
+	}
+}
+
+// A verification failure on the expired-lease re-register path must end the
+// session (fail closed, like the initial registration) rather than leaving
+// the relay online and mislabeled while re-registering forever.
+func TestReRegisterAttestationFailureFailsSession(t *testing.T) {
+	var registers atomic.Int32
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/relays/register" {
+			w.WriteHeader(http.StatusCreated)
+			if registers.Add(1) == 1 {
+				// First registration is properly attested.
+				_, _ = w.Write([]byte(`{"id":"relay_1","public_host":"relay.example","public_port":443,"node_class":"foundation"}`))
+				return
+			}
+			// The re-register response no longer attests foundation class.
+			_, _ = w.Write([]byte(`{"id":"relay_2","public_host":"relay.example","public_port":443}`))
+			return
+		}
+		// Every heartbeat reports the pruned-relay 404 to force re-registration.
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"relay not found"}`))
+	}))
+	defer broker.Close()
+
+	raw := Config{
+		BrokerURL:   broker.URL,
+		NodeClass:   relay.NodeClassFoundation,
+		Mode:        ModeDirect,
+		ListenPort:  freePort(t),
+		Identity:    testIdentity,
+		DisableXray: true,
+		ConfigDir:   t.TempDir(),
+	}.withDefaults()
+	cfg, err := raw.effectiveConfig()
+	if err != nil {
+		t.Fatalf("effectiveConfig: %v", err)
+	}
+	cfg.HeartbeatInterval = 50 * time.Millisecond
+	eng := New(raw, Events{})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- eng.runDirectSession(context.Background(), cfg.brokerClient(), cfg, "fnd-relay", testIdentity, "relay.example", directOnlyListenHost)
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "node_class") {
+			t.Fatalf("runDirectSession() error = %v, want a fail-closed re-register attestation error", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("session kept running after a failed re-register attestation")
+	}
+	if registers.Load() < 2 {
+		t.Fatalf("registers = %d, want at least 2 (initial + re-register)", registers.Load())
+	}
+}
+
 // A broker that predates node_class silently drops the field; a foundation
 // relay must refuse to serve mislabeled rather than run as volunteer-class.
 func TestDirectSessionRejectsUnattestedFoundationClass(t *testing.T) {
