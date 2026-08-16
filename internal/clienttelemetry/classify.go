@@ -39,12 +39,18 @@ const detailMaxBytes = 256
 // exercise the Windows rows in CI on Linux and macOS. They are spelled as
 // literals because syscall exports only WSAECONNRESET by name, and only on
 // Windows.
+//
+// Every errno this ladder acts on has its Winsock counterpart here, so a given
+// failure reports the same token on both platforms. Each is matched at the same
+// rung as the POSIX errno it pairs with, not all together, because the rung is
+// what orders it against the DNS and TLS rules.
 const (
-	wsaeNetUnreach  = syscall.Errno(10051) // WSAENETUNREACH
-	wsaeConnReset   = syscall.Errno(10054) // WSAECONNRESET
-	wsaeTimedOut    = syscall.Errno(10060) // WSAETIMEDOUT
-	wsaeConnRefused = syscall.Errno(10061) // WSAECONNREFUSED
-	wsaeHostUnreach = syscall.Errno(10065) // WSAEHOSTUNREACH
+	wsaeAccessDenied = syscall.Errno(10013) // WSAEACCES
+	wsaeNetUnreach   = syscall.Errno(10051) // WSAENETUNREACH
+	wsaeConnReset    = syscall.Errno(10054) // WSAECONNRESET
+	wsaeTimedOut     = syscall.Errno(10060) // WSAETIMEDOUT
+	wsaeConnRefused  = syscall.Errno(10061) // WSAECONNREFUSED
+	wsaeHostUnreach  = syscall.Errno(10065) // WSAEHOSTUNREACH
 )
 
 // httpStatusError is implemented by broker errors that carry an HTTP status
@@ -148,8 +154,13 @@ func ClassifyError(err error) string {
 		return "tls_handshake"
 	}
 
-	// os.ErrPermission also catches EACCES/EPERM via syscall.Errno.Is.
-	if errors.Is(err, os.ErrPermission) {
+	// os.ErrPermission also catches EACCES/EPERM via syscall.Errno.Is — but not
+	// WSAEACCES, which Errno.Is maps to nothing (internal/relayruntime
+	// documents the same trap for its bind probes). A WFP callout driver or an
+	// endpoint-security policy refusing the connect raises it, which is
+	// precisely the condition EACCES reports elsewhere, so it belongs at this
+	// rung rather than in the errno switch above.
+	if errors.Is(err, os.ErrPermission) || errno == wsaeAccessDenied {
 		return "permission_denied"
 	}
 

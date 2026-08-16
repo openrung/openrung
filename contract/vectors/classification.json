@@ -74,7 +74,7 @@
     "errno": {
       "suites": ["go", "kotlin", "swift"],
       "input": "{symbol: string, code: int} — code is present only for platform 'windows'; POSIX numbers differ per kernel, so POSIX rows name the symbol and each suite resolves it locally.",
-      "description": "A socket-level failure surfacing a raw errno."
+      "description": "A socket-level failure surfacing a raw errno. Every errno row carries 'pair': the id of the row on the other platform that describes the same underlying condition, which must expect the same token. Pairing is many-to-one where the platforms disagree on granularity (EACCES and EPERM both pair with WSAEACCES). The Go suite checks the pairing, so a Winsock code added — or forgotten — without its POSIX counterpart fails there rather than becoming a silent per-platform divergence in the field."
     },
     "dns": {
       "suites": ["go", "kotlin", "swift"],
@@ -131,22 +131,23 @@
     {"id": "http_500", "kind": "http_status", "input": {"status": 500}, "expect": "http_500"},
     {"id": "http_503", "kind": "http_status", "input": {"status": 503}, "expect": "http_503"},
 
-    {"id": "errno_econnrefused", "kind": "errno", "platform": "posix", "input": {"symbol": "ECONNREFUSED"}, "expect": "connection_refused"},
-    {"id": "errno_econnrefused_wrapped", "kind": "errno", "platform": "posix", "input": {"symbol": "ECONNREFUSED", "wrapped": true}, "expect": "connection_refused", "note": "Pins that the whole error chain is inspected: the suite nests the errno in whatever its connect pipeline wraps it with."},
-    {"id": "errno_econnreset", "kind": "errno", "platform": "posix", "input": {"symbol": "ECONNRESET"}, "expect": "connection_reset"},
-    {"id": "errno_enetunreach", "kind": "errno", "platform": "posix", "input": {"symbol": "ENETUNREACH"}, "expect": "network_unreachable"},
-    {"id": "errno_ehostunreach", "kind": "errno", "platform": "posix", "input": {"symbol": "EHOSTUNREACH"}, "expect": "network_unreachable"},
-    {"id": "errno_etimedout", "kind": "errno", "platform": "posix", "input": {"symbol": "ETIMEDOUT"}, "expect": "timeout"},
-    {"id": "errno_eacces", "kind": "errno", "platform": "posix", "input": {"symbol": "EACCES"}, "expect": "permission_denied"},
-    {"id": "errno_eperm", "kind": "errno", "platform": "posix", "input": {"symbol": "EPERM"}, "expect": "permission_denied"},
-    {"id": "errno_epipe", "kind": "errno", "platform": "posix", "input": {"symbol": "EPIPE"}, "expect": "unknown", "note": "Deliberately unmapped. A write to a connection the peer already tore down is indistinguishable here from an ordinary shutdown race, and the taxonomy has no broken-pipe token; pinned so its Winsock twin (WSAECONNABORTED) stays unmapped too."},
+    {"id": "errno_econnrefused", "kind": "errno", "pair": "errno_wsaeconnrefused", "platform": "posix", "input": {"symbol": "ECONNREFUSED"}, "expect": "connection_refused"},
+    {"id": "errno_econnrefused_wrapped", "kind": "errno", "pair": "errno_wsaeconnrefused", "platform": "posix", "input": {"symbol": "ECONNREFUSED", "wrapped": true}, "expect": "connection_refused", "note": "Pins that the whole error chain is inspected: the suite nests the errno in whatever its connect pipeline wraps it with."},
+    {"id": "errno_econnreset", "kind": "errno", "pair": "errno_wsaeconnreset", "platform": "posix", "input": {"symbol": "ECONNRESET"}, "expect": "connection_reset"},
+    {"id": "errno_enetunreach", "kind": "errno", "pair": "errno_wsaenetunreach", "platform": "posix", "input": {"symbol": "ENETUNREACH"}, "expect": "network_unreachable"},
+    {"id": "errno_ehostunreach", "kind": "errno", "pair": "errno_wsaehostunreach", "platform": "posix", "input": {"symbol": "EHOSTUNREACH"}, "expect": "network_unreachable"},
+    {"id": "errno_etimedout", "kind": "errno", "pair": "errno_wsaetimedout", "platform": "posix", "input": {"symbol": "ETIMEDOUT"}, "expect": "timeout"},
+    {"id": "errno_eacces", "kind": "errno", "pair": "errno_wsaeaccess", "platform": "posix", "input": {"symbol": "EACCES"}, "expect": "permission_denied"},
+    {"id": "errno_eperm", "kind": "errno", "pair": "errno_wsaeaccess", "platform": "posix", "input": {"symbol": "EPERM"}, "expect": "permission_denied"},
+    {"id": "errno_epipe", "kind": "errno", "pair": "errno_wsaeconnaborted", "platform": "posix", "input": {"symbol": "EPIPE"}, "expect": "unknown", "note": "Deliberately unmapped. A write to a connection the peer already tore down is indistinguishable here from an ordinary shutdown race, and the taxonomy has no broken-pipe token; pinned so its Winsock twin (WSAECONNABORTED) stays unmapped too."},
 
-    {"id": "errno_wsaeconnrefused", "kind": "errno", "platform": "windows", "input": {"symbol": "WSAECONNREFUSED", "code": 10061}, "expect": "connection_refused"},
-    {"id": "errno_wsaeconnreset", "kind": "errno", "platform": "windows", "input": {"symbol": "WSAECONNRESET", "code": 10054}, "expect": "connection_reset"},
-    {"id": "errno_wsaenetunreach", "kind": "errno", "platform": "windows", "input": {"symbol": "WSAENETUNREACH", "code": 10051}, "expect": "network_unreachable"},
-    {"id": "errno_wsaehostunreach", "kind": "errno", "platform": "windows", "input": {"symbol": "WSAEHOSTUNREACH", "code": 10065}, "expect": "network_unreachable"},
-    {"id": "errno_wsaetimedout", "kind": "errno", "platform": "windows", "input": {"symbol": "WSAETIMEDOUT", "code": 10060}, "expect": "timeout", "note": "Go's syscall.Errno.Timeout on Windows reports true only for its own invented EAGAIN/EWOULDBLOCK/ETIMEDOUT, so this needs an explicit rule or it lands in 'unknown'."},
-    {"id": "errno_wsaeconnaborted", "kind": "errno", "platform": "windows", "input": {"symbol": "WSAECONNABORTED", "code": 10053}, "expect": "unknown", "note": "Unmapped on purpose, matching errno_epipe: mapping the Winsock code alone would make the same broken connection report different tokens per platform."},
+    {"id": "errno_wsaeconnrefused", "kind": "errno", "pair": "errno_econnrefused", "platform": "windows", "input": {"symbol": "WSAECONNREFUSED", "code": 10061}, "expect": "connection_refused"},
+    {"id": "errno_wsaeconnreset", "kind": "errno", "pair": "errno_econnreset", "platform": "windows", "input": {"symbol": "WSAECONNRESET", "code": 10054}, "expect": "connection_reset"},
+    {"id": "errno_wsaenetunreach", "kind": "errno", "pair": "errno_enetunreach", "platform": "windows", "input": {"symbol": "WSAENETUNREACH", "code": 10051}, "expect": "network_unreachable"},
+    {"id": "errno_wsaehostunreach", "kind": "errno", "pair": "errno_ehostunreach", "platform": "windows", "input": {"symbol": "WSAEHOSTUNREACH", "code": 10065}, "expect": "network_unreachable"},
+    {"id": "errno_wsaetimedout", "kind": "errno", "pair": "errno_etimedout", "platform": "windows", "input": {"symbol": "WSAETIMEDOUT", "code": 10060}, "expect": "timeout", "note": "Go's syscall.Errno.Timeout on Windows reports true only for its own invented EAGAIN/EWOULDBLOCK/ETIMEDOUT, so this needs an explicit rule or it lands in 'unknown'."},
+    {"id": "errno_wsaeaccess", "kind": "errno", "pair": "errno_eacces", "platform": "windows", "input": {"symbol": "WSAEACCES", "code": 10013}, "expect": "permission_denied", "note": "The Winsock counterpart of errno_eacces: a WFP callout driver or an endpoint-security policy refusing the connect. Go's syscall.Errno.Is maps ERROR_ACCESS_DENIED and its own invented EACCES/EPERM to os.ErrPermission, but not this, so it needs an explicit rule at the permission rung or the same block reports permission_denied on POSIX and 'unknown' on Windows."},
+    {"id": "errno_wsaeconnaborted", "kind": "errno", "pair": "errno_epipe", "platform": "windows", "input": {"symbol": "WSAECONNABORTED", "code": 10053}, "expect": "unknown", "note": "Unmapped on purpose, matching errno_epipe: mapping the Winsock code alone would make the same broken connection report different tokens per platform."},
 
     {"id": "dns_not_found", "kind": "dns", "input": {"subkind": "not_found"}, "expect": "dns_failure"},
     {"id": "dns_timeout", "kind": "dns", "input": {"subkind": "timeout"}, "expect": "dns_failure", "suites": ["go"], "note": "Pins DNS-before-timeout ordering. Android and iOS cannot construct it: their resolvers report a lookup timeout as the ordinary timeout error, not as a DNS error."},

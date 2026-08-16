@@ -54,6 +54,7 @@ type classificationCase struct {
 	} `json:"input"`
 	Expect string   `json:"expect"`
 	Suites []string `json:"suites"`
+	Pair   string   `json:"pair"`
 }
 
 // runsHere reports whether this suite must run the case: the kind's suite list,
@@ -161,6 +162,60 @@ func TestClassificationVectorsCoverage(t *testing.T) {
 	for kind := range vectors.Kinds {
 		if _, used := kindsUsed[kind]; !used {
 			t.Errorf("kind %q is described but has no vector", kind)
+		}
+	}
+}
+
+// TestClassificationVectorsErrnoPairing checks that the two platforms report
+// the same token for the same condition. A Winsock code is easy to add without
+// its POSIX counterpart — or, as WSAEACCES was, to leave out entirely while its
+// POSIX twin is mapped — and either way the divergence is invisible until a
+// Windows user's failures land in the wrong dashboard bucket. Machine-checking
+// the pairing is what keeps that from depending on review.
+func TestClassificationVectorsErrnoPairing(t *testing.T) {
+	vectors := loadClassificationVectors(t)
+
+	byID := make(map[string]classificationCase, len(vectors.Cases))
+	for _, testCase := range vectors.Cases {
+		byID[testCase.ID] = testCase
+	}
+
+	tokensByPlatform := map[string]map[string]struct{}{
+		"posix":   {},
+		"windows": {},
+	}
+	for _, testCase := range vectors.Cases {
+		if testCase.Kind != "errno" {
+			continue
+		}
+		if _, known := tokensByPlatform[testCase.Platform]; !known {
+			t.Errorf("errno vector %q has platform %q, want posix or windows", testCase.ID, testCase.Platform)
+			continue
+		}
+		tokensByPlatform[testCase.Platform][testCase.Expect] = struct{}{}
+
+		pair, found := byID[testCase.Pair]
+		switch {
+		case testCase.Pair == "":
+			t.Errorf("errno vector %q names no cross-platform pair", testCase.ID)
+		case !found:
+			t.Errorf("errno vector %q pairs with %q, which does not exist", testCase.ID, testCase.Pair)
+		case pair.Kind != "errno" || pair.Platform == testCase.Platform:
+			t.Errorf("errno vector %q pairs with %q, which is not an errno row on the other platform", testCase.ID, testCase.Pair)
+		case pair.Expect != testCase.Expect:
+			t.Errorf("errno vector %q expects %q but its pair %q expects %q — the same condition must report one token on both platforms",
+				testCase.ID, testCase.Expect, testCase.Pair, pair.Expect)
+		}
+	}
+
+	for token := range tokensByPlatform["posix"] {
+		if _, covered := tokensByPlatform["windows"][token]; !covered {
+			t.Errorf("a POSIX errno reports %q but no Winsock code does; either map its counterpart or pin the gap with a row", token)
+		}
+	}
+	for token := range tokensByPlatform["windows"] {
+		if _, covered := tokensByPlatform["posix"][token]; !covered {
+			t.Errorf("a Winsock code reports %q but no POSIX errno does", token)
 		}
 	}
 }
