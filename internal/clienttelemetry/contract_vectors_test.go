@@ -10,6 +10,7 @@ import (
 	"os"
 	"regexp"
 	"slices"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -36,7 +37,12 @@ type classificationVectors struct {
 	Kinds         map[string]struct {
 		Suites []string `json:"suites"`
 	} `json:"kinds"`
-	Cases []classificationCase `json:"cases"`
+	Cases               []classificationCase `json:"cases"`
+	ErrnoPairExceptions []struct {
+		ID       string `json:"id"`
+		DefersTo string `json:"defers_to"`
+		Reason   string `json:"reason"`
+	} `json:"errno_pair_exceptions"`
 }
 
 type classificationCase struct {
@@ -251,6 +257,28 @@ func TestClassificationVectorsErrnoPairing(t *testing.T) {
 		case pair.Expect != testCase.Expect:
 			t.Errorf("errno vector %q expects %q but its pair %q expects %q — the same condition must report one token on both platforms",
 				testCase.ID, testCase.Expect, testCase.Pair, pair.Expect)
+		case pair.Pair != testCase.ID && !declaredException(vectors, testCase.ID, testCase.Pair):
+			// Pairing is one-to-one by default. Left unrestricted, a new row
+			// could point at a pair already spoken for and satisfy both this
+			// check and the token-set check below while its own counterpart
+			// went unmapped — the token is already covered by the pair it
+			// borrowed. A collapse has to be declared to be allowed.
+			t.Errorf("errno vector %q pairs with %q, which pairs back with %q instead — declare the collapse in "+
+				"errno_pair_exceptions with a reason, or give %q its own counterpart",
+				testCase.ID, testCase.Pair, pair.Pair, testCase.ID)
+		}
+	}
+
+	for _, exception := range vectors.ErrnoPairExceptions {
+		switch {
+		case byID[exception.ID].Kind != "errno":
+			t.Errorf("errno_pair_exceptions names %q, which is not an errno vector", exception.ID)
+		case byID[exception.ID].Pair != byID[exception.DefersTo].Pair:
+			t.Errorf("errno_pair_exceptions says %q defers to %q, but they do not share a counterpart (%q vs %q)",
+				exception.ID, exception.DefersTo, byID[exception.ID].Pair, byID[exception.DefersTo].Pair)
+		case strings.TrimSpace(exception.Reason) == "":
+			t.Errorf("errno_pair_exceptions entry %q carries no reason; a collapse without one is indistinguishable "+
+				"from a forgotten counterpart", exception.ID)
 		}
 	}
 
@@ -264,6 +292,26 @@ func TestClassificationVectorsErrnoPairing(t *testing.T) {
 			t.Errorf("a Winsock code reports %q but no POSIX errno does", token)
 		}
 	}
+}
+
+// declaredException reports whether the file declares that caseID deliberately
+// shares another row's cross-platform counterpart.
+func declaredException(vectors classificationVectors, caseID, pairID string) bool {
+	for _, exception := range vectors.ErrnoPairExceptions {
+		if exception.ID == caseID && byIDPair(vectors, exception.DefersTo) == pairID {
+			return true
+		}
+	}
+	return false
+}
+
+func byIDPair(vectors classificationVectors, caseID string) string {
+	for _, testCase := range vectors.Cases {
+		if testCase.ID == caseID {
+			return testCase.Pair
+		}
+	}
+	return ""
 }
 
 // vectorError builds the platform-specific error one vector describes. Each

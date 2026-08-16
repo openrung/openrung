@@ -47,6 +47,19 @@
   "token_patterns": [
     "^http_[0-9]{3}$"
   ],
+  "errno_pair_exceptions_note": "Errno rows pair one-to-one by default: R names P and P names R back. A row that points at a pair already spoken for is the exception and must be listed here with a reason, because an unrestricted many-to-one pairing would let a new errno row hide behind any existing pair carrying the same token — add ENETDOWN pointing at errno_wsaenetunreach and both the pair check and the token-set check pass while WSAENETDOWN goes unmapped. Requiring the collapse to be declared here makes that a visible edit to a shared table rather than one inconspicuous field on a new row.",
+  "errno_pair_exceptions": [
+    {
+      "id": "errno_eperm",
+      "defers_to": "errno_eacces",
+      "reason": "Winsock has no distinct socket EPERM; WSAEACCES covers what POSIX splits between EACCES and EPERM, so both POSIX rows collapse onto the one Windows row."
+    },
+    {
+      "id": "errno_econnrefused_wrapped",
+      "defers_to": "errno_econnrefused",
+      "reason": "Not a distinct condition: the same errno as errno_econnrefused, wrapped, to prove the chain is walked. It shares that row's Windows counterpart rather than needing one of its own."
+    }
+  ],
   "kinds": {
     "none": {
       "suites": ["go", "kotlin"],
@@ -139,8 +152,8 @@
     {"id": "errno_enetunreach", "kind": "errno", "pair": "errno_wsaenetunreach", "platform": "posix", "input": {"symbol": "ENETUNREACH"}, "expect": "network_unreachable"},
     {"id": "errno_ehostunreach", "kind": "errno", "pair": "errno_wsaehostunreach", "platform": "posix", "input": {"symbol": "EHOSTUNREACH"}, "expect": "network_unreachable"},
     {"id": "errno_etimedout", "kind": "errno", "pair": "errno_wsaetimedout", "platform": "posix", "input": {"symbol": "ETIMEDOUT"}, "expect": "timeout"},
-    {"id": "errno_eacces", "kind": "errno", "pair": "errno_wsaeaccess", "platform": "posix", "input": {"symbol": "EACCES"}, "expect": "permission_denied"},
-    {"id": "errno_eperm", "kind": "errno", "pair": "errno_wsaeaccess", "platform": "posix", "input": {"symbol": "EPERM"}, "expect": "permission_denied"},
+    {"id": "errno_eacces", "kind": "errno", "pair": "errno_wsaeacces", "platform": "posix", "input": {"symbol": "EACCES"}, "expect": "permission_denied"},
+    {"id": "errno_eperm", "kind": "errno", "pair": "errno_wsaeacces", "platform": "posix", "input": {"symbol": "EPERM"}, "expect": "permission_denied"},
     {"id": "errno_epipe", "kind": "errno", "pair": "errno_wsaeconnaborted", "platform": "posix", "input": {"symbol": "EPIPE"}, "expect": "unknown", "note": "Deliberately unmapped. A write to a connection the peer already tore down is indistinguishable here from an ordinary shutdown race, and the taxonomy has no broken-pipe token; pinned so its Winsock twin (WSAECONNABORTED) stays unmapped too."},
 
     {"id": "errno_wsaeconnrefused", "kind": "errno", "pair": "errno_econnrefused", "platform": "windows", "input": {"symbol": "WSAECONNREFUSED", "code": 10061}, "expect": "connection_refused"},
@@ -148,7 +161,7 @@
     {"id": "errno_wsaenetunreach", "kind": "errno", "pair": "errno_enetunreach", "platform": "windows", "input": {"symbol": "WSAENETUNREACH", "code": 10051}, "expect": "network_unreachable"},
     {"id": "errno_wsaehostunreach", "kind": "errno", "pair": "errno_ehostunreach", "platform": "windows", "input": {"symbol": "WSAEHOSTUNREACH", "code": 10065}, "expect": "network_unreachable"},
     {"id": "errno_wsaetimedout", "kind": "errno", "pair": "errno_etimedout", "platform": "windows", "input": {"symbol": "WSAETIMEDOUT", "code": 10060}, "expect": "timeout", "note": "Go's syscall.Errno.Timeout on Windows reports true only for its own invented EAGAIN/EWOULDBLOCK/ETIMEDOUT, so this needs an explicit rule or it lands in 'unknown'."},
-    {"id": "errno_wsaeaccess", "kind": "errno", "pair": "errno_eacces", "platform": "windows", "input": {"symbol": "WSAEACCES", "code": 10013}, "expect": "permission_denied", "note": "The Winsock counterpart of errno_eacces: a WFP callout driver or an endpoint-security policy refusing the connect. Go's syscall.Errno.Is maps ERROR_ACCESS_DENIED and its own invented EACCES/EPERM to os.ErrPermission, but not this, so it needs an explicit rule at the permission rung or the same block reports permission_denied on POSIX and 'unknown' on Windows."},
+    {"id": "errno_wsaeacces", "kind": "errno", "pair": "errno_eacces", "platform": "windows", "input": {"symbol": "WSAEACCES", "code": 10013}, "expect": "permission_denied", "note": "The Winsock counterpart of errno_eacces: a WFP callout driver or an endpoint-security policy refusing the connect. Go's syscall.Errno.Is maps ERROR_ACCESS_DENIED and its own invented EACCES/EPERM to os.ErrPermission, but not this, so it needs an explicit rule at the permission rung or the same block reports permission_denied on POSIX and 'unknown' on Windows."},
     {"id": "errno_wsaeconnaborted", "kind": "errno", "pair": "errno_epipe", "platform": "windows", "input": {"symbol": "WSAECONNABORTED", "code": 10053}, "expect": "unknown", "note": "Unmapped on purpose, matching errno_epipe: mapping the Winsock code alone would make the same broken connection report different tokens per platform."},
 
     {"id": "dns_not_found", "kind": "dns", "input": {"subkind": "not_found"}, "expect": "dns_failure"},

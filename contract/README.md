@@ -53,3 +53,9 @@ un-re-vendored copy on the other. The point of the friction is that a deployed
 client's behavior cannot be renegotiated after the fact: a token that changes
 meaning silently re-labels history in the dashboard, and a relay field that
 stops decoding silently narrows which relays a user can reach.
+
+The version is a coordination device between copies, so the rule starts when
+there is a copy to coordinate with: within the pull request that first
+introduces a file — before it has merged or been vendored anywhere — rows are
+still being drafted and are edited in place, at the version they will land on.
+It binds from the first vendoring onward, which is every edit after that point.
