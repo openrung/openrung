@@ -289,6 +289,13 @@ func TestMalformedFlagValuesAreRejected(t *testing.T) {
 	for name, args := range map[string][]string{
 		"identity seed": {"-identity-seed", "not-base64"},
 		"wss fronts":    {"-wss-fronts", "front-a"},
+		// The engine would degrade a hubless auto config to direct; the CLI has
+		// always refused it, because there is nothing to probe against.
+		"auto without a hub": {"-mode", "auto"},
+		// Zero reads to the engine as "advertise the listen port", which would
+		// silently publish the wrong endpoint behind a port mapping.
+		"zero public port":         {"-public-port", "0"},
+		"out-of-range public port": {"-public-port", "70000"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := parseFlags(t, args...).engineConfig(); err == nil {
@@ -327,36 +334,41 @@ func TestConsoleReporterEmitsRegistrationLines(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
 	t.Cleanup(func() { slog.SetDefault(previous) })
 
+	// The broker derives the relay ID from the identity key, so it is the SAME
+	// across a re-registration. Every status below therefore carries one stable
+	// ID, as a real relay's would.
+	const stableID = "relay_8f46f41513ca98ddef91953365e71c85"
+	online := func(registrations uint64) engine.Status {
+		return engine.Status{
+			Phase: engine.PhaseOnline, Transport: relay.TransportDirect,
+			RelayID: stableID, Label: "brisk-otter",
+			PublicHost: "203.0.113.7", PublicPort: 443,
+			Registrations: registrations,
+		}
+	}
+
 	reporter := &consoleReporter{}
 	reporter.observe(engine.Status{Phase: engine.PhaseRegistering})
-	reporter.observe(engine.Status{
-		Phase: engine.PhaseOnline, Transport: relay.TransportDirect,
-		RelayID: "relay_1", Label: "brisk-otter", PublicHost: "203.0.113.7", PublicPort: 443,
-	})
+	reporter.observe(online(1))
 	if got := logged.String(); !strings.Contains(got, "registered relay") ||
-		!strings.Contains(got, "id=relay_1") || !strings.Contains(got, "public=203.0.113.7:443") {
+		!strings.Contains(got, "id="+stableID) || !strings.Contains(got, "public=203.0.113.7:443") {
 		t.Fatalf("registration line = %q, want the deployment-contract fields", got)
 	}
 
 	// A status repeat is not a second registration.
 	logged.Reset()
-	reporter.observe(engine.Status{
-		Phase: engine.PhaseOnline, Transport: relay.TransportDirect,
-		RelayID: "relay_1", Label: "brisk-otter", PublicHost: "203.0.113.7", PublicPort: 443,
-	})
+	reporter.observe(online(1))
 	if logged.Len() != 0 {
 		t.Fatalf("unchanged online status logged %q", logged.String())
 	}
 
-	// A new lease within the same session reports as a re-registration — which
-	// the deployment grep still matches.
+	// A re-registration after an expired lease keeps the same relay ID, so only
+	// the counter marks it. It still reports — as "re-registered relay", which
+	// the deployment grep for "registered relay" also matches.
 	logged.Reset()
-	reporter.observe(engine.Status{
-		Phase: engine.PhaseOnline, Transport: relay.TransportDirect,
-		RelayID: "relay_2", Label: "brisk-otter", PublicHost: "203.0.113.7", PublicPort: 443,
-	})
-	if got := logged.String(); !strings.Contains(got, "re-registered relay") || !strings.Contains(got, "registered relay") {
-		t.Fatalf("re-registration line = %q", got)
+	reporter.observe(online(2))
+	if got := logged.String(); !strings.Contains(got, "re-registered relay") || !strings.Contains(got, "id="+stableID) {
+		t.Fatalf("re-registration line = %q, want it reported despite the unchanged relay ID", got)
 	}
 
 	logged.Reset()
@@ -365,10 +377,18 @@ func TestConsoleReporterEmitsRegistrationLines(t *testing.T) {
 		t.Fatalf("retry line = %q, want the failure surfaced", got)
 	}
 
+	// After a retry the session is new, so its registration reports as one.
+	logged.Reset()
+	reporter.observe(online(3))
+	if got := logged.String(); !strings.Contains(got, "registered relay") || strings.Contains(got, "re-registered") {
+		t.Fatalf("post-retry line = %q, want a fresh registration", got)
+	}
+
 	logged.Reset()
 	reporter.observe(engine.Status{
 		Phase: engine.PhaseOnline, Transport: relay.TransportTunnel,
 		RelayID: "relay_hub_1", PublicHost: "198.51.100.4", PublicPort: 20001,
+		Registrations: 4,
 	})
 	if got := logged.String(); !strings.Contains(got, "relay published via hub") || !strings.Contains(got, "relay_id=relay_hub_1") {
 		t.Fatalf("tunnel line = %q", got)

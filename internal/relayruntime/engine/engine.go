@@ -417,7 +417,14 @@ type Status struct {
 	PublicPort int    `json:"publicPort,omitempty"`
 	LastError  string `json:"lastError,omitempty"`
 	// StartedAtMs is when the engine went online (unix ms), 0 when not online.
-	StartedAtMs       int64  `json:"startedAtMs"`
+	StartedAtMs int64 `json:"startedAtMs"`
+	// Registrations counts successful broker registrations and hub
+	// publications across the engine's lifetime. It increments even when
+	// RelayID does not change — the broker derives the ID from the relay's
+	// identity key, so re-registering after an expired lease returns the same
+	// one — which is why a caller that reports each registration must watch
+	// this rather than diffing RelayID.
+	Registrations     uint64 `json:"registrations"`
 	ActiveConnections int64  `json:"activeConnections"`
 	TotalConnections  uint64 `json:"totalConnections"`
 	// BytesFromClients/BytesToClients count relayed traffic in both directions
@@ -476,6 +483,10 @@ type Engine struct {
 	bytesFrom   atomic.Uint64
 	bytesTo     atomic.Uint64
 	tunnelStats tunnel.TrafficStats
+
+	// registrations counts every successful broker registration and hub
+	// publication, so callers can see a re-registration that kept the same ID.
+	registrations atomic.Uint64
 
 	probeDirect func(context.Context, string, string, string, int, *http.Client) relayruntime.DirectProbeResult
 }
@@ -576,6 +587,7 @@ func (e *Engine) statusLocked() Status {
 		PublicPort:        e.publicPort,
 		LastError:         e.lastErr,
 		StartedAtMs:       startedMs,
+		Registrations:     e.registrations.Load(),
 		ActiveConnections: e.active.Load() + ts.ActiveStreams,
 		TotalConnections:  e.total.Load() + ts.TotalStreams,
 		BytesFromClients:  e.bytesFrom.Load() + ts.BytesFromClients,
@@ -1256,6 +1268,7 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 	}
 	e.logf("registered with the broker as %q (%s) at %s", desc.Label, desc.ID,
 		net.JoinHostPort(desc.PublicHost, strconv.Itoa(desc.PublicPort)))
+	e.registrations.Add(1)
 	e.setStatus(func() {
 		e.phase = PhaseOnline
 		e.transport = relay.TransportDirect
@@ -1336,6 +1349,9 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 				}
 				desc = updated
 				e.logf("re-registered with the broker as %q (%s)", desc.Label, desc.ID)
+				// The ID is derived from the identity key and so is unchanged
+				// here; the counter is what tells a caller this happened.
+				e.registrations.Add(1)
 				e.setStatus(func() { e.relayID = desc.ID })
 			}
 		}
@@ -1448,6 +1464,7 @@ func (e *Engine) runTunnelSession(ctx context.Context, cfg Config, label string,
 		Stats:      &e.tunnelStats,
 		OnRegistered: func(ack tunnel.HelloAckFrame) {
 			e.logf("relay published via hub at %s", net.JoinHostPort(ack.PublicHost, strconv.Itoa(ack.PublicPort)))
+			e.registrations.Add(1)
 			e.setStatus(func() {
 				e.phase = PhaseOnline
 				e.transport = relay.TransportTunnel

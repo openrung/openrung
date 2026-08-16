@@ -180,6 +180,21 @@ func (f *cliFlags) register(fs *flag.FlagSet, identitySeed string) {
 // a malformed flag value; every posture rule (foundation, WSS, mode) belongs to
 // the engine and is enforced by Start.
 func (f *cliFlags) engineConfig() (engine.Config, error) {
+	mode := normalizeMode(f.mode, f.tunnel, f.hubAddr)
+	// The engine lets a hubless auto config degrade to direct, which suits a
+	// GUI whose user has not configured a hub yet. An operator who typed
+	// -mode auto asked for reachability probing, so say it cannot run rather
+	// than silently serving direct. (normalizeMode only returns auto for an
+	// explicit request or a configured hub, so this catches only the former.)
+	if mode == engine.ModeAuto && f.hubAddr == "" {
+		return engine.Config{}, fmt.Errorf("hub is required in auto mode for reachability probing (set -hub or use -mode direct)")
+	}
+	// Zero reads to the engine as "advertise the listen port", which is a
+	// sensible default for a programmatic caller but never what a flag that
+	// defaults to 443 meant.
+	if f.publicPort < 1 || f.publicPort > 65535 {
+		return engine.Config{}, fmt.Errorf("public-port must be between 1 and 65535")
+	}
 	fronts, err := parseWSSFrontsFlag(f.wssFronts)
 	if err != nil {
 		return engine.Config{}, fmt.Errorf("invalid wss-fronts: %w", err)
@@ -214,7 +229,7 @@ func (f *cliFlags) engineConfig() (engine.Config, error) {
 		XrayPath:            f.xrayPath,
 		ListenHost:          f.listenHost,
 		ListenPort:          f.listenPort,
-		Mode:                normalizeMode(f.mode, f.tunnel, f.hubAddr),
+		Mode:                mode,
 		HubAddr:             f.hubAddr,
 		HubHTTPURL:          f.hubHTTP,
 		HubCertFingerprint:  f.hubCertFingerprint,
@@ -301,30 +316,34 @@ func boolEnv(key string) bool {
 // foundation-wss-host.sh poll container logs for "registered relay", so that
 // message is a deployment contract rather than decoration.
 type consoleReporter struct {
-	mu        sync.Mutex
-	onlineID  string
-	lastPhase engine.Phase
+	mu sync.Mutex
+	// registrations is the engine's count as last seen while online. The relay
+	// ID cannot stand in for it: the broker derives the ID from the identity
+	// key, so re-registering after an expired lease returns the same one and a
+	// diff of RelayID would report nothing.
+	registrations uint64
+	lastPhase     engine.Phase
 }
 
 func (c *consoleReporter) observe(status engine.Status) {
 	c.mu.Lock()
-	previousID, previousPhase := c.onlineID, c.lastPhase
+	previous, previousPhase := c.registrations, c.lastPhase
 	// Leaving online ends the registration: whatever comes back is a fresh one,
 	// not a renewal of the lease that just lapsed.
-	c.onlineID = ""
+	c.registrations = 0
 	if status.Phase == engine.PhaseOnline {
-		c.onlineID = status.RelayID
+		c.registrations = status.Registrations
 	}
 	c.lastPhase = status.Phase
 	c.mu.Unlock()
 
 	switch {
-	case status.Phase == engine.PhaseOnline && status.RelayID != "" && status.RelayID != previousID:
+	case status.Phase == engine.PhaseOnline && status.Registrations > previous:
 		public := net.JoinHostPort(status.PublicHost, strconv.Itoa(status.PublicPort))
 		switch {
 		case status.Transport == relay.TransportTunnel:
 			slog.Info("relay published via hub", "relay_id", status.RelayID, "label", status.Label, "public", public)
-		case previousID == "":
+		case previous == 0:
 			slog.Info("registered relay", "id", status.RelayID, "label", status.Label, "public", public)
 		default:
 			slog.Info("re-registered relay", "id", status.RelayID, "label", status.Label, "public", public)

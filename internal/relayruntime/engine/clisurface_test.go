@@ -330,6 +330,68 @@ func TestValidateRejectsUnusableFlagValuesAtStart(t *testing.T) {
 	}
 }
 
+// A real broker derives the relay ID from the identity key, so re-registering
+// after an expired lease returns the SAME ID. Status.Registrations is then the
+// only signal that it happened — a caller diffing RelayID would see nothing.
+func TestReRegistrationIncrementsTheCounterWithAStableRelayID(t *testing.T) {
+	const stableID = "relay_stable"
+	var registers atomic.Int32
+	notFoundOnce := make(chan struct{}, 1)
+	notFoundOnce <- struct{}{}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/relays/register" {
+			registers.Add(1)
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(relay.Descriptor{ID: stableID, PublicHost: "203.0.113.7", PublicPort: 443})
+			return
+		}
+		select {
+		case <-notFoundOnce:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"relay not found"}`))
+		default:
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}
+	}))
+	defer ts.Close()
+
+	eng := New(Config{
+		BrokerURL:   ts.URL,
+		Mode:        ModeDirect,
+		PublicHost:  "203.0.113.7",
+		ListenPort:  freePort(t),
+		Identity:    testIdentity,
+		DisableXray: true,
+		ConfigDir:   t.TempDir(),
+	}, Events{})
+	cfg := eng.currentConfig()
+	cfg.HeartbeatInterval = 50 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = eng.runDirectSession(ctx, cfg.brokerClient(), cfg, "stable-relay", testIdentity, "203.0.113.7", directOnlyListenHost)
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	eventually(t, 5*time.Second, "initial registration", func() bool {
+		return eng.Status().Registrations == 1
+	})
+	eventually(t, 5*time.Second, "re-registration after the pruned lease", func() bool {
+		return eng.Status().Registrations == 2
+	})
+	if got := eng.Status().RelayID; got != stableID {
+		t.Fatalf("relay ID = %q, want it unchanged at %q across the re-registration", got, stableID)
+	}
+	if got := registers.Load(); got != 2 {
+		t.Fatalf("registrations sent = %d, want 2", got)
+	}
+}
+
 // A heartbeat failure that is not the broker's pruned-relay 404 is transient:
 // the session keeps its lease and retries on the next tick rather than
 // registering a second relay row.
