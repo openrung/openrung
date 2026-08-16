@@ -30,6 +30,7 @@ const suiteName = "go"
 
 type classificationVectors struct {
 	Version       int      `json:"version"`
+	Suites        []string `json:"suites"`
 	Tokens        []string `json:"tokens"`
 	TokenPatterns []string `json:"token_patterns"`
 	Kinds         map[string]struct {
@@ -163,6 +164,51 @@ func TestClassificationVectorsCoverage(t *testing.T) {
 		if _, used := kindsUsed[kind]; !used {
 			t.Errorf("kind %q is described but has no vector", kind)
 		}
+	}
+}
+
+// TestClassificationVectorsSuiteDeclaration checks that the suites this file
+// says consume it are exactly the suites its rows are claimed by.
+//
+// A suite named in the header but claimed by no row is the failure mode worth
+// guarding: someone stands up that suite, it iterates the rows, finds none
+// naming it, asserts nothing, and reports green forever — a vacuous pass that
+// looks like coverage. The reverse, a row claimed by an undeclared suite, means
+// the header undercounts its consumers and a change would not be routed to all
+// of them.
+func TestClassificationVectorsSuiteDeclaration(t *testing.T) {
+	vectors := loadClassificationVectors(t)
+	if len(vectors.Suites) == 0 {
+		t.Fatal("the file declares no consuming suites")
+	}
+
+	claimed := make(map[string]int, len(vectors.Suites))
+	claim := func(suites []string) {
+		for _, suite := range suites {
+			claimed[suite]++
+		}
+	}
+	for _, testCase := range vectors.Cases {
+		if len(testCase.Suites) > 0 {
+			claim(testCase.Suites)
+			continue
+		}
+		claim(vectors.Kinds[testCase.Kind].Suites)
+	}
+
+	for _, suite := range vectors.Suites {
+		if claimed[suite] == 0 {
+			t.Errorf("suite %q is declared as a consumer but no row is claimed by it — it would iterate this file, "+
+				"assert nothing, and pass vacuously; either give it rows or drop it from \"suites\"", suite)
+		}
+	}
+	for suite := range claimed {
+		if !slices.Contains(vectors.Suites, suite) {
+			t.Errorf("rows are claimed by suite %q, which is not declared in \"suites\"", suite)
+		}
+	}
+	if !slices.Contains(vectors.Suites, suiteName) {
+		t.Errorf("this suite (%q) runs these vectors but is not declared in \"suites\"", suiteName)
 	}
 }
 
