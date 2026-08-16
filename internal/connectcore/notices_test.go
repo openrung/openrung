@@ -196,6 +196,45 @@ func TestHealthLoopEmitsProbeNotices(t *testing.T) {
 	}
 }
 
+// A prolonged local outage keeps the internal failure counter growing past the
+// threshold (the network-alive gate keeps refusing the failover); the notice
+// reads "N of threshold", so the notified count must stay capped there.
+func TestHealthLoopCapsNotifiedFailuresAtThreshold(t *testing.T) {
+	s := New()
+	sink := &testSink{}
+	s.Sink = sink
+	s.healthTick = time.Millisecond
+	s.healthProbe = func(context.Context, int) error { return errors.New("probe timeout") }
+	// The network stays down for several over-threshold sweeps, then recovers
+	// so the loop finally reports the failover trigger and exits.
+	var networkChecks int32
+	s.checkNetworkAlive = func(context.Context, []string) bool {
+		return atomic.AddInt32(&networkChecks, 1) > 3
+	}
+
+	failCh := make(chan error, 1)
+	go s.healthLoop(context.Background(), 1080, nil, failCh)
+	select {
+	case <-failCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("health loop never reported the failover trigger")
+	}
+
+	got := sink.noticesOf(NoticeHealthProbe)
+	if len(got) < HealthFailureThreshold+3 {
+		t.Fatalf("health notices = %d, want the below-threshold sweeps plus the outage sweeps", len(got))
+	}
+	for i, notice := range got {
+		if notice.Failures > notice.Threshold {
+			t.Fatalf("notice %d exceeds the threshold: %+v", i, notice)
+		}
+	}
+	last := got[len(got)-1]
+	if last.Failures != HealthFailureThreshold || last.Reason != "" {
+		t.Fatalf("failover-trigger notice = %+v", last)
+	}
+}
+
 // TestEngineTelemetryCarriesCLIPlatformLabel is the local-broker acceptance
 // check for the distinct CLI platform label: with Engine.Platform set to
 // PlatformCLI, every telemetry event that reaches the (loopback) broker

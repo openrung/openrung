@@ -337,6 +337,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case engineStateMsg:
 		m.state = connectcore.State(msg)
 		switch m.state.Status {
+		case connectcore.StatusPreparing:
+			// Only a fresh ConnectTarget passes through preparing (a failover
+			// recovery re-promotes via connecting), so this is where a genuinely
+			// new session starts: drop the previous session's activity notice.
+			m.activity = connectcore.Notice{}
+			m.activityAt = time.Time{}
 		case connectcore.StatusConnected:
 			// Stamp only a fresh session: an automatic failover re-promotes
 			// through connecting → connected without ending the telemetry

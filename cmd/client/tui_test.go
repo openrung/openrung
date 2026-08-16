@@ -384,6 +384,13 @@ func TestEngineNoticesDriveActivityAndHealthRows(t *testing.T) {
 	if m.activity.Kind == "" {
 		t.Fatal("activity notice cleared on disconnect")
 	}
+
+	// A genuinely new connection (preparing — a failover recovery never passes
+	// through it) must not display the previous session's events.
+	m, _ = update(t, m, engineStateMsg(connectcore.State{Status: connectcore.StatusPreparing}))
+	if m.activity.Kind != "" {
+		t.Fatalf("old session's activity leaked into the new connection: %+v", m.activity)
+	}
 }
 
 func TestRecentsRenderInRelaysView(t *testing.T) {
@@ -438,6 +445,18 @@ func TestShellHelperActionRequiresConnection(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Fatalf("settings view missing %q:\n%s", want, view)
 		}
+	}
+
+	// After disconnect the enable command would point at a dead proxy, so it
+	// disappears; the restore command stays — that is exactly when a shell
+	// still carrying our variables needs it.
+	m, _ = update(t, m, engineStateMsg(connectcore.State{Status: connectcore.StatusDisconnected}))
+	view = m.View()
+	if strings.Contains(view, "openrung_proxy_on") {
+		t.Fatalf("enable command still shown while disconnected:\n%s", view)
+	}
+	if !strings.Contains(view, "openrung_proxy_off") {
+		t.Fatalf("restore command hidden while disconnected:\n%s", view)
 	}
 }
 

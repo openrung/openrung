@@ -428,12 +428,18 @@ func (m tuiModel) settingsView() string {
 		rows = append(rows, cursor+labelStyle.Width(18).Render(field.name)+" "+value)
 	}
 	if m.settings.shellOK {
-		// Copyable POSIX shell commands, exactly what desktop's Settings offers:
-		// the enable line preserves existing proxy variables and unset state, the
-		// restore line puts them back.
+		// Copyable POSIX shell commands, exactly what desktop's Settings offers.
+		// The enable line points a shell at the local endpoint, which only
+		// answers while connected, so it is shown only then (desktop disables
+		// its copy button the same way); the restore line stays visible — its
+		// whole purpose is cleaning up a shell after the tunnel is gone.
+		rows = append(rows, "")
+		if m.state.Status == connectcore.StatusConnected {
+			rows = append(rows, "  "+labelStyle.Width(18).Render("Enable in a shell")+" "+m.settings.shell.EnableCommand)
+		} else {
+			rows = append(rows, "  "+labelStyle.Width(18).Render("Enable in a shell")+" "+helpStyle.Render("available while connected"))
+		}
 		rows = append(rows,
-			"",
-			"  "+labelStyle.Width(18).Render("Enable in a shell")+" "+m.settings.shell.EnableCommand,
 			"  "+labelStyle.Width(18).Render("Restore that shell")+" "+m.settings.shell.DisableCommand,
 			"  "+helpStyle.Render("run the restore command after disconnect, failure, quit, or crash"),
 		)

@@ -267,8 +267,11 @@ func (s *Engine) healthLoop(ctx context.Context, port int, fronts []string, fail
 			return
 		}
 		failures++
+		// The internal count keeps growing during a prolonged local outage;
+		// the notice reads "N of threshold", so cap what hosts are shown.
+		notified := min(failures, HealthFailureThreshold)
 		if failures < HealthFailureThreshold {
-			s.notify(Notice{Kind: NoticeHealthProbe, Failures: failures, Threshold: HealthFailureThreshold})
+			s.notify(Notice{Kind: NoticeHealthProbe, Failures: notified, Threshold: HealthFailureThreshold})
 			continue
 		}
 		if !s.networkAlive(ctx, fronts) {
@@ -277,12 +280,12 @@ func (s *Engine) healthLoop(ctx context.Context, port int, fronts []string, fail
 			}
 			s.appendLog("health check failed but the network looks down; assuming a local outage, not failing over")
 			s.notify(Notice{
-				Kind: NoticeHealthProbe, Failures: failures, Threshold: HealthFailureThreshold,
+				Kind: NoticeHealthProbe, Failures: notified, Threshold: HealthFailureThreshold,
 				Reason: "network looks down; assuming a local outage, not failing over",
 			})
 			continue
 		}
-		s.notify(Notice{Kind: NoticeHealthProbe, Failures: failures, Threshold: HealthFailureThreshold})
+		s.notify(Notice{Kind: NoticeHealthProbe, Failures: notified, Threshold: HealthFailureThreshold})
 		select {
 		case failCh <- fmt.Errorf("tunnel health probe failed %d times: %w", failures, err):
 		default:
