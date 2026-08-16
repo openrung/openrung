@@ -419,11 +419,15 @@ type Engine struct {
 	cfg    Config
 	events Events
 
-	// identityMu serializes prepareIdentity end-to-end. Generation cannot run
-	// under mu (Reality keys shell out to xray, and OnIdentity is a caller
-	// callback), so without this lock two concurrent callers — renders, or a
-	// render racing a starting session — could each generate a different
-	// identity for the same missing fields and the last writeback would win.
+	// identityMu serializes prepareIdentity end-to-end, and UpdateConfig with
+	// it. Generation cannot run under mu (Reality keys shell out to xray, and
+	// OnIdentity is a caller callback), so without this lock two concurrent
+	// callers — renders, or a render racing a starting session — could each
+	// generate a different identity for the same missing fields, and a
+	// preparation in flight across an UpdateConfig would write its stale
+	// result over the just-installed configuration. Lock order: identityMu
+	// before mu; Events callbacks run with identityMu held and so must not
+	// call UpdateConfig.
 	identityMu sync.Mutex
 
 	cancel context.CancelFunc
@@ -506,8 +510,14 @@ func (e *Engine) Running() bool {
 }
 
 // UpdateConfig replaces the engine configuration. It only applies while
-// stopped; calling it on a running engine returns an error.
+// stopped; calling it on a running engine returns an error. It waits for any
+// in-flight identity preparation (a concurrent RenderXrayConfig generating
+// keys) to finish first, so the installed configuration always wins: without
+// that, the preparation's writeback would overwrite the new identity with one
+// generated from the replaced config.
 func (e *Engine) UpdateConfig(cfg Config) error {
+	e.identityMu.Lock()
+	defer e.identityMu.Unlock()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.cancel != nil {

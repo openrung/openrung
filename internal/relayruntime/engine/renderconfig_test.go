@@ -3,8 +3,12 @@ package engine
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -165,6 +169,80 @@ func TestConcurrentRendersConvergeOnOneIdentity(t *testing.T) {
 	if last.ClientID != winner.ClientID || last.ShortID != winner.ShortID {
 		t.Fatalf("registered identity (%s/%s) does not match the rendered one (%s/%s)",
 			last.ClientID, last.ShortID, winner.ClientID, winner.ShortID)
+	}
+}
+
+// UpdateConfig must wait for an in-flight identity preparation: without the
+// shared lock, a render generating keys across an UpdateConfig would write
+// its stale identity back over the just-installed configuration.
+func TestUpdateConfigWaitsForInFlightIdentityGeneration(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake xray requires a POSIX shell")
+	}
+
+	dir := t.TempDir()
+	startedPath := filepath.Join(dir, "started")
+	releasePath := filepath.Join(dir, "release")
+	fakeXray := filepath.Join(dir, "xray")
+	script := fmt.Sprintf(`#!/bin/sh
+touch %q
+while [ ! -e %q ]; do sleep 0.05; done
+echo "Private key: generated-private-key"
+echo "Public key: generated-public-key"
+`, startedPath, releasePath)
+	if err := os.WriteFile(fakeXray, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake xray: %v", err)
+	}
+
+	// Missing Reality keys force prepareIdentity through the fake xray, which
+	// holds the identity lock until the release file appears.
+	partial := testIdentity
+	partial.RealityPrivateKey = ""
+	partial.RealityPublicKey = ""
+	eng := New(Config{
+		BrokerURL: "http://127.0.0.1:1",
+		Mode:      ModeDirect,
+		XrayPath:  fakeXray,
+		Identity:  partial,
+	}, Events{})
+
+	renderDone := make(chan error, 1)
+	go func() {
+		_, err := eng.RenderXrayConfig()
+		renderDone <- err
+	}()
+	eventually(t, 5*time.Second, "identity generation in flight", func() bool {
+		_, err := os.Stat(startedPath)
+		return err == nil
+	})
+
+	updateDone := make(chan error, 1)
+	go func() {
+		updateDone <- eng.UpdateConfig(Config{
+			BrokerURL: "http://127.0.0.1:1",
+			Mode:      ModeDirect,
+			XrayPath:  fakeXray,
+			Identity:  testIdentity,
+		})
+	}()
+	select {
+	case err := <-updateDone:
+		t.Fatalf("UpdateConfig returned (%v) while identity generation was still in flight", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	if err := os.WriteFile(releasePath, []byte("go"), 0o600); err != nil {
+		t.Fatalf("release fake xray: %v", err)
+	}
+	if err := <-renderDone; err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if err := <-updateDone; err != nil {
+		t.Fatalf("UpdateConfig: %v", err)
+	}
+
+	if got := eng.currentConfig().Identity; got != testIdentity {
+		t.Fatalf("identity after UpdateConfig = %+v, want the installed testIdentity (a stale render writeback overwrote it)", got)
 	}
 }
 
