@@ -265,5 +265,9 @@ concern now, and `-mtu` applies only to a TUN device.
 
 Everything platform-specific reaches the engine through the narrow interfaces
 in `internal/connectcore/interfaces.go`, so Linux, macOS, and Windows share one
-implementation. Windows may need additional install checks around the tunnel
-driver sing-box uses for TUN mode.
+implementation.
+
+Windows TUN mode is disabled pending graceful shutdown support, as described
+under [Windows](#windows) above; proxy mode is unaffected. Re-enabling it needs
+a way to ask sing-box to stop and unwind its routes and DNS, and only then the
+install checks around the tunnel driver it uses.
