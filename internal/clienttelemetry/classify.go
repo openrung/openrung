@@ -22,6 +22,31 @@ import (
 // so the classifier never emits a value the broker would reject.
 const detailMaxBytes = 256
 
+// Winsock error numbers, matched alongside the syscall.E* names below.
+//
+// Go's syscall package defines ECONNREFUSED and friends on Windows as invented
+// APPLICATION_ERROR values (1<<29 and up), while the net package surfaces the
+// raw Winsock numbers from connectex/WSARecv untranslated. Matching only the E*
+// names therefore compiles cleanly on Windows and never fires, so every Windows
+// socket failure degraded to "unknown". wsscore solves this with a build-tagged
+// constant set (wsscore/failure_posix.go, wsscore/failure_windows.go); this
+// classifier maps the same conditions to the same tokens.
+//
+// The numbers are matched unconditionally rather than behind a build tag: they
+// sit far above every errno any POSIX kernel returns (Linux tops out at 133,
+// darwin at 106), so they cannot collide with a real POSIX errno, and matching
+// them on every platform is what lets the cross-language contract vectors
+// exercise the Windows rows in CI on Linux and macOS. They are spelled as
+// literals because syscall exports only WSAECONNRESET by name, and only on
+// Windows.
+const (
+	wsaeNetUnreach  = syscall.Errno(10051) // WSAENETUNREACH
+	wsaeConnReset   = syscall.Errno(10054) // WSAECONNRESET
+	wsaeTimedOut    = syscall.Errno(10060) // WSAETIMEDOUT
+	wsaeConnRefused = syscall.Errno(10061) // WSAECONNREFUSED
+	wsaeHostUnreach = syscall.Errno(10065) // WSAEHOSTUNREACH
+)
+
 // httpStatusError is implemented by broker errors that carry an HTTP status
 // code (internal/client.BrokerStatusError, discovery.RateLimitedError). Matching
 // on this interface keeps the classifier free of any fetch-package import.
@@ -83,14 +108,19 @@ func ClassifyError(err error) string {
 	}
 
 	// Syscall-level network errors (dial/read failures wrap a syscall.Errno).
+	// Each case pairs the POSIX errno with its Winsock number; on Windows only
+	// the latter ever arrives. WSAECONNABORTED (10053) is deliberately absent:
+	// its closest POSIX analogue is EPIPE, which classifies as "unknown" here,
+	// and mapping one without the other would make the same broken connection
+	// report different tokens per platform.
 	var errno syscall.Errno
 	if errors.As(err, &errno) {
 		switch errno {
-		case syscall.ECONNREFUSED:
+		case syscall.ECONNREFUSED, wsaeConnRefused:
 			return "connection_refused"
-		case syscall.ECONNRESET:
+		case syscall.ECONNRESET, wsaeConnReset:
 			return "connection_reset"
-		case syscall.ENETUNREACH, syscall.EHOSTUNREACH:
+		case syscall.ENETUNREACH, syscall.EHOSTUNREACH, wsaeNetUnreach, wsaeHostUnreach:
 			return "network_unreachable"
 		}
 	}
@@ -130,12 +160,19 @@ func ClassifyError(err error) string {
 	}
 
 	// Generic i/o timeout, after the typed checks above so a refused/reset dial
-	// (Timeout()==false) is never mislabeled.
+	// (Timeout()==false) is never mislabeled, and after the DNS check so a
+	// name-lookup timeout keeps the more actionable token.
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
 		return "timeout"
 	}
 	if os.IsTimeout(err) {
+		return "timeout"
+	}
+	// syscall.Errno.Timeout on Windows reports true only for Go's invented
+	// EAGAIN/EWOULDBLOCK/ETIMEDOUT, so a real WSAETIMEDOUT reaches neither check
+	// above and needs naming here (as it does in wsscore's timeout rule).
+	if errno == wsaeTimedOut {
 		return "timeout"
 	}
 
