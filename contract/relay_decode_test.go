@@ -245,11 +245,12 @@ func checkRelays(t *testing.T, relays []relay.Descriptor, expect relayListExpect
 		checkFronts(t, index, got.WSSFronts, want.WSSFronts)
 
 		// An absent or unrecognized class is the volunteer class; the decoded
-		// field stays exactly what the wire carried.
-		effective, err := relay.NormalizeNodeClass(got.NodeClass)
-		if err != nil {
-			t.Errorf("relay %d node_class %q: %v", index, got.NodeClass, err)
-		} else if effective != want.EffectiveNodeClass {
+		// field stays exactly what the wire carried. This is the read-side rule
+		// (relay.EffectiveNodeClass), not the ingest-side validator
+		// relay.NormalizeNodeClass, which rejects an unrecognized class instead
+		// of degrading it — using that one here would make the harness fail the
+		// very forward-compatibility rows the contract requires.
+		if effective := relay.EffectiveNodeClass(got.NodeClass); effective != want.EffectiveNodeClass {
 			t.Errorf("relay %d effective node_class = %q, want %q", index, effective, want.EffectiveNodeClass)
 		}
 	}

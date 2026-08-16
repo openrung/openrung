@@ -360,9 +360,31 @@ type ErrorResponse struct {
 	Error string `json:"error"`
 }
 
+// EffectiveNodeClass reads the class a client should act on from the value in
+// a signed descriptor. Only the exact literal NodeClassFoundation grants the
+// foundation class; an absent, unrecognized, or differently-cased value is the
+// volunteer class.
+//
+// This is the read-side counterpart of NormalizeNodeClass and deliberately
+// behaves differently. NormalizeNodeClass validates operator input at ingest,
+// where an unrecognized class is an operator error worth rejecting, and where
+// trimming and lowercasing are a convenience. Here the value has already been
+// through that gate and is covered by the relay-list signature, so the only
+// question left is what to do with a value this client does not know — and the
+// answer has to be the less-privileged class, since the foundation class gates
+// the WSS transport. Strictness is the point: a value that merely resembles
+// "foundation" must not be read as it.
+func EffectiveNodeClass(class string) string {
+	if class == NodeClassFoundation {
+		return NodeClassFoundation
+	}
+	return NodeClassVolunteer
+}
+
 // NormalizeNodeClass trims, lowercases, and validates an operator-supplied
 // node class. Empty means "unstated" and normalizes to NodeClassVolunteer, so
-// every descriptor downstream carries a concrete class.
+// every descriptor downstream carries a concrete class. It is the ingest-side
+// gate; clients reading a descriptor want EffectiveNodeClass instead.
 func NormalizeNodeClass(class string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(class)) {
 	case "", NodeClassVolunteer:

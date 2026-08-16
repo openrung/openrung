@@ -115,7 +115,7 @@ func supportedWSSFronts(candidate relay.Descriptor) []relay.WSSFrontDescriptor {
 		transport = relay.TransportDirect
 	}
 	if transport != relay.TransportDirect ||
-		candidate.NodeClass != relay.NodeClassFoundation ||
+		relay.EffectiveNodeClass(candidate.NodeClass) != relay.NodeClassFoundation ||
 		candidate.ExitMode != relay.ExitModeDirect ||
 		candidate.PublicPort != 443 {
 		return nil
