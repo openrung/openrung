@@ -1,0 +1,536 @@
+{
+  "version": 1,
+  "contract": "openrung-relay-decode-v1",
+  "suites": ["go", "kotlin", "swift", "ts"],
+  "comment": "Golden cross-repo vectors for decoding a signed relay directory into a client relay model, and for the usability filter applied to it. Consumed by the four suites named in 'suites' — Go (contract/relay_decode_test.go, against brokerapi's wire validation, internal/relay's model, and internal/client's selector) in this repo, and Kotlin, Swift, and Jest (src/model/relay.ts) in openrung-mobile-app, which vendors this file and checks the vendored copy against a pinned openrung ref. A decoder that drops or renames a field here silently changes which relays a deployed client will try, so an existing row may only change together with a bump of 'version' here and in every vendored copy, so the change lands in all four suites at once.",
+  "signing_note": "The bodies carry the in-body signing envelope (not_after, key_id, channel, limit) because those fields live INSIDE the signed body — in plain headers an attacker could rewrite them. They carry no real signature: the production signing key is offline, so no vector can be validly signed. Signature verification is brokerapi's own concern and is covered by its tests; these vectors pin what a client does with a body that has already been verified, which is exactly the boundary the mobile clients see (native brokerapi verifies, then hands the projected snapshot to Kotlin/Swift/TypeScript).",
+  "expectation_note": "In 'expect', null means the field is absent from the wire and the decoder must produce its own no-value representation (Go's zero value, TypeScript's undefined, a Kotlin/Swift null). 'effective_node_class' is the interpretation rule rather than a decoded field, and it is deliberately strict: only the exact literal 'foundation' is the foundation class, and an absent, unrecognized, or differently-cased value is 'volunteer'. That direction is load-bearing — the foundation class gates the WSS transport — so a value that merely resembles 'foundation' must never be read as it. The rule applies when reading a signed descriptor; do not implement it with an ingest-side validator that rejects unrecognized classes instead of degrading them (in this repo that is relay.NormalizeNodeClass, and relay.EffectiveNodeClass is the read-side rule). A suite asserts the expected keys its own model carries and ignores the rest — the TypeScript model, for one, exposes the version only under the legacy 'volunteer_version' name. 'relay_version' and 'volunteer_version' always carry the same value on the wire today; a body with only 'relay_version' is rejected outright (see the invalid case 'relay_version_without_alias'), so dropping the legacy alias is a breaking wire change, not a decoder change, and that is why no valid case pins a precedence between them.",
+  "cases": [
+    {
+      "id": "api_two_relays",
+      "description": "An ordinary signed API-channel page: one direct Foundation relay with geo and a WSS front, one tunnel volunteer relay behind the hub with punch fields, no geo, and only the legacy version alias.",
+      "body": {
+        "count": 2,
+        "server_time": "2026-08-17T12:00:00Z",
+        "not_after": "2026-08-17T12:30:00Z",
+        "key_id": "0f1a2b3c4d5e6f70",
+        "channel": "api",
+        "limit": 5,
+        "relays": [
+          {
+            "id": "relay_0883de4588ee3af0f925ec7e3ce18aa7",
+            "label": "kind-otter",
+            "public_host": "203.0.113.10",
+            "public_port": 443,
+            "city": "Seoul",
+            "country": "South Korea",
+            "country_code": "KR",
+            "latitude": 37.5665,
+            "longitude": 126.978,
+            "node_class": "foundation",
+            "protocol": "vless-reality-vision",
+            "client_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+            "reality_public_key": "hSN7wJowfoOdmnbRDW9BC9BXGCyPTM6PqFOQqUFvvXo",
+            "short_id": "0123abcd",
+            "server_name": "www.cloudflare.com",
+            "flow": "xtls-rprx-vision",
+            "exit_mode": "direct",
+            "max_sessions": 64,
+            "max_mbps": 200,
+            "relay_version": "0.4.1",
+            "volunteer_version": "0.4.1",
+            "transport": "direct",
+            "wss_fronts": [
+              {"id": "front-a", "url": "https://cdn-edge-a.example.net/api/v1/wss-bridge", "protocol_version": 1}
+            ],
+            "registered_at": "2026-08-17T09:00:00Z",
+            "last_heartbeat_at": "2026-08-17T11:59:00Z",
+            "expires_at": "2026-08-17T12:10:00Z"
+          },
+          {
+            "id": "relay_9c1f4d2ba07e5188cc31a6d0f4e27b53",
+            "public_host": "198.51.100.20",
+            "public_port": 8443,
+            "node_class": "volunteer",
+            "protocol": "vless-reality-vision",
+            "client_id": "b1e9f0c2-3d4a-4b5c-8d6e-7f8091a2b3c4",
+            "reality_public_key": "Q1RKb2hOZFhKbGJHRjVJRlJsYzNRZ1MyVjVJREF3TVRJ",
+            "short_id": "beef1234",
+            "server_name": "www.microsoft.com",
+            "flow": "xtls-rprx-vision",
+            "exit_mode": "direct",
+            "max_sessions": 8,
+            "max_mbps": 20,
+            "volunteer_version": "0.3.9",
+            "transport": "tunnel",
+            "punch_capable": true,
+            "punch_endpoint": "https://198.51.100.20:9444",
+            "registered_at": "2026-08-17T10:30:00Z",
+            "last_heartbeat_at": "2026-08-17T11:58:00Z",
+            "expires_at": "2026-08-17T12:05:00Z"
+          }
+        ]
+      },
+      "expect": {
+        "count": 2,
+        "server_time": "2026-08-17T12:00:00Z",
+        "not_after": "2026-08-17T12:30:00Z",
+        "key_id": "0f1a2b3c4d5e6f70",
+        "channel": "api",
+        "limit": 5,
+        "relays": [
+          {
+            "id": "relay_0883de4588ee3af0f925ec7e3ce18aa7",
+            "label": "kind-otter",
+            "public_host": "203.0.113.10",
+            "public_port": 443,
+            "city": "Seoul",
+            "country": "South Korea",
+            "country_code": "KR",
+            "latitude": 37.5665,
+            "longitude": 126.978,
+            "node_class": "foundation",
+            "effective_node_class": "foundation",
+            "protocol": "vless-reality-vision",
+            "client_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+            "reality_public_key": "hSN7wJowfoOdmnbRDW9BC9BXGCyPTM6PqFOQqUFvvXo",
+            "short_id": "0123abcd",
+            "server_name": "www.cloudflare.com",
+            "flow": "xtls-rprx-vision",
+            "exit_mode": "direct",
+            "max_sessions": 64,
+            "max_mbps": 200,
+            "relay_version": "0.4.1",
+            "volunteer_version": "0.4.1",
+            "transport": "direct",
+            "punch_capable": null,
+            "punch_endpoint": null,
+            "wss_fronts": [
+              {"id": "front-a", "url": "https://cdn-edge-a.example.net/api/v1/wss-bridge", "protocol_version": 1}
+            ],
+            "registered_at": "2026-08-17T09:00:00Z",
+            "last_heartbeat_at": "2026-08-17T11:59:00Z",
+            "expires_at": "2026-08-17T12:10:00Z"
+          },
+          {
+            "id": "relay_9c1f4d2ba07e5188cc31a6d0f4e27b53",
+            "label": null,
+            "public_host": "198.51.100.20",
+            "public_port": 8443,
+            "city": null,
+            "country": null,
+            "country_code": null,
+            "latitude": null,
+            "longitude": null,
+            "node_class": "volunteer",
+            "effective_node_class": "volunteer",
+            "protocol": "vless-reality-vision",
+            "client_id": "b1e9f0c2-3d4a-4b5c-8d6e-7f8091a2b3c4",
+            "reality_public_key": "Q1RKb2hOZFhKbGJHRjVJRlJsYzNRZ1MyVjVJREF3TVRJ",
+            "short_id": "beef1234",
+            "server_name": "www.microsoft.com",
+            "flow": "xtls-rprx-vision",
+            "exit_mode": "direct",
+            "max_sessions": 8,
+            "max_mbps": 20,
+            "relay_version": "0.3.9",
+            "volunteer_version": "0.3.9",
+            "transport": "tunnel",
+            "punch_capable": true,
+            "punch_endpoint": "https://198.51.100.20:9444",
+            "wss_fronts": null,
+            "registered_at": "2026-08-17T10:30:00Z",
+            "last_heartbeat_at": "2026-08-17T11:58:00Z",
+            "expires_at": "2026-08-17T12:05:00Z"
+          }
+        ]
+      },
+      "usability": [
+        {
+          "now": "2026-08-17T12:00:00Z",
+          "note": "Broker server_time: freshness is judged against it, never the device clock.",
+          "usable_ids": [
+            "relay_0883de4588ee3af0f925ec7e3ce18aa7",
+            "relay_9c1f4d2ba07e5188cc31a6d0f4e27b53"
+          ],
+          "first_usable_id": "relay_0883de4588ee3af0f925ec7e3ce18aa7"
+        },
+        {
+          "now": "2026-08-17T12:07:00Z",
+          "note": "The tunnel relay's lease has lapsed; expiry is exclusive, judged against the supplied instant.",
+          "usable_ids": ["relay_0883de4588ee3af0f925ec7e3ce18aa7"],
+          "first_usable_id": "relay_0883de4588ee3af0f925ec7e3ce18aa7"
+        },
+        {
+          "now": "2026-08-17T12:10:00Z",
+          "note": "expires_at exactly equal to now is NOT usable.",
+          "usable_ids": [],
+          "first_usable_id": null
+        }
+      ]
+    },
+    {
+      "id": "unusable_mix",
+      "description": "Every way a schema-valid relay can still fail the usability filter, plus one relay that passes. Broker order is preserved: the filter is score-free and never reorders.",
+      "body": {
+        "count": 8,
+        "server_time": "2026-08-17T12:00:00Z",
+        "not_after": "2026-08-17T12:30:00Z",
+        "key_id": "0f1a2b3c4d5e6f70",
+        "channel": "api",
+        "limit": 20,
+        "relays": [
+          {
+            "id": "relay_expired", "public_host": "203.0.113.11", "public_port": 443,
+            "protocol": "vless-reality-vision", "client_id": "11111111-1111-4111-8111-111111111111",
+            "reality_public_key": "key11", "short_id": "aa01", "server_name": "www.bing.com",
+            "flow": "xtls-rprx-vision", "exit_mode": "direct", "max_sessions": 8, "max_mbps": 20,
+            "volunteer_version": "0.4.1", "registered_at": "2026-08-17T09:00:00Z",
+            "last_heartbeat_at": "2026-08-17T11:00:00Z", "expires_at": "2026-08-17T11:55:00Z"
+          },
+          {
+            "id": "relay_wrong_protocol", "public_host": "203.0.113.12", "public_port": 443,
+            "protocol": "vless-reality", "client_id": "22222222-2222-4222-8222-222222222222",
+            "reality_public_key": "key22", "short_id": "aa02", "server_name": "www.bing.com",
+            "flow": "xtls-rprx-vision", "exit_mode": "direct", "max_sessions": 8, "max_mbps": 20,
+            "volunteer_version": "0.4.1", "registered_at": "2026-08-17T09:00:00Z",
+            "last_heartbeat_at": "2026-08-17T11:59:00Z", "expires_at": "2026-08-17T12:10:00Z"
+          },
+          {
+            "id": "relay_wrong_flow", "public_host": "203.0.113.13", "public_port": 443,
+            "protocol": "vless-reality-vision", "client_id": "33333333-3333-4333-8333-333333333333",
+            "reality_public_key": "key33", "short_id": "aa03", "server_name": "www.bing.com",
+            "flow": "", "exit_mode": "direct", "max_sessions": 8, "max_mbps": 20,
+            "volunteer_version": "0.4.1", "registered_at": "2026-08-17T09:00:00Z",
+            "last_heartbeat_at": "2026-08-17T11:59:00Z", "expires_at": "2026-08-17T12:10:00Z"
+          },
+          {
+            "id": "relay_dedicated_exit", "public_host": "203.0.113.14", "public_port": 443,
+            "protocol": "vless-reality-vision", "client_id": "44444444-4444-4444-8444-444444444444",
+            "reality_public_key": "key44", "short_id": "aa04", "server_name": "www.bing.com",
+            "flow": "xtls-rprx-vision", "exit_mode": "dedicated", "max_sessions": 8, "max_mbps": 20,
+            "volunteer_version": "0.4.1", "registered_at": "2026-08-17T09:00:00Z",
+            "last_heartbeat_at": "2026-08-17T11:59:00Z", "expires_at": "2026-08-17T12:10:00Z"
+          },
+          {
+            "id": "relay_blank_host", "public_host": "", "public_port": 443,
+            "protocol": "vless-reality-vision", "client_id": "55555555-5555-4555-8555-555555555555",
+            "reality_public_key": "key55", "short_id": "aa05", "server_name": "www.bing.com",
+            "flow": "xtls-rprx-vision", "exit_mode": "direct", "max_sessions": 8, "max_mbps": 20,
+            "volunteer_version": "0.4.1", "registered_at": "2026-08-17T09:00:00Z",
+            "last_heartbeat_at": "2026-08-17T11:59:00Z", "expires_at": "2026-08-17T12:10:00Z"
+          },
+          {
+            "id": "relay_zero_port", "public_host": "203.0.113.16", "public_port": 0,
+            "protocol": "vless-reality-vision", "client_id": "66666666-6666-4666-8666-666666666666",
+            "reality_public_key": "key66", "short_id": "aa06", "server_name": "www.bing.com",
+            "flow": "xtls-rprx-vision", "exit_mode": "direct", "max_sessions": 8, "max_mbps": 20,
+            "volunteer_version": "0.4.1", "registered_at": "2026-08-17T09:00:00Z",
+            "last_heartbeat_at": "2026-08-17T11:59:00Z", "expires_at": "2026-08-17T12:10:00Z"
+          },
+          {
+            "id": "relay_blank_reality_material", "public_host": "203.0.113.17", "public_port": 443,
+            "protocol": "vless-reality-vision", "client_id": "77777777-7777-4777-8777-777777777777",
+            "reality_public_key": "", "short_id": "", "server_name": "",
+            "flow": "xtls-rprx-vision", "exit_mode": "direct", "max_sessions": 8, "max_mbps": 20,
+            "volunteer_version": "0.4.1", "registered_at": "2026-08-17T09:00:00Z",
+            "last_heartbeat_at": "2026-08-17T11:59:00Z", "expires_at": "2026-08-17T12:10:00Z"
+          },
+          {
+            "id": "relay_good", "public_host": "203.0.113.18", "public_port": 443,
+            "protocol": "vless-reality-vision", "client_id": "88888888-8888-4888-8888-888888888888",
+            "reality_public_key": "key88", "short_id": "aa08", "server_name": "www.bing.com",
+            "flow": "xtls-rprx-vision", "exit_mode": "direct", "max_sessions": 8, "max_mbps": 20,
+            "volunteer_version": "0.4.1", "registered_at": "2026-08-17T09:00:00Z",
+            "last_heartbeat_at": "2026-08-17T11:59:00Z", "expires_at": "2026-08-17T12:10:00Z"
+          }
+        ]
+      },
+      "expect": {
+        "count": 8,
+        "server_time": "2026-08-17T12:00:00Z",
+        "not_after": "2026-08-17T12:30:00Z",
+        "key_id": "0f1a2b3c4d5e6f70",
+        "channel": "api",
+        "limit": 20,
+        "relay_ids": [
+          "relay_expired",
+          "relay_wrong_protocol",
+          "relay_wrong_flow",
+          "relay_dedicated_exit",
+          "relay_blank_host",
+          "relay_zero_port",
+          "relay_blank_reality_material",
+          "relay_good"
+        ]
+      },
+      "usability": [
+        {
+          "now": "2026-08-17T12:00:00Z",
+          "usable_ids": ["relay_good"],
+          "first_usable_id": "relay_good"
+        }
+      ]
+    },
+    {
+      "id": "forward_compatible",
+      "description": "A body from a newer broker: unknown top-level and per-relay fields must be ignored, not rejected, and every node_class a client cannot recognize — omitted, a future name, or a case variant — must be read as the volunteer class. Never as foundation: that class gates the WSS transport, so an unrecognized value has to degrade to the less-privileged side. The decoded field keeps whatever the wire carried; only the effective class is interpreted. An unrecognized class must also not make the relay unusable — dropping it would strand a client on a directory it merely does not fully understand.",
+      "body": {
+        "count": 3,
+        "server_time": "2026-08-17T12:00:00Z",
+        "not_after": "2026-08-17T12:30:00Z",
+        "key_id": "0f1a2b3c4d5e6f70",
+        "channel": "api",
+        "limit": 5,
+        "future_top_level_field": {"anything": [1, 2, 3]},
+        "relays": [
+          {
+            "id": "relay_forward",
+            "public_host": "2001:db8::10",
+            "public_port": 443,
+            "protocol": "vless-reality-vision",
+            "client_id": "99999999-9999-4999-8999-999999999999",
+            "reality_public_key": "key99",
+            "short_id": "aa09",
+            "server_name": "www.bing.com",
+            "flow": "xtls-rprx-vision",
+            "exit_mode": "direct",
+            "max_sessions": 8,
+            "max_mbps": 20,
+            "volunteer_version": "0.4.1",
+            "future_relay_field": "ignored",
+            "registered_at": "2026-08-17T09:00:00Z",
+            "last_heartbeat_at": "2026-08-17T11:59:00Z",
+            "expires_at": "2026-08-17T12:10:00Z"
+          },
+          {
+            "id": "relay_future_class",
+            "public_host": "203.0.113.30",
+            "public_port": 443,
+            "node_class": "partner",
+            "protocol": "vless-reality-vision",
+            "client_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+            "reality_public_key": "keyee",
+            "short_id": "aa14",
+            "server_name": "www.bing.com",
+            "flow": "xtls-rprx-vision",
+            "exit_mode": "direct",
+            "max_sessions": 8,
+            "max_mbps": 20,
+            "volunteer_version": "0.5.0",
+            "registered_at": "2026-08-17T09:00:00Z",
+            "last_heartbeat_at": "2026-08-17T11:59:00Z",
+            "expires_at": "2026-08-17T12:10:00Z"
+          },
+          {
+            "id": "relay_case_variant_class",
+            "public_host": "203.0.113.31",
+            "public_port": 443,
+            "node_class": "Foundation",
+            "protocol": "vless-reality-vision",
+            "client_id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            "reality_public_key": "keyff",
+            "short_id": "aa15",
+            "server_name": "www.bing.com",
+            "flow": "xtls-rprx-vision",
+            "exit_mode": "direct",
+            "max_sessions": 8,
+            "max_mbps": 20,
+            "volunteer_version": "0.5.0",
+            "registered_at": "2026-08-17T09:00:00Z",
+            "last_heartbeat_at": "2026-08-17T11:59:00Z",
+            "expires_at": "2026-08-17T12:10:00Z"
+          }
+        ]
+      },
+      "expect": {
+        "count": 3,
+        "server_time": "2026-08-17T12:00:00Z",
+        "not_after": "2026-08-17T12:30:00Z",
+        "key_id": "0f1a2b3c4d5e6f70",
+        "channel": "api",
+        "limit": 5,
+        "relays": [
+          {
+            "id": "relay_forward",
+            "label": null,
+            "public_host": "2001:db8::10",
+            "public_port": 443,
+            "node_class": null,
+            "effective_node_class": "volunteer",
+            "protocol": "vless-reality-vision",
+            "client_id": "99999999-9999-4999-8999-999999999999",
+            "reality_public_key": "key99",
+            "short_id": "aa09",
+            "server_name": "www.bing.com",
+            "flow": "xtls-rprx-vision",
+            "exit_mode": "direct",
+            "max_sessions": 8,
+            "max_mbps": 20,
+            "relay_version": "0.4.1",
+            "volunteer_version": "0.4.1",
+            "transport": null,
+            "punch_capable": null,
+            "punch_endpoint": null,
+            "wss_fronts": null,
+            "registered_at": "2026-08-17T09:00:00Z",
+            "last_heartbeat_at": "2026-08-17T11:59:00Z",
+            "expires_at": "2026-08-17T12:10:00Z"
+          },
+          {
+            "id": "relay_future_class",
+            "label": null,
+            "public_host": "203.0.113.30",
+            "public_port": 443,
+            "node_class": "partner",
+            "effective_node_class": "volunteer",
+            "protocol": "vless-reality-vision",
+            "client_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+            "reality_public_key": "keyee",
+            "short_id": "aa14",
+            "server_name": "www.bing.com",
+            "flow": "xtls-rprx-vision",
+            "exit_mode": "direct",
+            "max_sessions": 8,
+            "max_mbps": 20,
+            "relay_version": "0.5.0",
+            "volunteer_version": "0.5.0",
+            "transport": null,
+            "punch_capable": null,
+            "punch_endpoint": null,
+            "wss_fronts": null,
+            "registered_at": "2026-08-17T09:00:00Z",
+            "last_heartbeat_at": "2026-08-17T11:59:00Z",
+            "expires_at": "2026-08-17T12:10:00Z"
+          },
+          {
+            "id": "relay_case_variant_class",
+            "label": null,
+            "public_host": "203.0.113.31",
+            "public_port": 443,
+            "node_class": "Foundation",
+            "effective_node_class": "volunteer",
+            "protocol": "vless-reality-vision",
+            "client_id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            "reality_public_key": "keyff",
+            "short_id": "aa15",
+            "server_name": "www.bing.com",
+            "flow": "xtls-rprx-vision",
+            "exit_mode": "direct",
+            "max_sessions": 8,
+            "max_mbps": 20,
+            "relay_version": "0.5.0",
+            "volunteer_version": "0.5.0",
+            "transport": null,
+            "punch_capable": null,
+            "punch_endpoint": null,
+            "wss_fronts": null,
+            "registered_at": "2026-08-17T09:00:00Z",
+            "last_heartbeat_at": "2026-08-17T11:59:00Z",
+            "expires_at": "2026-08-17T12:10:00Z"
+          }
+        ]
+      },
+      "usability": [
+        {
+          "now": "2026-08-17T12:00:00Z",
+          "note": "An IPv6 public_host is usable; address family selection is a separate, later stage. A relay whose node_class the client cannot recognize stays usable — the class is provenance, not a usability condition.",
+          "usable_ids": ["relay_forward", "relay_future_class", "relay_case_variant_class"],
+          "first_usable_id": "relay_forward"
+        }
+      ]
+    }
+  ],
+  "invalid": {
+    "suites": ["go"],
+    "note": "Wire-schema rejections enforced by brokerapi before any client model sees the body. Kotlin and Swift inherit them through the same native module; the TypeScript model only ever receives an already-validated snapshot, so the Jest suite does not run these.",
+    "cases": [
+      {
+        "id": "missing_count",
+        "reason": "relay list requires count, server_time, and relays",
+        "body": {"server_time": "2026-08-17T12:00:00Z", "not_after": "2026-08-17T12:30:00Z", "key_id": "0f1a2b3c4d5e6f70", "channel": "api", "limit": 5, "relays": []}
+      },
+      {
+        "id": "missing_server_time",
+        "reason": "relay list requires count, server_time, and relays",
+        "body": {"count": 0, "not_after": "2026-08-17T12:30:00Z", "key_id": "0f1a2b3c4d5e6f70", "channel": "api", "limit": 5, "relays": []}
+      },
+      {
+        "id": "missing_relays",
+        "reason": "relay list requires count, server_time, and relays",
+        "body": {"count": 0, "server_time": "2026-08-17T12:00:00Z", "not_after": "2026-08-17T12:30:00Z", "key_id": "0f1a2b3c4d5e6f70", "channel": "api", "limit": 5}
+      },
+      {
+        "id": "relay_missing_client_id",
+        "reason": "relay 0 is missing a required client field",
+        "body": {
+          "count": 1, "server_time": "2026-08-17T12:00:00Z", "not_after": "2026-08-17T12:30:00Z",
+          "key_id": "0f1a2b3c4d5e6f70", "channel": "api", "limit": 5,
+          "relays": [{
+            "id": "relay_incomplete", "public_host": "203.0.113.19", "public_port": 443,
+            "protocol": "vless-reality-vision", "reality_public_key": "keyaa", "short_id": "aa10",
+            "server_name": "www.bing.com", "flow": "xtls-rprx-vision", "exit_mode": "direct",
+            "max_sessions": 8, "max_mbps": 20, "volunteer_version": "0.4.1",
+            "registered_at": "2026-08-17T09:00:00Z", "last_heartbeat_at": "2026-08-17T11:59:00Z",
+            "expires_at": "2026-08-17T12:10:00Z"
+          }]
+        }
+      },
+      {
+        "id": "relay_version_without_alias",
+        "reason": "relay 0 is missing a required client field",
+        "note": "The legacy volunteer_version alias is load-bearing: released native clients require it, so a broker that emits only relay_version is rejected here rather than silently decoding to a blank version. This is why no valid case pins relay_version/volunteer_version precedence — they never disagree on the wire.",
+        "body": {
+          "count": 1, "server_time": "2026-08-17T12:00:00Z", "not_after": "2026-08-17T12:30:00Z",
+          "key_id": "0f1a2b3c4d5e6f70", "channel": "api", "limit": 5,
+          "relays": [{
+            "id": "relay_no_alias", "public_host": "203.0.113.20", "public_port": 443,
+            "protocol": "vless-reality-vision", "client_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "reality_public_key": "keybb", "short_id": "aa11", "server_name": "www.bing.com",
+            "flow": "xtls-rprx-vision", "exit_mode": "direct", "max_sessions": 8, "max_mbps": 20,
+            "relay_version": "0.4.1",
+            "registered_at": "2026-08-17T09:00:00Z", "last_heartbeat_at": "2026-08-17T11:59:00Z",
+            "expires_at": "2026-08-17T12:10:00Z"
+          }]
+        }
+      },
+      {
+        "id": "wss_front_missing_protocol_version",
+        "reason": "WSS front requires id, url, and protocol_version",
+        "note": "The nested front shape is decoded strictly — it selects a censorship-circumvention transport, so it must not be normalized before wsscore sees it.",
+        "body": {
+          "count": 1, "server_time": "2026-08-17T12:00:00Z", "not_after": "2026-08-17T12:30:00Z",
+          "key_id": "0f1a2b3c4d5e6f70", "channel": "api", "limit": 5,
+          "relays": [{
+            "id": "relay_bad_front", "public_host": "203.0.113.21", "public_port": 443,
+            "protocol": "vless-reality-vision", "client_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            "reality_public_key": "keycc", "short_id": "aa12", "server_name": "www.bing.com",
+            "flow": "xtls-rprx-vision", "exit_mode": "direct", "max_sessions": 8, "max_mbps": 20,
+            "volunteer_version": "0.4.1",
+            "wss_fronts": [{"id": "front-a", "url": "https://cdn-edge-a.example.net/api/v1/wss-bridge"}],
+            "registered_at": "2026-08-17T09:00:00Z", "last_heartbeat_at": "2026-08-17T11:59:00Z",
+            "expires_at": "2026-08-17T12:10:00Z"
+          }]
+        }
+      },
+      {
+        "id": "wss_front_unknown_field",
+        "reason": "unknown field",
+        "body": {
+          "count": 1, "server_time": "2026-08-17T12:00:00Z", "not_after": "2026-08-17T12:30:00Z",
+          "key_id": "0f1a2b3c4d5e6f70", "channel": "api", "limit": 5,
+          "relays": [{
+            "id": "relay_extra_front_field", "public_host": "203.0.113.22", "public_port": 443,
+            "protocol": "vless-reality-vision", "client_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            "reality_public_key": "keydd", "short_id": "aa13", "server_name": "www.bing.com",
+            "flow": "xtls-rprx-vision", "exit_mode": "direct", "max_sessions": 8, "max_mbps": 20,
+            "volunteer_version": "0.4.1",
+            "wss_fronts": [{"id": "front-a", "url": "https://cdn-edge-a.example.net/api/v1/wss-bridge", "protocol_version": 1, "weight": 3}],
+            "registered_at": "2026-08-17T09:00:00Z", "last_heartbeat_at": "2026-08-17T11:59:00Z",
+            "expires_at": "2026-08-17T12:10:00Z"
+          }]
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,98 @@
+{
+  "version": 1,
+  "contract": "openrung-broker-fronts-v1",
+  "suites": ["go", "kotlin", "swift", "ts"],
+  "comment": "Snapshot of the advertised broker-front list and the order discovery races it in. Consumed by the four suites named in 'suites', but not symmetrically, and the asymmetry is the point rather than an omission. The Go suite (contract/broker_fronts_test.go) checks the whole snapshot — the list, the phase partition, the hostname-shape classification, and the candidate ordering — against brokerapi's DefaultBrokerURLs, BrokerCandidates, and EndpointUnboundBrokerFront, because brokerapi owns all of it. The Kotlin, Swift, and Jest suites in openrung-mobile-app own no racing at all: they hand native brokerapi a single primary and let Go race the built-in candidates. What they can check, and what the mobile suites are for, is that every front they hardcode (AppConfig.DEFAULT_BROKER_URLS on Android, AppConfig.defaultBrokerURL on iOS, AppConfig.DEFAULT_BROKER_URL in TypeScript) still appears in 'default_order' here — which is what catches a front rotated in one repo and not the other. They must not assert the phases or the candidate ordering, which they do not implement. A front that silently disappears from one client is a front that client cannot fall back to when the others are blocked, so an existing entry may only change together with a bump of 'version' here and in every vendored copy. Rotating or adding a front is exactly such a change.",
+  "scope_note": "'default_order' is the relay-directory control plane only. openrung-mobile-app's UPDATE_MANIFEST_URLS is a different channel with its own candidate list and its own check (npm run transport:check); do not conflate the two lists.",
+  "phase_note": "Discovery races the fronts in two phases. Phase 1 holds every front whose TLS connection authenticates that endpoint. Phase 2 starts only after every phase-1 front has failed, and holds fronts dialed without SNI onto a shared CDN edge whose certificate proves only 'an edge of this provider', never this endpoint — the Ed25519 relay-list signature is what makes them trustworthy, so they are tried last. A front is assigned to a phase by the shape of its hostname, not by matching this deployment's own endpoints, so a fork or a rotated endpoint is classified the same way.",
+  "default_order": [
+    "https://broker.openrung.org/",
+    "https://d2r7mdpyevvs1m.cloudfront.net/",
+    "https://cdn-edge-cxdnhsg2aadmaubj.z02.azurefd.net/"
+  ],
+  "phases": [
+    {
+      "phase": 1,
+      "name": "endpoint_bound",
+      "urls": [
+        "https://broker.openrung.org/",
+        "https://d2r7mdpyevvs1m.cloudfront.net/"
+      ]
+    },
+    {
+      "phase": 2,
+      "name": "endpoint_unbound",
+      "urls": [
+        "https://cdn-edge-cxdnhsg2aadmaubj.z02.azurefd.net/"
+      ]
+    }
+  ],
+  "classification": [
+    {"url": "https://broker.openrung.org/", "endpoint_unbound": false},
+    {"url": "https://d2r7mdpyevvs1m.cloudfront.net/", "endpoint_unbound": false, "note": "Dialed without SNI, but the CloudFront distribution still serves this deployment's own certificate, so the connection authenticates the endpoint."},
+    {"url": "https://cdn-edge-cxdnhsg2aadmaubj.z02.azurefd.net/", "endpoint_unbound": true},
+    {"url": "https://anything.azurefd.net/", "endpoint_unbound": true, "note": "Matched by hostname shape: the bare Front Door endpoint form."},
+    {"url": "https://anything.a01.azurefd.net/", "endpoint_unbound": true, "note": "And the zoned form, where the zone is a letter followed by two digits."},
+    {"url": "https://anything.zz9.azurefd.net/", "endpoint_unbound": false, "note": "Not a zone shape (two letters), so it is not the shared-edge path."},
+    {"url": "https://front-door.example.org/", "endpoint_unbound": false, "note": "A custom domain pointed at Front Door keeps ordinary SNI and ordinary verification."},
+    {"url": "https://anything.azurefd.net:8443/", "endpoint_unbound": false, "note": "Only the standard HTTPS port takes the shared-edge path."},
+    {"url": "http://anything.azurefd.net/", "endpoint_unbound": false, "note": "Cleartext broker URLs are refused outright before any front classification."},
+    {"url": "not a url", "endpoint_unbound": false}
+  ],
+  "candidates_note": "The discovery order a client builds from its configured primary. A genuine user override runs alone before the built-in fronts (override_first), so it cannot be starved by the defaults' stagger; merely persisting one of the defaults as the primary must not reorder anything.",
+  "candidates": [
+    {
+      "id": "no_primary",
+      "primary": "",
+      "expect_urls": [
+        "https://broker.openrung.org/",
+        "https://d2r7mdpyevvs1m.cloudfront.net/",
+        "https://cdn-edge-cxdnhsg2aadmaubj.z02.azurefd.net/"
+      ],
+      "expect_override_first": false
+    },
+    {
+      "id": "primary_is_a_default",
+      "primary": "https://broker.openrung.org/",
+      "expect_urls": [
+        "https://broker.openrung.org/",
+        "https://d2r7mdpyevvs1m.cloudfront.net/",
+        "https://cdn-edge-cxdnhsg2aadmaubj.z02.azurefd.net/"
+      ],
+      "expect_override_first": false
+    },
+    {
+      "id": "primary_is_a_default_with_whitespace",
+      "primary": "  https://broker.openrung.org/  ",
+      "expect_urls": [
+        "https://broker.openrung.org/",
+        "https://d2r7mdpyevvs1m.cloudfront.net/",
+        "https://cdn-edge-cxdnhsg2aadmaubj.z02.azurefd.net/"
+      ],
+      "expect_override_first": false
+    },
+    {
+      "id": "genuine_override",
+      "primary": "https://broker.example.org/",
+      "expect_urls": [
+        "https://broker.example.org/",
+        "https://broker.openrung.org/",
+        "https://d2r7mdpyevvs1m.cloudfront.net/",
+        "https://cdn-edge-cxdnhsg2aadmaubj.z02.azurefd.net/"
+      ],
+      "expect_override_first": true
+    },
+    {
+      "id": "default_without_trailing_slash",
+      "primary": "https://broker.openrung.org",
+      "note": "Comparison is on the exact string, not a normalized URL, so a default written without its trailing slash is treated as a genuine override and is attempted alone first. Pinned because it changes the discovery order, not just the list.",
+      "expect_urls": [
+        "https://broker.openrung.org",
+        "https://broker.openrung.org/",
+        "https://d2r7mdpyevvs1m.cloudfront.net/",
+        "https://cdn-edge-cxdnhsg2aadmaubj.z02.azurefd.net/"
+      ],
+      "expect_override_first": true
+    }
+  ]
+}

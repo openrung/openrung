@@ -205,10 +205,11 @@ func transportLabel(info connectcore.ConnectionInfo) string {
 }
 
 func nodeClassBadge(nodeClass string) string {
-	if nodeClass == relay.NodeClassFoundation {
+	// A missing or unrecognized class is the volunteer class, per the
+	// descriptor contract; EffectiveNodeClass is that rule.
+	if relay.EffectiveNodeClass(nodeClass) == relay.NodeClassFoundation {
 		return foundationBadge
 	}
-	// A missing class is the volunteer class, per the descriptor contract.
 	return volunteerBadge
 }
 

@@ -1,0 +1,215 @@
+{
+  "version": 1,
+  "contract": "openrung-failure-classification-v1",
+  "suites": ["go", "kotlin", "swift"],
+  "comment": "Golden cross-repo vectors for the client failure-classification contract: the closed failure_reason token set the broker's 'Failure reasons' dashboard groups by. Consumed by the three suites named in 'suites' — Go (internal/clienttelemetry/contract_vectors_test.go, against internal/clienttelemetry/classify.go) in this repo, and Kotlin (FailureClassifierTest, against FailureClassifier.kt) and Swift (FailureClassifierTests, against FailureClassifier.swift) in openrung-mobile-app, which vendors this file and checks the vendored copy against a pinned openrung ref. Because the token of a deployed client cannot be renegotiated, an existing row may only change together with a bump of 'version' here and in every vendored copy, so the change lands in all three suites at once. Each row states the 'kind' of input it describes; 'kinds' below says which suites can construct that kind, and a row may narrow that further with its own 'suites' plus a 'note' saying why. A suite must run every row it claims and must not silently skip one.",
+  "no_typescript_note": "There is deliberately no 'ts' suite here, unlike the sibling relay_decode.json and broker_fronts.json. The React Native layer never sees a connect failure to classify: Android's VPN service, iOS's PacketTunnel, and native brokerapi own that path and report the token themselves, and openrung-mobile-app has no TypeScript classifier for a Jest suite to run these rows against. Adding one would mean writing a fourth classifier, not wiring up an existing one. The Go suite checks that every suite listed in 'suites' claims at least one row, so a suite named here but consuming nothing fails rather than passing vacuously.",
+  "windows_note": "Rows with platform 'windows' carry raw Winsock numbers. Only a Windows network stack produces them, so the Kotlin and Swift suites skip them. The Go classifier matches them on every platform — they sit far above every errno a POSIX kernel returns (Linux tops out at 133, darwin at 106), so they cannot collide with a real POSIX errno — which is what lets CI exercise these rows on Linux and macOS. Classification is by numeric code only, never by message text: Windows localizes its socket error strings.",
+  "tokens": [
+    "",
+    "cancelled",
+    "timeout",
+    "no_relays_available",
+    "relay_not_in_list",
+    "no_relay_in_country",
+    "no_usable_relay",
+    "rate_limited",
+    "connection_refused",
+    "connection_reset",
+    "network_unreachable",
+    "dns_failure",
+    "tls_handshake",
+    "permission_denied",
+    "process_exited",
+    "unknown",
+    "wss_transport_failed",
+    "ws_upgrade",
+    "http_401",
+    "http_403",
+    "http_421",
+    "http_502",
+    "http_503",
+    "http_other",
+    "ws_subprotocol",
+    "dns_bogon",
+    "tls_reset",
+    "response_reset",
+    "tls_not_tls",
+    "cert_expired",
+    "cert_verify",
+    "tls_alert",
+    "tcp_timeout",
+    "tls_timeout",
+    "response_timeout",
+    "handshake_timeout",
+    "unclassified"
+  ],
+  "token_patterns": [
+    "^http_[0-9]{3}$"
+  ],
+  "errno_pair_exceptions_note": "Errno rows pair one-to-one by default: R names P and P names R back. A row that points at a pair already spoken for is the exception and must be listed here with a reason, because an unrestricted many-to-one pairing would let a new errno row hide behind any existing pair carrying the same token — add ENETDOWN pointing at errno_wsaenetunreach and both the pair check and the token-set check pass while WSAENETDOWN goes unmapped. Requiring the collapse to be declared here makes that a visible edit to a shared table rather than one inconspicuous field on a new row.",
+  "errno_pair_exceptions": [
+    {
+      "id": "errno_eperm",
+      "defers_to": "errno_eacces",
+      "reason": "Winsock has no distinct socket EPERM; WSAEACCES covers what POSIX splits between EACCES and EPERM, so both POSIX rows collapse onto the one Windows row."
+    },
+    {
+      "id": "errno_econnrefused_wrapped",
+      "defers_to": "errno_econnrefused",
+      "reason": "Not a distinct condition: the same errno as errno_econnrefused, wrapped, to prove the chain is walked. It shares that row's Windows counterpart rather than needing one of its own."
+    }
+  ],
+  "kinds": {
+    "none": {
+      "suites": ["go", "kotlin"],
+      "input": "{}",
+      "description": "No error at all. Swift's classify() takes a non-optional Error and cannot express it."
+    },
+    "cancellation": {
+      "suites": ["go", "kotlin", "swift"],
+      "input": "{wrapped: bool} — when wrapped, the suite nests the cancellation inside a generic wrapper error and must still get the same token.",
+      "description": "Local intent: the user stopped the connect, or the enclosing task/coroutine was cancelled."
+    },
+    "deadline": {
+      "suites": ["go"],
+      "input": "{}",
+      "description": "The connect context's own deadline fired (context.DeadlineExceeded). Kotlin and Swift have no distinct type for it — their platforms raise the ordinary timeout error, covered by the 'timeout' kind — and Kotlin's coroutine timeout is a CancellationException, which is 'cancelled' by design."
+    },
+    "selection": {
+      "suites": ["go", "kotlin", "swift"],
+      "input": "{sentinel: string} — the relay-selection sentinel the connect pipeline raised.",
+      "description": "Relay selection failed before any socket was opened. Distinct tokens so the dashboard can tell 'broker gave nothing' from 'none usable' from a bad target id/country."
+    },
+    "http_status": {
+      "suites": ["go", "kotlin", "swift"],
+      "input": "{status: int} — the broker/CDN HTTP status carried by the error.",
+      "description": "A broker request came back with a non-2xx status. 429 is its own token; every other status is interpolated as http_<status>."
+    },
+    "errno": {
+      "suites": ["go", "kotlin", "swift"],
+      "input": "{symbol: string, code: int} — code is present only for platform 'windows'; POSIX numbers differ per kernel, so POSIX rows name the symbol and each suite resolves it locally.",
+      "description": "A socket-level failure surfacing a raw errno. Every errno row carries 'pair': the id of the row on the other platform that describes the same underlying condition, which must expect the same token. Pairing is many-to-one where the platforms disagree on granularity (EACCES and EPERM both pair with WSAEACCES). The Go suite checks the pairing, so a Winsock code added — or forgotten — without its POSIX counterpart fails there rather than becoming a silent per-platform divergence in the field."
+    },
+    "dns": {
+      "suites": ["go", "kotlin", "swift"],
+      "input": "{subkind: 'not_found'|'timeout'}",
+      "description": "Name resolution failed. Checked before the generic timeout rule so a name-lookup timeout keeps the more actionable token."
+    },
+    "tls": {
+      "suites": ["go", "kotlin", "swift"],
+      "input": "{subkind: 'not_tls'|'unknown_authority'|'hostname_mismatch'|'cert_expired'}",
+      "description": "TLS handshake or certificate rejection. The client taxonomy collapses every shape to one token; only wsscore's WSS taxonomy splits them further."
+    },
+    "permission": {
+      "suites": ["go", "kotlin", "swift"],
+      "input": "{subkind: 'os_permission'}",
+      "description": "The OS refused the operation: revoked VPN consent, or a denied tunnel-device open. EACCES/EPERM are covered as errno rows instead."
+    },
+    "process_exit": {
+      "suites": ["go", "kotlin", "swift"],
+      "input": "{}",
+      "description": "The tunnel engine died on arrival — a sing-box subprocess on desktop, the embedded libbox/sing-box engine on mobile."
+    },
+    "timeout": {
+      "suites": ["go", "kotlin", "swift"],
+      "input": "{subkind: 'io_timeout'}",
+      "description": "A generic i/o timeout that carries no errno, matched only after every typed rule above so a refused or reset dial is never mislabeled."
+    },
+    "unrecognized": {
+      "suites": ["go", "kotlin", "swift"],
+      "input": "{message: string}",
+      "description": "An error matching no rule. The residual must stay 'unknown' — the dashboard measures the ladder's coverage by its share."
+    },
+    "wss_reason": {
+      "suites": ["go"],
+      "input": "{reason: string} — a token as produced by wsscore's dial classifier.",
+      "description": "Projection of wsscore's own closed WSS taxonomy (wsscore/README.md) through the consumer-side allowlist: a recognized token passes through verbatim, anything else degrades to wss_transport_failed rather than reaching telemetry. Go-only: on iOS the native WSS error already carries wsscore's token, and Android projects brokerapi's bounded failure kinds instead."
+    }
+  },
+  "cases": [
+    {"id": "none", "kind": "none", "input": {}, "expect": ""},
+
+    {"id": "cancelled", "kind": "cancellation", "input": {"wrapped": false}, "expect": "cancelled"},
+    {"id": "cancelled_wrapped", "kind": "cancellation", "input": {"wrapped": true}, "expect": "cancelled"},
+
+    {"id": "deadline_exceeded", "kind": "deadline", "input": {}, "expect": "timeout"},
+
+    {"id": "selection_no_relays_available", "kind": "selection", "input": {"sentinel": "no_relays_available"}, "expect": "no_relays_available", "suites": ["go", "kotlin"], "note": "iOS has no sentinel for an empty broker list: PacketTunnelError.allRelaysFailed covers it and reports no_usable_relay."},
+    {"id": "selection_relay_not_in_list", "kind": "selection", "input": {"sentinel": "relay_not_in_list"}, "expect": "relay_not_in_list"},
+    {"id": "selection_no_relay_in_country", "kind": "selection", "input": {"sentinel": "no_relay_in_country"}, "expect": "no_relay_in_country"},
+    {"id": "selection_no_usable_relay", "kind": "selection", "input": {"sentinel": "no_usable_relay"}, "expect": "no_usable_relay"},
+
+    {"id": "http_429", "kind": "http_status", "input": {"status": 429}, "expect": "rate_limited"},
+    {"id": "http_403", "kind": "http_status", "input": {"status": 403}, "expect": "http_403"},
+    {"id": "http_451", "kind": "http_status", "input": {"status": 451}, "expect": "http_451"},
+    {"id": "http_500", "kind": "http_status", "input": {"status": 500}, "expect": "http_500"},
+    {"id": "http_503", "kind": "http_status", "input": {"status": 503}, "expect": "http_503"},
+
+    {"id": "errno_econnrefused", "kind": "errno", "pair": "errno_wsaeconnrefused", "platform": "posix", "input": {"symbol": "ECONNREFUSED"}, "expect": "connection_refused"},
+    {"id": "errno_econnrefused_wrapped", "kind": "errno", "pair": "errno_wsaeconnrefused", "platform": "posix", "input": {"symbol": "ECONNREFUSED", "wrapped": true}, "expect": "connection_refused", "note": "Pins that the whole error chain is inspected: the suite nests the errno in whatever its connect pipeline wraps it with."},
+    {"id": "errno_econnreset", "kind": "errno", "pair": "errno_wsaeconnreset", "platform": "posix", "input": {"symbol": "ECONNRESET"}, "expect": "connection_reset"},
+    {"id": "errno_enetunreach", "kind": "errno", "pair": "errno_wsaenetunreach", "platform": "posix", "input": {"symbol": "ENETUNREACH"}, "expect": "network_unreachable"},
+    {"id": "errno_ehostunreach", "kind": "errno", "pair": "errno_wsaehostunreach", "platform": "posix", "input": {"symbol": "EHOSTUNREACH"}, "expect": "network_unreachable"},
+    {"id": "errno_etimedout", "kind": "errno", "pair": "errno_wsaetimedout", "platform": "posix", "input": {"symbol": "ETIMEDOUT"}, "expect": "timeout"},
+    {"id": "errno_eacces", "kind": "errno", "pair": "errno_wsaeacces", "platform": "posix", "input": {"symbol": "EACCES"}, "expect": "permission_denied"},
+    {"id": "errno_eperm", "kind": "errno", "pair": "errno_wsaeacces", "platform": "posix", "input": {"symbol": "EPERM"}, "expect": "permission_denied"},
+    {"id": "errno_epipe", "kind": "errno", "pair": "errno_wsaeconnaborted", "platform": "posix", "input": {"symbol": "EPIPE"}, "expect": "unknown", "note": "Deliberately unmapped. A write to a connection the peer already tore down is indistinguishable here from an ordinary shutdown race, and the taxonomy has no broken-pipe token; pinned so its Winsock twin (WSAECONNABORTED) stays unmapped too."},
+
+    {"id": "errno_wsaeconnrefused", "kind": "errno", "pair": "errno_econnrefused", "platform": "windows", "input": {"symbol": "WSAECONNREFUSED", "code": 10061}, "expect": "connection_refused"},
+    {"id": "errno_wsaeconnreset", "kind": "errno", "pair": "errno_econnreset", "platform": "windows", "input": {"symbol": "WSAECONNRESET", "code": 10054}, "expect": "connection_reset"},
+    {"id": "errno_wsaenetunreach", "kind": "errno", "pair": "errno_enetunreach", "platform": "windows", "input": {"symbol": "WSAENETUNREACH", "code": 10051}, "expect": "network_unreachable"},
+    {"id": "errno_wsaehostunreach", "kind": "errno", "pair": "errno_ehostunreach", "platform": "windows", "input": {"symbol": "WSAEHOSTUNREACH", "code": 10065}, "expect": "network_unreachable"},
+    {"id": "errno_wsaetimedout", "kind": "errno", "pair": "errno_etimedout", "platform": "windows", "input": {"symbol": "WSAETIMEDOUT", "code": 10060}, "expect": "timeout", "note": "Go's syscall.Errno.Timeout on Windows reports true only for its own invented EAGAIN/EWOULDBLOCK/ETIMEDOUT, so this needs an explicit rule or it lands in 'unknown'."},
+    {"id": "errno_wsaeacces", "kind": "errno", "pair": "errno_eacces", "platform": "windows", "input": {"symbol": "WSAEACCES", "code": 10013}, "expect": "permission_denied", "note": "The Winsock counterpart of errno_eacces: a WFP callout driver or an endpoint-security policy refusing the connect. Go's syscall.Errno.Is maps ERROR_ACCESS_DENIED and its own invented EACCES/EPERM to os.ErrPermission, but not this, so it needs an explicit rule at the permission rung or the same block reports permission_denied on POSIX and 'unknown' on Windows."},
+    {"id": "errno_wsaeconnaborted", "kind": "errno", "pair": "errno_epipe", "platform": "windows", "input": {"symbol": "WSAECONNABORTED", "code": 10053}, "expect": "unknown", "note": "Unmapped on purpose, matching errno_epipe: mapping the Winsock code alone would make the same broken connection report different tokens per platform."},
+
+    {"id": "dns_not_found", "kind": "dns", "input": {"subkind": "not_found"}, "expect": "dns_failure"},
+    {"id": "dns_timeout", "kind": "dns", "input": {"subkind": "timeout"}, "expect": "dns_failure", "suites": ["go"], "note": "Pins DNS-before-timeout ordering. Android and iOS cannot construct it: their resolvers report a lookup timeout as the ordinary timeout error, not as a DNS error."},
+
+    {"id": "tls_not_tls", "kind": "tls", "input": {"subkind": "not_tls"}, "expect": "tls_handshake"},
+    {"id": "tls_unknown_authority", "kind": "tls", "input": {"subkind": "unknown_authority"}, "expect": "tls_handshake"},
+    {"id": "tls_hostname_mismatch", "kind": "tls", "input": {"subkind": "hostname_mismatch"}, "expect": "tls_handshake"},
+    {"id": "tls_cert_expired", "kind": "tls", "input": {"subkind": "cert_expired"}, "expect": "tls_handshake", "note": "The WSS taxonomy splits an expired chain out as cert_expired (it overwhelmingly means a wrong device clock); the client taxonomy does not."},
+
+    {"id": "permission_os_denied", "kind": "permission", "input": {"subkind": "os_permission"}, "expect": "permission_denied"},
+
+    {"id": "process_exited", "kind": "process_exit", "input": {}, "expect": "process_exited"},
+
+    {"id": "timeout_io", "kind": "timeout", "input": {"subkind": "io_timeout"}, "expect": "timeout"},
+
+    {"id": "unrecognized", "kind": "unrecognized", "input": {"message": "something odd"}, "expect": "unknown"},
+
+    {"id": "wss_ws_upgrade", "kind": "wss_reason", "input": {"reason": "ws_upgrade"}, "expect": "ws_upgrade"},
+    {"id": "wss_http_401", "kind": "wss_reason", "input": {"reason": "http_401"}, "expect": "http_401"},
+    {"id": "wss_http_403", "kind": "wss_reason", "input": {"reason": "http_403"}, "expect": "http_403"},
+    {"id": "wss_http_421", "kind": "wss_reason", "input": {"reason": "http_421"}, "expect": "http_421"},
+    {"id": "wss_rate_limited", "kind": "wss_reason", "input": {"reason": "rate_limited"}, "expect": "rate_limited"},
+    {"id": "wss_http_502", "kind": "wss_reason", "input": {"reason": "http_502"}, "expect": "http_502"},
+    {"id": "wss_http_503", "kind": "wss_reason", "input": {"reason": "http_503"}, "expect": "http_503"},
+    {"id": "wss_http_other", "kind": "wss_reason", "input": {"reason": "http_other"}, "expect": "http_other"},
+    {"id": "wss_ws_subprotocol", "kind": "wss_reason", "input": {"reason": "ws_subprotocol"}, "expect": "ws_subprotocol"},
+    {"id": "wss_dns_bogon", "kind": "wss_reason", "input": {"reason": "dns_bogon"}, "expect": "dns_bogon"},
+    {"id": "wss_dns_failure", "kind": "wss_reason", "input": {"reason": "dns_failure"}, "expect": "dns_failure"},
+    {"id": "wss_cancelled", "kind": "wss_reason", "input": {"reason": "cancelled"}, "expect": "cancelled"},
+    {"id": "wss_connection_refused", "kind": "wss_reason", "input": {"reason": "connection_refused"}, "expect": "connection_refused"},
+    {"id": "wss_network_unreachable", "kind": "wss_reason", "input": {"reason": "network_unreachable"}, "expect": "network_unreachable"},
+    {"id": "wss_connection_reset", "kind": "wss_reason", "input": {"reason": "connection_reset"}, "expect": "connection_reset"},
+    {"id": "wss_tls_reset", "kind": "wss_reason", "input": {"reason": "tls_reset"}, "expect": "tls_reset"},
+    {"id": "wss_response_reset", "kind": "wss_reason", "input": {"reason": "response_reset"}, "expect": "response_reset"},
+    {"id": "wss_tls_not_tls", "kind": "wss_reason", "input": {"reason": "tls_not_tls"}, "expect": "tls_not_tls"},
+    {"id": "wss_cert_expired", "kind": "wss_reason", "input": {"reason": "cert_expired"}, "expect": "cert_expired"},
+    {"id": "wss_cert_verify", "kind": "wss_reason", "input": {"reason": "cert_verify"}, "expect": "cert_verify"},
+    {"id": "wss_tls_alert", "kind": "wss_reason", "input": {"reason": "tls_alert"}, "expect": "tls_alert"},
+    {"id": "wss_tls_handshake", "kind": "wss_reason", "input": {"reason": "tls_handshake"}, "expect": "tls_handshake"},
+    {"id": "wss_tcp_timeout", "kind": "wss_reason", "input": {"reason": "tcp_timeout"}, "expect": "tcp_timeout"},
+    {"id": "wss_tls_timeout", "kind": "wss_reason", "input": {"reason": "tls_timeout"}, "expect": "tls_timeout"},
+    {"id": "wss_response_timeout", "kind": "wss_reason", "input": {"reason": "response_timeout"}, "expect": "response_timeout"},
+    {"id": "wss_handshake_timeout", "kind": "wss_reason", "input": {"reason": "handshake_timeout"}, "expect": "handshake_timeout"},
+    {"id": "wss_unclassified", "kind": "wss_reason", "input": {"reason": "unclassified"}, "expect": "unclassified"},
+    {"id": "wss_degrade_empty", "kind": "wss_reason", "input": {"reason": ""}, "expect": "wss_transport_failed"},
+    {"id": "wss_degrade_future_token", "kind": "wss_reason", "input": {"reason": "future_token"}, "expect": "wss_transport_failed"},
+    {"id": "wss_degrade_unknown", "kind": "wss_reason", "input": {"reason": "unknown"}, "expect": "wss_transport_failed", "note": "'unknown' is not a wsscore token and must stay reserved for pre-taxonomy builds, so it degrades like any unrecognized value."},
+    {"id": "wss_degrade_hostname", "kind": "wss_reason", "input": {"reason": "d111111abcdef8.cloudfront.net"}, "expect": "wss_transport_failed", "note": "A front hostname must never reach telemetry verbatim, whatever a future wsscore build puts in the field."}
+  ]
+}
