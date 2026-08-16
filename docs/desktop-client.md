@@ -2,8 +2,9 @@
 
 OpenRung ships a Wails desktop app for Linux, macOS, and Windows. It runs a
 mixed HTTP/SOCKS proxy on loopback, requiring no administrator privileges.
-This repository also contains the original command-line TUN client described
-below.
+This repository also contains a terminal client (`cmd/client`) that drives the
+same connection engine from a TUI and can additionally route the whole device
+through a TUN interface. Both are described below.
 
 ## Direct-first WSS fallback
 
@@ -30,8 +31,9 @@ direct-first contract through their own platform orchestration over pinned
 
 The desktop app chooses one local port on first launch and persists it under
 the user's OpenRung configuration directory. Disconnecting, reconnecting, and
-switching relays therefore keep the same endpoint. Set a specific port before
-launch when needed:
+switching relays therefore keep the same endpoint. The terminal client in proxy
+mode reads and writes the same state, so both clients offer the same endpoint.
+Set a specific port before launch when needed:
 
 ```sh
 OPENRUNG_PROXY_PORT=17890 ./OpenRung
@@ -54,7 +56,8 @@ multi-user computer may still be able to reach the listener.
 macOS and Windows are configured through their system proxy settings. Linux
 desktop integration is not implemented yet, and command-line applications do
 not necessarily honor those OS settings. On Linux and macOS, the Settings
-screen therefore also provides two copyable POSIX-shell commands:
+screen of both the desktop app and the terminal client therefore also provides
+two copyable POSIX-shell commands:
 
 1. **Enable in this shell** sources OpenRung's generated, port-qualified
    `proxy-env-<port>.sh` helper and calls `openrung_proxy_on`. The Settings
@@ -83,85 +86,160 @@ remains unchanged. Helpers are port-qualified (for example,
 `proxy-env-46685.sh`) so concurrent app instances cannot rewrite each other's
 copied command.
 
-## Desktop CLI Client
+## Terminal Client
 
-The command-line client fetches relay candidates from the broker, selects the
-first usable direct-exit VLESS Reality Vision relay, generates a sing-box TUN
-config, and runs sing-box to route device traffic through that relay.
+`cmd/client` is an interactive terminal client for Linux, macOS, and Windows.
+It is a view over the same `internal/connectcore` engine the desktop app
+drives, so relay ranking, the connect ladder, direct-first WSS fallback, NAT
+punching, telemetry, and mid-session failover behave identically in both — with
+the two TUN-mode differences noted under [Capture modes](#capture-modes). The
+view layer holds no connection logic.
 
-The implementation is in Go so the broker client, relay selection, sing-box
-config generation, and process runner can be reused across platforms.
+### Requirements
 
-## Requirements
-
-- A running OpenRung broker.
-- At least one registered relay.
 - A local `sing-box` binary. Use sing-box 1.14 or newer so the generated TUN
-  config can install native DNS settings for the tunnel.
-- macOS privileges for TUN routing. In practice, run `connect` with `sudo`.
+  config can install native DNS settings for the tunnel. Install it with
+  Homebrew if needed:
 
-Install sing-box with Homebrew if needed:
+  ```sh
+  brew install sing-box
+  ```
+
+- Nothing else for proxy mode. TUN mode additionally needs root (macOS and
+  Linux) or an elevated terminal (Windows) — see [Capture modes](#capture-modes).
+- Against the public fleet, no broker URL is needed: the client races the
+  built-in HTTPS broker fronts. Working against a local deployment needs a
+  running broker with at least one registered relay, selected with `-broker`.
+
+### Launch
 
 ```sh
-brew install sing-box
+go run ./cmd/client
 ```
 
-## Check Relay Selection
+A bare invocation and `connect` are the same thing; flags seed the initial
+settings. To work against a local broker:
 
 ```sh
+go run ./cmd/client connect -broker http://localhost:8080
+```
+
+Connecting is a keypress, not a flag: the client starts disconnected, and `c`
+connects with whatever the Settings view holds.
+
+### Views and keys
+
+Four views, switched with `1`–`4`, `tab`, and `shift+tab`:
+
+| View | What it shows |
+| --- | --- |
+| **Status** | Connection state, relay label, country, foundation/volunteer class, transport path (direct, punched, or WSS front), session duration, health-probe state, the latest failover/fallback activity, and the capture mode with its local proxy endpoint |
+| **Relays** | The ranked relay directory — country, measured latency, node class — plus the persisted recents row. `↑`/`↓` moves, `enter` pins the highlighted relay and connects to it, `x` clears the pin |
+| **Logs** | Engine and sing-box output in a scrollable ring buffer |
+| **Settings** | Broker URL override, capture mode, relay targeting by id/label/country, and the shell proxy helper |
+
+Global keys: `c` connect, `d` disconnect, `r` refresh the relay directory,
+`q` (or `ctrl+c`) quit. Quitting tears down the tunnel, restores the system
+proxy, and flushes telemetry before the process exits.
+
+In Settings, `↑`/`↓` moves between fields and `enter` acts on one: text fields
+open an inline editor (`enter` applies, `esc` cancels), the Mode field toggles
+the capture mode, and the Shell proxy field prints the copyable commands.
+
+### Capture modes
+
+**Proxy mode is the default** and needs no privileges. It runs a loopback mixed
+HTTP/SOCKS inbound and points the system proxy at it, exactly like the desktop
+app — including the stable per-install port and the `OPENRUNG_PROXY_PORT`
+override described under [Desktop App: Local Proxy](#desktop-app-local-proxy),
+and the shell helper under [POSIX shell applications](#posix-shell-applications).
+Only proxy-aware applications are carried.
+
+**TUN mode** captures the whole device instead. Pass `--tun`, or toggle the
+Settings Mode field while disconnected:
+
+```sh
+sudo go run ./cmd/client connect --tun
+```
+
+The generated config uses:
+
+- `tun` inbound with `auto_route: true` and `strict_route: true`.
+- `dns_mode: hijack`, so sing-box installs tunnel DNS settings and intercepts
+  port 53 DNS requests.
+- DNS servers detoured through the proxy.
+- `route_exclude_address` for the literal relay IP (and, on a punched path, the
+  relay's reflexive UDP IP), so the client's own connection to the relay stays
+  on the real network interface instead of being routed back into the TUN.
+- VLESS Reality Vision outbound from the selected relay descriptor.
+- Route final set to the proxy outbound.
+- `-mtu` when given; otherwise 1500.
+
+TUN mode needs the privileges to create the tunnel device and rewrite the
+routing table. Without them the client refuses before it dials anything, and
+says how to rerun:
+
+```text
+TUN mode needs root privileges to create the tunnel device: rerun as
+`sudo client connect --tun`, or drop --tun to use proxy mode (no privileges
+needed)
+```
+
+On Windows the same refusal asks for a terminal started with *Run as
+administrator*. The capture mode is fixed for the length of a session: changing
+it while connected is refused, so disconnect first.
+
+Two engine behaviors differ in TUN mode, both because a full-device tunnel owns
+the default route:
+
+- **The WSS/CDN fallback is unavailable.** The WSS bridge dials its front from
+  the client process, which the TUN would capture back into the tunnel the
+  bridge is carrying. Only the relay's own address can be excluded from the
+  routes, not a CDN's, so a relay whose direct path fails is left failed rather
+  than looped. Use proxy mode where the fallback matters.
+- **Mid-session health failures always trigger a failover.** Proxy mode first
+  checks whether the local network is alive at all, and rides out a Wi-Fi blip
+  or a laptop sleep without churning relays. In TUN mode every reference point
+  is reached through the tunnel under suspicion, so that check cannot answer;
+  the recovery pass tears the tunnel down first, which also restores the normal
+  network if the outage was local.
+
+### Headless subcommands
+
+For scripts and service managers, three non-interactive commands keep their
+historical flags:
+
+```sh
+# Connect and stream engine logs until interrupted (SIGINT or SIGTERM).
+go run ./cmd/client connect -headless -broker http://localhost:8080
+
+# Fetch relay candidates and print the selected usable relay.
 go run ./cmd/client check -broker http://localhost:8080
-```
 
-This fetches candidates from:
-
-```http
-GET /api/v1/relays?limit=5
-```
-
-Then it prints the selected usable relay.
-
-## Generate Config Only
-
-```sh
+# Write a sing-box TUN config for the selected relay without connecting.
 go run ./cmd/client config \
   -broker http://localhost:8080 \
   -out openrung-sing-box.json
 ```
 
-The generated config uses:
+`connect -headless` drives the same engine as the TUI — full candidate ladder,
+WSS fallback, punching, and failover — and combines with `--tun`. It exits
+non-zero on a terminal failure, and an interrupt disconnects cleanly, restoring
+the system proxy. `check` and `config` are fetch-and-print only: they open no
+telemetry session and start no tunnel.
 
-- `tun` inbound.
-- `auto_route: true`.
-- `strict_route: true`.
-- `dns_mode: hijack`, so sing-box installs tunnel DNS settings and intercepts
-  port 53 DNS requests.
-- DNS servers detoured through the proxy.
-- `route_exclude_address` for literal relay IPs, so the client's own TCP
-  connection to the relay stays on the real network interface instead of
-  being routed back into the TUN.
-- VLESS Reality Vision outbound from the selected relay descriptor.
-- Route final set to the proxy outbound.
+Common flags: `-broker` (empty races the built-in HTTPS fronts), `-relay-id`
+and `-relay-label` to pin a target, `-relay-family` for `check`/`config`,
+`-mtu` for the TUN device, and `-sing-box` to point at a specific binary. Run
+`go run ./cmd/client help` for the full list.
 
-## Connect on macOS
+Some pre-rewrite flags are still parsed but no longer honored, and say so on
+startup rather than failing: `-limit` and `-config-out` are the engine's
+concern now, and `-mtu` applies only to a TUN device.
 
-```sh
-sudo go run ./cmd/client connect \
-  -broker http://localhost:8080 \
-  -sing-box /opt/homebrew/bin/sing-box
-```
+### Reuse notes
 
-The client writes a temporary sing-box config, prints the chosen relay, and then
-runs:
-
-```sh
-sing-box run -c <generated-config>
-```
-
-Press `Ctrl-C` to stop. The client forwards the interrupt to sing-box and removes
-the temporary config file.
-
-## Reuse Notes
-
-Linux should be able to reuse most of the Go code directly. Windows should reuse
-the broker, relay selection, config generation, and command contract, but may
-need additional install checks around the Windows tunnel driver used by sing-box.
+Everything platform-specific reaches the engine through the narrow interfaces
+in `internal/connectcore/interfaces.go`, so Linux, macOS, and Windows share one
+implementation. Windows may need additional install checks around the tunnel
+driver sing-box uses for TUN mode.

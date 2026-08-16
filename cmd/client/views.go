@@ -151,16 +151,22 @@ func (m tuiModel) statusView() string {
 		rows = append(rows, row("Activity", noteStyle.Render("["+stamp+"] "+noticeLine(m.activity))))
 	}
 
-	proxy := m.proxyEndpoint
-	switch {
-	case m.proxyErr != "":
-		proxy = errorStyle.Render(m.proxyErr)
-	case proxy == "":
-		proxy = "resolving…"
-	}
-	rows = append(rows, row("Proxy", proxy))
-	if m.proxyWarn != "" {
-		rows = append(rows, row("", noteStyle.Render(m.proxyWarn)))
+	if m.settings.mode == connectcore.ModeTUN {
+		// No local endpoint exists in TUN mode; the tunnel device carries every
+		// application, so there is nothing for the user to configure.
+		rows = append(rows, row("Capture", "TUN — whole device"))
+	} else {
+		proxy := m.proxyEndpoint
+		switch {
+		case m.proxyErr != "":
+			proxy = errorStyle.Render(m.proxyErr)
+		case proxy == "":
+			proxy = "resolving…"
+		}
+		rows = append(rows, row("Capture", "proxy — applications configured for the endpoint below"), row("Proxy", proxy))
+		if m.proxyWarn != "" {
+			rows = append(rows, row("", noteStyle.Render(m.proxyWarn)))
+		}
 	}
 
 	rows = append(rows,
@@ -408,7 +414,7 @@ func (m tuiModel) settingsView() string {
 		value string
 	}{
 		{fieldBroker, "Broker URL", displayBroker(m.settings.brokerURL)},
-		{fieldMode, "Mode", "proxy (TUN arrives in a later release)"},
+		{fieldMode, "Mode", modeLabel(m.settings.mode)},
 		{fieldRelayID, "Target relay id", orUnset(m.settings.target.RelayID)},
 		{fieldRelayLabel, "Target label", orUnset(m.settings.target.Label)},
 		{fieldCountry, "Target country", orUnset(m.settings.target.Country)},
@@ -453,6 +459,8 @@ func (m tuiModel) settingsView() string {
 // shellHelperValue is the Shell proxy row's summary cell.
 func (m tuiModel) shellHelperValue() string {
 	switch {
+	case m.settings.mode == connectcore.ModeTUN:
+		return helpStyle.Render("not needed in TUN mode")
 	case m.settings.shellErr != "":
 		return errorStyle.Render(m.settings.shellErr)
 	case m.settings.shellOK:
@@ -462,6 +470,30 @@ func (m tuiModel) shellHelperValue() string {
 	default:
 		return helpStyle.Render("available while connected")
 	}
+}
+
+// modeLabel is the Settings Mode row: what the mode does and what it costs.
+func modeLabel(mode connectcore.Mode) string {
+	if mode == connectcore.ModeTUN {
+		return "TUN — whole device (needs sudo)"
+	}
+	return "proxy — local mixed HTTP/SOCKS inbound (no privileges)"
+}
+
+// modeNote explains what a just-accepted mode changes, since the engine only
+// applies it on the next connect.
+func modeNote(mode connectcore.Mode) string {
+	if mode == connectcore.ModeTUN {
+		return "TUN mode: the next connect captures every application — the client must be running under sudo"
+	}
+	return "proxy mode: the next connect serves a local mixed proxy and points the system proxy at it"
+}
+
+func toggleMode(mode connectcore.Mode) connectcore.Mode {
+	if mode == connectcore.ModeTUN {
+		return connectcore.ModeProxy
+	}
+	return connectcore.ModeTUN
 }
 
 func orUnset(value string) string {

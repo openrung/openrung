@@ -25,6 +25,16 @@ const (
 	ModeProxy
 )
 
+const (
+	// DefaultTunnelIPv4Address and DefaultTunnelIPv6Address are the TUN
+	// inbound's addresses when the caller does not override them. They are
+	// exported because a TUN-mode host has no loopback inbound to dial for
+	// readiness and instead waits for these addresses to appear on a local
+	// interface (connectcore.tunInterfaceReady).
+	DefaultTunnelIPv4Address = "172.19.0.1/30"
+	DefaultTunnelIPv6Address = "fdfe:dcba:9876::1/126"
+)
+
 type SingBoxConfigInput struct {
 	Relay             relay.Descriptor
 	TunnelIPv4Address string
@@ -58,11 +68,11 @@ func BuildSingBoxConfig(input SingBoxConfigInput) ([]byte, error) {
 
 	tunnelIPv4Address := input.TunnelIPv4Address
 	if tunnelIPv4Address == "" {
-		tunnelIPv4Address = "172.19.0.1/30"
+		tunnelIPv4Address = DefaultTunnelIPv4Address
 	}
 	tunnelIPv6Address := input.TunnelIPv6Address
 	if tunnelIPv6Address == "" {
-		tunnelIPv6Address = "fdfe:dcba:9876::1/126"
+		tunnelIPv6Address = DefaultTunnelIPv6Address
 	}
 	dnsServers := input.DNSServers
 	if len(dnsServers) == 0 {

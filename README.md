@@ -29,8 +29,8 @@ relays in unrestricted regions.
 OpenRung connects censored users with relays in unrestricted regions, similar in
 spirit to Tor's [Snowflake](https://snowflake.torproject.org/):
 
-- **Clients** (mobile VPN apps, the desktop proxy app, and a desktop TUN CLI)
-  route user traffic through a relay.
+- **Clients** (mobile VPN apps, the desktop proxy app, and a terminal client
+  with proxy and full-device TUN modes) route user traffic through a relay.
 - **Relay operators** — the OpenRung Foundation and community volunteers — run
   a small command-line app that relays that traffic to the open internet.
 - **The broker** is a control plane only: it matches clients with healthy
@@ -275,15 +275,22 @@ TLS setup.
 
 #### Try a client
 
-Inspect the raw relay directory response and confirm that the desktop CLI can
-select a usable relay:
+Inspect the raw relay directory response and confirm that the terminal client
+can select a usable relay:
 
 ```sh
 curl http://localhost:8080/api/v1/relays
 go run ./cmd/client check -broker http://localhost:8080
 ```
 
-For the zero-privilege desktop proxy app and macOS full-device CLI routing, see
+Then connect with the interactive client (`c` connects, `q` quits):
+
+```sh
+go run ./cmd/client connect -broker http://localhost:8080
+```
+
+For the zero-privilege desktop proxy app, and for the terminal client's views,
+keys, and full-device TUN mode, see
 [`docs/desktop-client.md`](docs/desktop-client.md).
 The separately maintained Android and iOS clients implement the same
 direct-first WSS/CDN fallback through pinned `brokerapi` and `wsscore` modules.
@@ -296,7 +303,7 @@ cmd/relay/           Relay CLI for Xray-backed registration.
 cmd/relayhub/        Relay hub for CGNAT volunteer-run relays
                      (reverse-tunnel data plane).
 cmd/wsssidecar/      Relay-local WSS/CDN origin with a fixed loopback target.
-cmd/client/          Desktop CLI client.
+cmd/client/          Terminal client (TUI; proxy and TUN capture modes).
 internal/broker/     Broker store and HTTP handlers.
 internal/client/     Client engine, relay selection, and sing-box config.
 internal/clienttelemetry/  Client metrics reporting to the broker.
@@ -330,7 +337,7 @@ docs/                Architecture, API, client, and operations docs.
 | [Architecture](docs/architecture.md) | Goals, components, and trust boundaries |
 | [Broker API](docs/api.md) | HTTP API reference (`/api/v1`) |
 | [Component versioning](docs/versioning.md) | Independent release identities and compatibility contracts |
-| [Desktop clients](docs/desktop-client.md) | GUI proxy mode, Linux shell setup, and CLI TUN routing |
+| [Desktop clients](docs/desktop-client.md) | GUI proxy mode, Linux shell setup, and the terminal client's proxy and TUN modes |
 | [WSS fallback](docs/wss-fallback.md) | Per-relay protocol, trust boundaries, failure policy, and rollout |
 | [Per-relay CloudFront deployment](deploy/relay/cloudfront-wss.md) | CloudFront and relay-local sidecar configuration |
 | [Security and abuse](docs/security-abuse.md) | Threat model, volunteer risk, and abuse handling |

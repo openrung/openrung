@@ -222,9 +222,11 @@ func (s *Engine) reladder(ctx context.Context, conn *connection, port int, targe
 	// The stable port was released while fetching and ranking. Recheck it at
 	// the last possible moment so a competing process that claimed it during
 	// that gap is reported as a local endpoint collision, not as a fleet of
-	// failed relays.
-	if err := EnsureProxyPortAvailable(port); err != nil {
-		return nil, 0, "proxy_bind", err
+	// failed relays. TUN mode holds no such port.
+	if !s.tunMode() {
+		if err := EnsureProxyPortAvailable(port); err != nil {
+			return nil, 0, "proxy_bind", err
+		}
 	}
 	res, err := s.runLadder(ctx, conn, cands, port)
 	if err != nil {
@@ -274,7 +276,14 @@ func (s *Engine) healthLoop(ctx context.Context, port int, fronts []string, fail
 			s.notify(Notice{Kind: NoticeHealthProbe, Failures: notified, Threshold: HealthFailureThreshold})
 			continue
 		}
-		if !s.networkAlive(ctx, fronts) {
+		// The network-alive gate needs a reference point outside the tunnel. In
+		// TUN mode there is none: the tunnel owns the default route, so the
+		// broker fronts are reached through the very tunnel under suspicion and
+		// the gate could only ever answer "network down" — which would disable
+		// failover for good. Fail over instead; the recovery pass tears the TUN
+		// down first, which is also what restores the normal network if the
+		// outage turns out to be local.
+		if !s.tunMode() && !s.networkAlive(ctx, fronts) {
 			if ctx.Err() != nil {
 				return
 			}

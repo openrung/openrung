@@ -211,7 +211,9 @@ func (c *candidateResult) teardown() {
 
 // Engine is the connection engine. The platform hooks (Sink, Persistence,
 // OSProxy, Elevation, ResolveProxyPort) and options must be assigned before
-// Start or the first Connect; the engine never mutates them.
+// Start or the first Connect; the engine never mutates them. The capture mode
+// is the one setting a host may change later, through SetMode (see mode.go),
+// which the TUI's Settings toggle uses.
 type Engine struct {
 	// Sink receives the engine's typed state and log events. A nil Sink drops
 	// them (headless drivers that only poll State).
@@ -227,6 +229,10 @@ type Engine struct {
 
 	// Elevation acquires TUN privileges; unused in proxy mode (see Prepare).
 	Elevation Elevation
+
+	// TunnelMTU overrides the generated TUN inbound's MTU. Zero keeps the
+	// sing-box config default. Proxy mode has no TUN device and ignores it.
+	TunnelMTU int
 
 	// ResolveProxyPort resolves the stable local proxy port; the engine pins
 	// the first successful resolution for the process (see LocalProxyPort).
@@ -266,6 +272,9 @@ type Engine struct {
 	core      coreState
 	sessionID string
 	conn      *connection
+	// mode is the capture mode (see mode.go). Its zero value is ModeProxy, so
+	// a host that never calls SetMode keeps the pre-B3 behavior.
+	mode Mode
 
 	directory *directoryCache
 
@@ -306,6 +315,9 @@ func (s *Engine) tunnelReadyProbe() func(context.Context, int) error {
 	if s.tunnelReady != nil {
 		return s.tunnelReady
 	}
+	if s.tunMode() {
+		return tunInterfaceReady
+	}
 	return loopbackReady
 }
 
@@ -313,12 +325,20 @@ func (s *Engine) tunnelRunner() func(context.Context, string) error {
 	if s.runTunnel != nil {
 		return s.runTunnel
 	}
+	// A TUN candidate holds a device plus the routes and DNS settings that go
+	// with it, so it gets the longer grace to unwind them on interrupt; hard
+	// killing it would leave the host's routing table pointing at a gone
+	// interface.
+	killGrace := LadderKillGrace
+	if s.tunMode() {
+		killGrace = TUNKillGrace
+	}
 	return func(ctx context.Context, configPath string) error {
 		runner := client.SingBoxRunner{
 			Path:      s.SingBoxPath,
 			Stdout:    s.logWriter(),
 			Stderr:    s.logWriter(),
-			KillGrace: LadderKillGrace,
+			KillGrace: killGrace,
 		}
 		return runner.Run(ctx, configPath)
 	}
@@ -328,12 +348,18 @@ func (s *Engine) tunnelProber() func(context.Context, int) (int64, error) {
 	if s.probeTunnel != nil {
 		return s.probeTunnel
 	}
+	if s.tunMode() {
+		return verifyInternetViaTUN
+	}
 	return verifyInternetViaProxy
 }
 
 func (s *Engine) healthProber() func(context.Context, int) error {
 	if s.healthProbe != nil {
 		return s.healthProbe
+	}
+	if s.tunMode() {
+		return healthSweepViaTUN
 	}
 	return healthSweepViaProxy
 }
@@ -417,11 +443,12 @@ func (s *Engine) Stop() {
 	s.connectMu.Unlock()
 }
 
-// Prepare mirrors the mobile bridge's OS-consent step. Proxy mode needs no OS
-// consent; TUN mode will perform the elevation handshake here via the
-// Elevation hook.
+// Prepare mirrors the mobile bridge's OS-consent step: proxy mode needs no OS
+// consent, while TUN mode performs the elevation handshake through the
+// Elevation hook. The connect flow runs the same step itself, so a host that
+// never calls Prepare is still gated.
 func (s *Engine) Prepare() (bool, error) {
-	return true, nil
+	return s.prepare(context.Background())
 }
 
 // Connect starts (or switches) the tunnel. targetRelayID takes precedence over
@@ -495,7 +522,7 @@ type ConnectionInfo struct {
 	Relay     relay.Descriptor
 	Transport string // relay.TransportDirect, "punch", or "wss"
 	FrontID   string // set only on the relay-local WSS fallback path
-	ProxyPort int
+	ProxyPort int    // 0 in TUN mode, which binds no local inbound
 }
 
 // ActiveConnectionInfo returns the promoted candidate's path details, or false
@@ -596,6 +623,15 @@ func (s *Engine) runConnect(ctx context.Context, conn *connection, brokerURL str
 // connectFlow runs the connect phases and returns ("", nil) on a clean end (a
 // user disconnect or shutdown, at any phase) or the terminal (stage, error).
 func (s *Engine) connectFlow(ctx context.Context, conn *connection, brokerURL string, target RelayTarget) (string, error) {
+	// OS consent while the state machine is still PREPARING, before a telemetry
+	// session exists: a refused elevation is a local precondition, not a
+	// connection attempt, and nothing has been dialed yet.
+	if ok, err := s.prepare(ctx); err != nil {
+		return "elevation", err
+	} else if !ok {
+		return "elevation", errors.New("TUN mode was not permitted")
+	}
+
 	s.setStatus(StatusConnecting, keepLabel, clearError)
 
 	mgr := s.newManager(brokerURL)
@@ -609,12 +645,19 @@ func (s *Engine) connectFlow(ctx context.Context, conn *connection, brokerURL st
 		mgr.Record("connection_attempted", "", nil, nil)
 	}
 
-	port, err := s.LocalProxyPort()
-	if err != nil {
-		return "proxy_port", err
-	}
-	if err := EnsureProxyPortAvailable(port); err != nil {
-		return "proxy_port", err
+	// TUN mode binds no local port, so it neither resolves nor reserves the
+	// stable endpoint; port stays 0 and every downstream user of it is
+	// mode-aware.
+	port := 0
+	if !s.tunMode() {
+		resolved, err := s.LocalProxyPort()
+		if err != nil {
+			return "proxy_port", err
+		}
+		if err := EnsureProxyPortAvailable(resolved); err != nil {
+			return "proxy_port", err
+		}
+		port = resolved
 	}
 
 	fetch, fetchMS, err := s.fetchCandidates(ctx, conn, brokerURL, target)
@@ -642,8 +685,10 @@ func (s *Engine) connectFlow(ctx context.Context, conn *connection, brokerURL st
 	if err := ctx.Err(); err != nil {
 		return "", nil
 	}
-	if err := EnsureProxyPortAvailable(port); err != nil {
-		return "proxy_port", err
+	if !s.tunMode() {
+		if err := EnsureProxyPortAvailable(port); err != nil {
+			return "proxy_port", err
+		}
 	}
 	res, err := s.runLadder(ctx, conn, ladder, port)
 	if err != nil {
@@ -771,6 +816,16 @@ func (s *Engine) attemptCandidate(ctx context.Context, conn *connection, cand re
 	if len(fronts) == 0 {
 		return nil, directErr
 	}
+	if s.tunMode() {
+		// The WSS bridge dials the CDN front from this process, and a full-device
+		// TUN captures that connection into the very tunnel the bridge carries —
+		// sing-box would route it back to the loopback bridge, which would dial
+		// the front again. Only the relay's own IP (and a punched peer) can be
+		// excluded from the routes; a CDN's addresses cannot. Stay on the direct
+		// failure instead of building that loop.
+		s.appendLog(fmt.Sprintf("relay %s has WSS fronts, but TUN mode cannot use them (the front connection would route back into the tunnel)", cand.ID))
+		return nil, directErr
+	}
 
 	// The direct path is an independently meaningful relay-health signal. Record
 	// it once before transport fallback; subsequent ticket/CDN/WSS failures must
@@ -824,12 +879,7 @@ func (s *Engine) attemptDirectCandidate(ctx context.Context, conn *connection, c
 
 	// Try a direct NAT-punched path first; on any failure fall back to the
 	// relay hub endpoint so the outcome is never worse than not punching.
-	configInput := client.SingBoxConfigInput{
-		Relay:              cand,
-		Mode:               client.ModeProxy,
-		ProxyListenAddress: ProxyHost,
-		ProxyListenPort:    port,
-	}
+	configInput := s.candidateConfigInput(cand, port)
 	if est := s.maybePunch(candCtx, conn.mgr, cand); est != nil {
 		res.punch = est
 		res.accessTransport = "punch"
@@ -840,6 +890,22 @@ func (s *Engine) attemptDirectCandidate(ctx context.Context, conn *connection, c
 		s.appendLog(fmt.Sprintf("punched direct path to %s (peer %s, nat %s)", cand.ID, est.PeerIP, est.NATClass))
 	}
 	return s.startCandidate(res, configInput)
+}
+
+// candidateConfigInput is the mode-shaped base every candidate's config starts
+// from: the loopback mixed inbound in proxy mode, or the full-device TUN
+// inbound (whose shape — auto_route, strict_route, DNS hijack, and the relay
+// route exclusions — BuildSingBoxConfig owns) in TUN mode.
+func (s *Engine) candidateConfigInput(cand relay.Descriptor, port int) client.SingBoxConfigInput {
+	mode := s.Mode()
+	input := client.SingBoxConfigInput{Relay: cand, Mode: mode.inboundMode()}
+	if mode == ModeTUN {
+		input.MTU = s.TunnelMTU
+		return input
+	}
+	input.ProxyListenAddress = ProxyHost
+	input.ProxyListenPort = port
+	return input
 }
 
 // startCandidate owns path-independent config, process, readiness, and
@@ -1020,13 +1086,22 @@ func (s *Engine) recordRelayAttemptFailed(mgr *clienttelemetry.Manager, relayID 
 	mgr.Record("relay_attempt_failed", relayID, attrs, meas)
 }
 
-// applyProxy points the OS proxy at the local mixed inbound. The pre-tunnel
+// applyProxy points the OS proxy at the local mixed inbound, and is a no-op in
+// TUN mode, which routes the device instead of configuring it. The pre-tunnel
 // setting is snapshotted exactly once per connection (a recovery release keeps
 // it, so a re-promote can re-point without capturing our own proxy as the
 // user's), persisted for crash recovery, and restored on exit. Failure is
 // non-fatal: sing-box still listens on loopback, so the app can fall back to a
 // manual proxy address.
 func (s *Engine) applyProxy(conn *connection, port int) {
+	if s.tunMode() {
+		// A TUN inbound already carries every route, and there is no loopback
+		// listener to point an OS proxy at. Touching the setting here would
+		// blackhole exactly the traffic the tunnel is meant to carry, and would
+		// leave a snapshot to restore for a change never made.
+		s.appendLog("routing all device traffic through the tunnel interface")
+		return
+	}
 	if s.OSProxy == nil || !s.OSProxy.Supported() {
 		s.appendLog(fmt.Sprintf("system proxy unavailable here; set manual proxy %s:%d", ProxyHost, port))
 		return

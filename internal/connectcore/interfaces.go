@@ -132,10 +132,15 @@ type OSProxy interface {
 	Restore(snap OSProxySnapshot) error
 }
 
-// Elevation acquires the OS privileges TUN mode needs (client.ModeTUN).
-// Proxy mode never invokes it; the hook exists now so the TUN rollout
-// (docs/adr/001 Track B3) lands as wiring behind Prepare rather than as an
-// interface change. A nil Elevation means TUN cannot be prepared.
+// Elevation acquires the OS privileges TUN mode needs (see Mode). Proxy mode
+// never invokes it. A nil Elevation means TUN cannot be prepared: the engine
+// refuses the connect rather than let sing-box fail opaquely after the ladder
+// has already dialed relays.
+//
+// A host that cannot acquire privileges it was not started with — the terminal
+// client, which would have to re-exec itself under sudo and detach the tunnel
+// from the terminal that owns it — returns an error naming the way to rerun.
+// That error is what the user sees, so it carries the guidance.
 type Elevation interface {
 	// Elevate ensures the process may create a TUN device, prompting the user
 	// if the platform requires it.

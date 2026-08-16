@@ -75,6 +75,13 @@ const (
 	// device, so a hard kill is safe.
 	LadderKillGrace = 500 * time.Millisecond
 
+	// TUNKillGrace replaces LadderKillGrace in TUN mode. A TUN candidate holds
+	// a tunnel device plus the routes and DNS settings sing-box installed for
+	// it, and only sing-box's own interrupt handling puts those back. A hard
+	// kill after half a second would leave the host routing traffic at an
+	// interface that no longer exists, so the interrupt gets the room it needs.
+	TUNKillGrace = 5 * time.Second
+
 	// TunnelReadyTimeout bounds how long a candidate's sing-box has to bind its
 	// mixed inbound before the rung is judged failed (a config or bind error).
 	// It replaces a fixed post-launch grace, so a healthy engine that binds in

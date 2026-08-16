@@ -382,6 +382,7 @@ type fakeProxyController struct {
 	snap       OSProxySnapshot
 	setErr     error
 	restoreErr error
+	sets       int
 	restores   []OSProxySnapshot
 }
 
@@ -392,6 +393,7 @@ func (f *fakeProxyController) Snapshot() (OSProxySnapshot, error) {
 }
 
 func (f *fakeProxyController) Set(host string, port int) error {
+	f.sets++
 	return f.setErr
 }
 

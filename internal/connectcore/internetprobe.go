@@ -72,13 +72,19 @@ func probeOnce(ctx context.Context, client *http.Client, endpoint string) error 
 }
 
 // verifyInternetViaProxy gates CONNECTED on end-to-end internet through the
-// tunnel, mirroring the mobile InternetProbe.verify: sweep the endpoints until
-// one answers or the overall deadline expires, pausing between sweeps. The
-// returned duration includes the retries (internet_probe_ms semantics).
+// tunnel's loopback mixed inbound.
 func verifyInternetViaProxy(ctx context.Context, proxyPort int) (int64, error) {
 	client := proxyProbeClient(proxyPort)
 	defer closeIdle(client)
+	return verifyInternet(ctx, client)
+}
 
+// verifyInternet mirrors the mobile InternetProbe.verify: sweep the endpoints
+// until one answers or the overall deadline expires, pausing between sweeps.
+// The returned duration includes the retries (internet_probe_ms semantics).
+// Only the client differs between capture modes — through the loopback proxy
+// inbound, or straight out over the route the TUN has taken over.
+func verifyInternet(ctx context.Context, client *http.Client) (int64, error) {
 	started := time.Now()
 	deadline := started.Add(InternetProbeOverallTimeout)
 	var lastErr error
@@ -101,8 +107,8 @@ func verifyInternetViaProxy(ctx context.Context, proxyPort int) (int64, error) {
 }
 
 // healthSweepViaProxy is one mid-session health-monitor sweep through the
-// tunnel — a single pass over the endpoints, no retry loop; the monitor's
-// consecutive-failure counter is the retry policy.
+// tunnel's loopback mixed inbound — a single pass over the endpoints, no retry
+// loop; the monitor's consecutive-failure counter is the retry policy.
 func healthSweepViaProxy(ctx context.Context, proxyPort int) error {
 	client := proxyProbeClient(proxyPort)
 	defer closeIdle(client)

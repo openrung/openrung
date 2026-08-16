@@ -32,6 +32,7 @@ type engineDriver interface {
 	RankedDirectory(ctx context.Context, brokerURL string) ([]connectcore.DirectoryRelay, error)
 	LocalProxyPort() (int, error)
 	LocalProxyPortWarning() error
+	SetMode(mode connectcore.Mode) error
 }
 
 // tuiSink forwards engine events into the Bubble Tea loop. Status changes are
@@ -94,6 +95,12 @@ func runTUI(cfg connectConfig) error {
 	engine.PunchEnabled = cfg.PunchEnabled
 	engine.PunchURL = cfg.PunchURL
 	engine.PunchInsecure = cfg.PunchInsecure
+	engine.TunnelMTU = cfg.MTU
+	// Nothing is connected yet, so this cannot fail; the Settings toggle uses
+	// the same call and does surface a refusal.
+	if err := engine.SetMode(cfg.mode()); err != nil {
+		return err
+	}
 
 	for _, warning := range legacyFlagWarnings(cfg) {
 		ring.push(stampLog(time.Now(), "warning: "+warning))
@@ -151,6 +158,14 @@ type proxyInfoMsg struct {
 
 type connectIssuedMsg struct{ err error }
 
+// modeSetMsg carries the outcome of a capture-mode change: the engine either
+// adopted the mode or said why it would not.
+type modeSetMsg struct {
+	mode    connectcore.Mode
+	applied bool
+	err     string
+}
+
 // ---- model ----
 
 type viewID int
@@ -178,6 +193,10 @@ const (
 type settingsState struct {
 	brokerURL string
 	target    connectcore.RelayTarget
+	// mode mirrors the engine's capture mode. The engine owns it (a live
+	// session keeps the mode it started with), so the view only ever shows
+	// what a SetMode call confirmed.
+	mode connectcore.Mode
 
 	cursor  settingsFieldID
 	editing bool
@@ -248,13 +267,21 @@ func newTUIModel(driver engineDriver, ring *logRing, cfg connectConfig) tuiModel
 		settings: settingsState{
 			brokerURL: cfg.BrokerURL,
 			target:    cfg.target(),
+			mode:      cfg.mode(),
 			input:     input,
 		},
 	}
 }
 
 func (m tuiModel) Init() tea.Cmd {
-	return tea.Batch(m.tickCmd(), m.refreshDirectoryCmd(), m.resolveProxyCmd())
+	cmds := []tea.Cmd{m.tickCmd(), m.refreshDirectoryCmd()}
+	// TUN mode binds no local endpoint, so it neither needs nor persists the
+	// stable proxy port; resolving one would pick a port for a listener that
+	// never opens.
+	if m.settings.mode == connectcore.ModeProxy {
+		cmds = append(cmds, m.resolveProxyCmd())
+	}
+	return tea.Batch(cmds...)
 }
 
 // ---- commands (every engine call happens here, off the event loop) ----
@@ -308,6 +335,19 @@ func (m tuiModel) disconnectCmd() tea.Cmd {
 	return func() tea.Msg {
 		_ = driver.Disconnect()
 		return nil
+	}
+}
+
+// setModeCmd asks the engine to change capture mode. The engine refuses while
+// a connection is live, so the view adopts the new mode only once the call
+// came back clean.
+func (m tuiModel) setModeCmd(mode connectcore.Mode) tea.Cmd {
+	driver := m.driver
+	return func() tea.Msg {
+		if err := driver.SetMode(mode); err != nil {
+			return modeSetMsg{err: err.Error()}
+		}
+		return modeSetMsg{mode: mode, applied: true}
 	}
 }
 
@@ -371,6 +411,20 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case shellHelperMsg:
 		m.settings.shell, m.settings.shellOK, m.settings.shellErr = msg.info, msg.err == "", msg.err
+		return m, nil
+
+	case modeSetMsg:
+		if !msg.applied {
+			m.settings.note = msg.err
+			return m, nil
+		}
+		m.settings.mode = msg.mode
+		m.settings.note = modeNote(msg.mode)
+		// Switching into proxy mode needs the stable endpoint the launch-time
+		// resolution skipped.
+		if msg.mode == connectcore.ModeProxy && m.proxyEndpoint == "" && m.proxyErr == "" {
+			return m, m.resolveProxyCmd()
+		}
 		return m, nil
 
 	case tickMsg:
@@ -504,14 +558,19 @@ func (m tuiModel) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter":
 		if m.settings.cursor == fieldMode {
-			// The engine runs proxy mode only until ADR-001 Track B3 wires the
-			// elevation hook; surface why the toggle does nothing yet.
-			m.settings.note = "TUN mode arrives in a later release; proxy mode needs no privileges"
-			return m, nil
+			// The mode is the engine's to accept: it refuses mid-session, and
+			// TUN mode is refused again at connect time without the privileges
+			// to create the tunnel device.
+			m.settings.note = ""
+			return m, m.setModeCmd(toggleMode(m.settings.mode))
 		}
 		if m.settings.cursor == fieldShellHelper {
 			// Mirrors the desktop Settings gating: the enable command points a
 			// shell at the local endpoint, which only answers while connected.
+			if m.settings.mode == connectcore.ModeTUN {
+				m.settings.note = "TUN mode already routes every application; the shell proxy is a proxy-mode helper"
+				return m, nil
+			}
 			if m.state.Status != connectcore.StatusConnected {
 				m.settings.note = "connect first — the shell proxy only works while connected"
 				return m, nil

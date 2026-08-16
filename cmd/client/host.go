@@ -31,6 +31,8 @@ func newEngineHost(sink connectcore.EventSink, singBoxPath string) *engineHost {
 	// attributes and sends no platform header for them).
 	engine.Platform = connectcore.PlatformCLI
 	engine.OSProxy = osProxyAdapter{ctrl: proxymode.New()}
+	// TUN mode is gated on this hook; proxy mode never invokes it.
+	engine.Elevation = elevation{}
 	if store, err := clientstate.New(); err == nil {
 		host.store = store
 		engine.Persistence = storeAdapter{store: store}
