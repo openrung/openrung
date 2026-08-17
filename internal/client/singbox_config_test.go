@@ -2,6 +2,9 @@ package client
 
 import (
 	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -35,6 +38,9 @@ func TestBuildSingBoxConfig(t *testing.T) {
 	if proxy["server_port"].(float64) != 443 {
 		t.Fatalf("unexpected server port: %+v", proxy["server_port"])
 	}
+	if _, ok := outbounds[1].(map[string]any)["domain_resolver"]; ok {
+		t.Fatal("full-tunnel direct outbound unexpectedly received a split DNS resolver")
+	}
 
 	tls := proxy["tls"].(map[string]any)
 	reality := tls["reality"].(map[string]any)
@@ -63,6 +69,135 @@ func TestBuildSingBoxConfig(t *testing.T) {
 	if dns0["type"] != "tcp" || dns0["detour"] != "proxy" {
 		t.Fatalf("expected TCP DNS through proxy, got %+v", dns0)
 	}
+	if _, ok := dns["rules"]; ok {
+		t.Fatal("full-tunnel config unexpectedly contains split DNS rules")
+	}
+}
+
+func TestBuildSingBoxProxyModeSplitTunnelRoutesChinaAndPrivateDirect(t *testing.T) {
+	now := time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC)
+	cfg, err := BuildSingBoxConfig(SingBoxConfigInput{
+		Relay:           validRelay(now),
+		Mode:            ModeProxy,
+		ProxyListenPort: 7890,
+		SplitTunnel:     true,
+	})
+	if err != nil {
+		t.Fatalf("build split proxy config: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(cfg, &decoded); err != nil {
+		t.Fatalf("config should be valid JSON: %v", err)
+	}
+
+	dns := decoded["dns"].(map[string]any)
+	servers := dns["servers"].([]any)
+	local := servers[len(servers)-1].(map[string]any)
+	if local["type"] != "local" || local["tag"] != "dns-direct" {
+		t.Fatalf("missing local direct resolver: %+v", servers)
+	}
+	dnsRule := dns["rules"].([]any)[0].(map[string]any)
+	if dnsRule["action"] != "route" || dnsRule["server"] != "dns-direct" {
+		t.Fatalf("unexpected split DNS rule: %+v", dnsRule)
+	}
+	if !containsJSONValue(dnsRule["domain_suffix"].([]any), ".cn") ||
+		!containsJSONValue(dnsRule["domain_suffix"].([]any), "baidu.com") {
+		t.Fatalf("split DNS domains missing China coverage: %+v", dnsRule["domain_suffix"])
+	}
+
+	direct := decoded["outbounds"].([]any)[1].(map[string]any)
+	if direct["domain_resolver"] != "dns-direct" {
+		t.Fatalf("direct outbound resolver = %v, want dns-direct", direct["domain_resolver"])
+	}
+
+	route := decoded["route"].(map[string]any)
+	if route["final"] != "proxy" {
+		t.Fatalf("split mode must keep fail-closed proxy final, got %v", route["final"])
+	}
+	rules := route["rules"].([]any)
+	if len(rules) != 3 {
+		t.Fatalf("proxy split route rules = %d, want 3: %+v", len(rules), rules)
+	}
+	privateRule := rules[1].(map[string]any)
+	if privateRule["ip_is_private"] != true || privateRule["outbound"] != "direct" {
+		t.Fatalf("unexpected private-network rule: %+v", privateRule)
+	}
+	domainRule := rules[2].(map[string]any)
+	if domainRule["outbound"] != "direct" ||
+		!containsJSONValue(domainRule["domain_suffix"].([]any), "bilibili.com") {
+		t.Fatalf("unexpected direct-domain rule: %+v", domainRule)
+	}
+	for _, raw := range rules {
+		if raw.(map[string]any)["action"] == "sniff" {
+			t.Fatalf("mixed proxy inbound should not pay a sniffing delay: %+v", rules)
+		}
+	}
+}
+
+func TestBuildSingBoxTUNSplitTunnelSniffsBeforeDomainRouting(t *testing.T) {
+	now := time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC)
+	cfg, err := BuildSingBoxConfig(SingBoxConfigInput{
+		Relay:       validRelay(now),
+		Mode:        ModeTUN,
+		SplitTunnel: true,
+	})
+	if err != nil {
+		t.Fatalf("build split TUN config: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(cfg, &decoded); err != nil {
+		t.Fatalf("config should be valid JSON: %v", err)
+	}
+	rules := decoded["route"].(map[string]any)["rules"].([]any)
+	if len(rules) != 4 {
+		t.Fatalf("TUN split route rules = %d, want 4: %+v", len(rules), rules)
+	}
+	sniff := rules[2].(map[string]any)
+	if sniff["inbound"] != "tun-in" || sniff["action"] != "sniff" {
+		t.Fatalf("TUN split config must sniff before domain routing: %+v", rules)
+	}
+	if rules[3].(map[string]any)["outbound"] != "direct" {
+		t.Fatalf("domain route must follow TUN sniff: %+v", rules)
+	}
+}
+
+func TestSplitTunnelConfigAcceptedBySingBox(t *testing.T) {
+	binary := os.Getenv("OPENRUNG_TEST_SING_BOX")
+	if binary == "" {
+		t.Skip("set OPENRUNG_TEST_SING_BOX to run config compatibility validation")
+	}
+	now := time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC)
+	candidate := validRelay(now)
+	// validRelay uses a readable placeholder key for structural unit tests;
+	// sing-box's checker correctly requires a real X25519 public key.
+	candidate.RealityPublicKey = "qYnwTernLtZYTfY7pQr1fLu27Am2MuKKvXW8n6bmTU4"
+	cfg, err := BuildSingBoxConfig(SingBoxConfigInput{
+		Relay:           candidate,
+		Mode:            ModeProxy,
+		ProxyListenPort: 7890,
+		SplitTunnel:     true,
+	})
+	if err != nil {
+		t.Fatalf("build split proxy config: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "split.json")
+	if err := os.WriteFile(path, cfg, 0o600); err != nil {
+		t.Fatalf("write split config: %v", err)
+	}
+	if output, err := exec.Command(binary, "check", "-c", path).CombinedOutput(); err != nil {
+		t.Fatalf("sing-box rejected split config: %v\n%s", err, output)
+	}
+}
+
+func containsJSONValue(values []any, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestBuildSingBoxConfigExcludesIPv6RelayFromTUNRoute(t *testing.T) {

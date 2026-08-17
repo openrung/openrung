@@ -52,6 +52,7 @@ function sampleRelay(loc: Located, index: number): RelayDescriptor {
 }
 
 export class MockOpenRungVpn implements OpenRungVpnModule {
+  private splitTunnel = false;
   private state: NativeVpnState = {
     status: 'disconnected',
     relayLabel: null,
@@ -147,6 +148,17 @@ export class MockOpenRungVpn implements OpenRungVpnModule {
       enableCommand: '. "$HOME/.config/openrung/proxy-env.sh" && openrung_proxy_on',
       disableCommand: 'openrung_proxy_off',
     };
+  }
+
+  async getSplitTunnel(): Promise<boolean> {
+    return this.splitTunnel;
+  }
+
+  async setSplitTunnel(enabled: boolean): Promise<void> {
+    if (this.state.status !== 'disconnected' && this.state.status !== 'failed') {
+      throw new Error('disconnect before changing split tunneling');
+    }
+    this.splitTunnel = enabled;
   }
 
   async listRelaysForDirectory(): Promise<RelayListResponse> {

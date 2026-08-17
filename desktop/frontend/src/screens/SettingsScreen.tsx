@@ -18,8 +18,12 @@ interface Props {
 export function SettingsScreen({ consoleOpen, connectionStatus, onToggleConsole }: Props) {
   const [proxyInfo, setProxyInfo] = useState<NativeProxyInfo | null>(null);
   const [proxyError, setProxyError] = useState<string | null>(null);
+  const [splitTunnel, setSplitTunnel] = useState<boolean | null>(null);
+  const [routingError, setRoutingError] = useState<string | null>(null);
+  const [routingSaving, setRoutingSaving] = useState(false);
   const [copied, setCopied] = useState<'endpoint' | 'enable' | 'disable' | null>(null);
   const connected = connectionStatus === 'connected';
+  const canChangeRouting = connectionStatus === 'disconnected' || connectionStatus === 'failed';
 
   useEffect(() => {
     let active = true;
@@ -34,6 +38,35 @@ export function SettingsScreen({ consoleOpen, connectionStatus, onToggleConsole 
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    void OpenRungVpn.getSplitTunnel()
+      .then(enabled => {
+        if (active) setSplitTunnel(enabled);
+      })
+      .catch(error => {
+        if (active) setRoutingError(String(error));
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const toggleSplitTunnel = async () => {
+    if (splitTunnel == null || routingSaving || !canChangeRouting) return;
+    const enabled = !splitTunnel;
+    setRoutingSaving(true);
+    setRoutingError(null);
+    try {
+      await OpenRungVpn.setSplitTunnel(enabled);
+      setSplitTunnel(enabled);
+    } catch (error) {
+      setRoutingError(String(error));
+    } finally {
+      setRoutingSaving(false);
+    }
+  };
 
   const copy = async (kind: 'endpoint' | 'enable' | 'disable', value: string) => {
     try {
@@ -52,6 +85,32 @@ export function SettingsScreen({ consoleOpen, connectionStatus, onToggleConsole 
       <span className="or-section-header">CONNECTION</span>
       <SettingRow title="Broker" subtitle={AppConfig.DEFAULT_BROKER_URL} />
       <SettingRow title="Tunnel mode" subtitle="System proxy (per-app, no admin)" />
+      <SettingRow
+        title="Split tunneling"
+        subtitle={
+          routingError ??
+          (splitTunnel == null
+            ? 'Loading routing preference…'
+            : canChangeRouting
+              ? splitTunnel
+                ? 'Mainland China sites and private networks connect directly.'
+                : 'All configured proxy traffic uses the relay.'
+              : 'Disconnect before changing the routing policy.')
+        }
+        trailing={
+          <button
+            type="button"
+            className={`or-switch ${splitTunnel ? 'is-on' : ''}`}
+            role="switch"
+            aria-label="Split tunneling"
+            aria-checked={splitTunnel ?? false}
+            disabled={splitTunnel == null || routingSaving || !canChangeRouting}
+            onClick={() => void toggleSplitTunnel()}
+          >
+            <span className="or-switch-thumb" />
+          </button>
+        }
+      />
 
       <span className="or-section-header">LOCAL PROXY</span>
       {proxyInfo != null ? (

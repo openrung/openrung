@@ -13,6 +13,8 @@ export interface WailsServiceBindings {
   GetState(): Promise<NativeVpnState>;
   GetIdentity(): Promise<NativeIdentity>;
   GetProxyInfo(): Promise<NativeProxyInfo>;
+  GetSplitTunnel(): Promise<boolean>;
+  SetSplitTunnel(enabled: boolean): Promise<void>;
   ListRelaysForDirectory(): Promise<RelayListResponse>;
 }
 

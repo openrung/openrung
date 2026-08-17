@@ -62,4 +62,8 @@ export interface OpenRungVpnModule {
   getState(): Promise<NativeVpnState>;
   getIdentity(): Promise<NativeIdentity>;
   getProxyInfo(): Promise<NativeProxyInfo>;
+  /** Whether private/mainland-China destinations bypass the relay. */
+  getSplitTunnel(): Promise<boolean>;
+  /** Changes the routing policy for subsequent connections. */
+  setSplitTunnel(enabled: boolean): Promise<void>;
 }

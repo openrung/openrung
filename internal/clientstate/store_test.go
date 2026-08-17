@@ -30,6 +30,33 @@ func TestRecentsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSplitTunnelPreferenceRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	store := NewInDir(dir)
+	if store.LoadSplitTunnel() {
+		t.Fatal("fresh store enabled split tunneling")
+	}
+	if err := store.SaveSplitTunnel(true); err != nil {
+		t.Fatalf("SaveSplitTunnel(true): %v", err)
+	}
+	if !store.LoadSplitTunnel() {
+		t.Fatal("saved split-tunnel preference was not loaded")
+	}
+	if err := store.SaveSplitTunnel(false); err != nil {
+		t.Fatalf("SaveSplitTunnel(false): %v", err)
+	}
+	if store.LoadSplitTunnel() {
+		t.Fatal("disabled split-tunnel preference was not loaded")
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, routingPrefsFile), []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if store.LoadSplitTunnel() {
+		t.Fatal("corrupt routing preference did not fall back to full proxy")
+	}
+}
+
 func TestProxyPortLifecycle(t *testing.T) {
 	dir := t.TempDir()
 	store := NewInDir(dir)
