@@ -707,6 +707,21 @@ func TestClassifyDialFailurePrecedence(t *testing.T) {
 			name: "broken pipe before TLS", err: syscall.EPIPE, marks: tcpOnly,
 			wantReason: ReasonConnectionReset,
 		},
+		// The Winsock rows below prove the Windows mappings on whatever host
+		// runs the suite: the raw numbers from the shared table (winsock.go)
+		// are matched unconditionally, so no Windows runner is needed.
+		{
+			name: "winsock reset during TLS", err: WSAECONNRESET, marks: midTLS,
+			wantReason: ReasonTLSReset,
+		},
+		{
+			name: "winsock connection aborted before TLS", err: WSAECONNABORTED, marks: tcpOnly,
+			wantReason: ReasonConnectionReset,
+		},
+		{
+			name: "winsock timeout awaiting the response", err: WSAETIMEDOUT, marks: afterTLS,
+			wantReason: ReasonResponseTimeout,
+		},
 		{
 			name: "opaque TLS residual", err: errors.New("tls: bad record MAC"), marks: midTLS,
 			wantReason: ReasonTLSHandshake,
@@ -723,32 +738,6 @@ func TestClassifyDialFailurePrecedence(t *testing.T) {
 			}
 			assertNoIdentifyingLeak(t, newDialError(reason).Error(), "")
 		})
-	}
-}
-
-// TestSocketErrnoConstantsAreDistinct guards the platform errno table. Go
-// defines the E* names on Windows as invented values unrelated to the Winsock
-// numbers the net stack returns, so a table that silently collapsed or zeroed
-// would make every socket failure on that platform report "unclassified" while
-// every test here still passed.
-func TestSocketErrnoConstantsAreDistinct(t *testing.T) {
-	named := map[string]syscall.Errno{
-		"connection refused":  errnoConnectionRefused,
-		"network unreachable": errnoNetworkUnreachable,
-		"host unreachable":    errnoHostUnreachable,
-		"connection reset":    errnoConnectionReset,
-		"broken pipe":         errnoBrokenPipe,
-		"timed out":           errnoTimedOut,
-	}
-	seen := make(map[syscall.Errno]string, len(named))
-	for name, errno := range named {
-		if errno == 0 {
-			t.Errorf("%s errno is zero, which would match every non-syscall error", name)
-		}
-		if previous, duplicate := seen[errno]; duplicate {
-			t.Errorf("%s and %s share errno %d, collapsing two distinct tokens", name, previous, errno)
-		}
-		seen[errno] = name
 	}
 }
 

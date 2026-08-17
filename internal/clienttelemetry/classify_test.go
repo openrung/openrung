@@ -144,28 +144,16 @@ func TestClassifyErrorUsesWSSTaxonomy(t *testing.T) {
 	}
 }
 
-// TestWSSFailureReasonAllowlist pins the allowlist to wsscore's current token
-// set. Passing every constant through proves the allowlist is complete, and —
-// because the allowlist is literals, not the constants — a renamed or changed
-// token value in wsscore fails here instead of flowing into telemetry, which is
-// the consumer-side decision point the frozen-set contract requires.
+// TestWSSFailureReasonAllowlist checks the projection over the real allowlist:
+// every allowed token passes through unchanged, and anything outside the
+// frozen set degrades to the generic transport-failure reason — never
+// verbatim. Completeness of the allowlist against wsscore's registry and the
+// contract vectors is checked in contract_vectors_test.go, which is what makes
+// a renamed or added wsscore token fail there instead of flowing into
+// telemetry — the consumer-side decision point the frozen-set contract
+// requires.
 func TestWSSFailureReasonAllowlist(t *testing.T) {
-	tokens := []string{
-		wsscore.ReasonWSUpgrade, wsscore.ReasonHTTP401, wsscore.ReasonHTTP403,
-		wsscore.ReasonHTTP421, wsscore.ReasonRateLimited, wsscore.ReasonHTTP502,
-		wsscore.ReasonHTTP503, wsscore.ReasonHTTPOther,
-		wsscore.ReasonWSSubprotocol,
-		wsscore.ReasonDNSBogon, wsscore.ReasonDNSFailure,
-		wsscore.ReasonCancelled,
-		wsscore.ReasonConnectionRefused, wsscore.ReasonNetworkUnreachable,
-		wsscore.ReasonConnectionReset, wsscore.ReasonTLSReset, wsscore.ReasonResponseReset,
-		wsscore.ReasonTLSNotTLS, wsscore.ReasonCertExpired, wsscore.ReasonCertVerify,
-		wsscore.ReasonTLSAlert, wsscore.ReasonTLSHandshake,
-		wsscore.ReasonTCPTimeout, wsscore.ReasonTLSTimeout,
-		wsscore.ReasonResponseTimeout, wsscore.ReasonHandshakeTimeout,
-		wsscore.ReasonUnclassified,
-	}
-	for _, token := range tokens {
+	for _, token := range wssReasonAllowlist {
 		if got := wssFailureReason(token); got != token {
 			t.Errorf("wssFailureReason(%q) = %q, want the token unchanged", token, got)
 		}

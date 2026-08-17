@@ -7,9 +7,9 @@ import (
 	"github.com/openrung/openrung/brokerapi"
 )
 
-// brokerFrontsVectorsVersion is the version of
-// contract/vectors/broker_fronts.json this suite was written against; see the
-// note on classificationVectorsVersion in internal/clienttelemetry.
+// brokerFrontsVectorsVersion pins the version of
+// contract/vectors/broker_fronts.json this suite expects; see the note on
+// classificationVectorsVersion in internal/clienttelemetry.
 const brokerFrontsVectorsVersion = 1
 
 type brokerFrontVectors struct {
@@ -37,13 +37,8 @@ type brokerFrontVectors struct {
 func loadBrokerFrontVectors(t *testing.T) brokerFrontVectors {
 	t.Helper()
 	var vectors brokerFrontVectors
-	if err := Load(BrokerFrontsVectors, &vectors); err != nil {
+	if err := LoadVersioned(BrokerFrontsVectors, brokerFrontsVectorsVersion, &vectors); err != nil {
 		t.Fatalf("load broker front vectors: %v", err)
-	}
-	if vectors.Version != brokerFrontsVectorsVersion {
-		t.Fatalf("broker front vectors are version %d, this suite was written against %d — "+
-			"bump brokerFrontsVectorsVersion together with the file, and re-vendor it in openrung-mobile-app",
-			vectors.Version, brokerFrontsVectorsVersion)
 	}
 	return vectors
 }

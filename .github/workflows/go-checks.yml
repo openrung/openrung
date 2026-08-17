@@ -244,6 +244,57 @@ jobs:
           fi
           echo "brokerapi/VERSION -> $version (will tag $tag on merge)"
 
+  # The contract vectors are vendored byte for byte by the mobile repo, and a
+  # file's top-level "version" is what routes an edit to every copy
+  # (contract/README.md). The Go suites pin the version they were written
+  # against, but a PR that edits a file and forgets the bump would leave main
+  # and the vendored copies agreeing on a version that now names two different
+  # contents. Enforce the bump at PR time, with no exemption for "small" edits:
+  # once vendored, every edit including row additions coordinates copies. A
+  # file new in the PR has no copy to coordinate yet and passes at the version
+  # it will land on, which is the README's drafting rule.
+  contract-vectors-version:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require a version bump on every vectors edit
+        run: |
+          base="origin/${{ github.base_ref }}"
+          changed="$(git diff --name-only "$base"...HEAD -- 'contract/vectors/*.json')"
+          if [ -z "$changed" ]; then
+            echo "contract/vectors/ untouched"
+            exit 0
+          fi
+          status=0
+          while IFS= read -r file; do
+            if [ ! -f "$file" ]; then
+              echo "$file was deleted; the mobile repo's vendoring check owns the fallout"
+              continue
+            fi
+            new="$(jq '.version' "$file")"
+            if ! printf '%s\n' "$new" | grep -Eq '^[1-9][0-9]*$'; then
+              echo "$file carries version $new, want a positive integer" >&2
+              status=1
+              continue
+            fi
+            if ! git cat-file -e "$base:$file" 2>/dev/null; then
+              echo "$file is new at version $new; the bump rule binds from its next edit"
+              continue
+            fi
+            old="$(git show "$base:$file" | jq '.version')"
+            if [ "$new" = "$old" ]; then
+              echo "$file changed without a \"version\" bump (still $old); move it off main's value so the edit reaches the vendored copies, and bump the Go suite's pinned constant with it" >&2
+              status=1
+            else
+              echo "$file: version $old -> $new"
+            fi
+          done < <(printf '%s\n' "$changed")
+          exit $status
+
   # PR-time smoke build of every deploy image. The image workflows themselves
   # only run on pushes to main, so without this a Docker packaging error (e.g.
   # a Dockerfile missing a COPY for a nested module's go.mod that the root

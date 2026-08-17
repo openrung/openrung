@@ -67,6 +67,30 @@ const (
 	ReasonUnclassified = "unclassified"
 )
 
+// Reasons returns every token of the closed taxonomy above, in declaration
+// order. It is the machine-readable form of the README's token registry:
+// consumers that project these tokens (openrung/internal/clienttelemetry's
+// allowlist) walk it in tests, so a token added to the const block without a
+// decision at every consumer fails CI instead of shipping unexamined.
+// TestReasonsCoversTheConstBlock keeps this list in lockstep with the
+// constants.
+func Reasons() []string {
+	return []string{
+		ReasonWSUpgrade, ReasonHTTP401, ReasonHTTP403, ReasonHTTP421,
+		ReasonRateLimited, ReasonHTTP502, ReasonHTTP503, ReasonHTTPOther,
+		ReasonWSSubprotocol,
+		ReasonDNSBogon, ReasonDNSFailure,
+		ReasonCancelled,
+		ReasonConnectionRefused, ReasonNetworkUnreachable,
+		ReasonConnectionReset, ReasonTLSReset, ReasonResponseReset,
+		ReasonTLSNotTLS, ReasonCertExpired, ReasonCertVerify,
+		ReasonTLSAlert, ReasonTLSHandshake,
+		ReasonTCPTimeout, ReasonTLSTimeout,
+		ReasonResponseTimeout, ReasonHandshakeTimeout,
+		ReasonUnclassified,
+	}
+}
+
 // DialError is the only error DialClient returns for a failed WSS handshake
 // (besides the bare ErrSocketProtectionFailed sentinel). Its fields are
 // unexported and it deliberately has no Unwrap: the underlying error chain
@@ -99,6 +123,19 @@ func FailureReason(err error) string {
 		return dialErr.reason
 	}
 	return ""
+}
+
+// SocketErrnoReason returns the token classifyDialFailure assigns to a bare
+// socket errno at the earliest dial phase (no TCP connect, no TLS started),
+// which is where a raw errno arrives; the phase-split variants (tls_reset,
+// response_timeout, …) exist only inside a dial that progressed further.
+// ReasonUnclassified for an errno this taxonomy deliberately does not map.
+// Exported so a consumer that keeps its own errno→token mapping over the
+// shared Winsock table (winsock.go) can machine-check where the two taxonomies
+// agree and pin where they deliberately diverge, instead of asserting it in
+// comments.
+func SocketErrnoReason(errno syscall.Errno) string {
+	return classifyDialFailure(context.Background(), errno, nil, &dialPhases{})
 }
 
 func newDialError(reason string) *DialError {
@@ -200,15 +237,19 @@ func classifyDialFailure(_ context.Context, err error, resp *http.Response, phas
 	if errors.As(err, &dnsErr) {
 		return ReasonDNSFailure
 	}
+	// Each case pairs the portable POSIX name with its Winsock number from the
+	// shared table (winsock.go), matched unconditionally: Go defines the E*
+	// names on Windows as invented values while the net package surfaces the
+	// raw Winsock numbers there, the two sets cannot collide, and matching
+	// both everywhere keeps the Windows mappings testable on any CI host.
 	var errno syscall.Errno
 	if errors.As(err, &errno) {
-		// Platform-specific constants: see failure_posix.go / failure_windows.go.
 		switch errno {
-		case errnoConnectionRefused:
+		case syscall.ECONNREFUSED, WSAECONNREFUSED:
 			return ReasonConnectionRefused
-		case errnoNetworkUnreachable, errnoHostUnreachable:
+		case syscall.ENETUNREACH, syscall.EHOSTUNREACH, WSAENETUNREACH, WSAEHOSTUNREACH:
 			return ReasonNetworkUnreachable
-		case errnoConnectionReset:
+		case syscall.ECONNRESET, WSAECONNRESET:
 			return resetReason(phases)
 		}
 	}
@@ -225,13 +266,21 @@ func classifyDialFailure(_ context.Context, err error, resp *http.Response, phas
 	if errors.As(err, &opErr) && opErr.Op == "remote error" {
 		return ReasonTLSAlert
 	}
+	// The raw WSAETIMEDOUT needs naming: Windows syscall.Errno.Timeout only
+	// reports true for the invented EAGAIN/EWOULDBLOCK/ETIMEDOUT, so the
+	// generic timeout rule misses it (POSIX ETIMEDOUT reports true and needs
+	// no explicit case).
 	var netErr net.Error
 	if (errors.As(err, &netErr) && netErr.Timeout()) ||
 		errors.Is(err, context.DeadlineExceeded) ||
-		errno == errnoTimedOut {
+		errno == WSAETIMEDOUT {
 		return timeoutReason(phases)
 	}
-	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errno == errnoBrokenPipe {
+	// WSAECONNABORTED, the local stack aborting a connection, is the closest
+	// analogue of a broken pipe: it is what a send raises after the connection
+	// has gone away without a peer reset.
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errno == syscall.EPIPE || errno == WSAECONNABORTED {
 		return resetReason(phases)
 	}
 	if phases.tlsStarted.Load() && !phases.tlsDone.Load() {

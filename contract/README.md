@@ -46,16 +46,25 @@ than a silent gap.
 
 ## Changing a vector
 
-Each file has a `version`. Editing an existing row means bumping it, and the Go
-suites pin the version they were written against in a constant, so a quiet edit
-fails the build on this side while the mobile repo's check script catches the
-un-re-vendored copy on the other. The point of the friction is that a deployed
-client's behavior cannot be renegotiated after the fact: a token that changes
-meaning silently re-labels history in the dashboard, and a relay field that
-stops decoding silently narrows which relays a user can reach.
+Each file has a `version`. Editing an existing file means bumping it — row
+additions included — and the Go suites pin the version they were written
+against in a constant (loaded through `contract.LoadVersioned`, which owns the
+version check), so a quiet edit fails the build on this side while the mobile
+repo's check script catches the un-re-vendored copy on the other. The point of
+the friction is that a deployed client's behavior cannot be renegotiated after
+the fact: a token that changes meaning silently re-labels history in the
+dashboard, and a relay field that stops decoding silently narrows which relays
+a user can reach.
+
+The bump itself is machine-enforced: the `contract-vectors-version` job in
+`.github/workflows/go-checks.yml` fails any PR that touches a
+`contract/vectors/*.json` file without moving its top-level `version` off the
+value on `main`.
 
 The version is a coordination device between copies, so the rule starts when
-there is a copy to coordinate with: within the pull request that first
+the file first has a life outside its own pull request: within the PR that
 introduces a file — before it has merged or been vendored anywhere — rows are
-still being drafted and are edited in place, at the version they will land on.
-It binds from the first vendoring onward, which is every edit after that point.
+still being drafted and are edited in place, at the version they will land on,
+and the CI job passes a file that is new on the branch. From merge onward every
+edit needs a bump, with no exemptions, because once the mobile repo vendors a
+file there is always a copy to coordinate.

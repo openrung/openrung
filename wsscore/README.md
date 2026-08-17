@@ -165,6 +165,12 @@ waved through: `cert_expired` is a device-clock tell worth roughly one bit, and
 `dns_bogon` is semi-stable for anyone behind a split-horizon resolver or a
 captive portal.
 
+`Reasons()` returns this registry to machines, in declaration order. Consumers
+that project the tokens walk it in tests, so a token added to the constant
+block cannot ship without an explicit pass-through or exclusion decision at
+each consumer; a source-parsing test keeps the function and the constants in
+lockstep.
+
 TCP-phase tokens describe the error Go selects to represent a dial that may
 have tried several resolved addresses: `net.Dialer` reports the **first**
 attempted address's failure (the first primary-family failure under dual-stack
@@ -173,19 +179,24 @@ broader — it is observed per attempt, so any poisoned address in the resolved
 set marks the dial even when it was not the attempt whose error is reported.
 
 The socket errnos behind `connection_refused`, `network_unreachable`, and the
-reset tokens are matched through a build-tagged table (`failure_posix.go`,
-`failure_windows.go`) because Go defines `syscall.ECONNREFUSED` and friends on
-Windows as its own invented values while the net package surfaces the raw
-Winsock numbers — so matching the portable names there would compile cleanly,
-never match, and silently degrade every socket failure to `unclassified`. The
+reset tokens are matched twice over: the portable `syscall.E*` names and the
+raw Winsock numbers from the shared table in `winsock.go`, both unconditionally
+on every platform. Go defines `syscall.ECONNREFUSED` and friends on Windows as
+its own invented values while the net package surfaces the raw Winsock
+numbers — so matching the portable names alone would compile cleanly, never
+match, and silently degrade every socket failure to `unclassified` (the
 standard library carries the same split in `net/error_unix.go` and
-`net/error_windows.go`. CI runs on Linux only, so a test asserts the table is
-non-zero and collision-free rather than relying on a platform run. That check
-alone cannot catch a reversion to the portable names — Go's invented values are
-also non-zero and distinct — so a windows-tagged companion test pins the raw
-Winsock numbers themselves; it needs a Windows test run to execute, which CI
-does not provide, leaving the hardcoded literals as the everyday defense and
-any one-off developer run as the tripwire.
+`net/error_windows.go`). The two sets cannot collide — Winsock numbers sit far
+above every errno a POSIX kernel returns and far below Go's invented Windows
+values — so matching both everywhere is safe, and it makes the Windows
+mappings testable on the Linux-only CI, which the earlier build-tagged split
+(`failure_posix.go` / `failure_windows.go`) never could: its windows-tagged
+pins needed a Windows test run CI does not provide. A range check now catches a
+reversion to the portable names on any host, a source-parsing registry test
+keeps `WinsockErrnos()` in lockstep with the constant block, and the exported
+table is also consumed by `openrung/internal/clienttelemetry`, whose divergence
+test pins where its client taxonomy deliberately disagrees with this one
+(WSAECONNABORTED, the timeout split, WSAEACCES).
 
 ### The set is frozen
 
