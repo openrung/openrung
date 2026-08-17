@@ -19,6 +19,9 @@ go.work.sum
 # Local generated relay configs
 openrung-xray-config.json
 
+# Internal ops tooling — reveals hosting providers/fleet layout; keep out of the public repo
+/scripts/relay-usage.sh
+
 # WSS front state written by OPENRUNG_WSS_FRONT_STATE_FILE.  Front hostnames are
 # rotated when they are blocked, so committing a mapping would preserve every
 # one this project has ever used, permanently, in git history.  Derive the live
