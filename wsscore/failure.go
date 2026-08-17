@@ -266,14 +266,17 @@ func classifyDialFailure(_ context.Context, err error, resp *http.Response, phas
 	if errors.As(err, &opErr) && opErr.Op == "remote error" {
 		return ReasonTLSAlert
 	}
-	// The raw WSAETIMEDOUT needs naming: Windows syscall.Errno.Timeout only
-	// reports true for the invented EAGAIN/EWOULDBLOCK/ETIMEDOUT, so the
-	// generic timeout rule misses it (POSIX ETIMEDOUT reports true and needs
-	// no explicit case).
+	// Both raw timeout errnos are matched explicitly, not left to the generic
+	// net.Error rule: errors.As binds the shallowest net.Error in the chain,
+	// so a wrapper reporting Timeout() == false shadows the errno's own answer
+	// even though the errno was still extracted above — and on Windows
+	// syscall.Errno.Timeout only reports true for the invented
+	// EAGAIN/EWOULDBLOCK/ETIMEDOUT, never for the raw WSAETIMEDOUT the net
+	// stack actually surfaces.
 	var netErr net.Error
 	if (errors.As(err, &netErr) && netErr.Timeout()) ||
 		errors.Is(err, context.DeadlineExceeded) ||
-		errno == WSAETIMEDOUT {
+		errno == syscall.ETIMEDOUT || errno == WSAETIMEDOUT {
 		return timeoutReason(phases)
 	}
 	// WSAECONNABORTED, the local stack aborting a connection, is the closest

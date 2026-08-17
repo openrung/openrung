@@ -13,7 +13,6 @@ import (
 const brokerFrontsVectorsVersion = 1
 
 type brokerFrontVectors struct {
-	Version      int      `json:"version"`
 	DefaultOrder []string `json:"default_order"`
 	Phases       []struct {
 		Phase int      `json:"phase"`

@@ -32,7 +32,6 @@ const classificationVectorsVersion = 1
 const suiteName = "go"
 
 type classificationVectors struct {
-	Version       int      `json:"version"`
 	Suites        []string `json:"suites"`
 	Tokens        []string `json:"tokens"`
 	TokenPatterns []string `json:"token_patterns"`

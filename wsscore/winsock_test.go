@@ -31,6 +31,40 @@ func TestWinsockTableIsRawAndDistinct(t *testing.T) {
 	}
 }
 
+// TestWinsockTableValues pins each symbol to its documented Winsock number, so
+// the independently-taggable module self-certifies its own table. The range
+// and distinctness checks above cannot catch a within-range typo or a
+// transposition — 10051 and 10065 map to the same token in both taxonomies
+// today, so no classification test anywhere would notice a swap, and it would
+// ship as a silently wrong binding to any consumer pinning the module tag the
+// moment either taxonomy splits net- from host-unreachable.
+func TestWinsockTableValues(t *testing.T) {
+	want := map[string]syscall.Errno{
+		"WSAEACCES":       10013,
+		"WSAENETUNREACH":  10051,
+		"WSAECONNABORTED": 10053,
+		"WSAECONNRESET":   10054,
+		"WSAETIMEDOUT":    10060,
+		"WSAECONNREFUSED": 10061,
+		"WSAEHOSTUNREACH": 10065,
+	}
+	table := WinsockErrnos()
+	for symbol, wantErrno := range want {
+		got, exists := table[symbol]
+		switch {
+		case !exists:
+			t.Errorf("%s is missing from the shared table", symbol)
+		case got != wantErrno:
+			t.Errorf("%s = %d, want the documented Winsock number %d", symbol, got, wantErrno)
+		}
+	}
+	for symbol := range table {
+		if _, pinned := want[symbol]; !pinned {
+			t.Errorf("%s is in the shared table but not pinned here; add its documented number", symbol)
+		}
+	}
+}
+
 // TestClassifyWinsockErrnos walks the shared table through SocketErrnoReason,
 // pinning this taxonomy's token for every Winsock number on whatever host runs
 // the suite. WSAEACCES is in the table for the client taxonomy's permission

@@ -34,7 +34,6 @@ var relayInvalidReasonMessages = map[string]string{
 }
 
 type relayDecodeVectors struct {
-	Version int                `json:"version"`
 	Cases   []relayDecodeCase  `json:"cases"`
 	Invalid relayInvalidVector `json:"invalid"`
 }

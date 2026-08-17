@@ -586,6 +586,18 @@ func (fakeTimeout) Error() string   { return "fake i/o timeout" }
 func (fakeTimeout) Timeout() bool   { return true }
 func (fakeTimeout) Temporary() bool { return false }
 
+// falseTimeoutWrapper implements net.Error with Timeout() == false while
+// wrapping another error — the shape a custom transport wrapper can produce.
+// errors.As binds it before anything it wraps, so it shadows a wrapped errno's
+// own Timeout answer; the classifier's explicit ETIMEDOUT match is what keeps
+// the timeout token.
+type falseTimeoutWrapper struct{ err error }
+
+func (w falseTimeoutWrapper) Error() string   { return "wrapped: " + w.err.Error() }
+func (w falseTimeoutWrapper) Timeout() bool   { return false }
+func (w falseTimeoutWrapper) Temporary() bool { return false }
+func (w falseTimeoutWrapper) Unwrap() error   { return w.err }
+
 // TestClassifyDialFailurePrecedence locks the deterministic precedence of the
 // frozen taxonomy, including the phase-dependent splits that a live-wire case
 // cannot provoke reliably.
@@ -706,6 +718,11 @@ func TestClassifyDialFailurePrecedence(t *testing.T) {
 		{
 			name: "broken pipe before TLS", err: syscall.EPIPE, marks: tcpOnly,
 			wantReason: ReasonConnectionReset,
+		},
+		{
+			name:       "ETIMEDOUT behind a wrapper whose Timeout reports false",
+			err:        falseTimeoutWrapper{err: syscall.ETIMEDOUT},
+			wantReason: ReasonTCPTimeout,
 		},
 		// The Winsock rows below prove the Windows mappings on whatever host
 		// runs the suite: the raw numbers from the shared table (winsock.go)
