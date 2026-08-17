@@ -249,12 +249,17 @@ jobs:
   # (contract/README.md). The Go suites pin the version they were written
   # against, but a PR that edits a file and forgets the bump would leave main
   # and the vendored copies agreeing on a version that now names two different
-  # contents. Enforce the bump at PR time, with no exemption for "small" edits:
-  # once vendored, every edit including row additions coordinates copies. A
-  # file new in the PR has no copy to coordinate yet and passes at the version
-  # it will land on, which is the README's drafting rule.
+  # contents. Enforce a strictly increasing bump — a downgrade or a reused
+  # number would also make one version name two contents across history — with
+  # no exemption for "small" edits: once vendored, every edit including row
+  # additions coordinates copies. A file new in the PR has no copy to
+  # coordinate yet and passes at the version it will land on, which is the
+  # README's drafting rule. Runs on pull requests AND on pushes to main: the
+  # repo has no up-to-date-branch protection, so two independently green PRs
+  # can race the same bump and merge cleanly (the #75 failure mode) — the push
+  # run judges exactly what landed and turns main red instead of shipping a
+  # version that names untested content.
   contract-vectors-version:
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -263,36 +268,74 @@ jobs:
 
       - name: Require a version bump on every vectors edit
         run: |
-          base="origin/${{ github.base_ref }}"
-          changed="$(git diff --name-only "$base"...HEAD -- 'contract/vectors/*.json')"
-          if [ -z "$changed" ]; then
-            echo "contract/vectors/ untouched"
-            exit 0
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            oldrev="$(git merge-base "origin/${{ github.base_ref }}" HEAD)"
+          else
+            oldrev="${{ github.event.before }}"
+            if ! git cat-file -e "$oldrev^{commit}" 2>/dev/null; then
+              echo "no reachable before-commit (branch creation or forced push); nothing to compare"
+              exit 0
+            fi
           fi
+          # NUL-delimited --name-status rather than line-oriented --name-only:
+          # core.quotepath would C-quote a non-ASCII filename and route it into
+          # the wrong arm, and without -M a rename is an unchecked delete+add
+          # pair. The pathspec matches the vectors directory anywhere in the
+          # tree, so moving it (ADR-001 D3) cannot silently disable this job.
           status=0
-          while IFS= read -r file; do
-            if [ ! -f "$file" ]; then
-              echo "$file was deleted; the mobile repo's vendoring check owns the fallout"
-              continue
-            fi
-            new="$(jq '.version' "$file")"
-            if ! printf '%s\n' "$new" | grep -Eq '^[1-9][0-9]*$'; then
-              echo "$file carries version $new, want a positive integer" >&2
-              status=1
-              continue
-            fi
-            if ! git cat-file -e "$base:$file" 2>/dev/null; then
-              echo "$file is new at version $new; the bump rule binds from its next edit"
-              continue
-            fi
-            old="$(git show "$base:$file" | jq '.version')"
-            if [ "$new" = "$old" ]; then
-              echo "$file changed without a \"version\" bump (still $old); move it off main's value so the edit reaches the vendored copies, and bump the Go suite's pinned constant with it" >&2
-              status=1
-            else
-              echo "$file: version $old -> $new"
-            fi
-          done < <(printf '%s\n' "$changed")
+          checked=0
+          while IFS= read -r -d '' state; do
+            IFS= read -r -d '' file || break
+            dest="$file"
+            case "$state" in
+              R*|C*) IFS= read -r -d '' dest || break ;;
+            esac
+            checked=1
+            case "$state" in
+              A)
+                new="$(jq '.version' "$dest")"
+                if ! printf '%s\n' "$new" | grep -Eq '^[1-9][0-9]*$'; then
+                  echo "$dest carries version $new, want a positive integer" >&2
+                  status=1
+                  continue
+                fi
+                echo "$dest is new at version $new; the bump rule binds from its next edit"
+                ;;
+              D)
+                echo "$file was deleted, which strands every vendored copy; removing a vector file needs the mobile repo's vendoring check to exist first" >&2
+                status=1
+                ;;
+              M|R*|C*)
+                new="$(jq '.version' "$dest")"
+                if ! printf '%s\n' "$new" | grep -Eq '^[1-9][0-9]*$'; then
+                  echo "$dest carries version $new, want a positive integer" >&2
+                  status=1
+                  continue
+                fi
+                old="$(git show "$oldrev:$file" | jq '.version')"
+                if ! printf '%s\n' "$old" | grep -Eq '^[1-9][0-9]*$'; then
+                  old=0
+                fi
+                if [ "$new" -gt "$old" ]; then
+                  if [ "$dest" = "$file" ]; then
+                    echo "$file: version $old -> $new"
+                  else
+                    echo "$file -> $dest: version $old -> $new"
+                  fi
+                else
+                  echo "$dest changed (was $file at version $old) but carries version $new; every edit — renames included — must raise the version above the old one, so the change reaches the vendored copies and no version ever names two contents; bump the Go suite's pinned constant with it" >&2
+                  status=1
+                fi
+                ;;
+              *)
+                echo "$file has unhandled diff status $state; refusing to guess" >&2
+                status=1
+                ;;
+            esac
+          done < <(git diff --name-status -z -M "$oldrev" HEAD -- '*contract/vectors/*.json')
+          if [ "$checked" -eq 0 ]; then
+            echo "contract/vectors/ untouched"
+          fi
           exit $status
 
   # PR-time smoke build of every deploy image. The image workflows themselves
