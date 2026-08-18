@@ -168,10 +168,14 @@ func ClassifyError(err error) string {
 	if os.IsTimeout(err) {
 		return "timeout"
 	}
-	// syscall.Errno.Timeout on Windows reports true only for Go's invented
-	// EAGAIN/EWOULDBLOCK/ETIMEDOUT, so a real WSAETIMEDOUT reaches neither check
-	// above and needs naming here (as it does in wsscore's timeout rule).
-	if errno == wsscore.WSAETIMEDOUT {
+	// Both raw timeout errnos are named explicitly, mirroring wsscore's
+	// timeout rule: errors.As binds the shallowest net.Error in the chain, so
+	// a wrapper reporting Timeout() == false shadows a wrapped ETIMEDOUT even
+	// though the errno was extracted above — and on Windows,
+	// syscall.Errno.Timeout reports true only for Go's invented
+	// EAGAIN/EWOULDBLOCK/ETIMEDOUT, so a real WSAETIMEDOUT reaches neither
+	// check above either way.
+	if errno == syscall.ETIMEDOUT || errno == wsscore.WSAETIMEDOUT {
 		return "timeout"
 	}
 

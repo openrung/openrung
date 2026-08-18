@@ -140,9 +140,14 @@ jobs:
   # punchcore/vX.Y.Z tag (punchcore-tag.yml triggers on VERSION changes), so
   # the mobile repo could never pin it. Enforce the bump at PR time and make
   # sure the bumped version is not already tagged. README-only edits are
-  # exempt.
+  # exempt. Like contract-vectors-version, this also runs on pushes to main:
+  # two independently green PRs can race the same bump and merge cleanly, and
+  # the second merge would ship module code the existing tag does not name —
+  # the push run judges exactly what landed and turns main red instead. The
+  # tag-freshness probe stays PR-only, because on a push the tag workflow may
+  # be creating this very tag concurrently and probing would race it into a
+  # false failure.
   punchcore-version:
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -151,13 +156,21 @@ jobs:
 
       - name: Require a fresh VERSION when punchcore changes
         run: |
-          base="origin/${{ github.base_ref }}"
-          changed="$(git diff --name-only "$base"...HEAD -- punchcore/ ':!punchcore/README.md')"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            oldrev="$(git merge-base "origin/${{ github.base_ref }}" HEAD)"
+          else
+            oldrev="${{ github.event.before }}"
+            if ! git cat-file -e "$oldrev^{commit}" 2>/dev/null; then
+              echo "no reachable before-commit (branch creation or forced push); nothing to compare"
+              exit 0
+            fi
+          fi
+          changed="$(git diff --name-only "$oldrev" HEAD -- punchcore/ ':!punchcore/README.md')"
           if [ -z "$changed" ]; then
             echo "punchcore/ untouched"
             exit 0
           fi
-          if git diff --quiet "$base"...HEAD -- punchcore/VERSION; then
+          if git diff --quiet "$oldrev" HEAD -- punchcore/VERSION; then
             echo "punchcore/ changed without a punchcore/VERSION bump:" >&2
             echo "$changed" >&2
             exit 1
@@ -168,6 +181,10 @@ jobs:
             exit 1
           fi
           tag="punchcore/v$version"
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "punchcore/VERSION -> $version"
+            exit 0
+          fi
           if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
             echo "punchcore/VERSION is $version but $tag already exists; bump to a new version" >&2
             exit 1
@@ -176,8 +193,8 @@ jobs:
 
   # Keep the independently consumable WSS transport module releasable by
   # requiring every non-documentation change to declare a fresh module version.
+  # Push-mode and the PR-only tag probe: see the note on punchcore-version.
   wsscore-version:
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -186,13 +203,21 @@ jobs:
 
       - name: Require a fresh VERSION when wsscore changes
         run: |
-          base="origin/${{ github.base_ref }}"
-          changed="$(git diff --name-only "$base"...HEAD -- wsscore/ ':!wsscore/README.md')"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            oldrev="$(git merge-base "origin/${{ github.base_ref }}" HEAD)"
+          else
+            oldrev="${{ github.event.before }}"
+            if ! git cat-file -e "$oldrev^{commit}" 2>/dev/null; then
+              echo "no reachable before-commit (branch creation or forced push); nothing to compare"
+              exit 0
+            fi
+          fi
+          changed="$(git diff --name-only "$oldrev" HEAD -- wsscore/ ':!wsscore/README.md')"
           if [ -z "$changed" ]; then
             echo "wsscore/ untouched"
             exit 0
           fi
-          if git diff --quiet "$base"...HEAD -- wsscore/VERSION; then
+          if git diff --quiet "$oldrev" HEAD -- wsscore/VERSION; then
             echo "wsscore/ changed without a wsscore/VERSION bump:" >&2
             echo "$changed" >&2
             exit 1
@@ -203,6 +228,10 @@ jobs:
             exit 1
           fi
           tag="wsscore/v$version"
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "wsscore/VERSION -> $version"
+            exit 0
+          fi
           if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
             echo "wsscore/VERSION is $version but $tag already exists; bump to a new version" >&2
             exit 1
@@ -211,8 +240,8 @@ jobs:
 
   # Keep the independently consumable broker control-plane client releasable
   # by requiring every non-documentation change to declare a fresh version.
+  # Push-mode and the PR-only tag probe: see the note on punchcore-version.
   brokerapi-version:
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -221,13 +250,21 @@ jobs:
 
       - name: Require a fresh VERSION when brokerapi changes
         run: |
-          base="origin/${{ github.base_ref }}"
-          changed="$(git diff --name-only "$base"...HEAD -- brokerapi/ ':!brokerapi/README.md')"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            oldrev="$(git merge-base "origin/${{ github.base_ref }}" HEAD)"
+          else
+            oldrev="${{ github.event.before }}"
+            if ! git cat-file -e "$oldrev^{commit}" 2>/dev/null; then
+              echo "no reachable before-commit (branch creation or forced push); nothing to compare"
+              exit 0
+            fi
+          fi
+          changed="$(git diff --name-only "$oldrev" HEAD -- brokerapi/ ':!brokerapi/README.md')"
           if [ -z "$changed" ]; then
             echo "brokerapi/ untouched"
             exit 0
           fi
-          if git diff --quiet "$base"...HEAD -- brokerapi/VERSION; then
+          if git diff --quiet "$oldrev" HEAD -- brokerapi/VERSION; then
             echo "brokerapi/ changed without a brokerapi/VERSION bump:" >&2
             echo "$changed" >&2
             exit 1
@@ -238,6 +275,10 @@ jobs:
             exit 1
           fi
           tag="brokerapi/v$version"
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "brokerapi/VERSION -> $version"
+            exit 0
+          fi
           if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
             echo "brokerapi/VERSION is $version but $tag already exists; bump to a new version" >&2
             exit 1
@@ -314,7 +355,11 @@ jobs:
                 fi
                 old="$(git show "$oldrev:$file" | jq '.version')"
                 if ! printf '%s\n' "$old" | grep -Eq '^[1-9][0-9]*$'; then
-                  old=0
+                  # Fail closed: an unreadable old version must never be treated
+                  # as 0 and wave a downgrade through.
+                  echo "$file carries unreadable version $old at the base revision; refusing to fail open" >&2
+                  status=1
+                  continue
                 fi
                 if [ "$new" -gt "$old" ]; then
                   if [ "$dest" = "$file" ]; then

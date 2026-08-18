@@ -168,6 +168,30 @@ func TestWSSFailureReasonAllowlist(t *testing.T) {
 	}
 }
 
+// falseTimeoutWrapper implements net.Error with Timeout() == false while
+// wrapping another error — the shape a custom transport wrapper can produce.
+// errors.As binds it before the errno it wraps, so without the explicit
+// ETIMEDOUT match at the timeout rung this ladder degraded the wrapped errno
+// to "unknown" while wsscore's taxonomy kept its timeout family, and the
+// platform chose the token.
+type falseTimeoutWrapper struct{ err error }
+
+func (w falseTimeoutWrapper) Error() string   { return "wrapped: " + w.err.Error() }
+func (w falseTimeoutWrapper) Timeout() bool   { return false }
+func (w falseTimeoutWrapper) Temporary() bool { return false }
+func (w falseTimeoutWrapper) Unwrap() error   { return w.err }
+
+func TestClassifyShadowedTimeoutErrnos(t *testing.T) {
+	for name, errno := range map[string]syscall.Errno{
+		"ETIMEDOUT":    syscall.ETIMEDOUT,
+		"WSAETIMEDOUT": wsscore.WSAETIMEDOUT,
+	} {
+		if got := ClassifyError(falseTimeoutWrapper{err: errno}); got != "timeout" {
+			t.Errorf("ClassifyError(%s behind a false-Timeout wrapper) = %q, want %q", name, got, "timeout")
+		}
+	}
+}
+
 func TestErrorDetail(t *testing.T) {
 	if got := ErrorDetail(nil); got != "" {
 		t.Fatalf("nil detail = %q, want empty", got)
