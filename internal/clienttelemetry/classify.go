@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"slices"
 	"syscall"
 	"unicode/utf8"
 
@@ -21,37 +22,6 @@ import (
 // detailMaxBytes caps failure_detail at the broker's per-attribute value length,
 // so the classifier never emits a value the broker would reject.
 const detailMaxBytes = 256
-
-// Winsock error numbers, matched alongside the syscall.E* names below.
-//
-// Go's syscall package defines ECONNREFUSED and friends on Windows as invented
-// APPLICATION_ERROR values (1<<29 and up), while the net package surfaces the
-// raw Winsock numbers from connectex/WSARecv untranslated. Matching only the E*
-// names therefore compiles cleanly on Windows and never fires, so every Windows
-// socket failure degraded to "unknown". wsscore solves this with a build-tagged
-// constant set (wsscore/failure_posix.go, wsscore/failure_windows.go); this
-// classifier maps the same conditions to the same tokens.
-//
-// The numbers are matched unconditionally rather than behind a build tag: they
-// sit far above every errno any POSIX kernel returns (Linux tops out at 133,
-// darwin at 106), so they cannot collide with a real POSIX errno, and matching
-// them on every platform is what lets the cross-language contract vectors
-// exercise the Windows rows in CI on Linux and macOS. They are spelled as
-// literals because syscall exports only WSAECONNRESET by name, and only on
-// Windows.
-//
-// Every errno this ladder acts on has its Winsock counterpart here, so a given
-// failure reports the same token on both platforms. Each is matched at the same
-// rung as the POSIX errno it pairs with, not all together, because the rung is
-// what orders it against the DNS and TLS rules.
-const (
-	wsaeAccessDenied = syscall.Errno(10013) // WSAEACCES
-	wsaeNetUnreach   = syscall.Errno(10051) // WSAENETUNREACH
-	wsaeConnReset    = syscall.Errno(10054) // WSAECONNRESET
-	wsaeTimedOut     = syscall.Errno(10060) // WSAETIMEDOUT
-	wsaeConnRefused  = syscall.Errno(10061) // WSAECONNREFUSED
-	wsaeHostUnreach  = syscall.Errno(10065) // WSAEHOSTUNREACH
-)
 
 // httpStatusError is implemented by broker errors that carry an HTTP status
 // code (internal/client.BrokerStatusError, discovery.RateLimitedError). Matching
@@ -114,19 +84,37 @@ func ClassifyError(err error) string {
 	}
 
 	// Syscall-level network errors (dial/read failures wrap a syscall.Errno).
-	// Each case pairs the POSIX errno with its Winsock number; on Windows only
-	// the latter ever arrives. WSAECONNABORTED (10053) is deliberately absent:
-	// its closest POSIX analogue is EPIPE, which classifies as "unknown" here,
-	// and mapping one without the other would make the same broken connection
-	// report different tokens per platform.
+	// Each case pairs the POSIX errno with its Winsock number from wsscore's
+	// shared table (wsscore/winsock.go), their single definition; on Windows
+	// only the latter ever arrives, because Go defines the E* names there as
+	// invented APPLICATION_ERROR values while the net package surfaces the raw
+	// Winsock numbers untranslated. Both are matched unconditionally rather
+	// than behind a build tag: the Winsock numbers sit far above every errno
+	// any POSIX kernel returns (Linux tops out at 133, darwin at 106), so they
+	// cannot collide, and matching them on every platform is what lets the
+	// cross-language contract vectors exercise the Windows rows in CI on Linux
+	// and macOS.
+	//
+	// The table shares only the numbers and their names — the errno→token
+	// mapping over them is this ladder's own, and it deliberately disagrees
+	// with wsscore's WSS taxonomy: wsscore folds WSAECONNABORTED (10053) into
+	// its reset family and splits timeouts by handshake phase, while this
+	// ladder leaves 10053 unmapped — its closest POSIX analogue is EPIPE,
+	// which classifies as "unknown" here, and mapping one without the other
+	// would make the same broken connection report different tokens per
+	// platform (vector row errno_wsaeconnaborted pins it) — and emits one bare
+	// "timeout". TestWinsockTableDivergence keeps every such disagreement
+	// declared. Each Winsock number is matched at the rung of the POSIX errno
+	// it pairs with, not all together, because the rung is what orders it
+	// against the DNS and TLS rules.
 	var errno syscall.Errno
 	if errors.As(err, &errno) {
 		switch errno {
-		case syscall.ECONNREFUSED, wsaeConnRefused:
+		case syscall.ECONNREFUSED, wsscore.WSAECONNREFUSED:
 			return "connection_refused"
-		case syscall.ECONNRESET, wsaeConnReset:
+		case syscall.ECONNRESET, wsscore.WSAECONNRESET:
 			return "connection_reset"
-		case syscall.ENETUNREACH, syscall.EHOSTUNREACH, wsaeNetUnreach, wsaeHostUnreach:
+		case syscall.ENETUNREACH, syscall.EHOSTUNREACH, wsscore.WSAENETUNREACH, wsscore.WSAEHOSTUNREACH:
 			return "network_unreachable"
 		}
 	}
@@ -160,7 +148,7 @@ func ClassifyError(err error) string {
 	// endpoint-security policy refusing the connect raises it, which is
 	// precisely the condition EACCES reports elsewhere, so it belongs at this
 	// rung rather than in the errno switch above.
-	if errors.Is(err, os.ErrPermission) || errno == wsaeAccessDenied {
+	if errors.Is(err, os.ErrPermission) || errno == wsscore.WSAEACCES {
 		return "permission_denied"
 	}
 
@@ -180,37 +168,58 @@ func ClassifyError(err error) string {
 	if os.IsTimeout(err) {
 		return "timeout"
 	}
-	// syscall.Errno.Timeout on Windows reports true only for Go's invented
-	// EAGAIN/EWOULDBLOCK/ETIMEDOUT, so a real WSAETIMEDOUT reaches neither check
-	// above and needs naming here (as it does in wsscore's timeout rule).
-	if errno == wsaeTimedOut {
+	// Both raw timeout errnos are named explicitly, mirroring wsscore's
+	// timeout rule: errors.As binds the shallowest net.Error in the chain, so
+	// a wrapper reporting Timeout() == false shadows a wrapped ETIMEDOUT even
+	// though the errno was extracted above — and on Windows,
+	// syscall.Errno.Timeout reports true only for Go's invented
+	// EAGAIN/EWOULDBLOCK/ETIMEDOUT, so a real WSAETIMEDOUT reaches neither
+	// check above either way.
+	if errno == syscall.ETIMEDOUT || errno == wsscore.WSAETIMEDOUT {
 		return "timeout"
 	}
 
 	return "unknown"
 }
 
+// wssReasonAllowlist is the frozen set of wsscore dial-failure tokens the
+// telemetry channel passes through verbatim. The literals are deliberate —
+// referencing the wsscore constants would let a future token addition or value
+// change flow into the telemetry channel without a decision here, and the
+// frozen set makes every such change a privacy-review event. This slice is the
+// one source of the pass-through set: the contract vectors' wss_reason rows,
+// the vectors' closed token list, and wsscore's own registry
+// (wsscore.Reasons) are all checked against it, so extending it means minting
+// a vector row every suite sees, and a wsscore token missing from it means
+// adding it here or to wssReasonExcluded.
+var wssReasonAllowlist = []string{
+	"ws_upgrade", "http_401", "http_403", "http_421", "rate_limited",
+	"http_502", "http_503", "http_other",
+	"ws_subprotocol",
+	"dns_bogon", "dns_failure",
+	"cancelled",
+	"connection_refused", "network_unreachable",
+	"connection_reset", "tls_reset", "response_reset",
+	"tls_not_tls", "cert_expired", "cert_verify", "tls_alert", "tls_handshake",
+	"tcp_timeout", "tls_timeout", "response_timeout", "handshake_timeout",
+	"unclassified",
+}
+
+// wssReasonExcluded names the wsscore taxonomy tokens deliberately kept out of
+// the allowlist, each with its rationale. Empty today — every wsscore token is
+// passed through — but the coverage test walks wsscore.Reasons() and requires
+// each token to appear in exactly one of these two lists, so a new wsscore
+// token forces an explicit decision here instead of shipping unexamined.
+var wssReasonExcluded = map[string]string{}
+
 // wssFailureReason projects wsscore's dial-failure token through the explicit
-// literal allowlist the taxonomy contract requires of every consumer
+// allowlist the taxonomy contract requires of every consumer
 // (wsscore/README.md): anything unrecognized degrades to the generic
-// "wss_transport_failed" instead of reaching telemetry verbatim. The literals
-// are deliberate — referencing the wsscore constants would let a future token
-// addition or value change flow into the telemetry channel without a decision
-// here, and the frozen set makes every such change a privacy-review event.
-// "unknown" stays reserved for pre-taxonomy builds, and "unclassified" for the
+// "wss_transport_failed" instead of reaching telemetry verbatim. "unknown"
+// stays reserved for pre-taxonomy builds, and "unclassified" for the
 // taxonomy's own coverage residual, so the degraded value is neither.
 func wssFailureReason(reason string) string {
-	switch reason {
-	case "ws_upgrade", "http_401", "http_403", "http_421", "rate_limited",
-		"http_502", "http_503", "http_other",
-		"ws_subprotocol",
-		"dns_bogon", "dns_failure",
-		"cancelled",
-		"connection_refused", "network_unreachable",
-		"connection_reset", "tls_reset", "response_reset",
-		"tls_not_tls", "cert_expired", "cert_verify", "tls_alert", "tls_handshake",
-		"tcp_timeout", "tls_timeout", "response_timeout", "handshake_timeout",
-		"unclassified":
+	if slices.Contains(wssReasonAllowlist, reason) {
 		return reason
 	}
 	return "wss_transport_failed"

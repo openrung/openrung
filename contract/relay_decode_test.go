@@ -15,13 +15,25 @@ import (
 	"openrung/internal/relay"
 )
 
-// relayDecodeVectorsVersion is the version of
-// contract/vectors/relay_decode.json this suite was written against; see the
-// note on classificationVectorsVersion in internal/clienttelemetry.
-const relayDecodeVectorsVersion = 1
+// relayDecodeVectorsVersion pins the version of
+// contract/vectors/relay_decode.json this suite expects; see the note on
+// classificationVectorsVersion in internal/clienttelemetry.
+const relayDecodeVectorsVersion = 2
+
+// relayInvalidReasonMessages translates each stable rejection reason code the
+// invalid vectors carry into the substring of brokerapi's Go error message
+// that proves the rejection fired for the pinned cause. The codes are the
+// vendored, version-pinned contract; the wording is brokerapi's own, lives
+// only in this non-vendored file, and can be reworded without a vector bump
+// reaching the mobile repo.
+var relayInvalidReasonMessages = map[string]string{
+	"relay_list_missing_required_field": "relay list requires count, server_time, and relays",
+	"relay_missing_required_field":      "relay 0 is missing a required client field",
+	"wss_front_missing_required_field":  "WSS front requires id, url, and protocol_version",
+	"unknown_field":                     "unknown field",
+}
 
 type relayDecodeVectors struct {
-	Version int                `json:"version"`
 	Cases   []relayDecodeCase  `json:"cases"`
 	Invalid relayInvalidVector `json:"invalid"`
 }
@@ -98,13 +110,8 @@ type relayInvalidVector struct {
 func loadRelayDecodeVectors(t *testing.T) relayDecodeVectors {
 	t.Helper()
 	var vectors relayDecodeVectors
-	if err := Load(RelayDecodeVectors, &vectors); err != nil {
+	if err := LoadVersioned(RelayDecodeVectors, relayDecodeVectorsVersion, &vectors); err != nil {
 		t.Fatalf("load relay decode vectors: %v", err)
-	}
-	if vectors.Version != relayDecodeVectorsVersion {
-		t.Fatalf("relay decode vectors are version %d, this suite was written against %d — "+
-			"bump relayDecodeVectorsVersion together with the file, and re-vendor it in openrung-mobile-app",
-			vectors.Version, relayDecodeVectorsVersion)
 	}
 	return vectors
 }
@@ -169,12 +176,16 @@ func TestRelayDecodeInvalidVectors(t *testing.T) {
 
 	for _, testCase := range vectors.Invalid.Cases {
 		t.Run(testCase.ID, func(t *testing.T) {
+			message, known := relayInvalidReasonMessages[testCase.Reason]
+			if !known {
+				t.Fatalf("invalid case carries reason code %q, which relayInvalidReasonMessages does not translate", testCase.Reason)
+			}
 			_, err := fetchRelayList(t, testCase.Body)
 			if err == nil {
 				t.Fatalf("body was accepted, want rejection (%s)", testCase.Reason)
 			}
-			if !strings.Contains(err.Error(), testCase.Reason) {
-				t.Fatalf("rejected with %q, want a message containing %q", err, testCase.Reason)
+			if !strings.Contains(err.Error(), message) {
+				t.Fatalf("rejected with %q, want a message containing %q (reason code %s)", err, message, testCase.Reason)
 			}
 		})
 	}

@@ -14,23 +14,24 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/openrung/openrung/wsscore"
+
 	"openrung/contract"
 	"openrung/internal/client"
 )
 
-// classificationVectorsVersion is the version of
-// contract/vectors/classification.json this suite was written against. The
-// vectors are a cross-repo contract: a changed row has to reach the mobile
-// repo's Kotlin, Swift, and TypeScript suites too, so the file's version must
-// be bumped with it — and this constant with the file, which is what stops a
-// row from being edited quietly on one side.
+// classificationVectorsVersion pins the version of
+// contract/vectors/classification.json this suite expects. The vectors are a
+// cross-repo contract: a changed row has to reach the mobile repo's Kotlin,
+// Swift, and TypeScript suites too, so the file's version must be bumped with
+// it — and this constant with the file, which is what stops a row from being
+// edited quietly on one side. contract.LoadVersioned enforces the pin.
 const classificationVectorsVersion = 1
 
 // suiteName identifies this suite in a vector's "suites" list.
 const suiteName = "go"
 
 type classificationVectors struct {
-	Version       int      `json:"version"`
 	Suites        []string `json:"suites"`
 	Tokens        []string `json:"tokens"`
 	TokenPatterns []string `json:"token_patterns"`
@@ -76,13 +77,8 @@ func (v classificationVectors) runsHere(testCase classificationCase) bool {
 func loadClassificationVectors(t *testing.T) classificationVectors {
 	t.Helper()
 	var vectors classificationVectors
-	if err := contract.Load(contract.ClassificationVectors, &vectors); err != nil {
+	if err := contract.LoadVersioned(contract.ClassificationVectors, classificationVectorsVersion, &vectors); err != nil {
 		t.Fatalf("load classification vectors: %v", err)
-	}
-	if vectors.Version != classificationVectorsVersion {
-		t.Fatalf("classification vectors are version %d, this suite was written against %d — "+
-			"bump classificationVectorsVersion together with the file, and re-vendor it in openrung-mobile-app",
-			vectors.Version, classificationVectorsVersion)
 	}
 	return vectors
 }
@@ -169,6 +165,159 @@ func TestClassificationVectorsCoverage(t *testing.T) {
 	for kind := range vectors.Kinds {
 		if _, used := kindsUsed[kind]; !used {
 			t.Errorf("kind %q is described but has no vector", kind)
+		}
+	}
+}
+
+// TestWSSReasonAllowlistMatchesVectors ties the pass-through allowlist to the
+// vectors from both sides, breaking the circle the token universe used to live
+// in (four hand-synced copies validating each other): (a) the vectors'
+// pass-through wss_reason rows are exactly the allowlist, so extending the
+// allowlist means minting a vector row every suite sees; (b) every allowlist
+// member is in the vectors' closed token list, so the dashboard enum cannot
+// lag it. A pass-through row is one whose input reason equals its expectation;
+// "wss_transport_failed" is the degrade target and can never be a pass-through
+// claim, whatever a row's input says.
+func TestWSSReasonAllowlistMatchesVectors(t *testing.T) {
+	vectors := loadClassificationVectors(t)
+
+	passThrough := make(map[string]string, len(vectors.Cases))
+	for _, testCase := range vectors.Cases {
+		if testCase.Kind != "wss_reason" || testCase.Input.Reason != testCase.Expect ||
+			testCase.Expect == "wss_transport_failed" {
+			continue
+		}
+		passThrough[testCase.Expect] = testCase.ID
+	}
+
+	allowed := make(map[string]bool, len(wssReasonAllowlist))
+	for _, token := range wssReasonAllowlist {
+		if allowed[token] {
+			t.Errorf("the allowlist lists %q twice", token)
+		}
+		allowed[token] = true
+		if _, covered := passThrough[token]; !covered {
+			t.Errorf("the allowlist passes %q through but no wss_reason vector row pins it — add the row (and re-vendor it) or drop the token", token)
+		}
+		if !slices.Contains(vectors.Tokens, token) {
+			t.Errorf("the allowlist passes %q through but the vectors' closed token list does not contain it", token)
+		}
+	}
+	for token, id := range passThrough {
+		if !allowed[token] {
+			t.Errorf("vector row %q pins %q as a pass-through, but the allowlist does not contain it", id, token)
+		}
+	}
+}
+
+// TestWSSReasonAllowlistCoversWsscore walks wsscore's machine-readable token
+// registry and requires a decision for every token: pass it through (the
+// allowlist, which the test above ties to a vector row) or exclude it by name
+// with a reason in wssReasonExcluded. A wsscore token in neither fails, so a
+// token added or renamed there must produce a vector row or a named exclusion
+// before it ships — the consumer-side decision point the frozen-set contract
+// requires. The reverse direction keeps the allowlist honest: a member wsscore
+// no longer emits is a stale decision to delete, not to carry.
+func TestWSSReasonAllowlistCoversWsscore(t *testing.T) {
+	registry := wsscore.Reasons()
+	for _, token := range registry {
+		allowed := slices.Contains(wssReasonAllowlist, token)
+		_, excluded := wssReasonExcluded[token]
+		switch {
+		case allowed && excluded:
+			t.Errorf("wsscore token %q is both allowlisted and excluded", token)
+		case !allowed && !excluded:
+			t.Errorf("wsscore token %q is neither in the allowlist nor in wssReasonExcluded — decide, and name the decision", token)
+		}
+	}
+	for token, rationale := range wssReasonExcluded {
+		if !slices.Contains(registry, token) {
+			t.Errorf("wssReasonExcluded names %q (%s), which is not a wsscore token; delete the stale entry", token, rationale)
+		}
+		if strings.TrimSpace(rationale) == "" {
+			t.Errorf("wssReasonExcluded entry %q carries no rationale", token)
+		}
+	}
+	for _, token := range wssReasonAllowlist {
+		if !slices.Contains(registry, token) {
+			t.Errorf("the allowlist passes %q through, which wsscore's registry no longer contains; delete the stale entry", token)
+		}
+	}
+}
+
+// TestWinsockTableDivergence walks the shared Winsock errno table
+// (wsscore/winsock.go) and checks, per code, that this ladder and wsscore's
+// dial classifier assign the same token — or that the disagreement is declared
+// below, naming the vector row that pins this ladder's side of it. The two
+// taxonomies deliberately disagree in places (wsscore folds WSAECONNABORTED
+// into its reset family and splits timeouts by phase); this test keeps each
+// disagreement a stated fact with a frozen vector behind it rather than an
+// accident either side could drift into.
+func TestWinsockTableDivergence(t *testing.T) {
+	vectors := loadClassificationVectors(t)
+	rowsByID := make(map[string]classificationCase, len(vectors.Cases))
+	for _, testCase := range vectors.Cases {
+		rowsByID[testCase.ID] = testCase
+	}
+
+	// The declared divergences: what each side reports, and the vector row
+	// that pins this ladder's side.
+	divergences := map[string]struct {
+		client, wss, pinnedBy string
+	}{
+		"WSAEACCES": {
+			// The WSS taxonomy has no permission token.
+			client:   "permission_denied",
+			wss:      wsscore.ReasonUnclassified,
+			pinnedBy: "errno_wsaeacces",
+		},
+		"WSAETIMEDOUT": {
+			// wsscore splits timeouts by handshake phase; this ladder emits
+			// one bare token.
+			client:   "timeout",
+			wss:      wsscore.ReasonTCPTimeout,
+			pinnedBy: "errno_wsaetimedout",
+		},
+		"WSAECONNABORTED": {
+			// 10053: deliberately unmapped here, together with EPIPE, its
+			// POSIX twin; wsscore folds it into the reset family.
+			client:   "unknown",
+			wss:      wsscore.ReasonConnectionReset,
+			pinnedBy: "errno_wsaeconnaborted",
+		},
+	}
+
+	table := wsscore.WinsockErrnos()
+	for symbol, errno := range table {
+		clientToken := ClassifyError(errno)
+		wssToken := wsscore.SocketErrnoReason(errno)
+		divergence, declared := divergences[symbol]
+		if !declared {
+			if clientToken != wssToken {
+				t.Errorf("%s: ClassifyError reports %q but wsscore reports %q — declare the divergence here with the vector row that pins it, or align the mapping",
+					symbol, clientToken, wssToken)
+			}
+			continue
+		}
+		if clientToken != divergence.client {
+			t.Errorf("%s: ClassifyError reports %q, but the declared divergence says %q", symbol, clientToken, divergence.client)
+		}
+		if wssToken != divergence.wss {
+			t.Errorf("%s: wsscore reports %q, but the declared divergence says %q", symbol, wssToken, divergence.wss)
+		}
+		row, pinned := rowsByID[divergence.pinnedBy]
+		switch {
+		case !pinned:
+			t.Errorf("%s: the divergence claims vector row %q pins it, but no such row exists", symbol, divergence.pinnedBy)
+		case row.Kind != "errno" || row.Platform != "windows" || syscall.Errno(row.Input.Code) != errno:
+			t.Errorf("%s: pinning row %q is not the windows errno row for code %d", symbol, divergence.pinnedBy, uint32(errno))
+		case row.Expect != divergence.client:
+			t.Errorf("%s: pinning row %q expects %q, not the declared client token %q", symbol, divergence.pinnedBy, row.Expect, divergence.client)
+		}
+	}
+	for symbol := range divergences {
+		if _, exists := table[symbol]; !exists {
+			t.Errorf("a divergence is declared for %s, which is not in the shared table", symbol)
 		}
 	}
 }

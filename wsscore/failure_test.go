@@ -586,6 +586,18 @@ func (fakeTimeout) Error() string   { return "fake i/o timeout" }
 func (fakeTimeout) Timeout() bool   { return true }
 func (fakeTimeout) Temporary() bool { return false }
 
+// falseTimeoutWrapper implements net.Error with Timeout() == false while
+// wrapping another error — the shape a custom transport wrapper can produce.
+// errors.As binds it before anything it wraps, so it shadows a wrapped errno's
+// own Timeout answer; the classifier's explicit ETIMEDOUT match is what keeps
+// the timeout token.
+type falseTimeoutWrapper struct{ err error }
+
+func (w falseTimeoutWrapper) Error() string   { return "wrapped: " + w.err.Error() }
+func (w falseTimeoutWrapper) Timeout() bool   { return false }
+func (w falseTimeoutWrapper) Temporary() bool { return false }
+func (w falseTimeoutWrapper) Unwrap() error   { return w.err }
+
 // TestClassifyDialFailurePrecedence locks the deterministic precedence of the
 // frozen taxonomy, including the phase-dependent splits that a live-wire case
 // cannot provoke reliably.
@@ -708,6 +720,26 @@ func TestClassifyDialFailurePrecedence(t *testing.T) {
 			wantReason: ReasonConnectionReset,
 		},
 		{
+			name:       "ETIMEDOUT behind a wrapper whose Timeout reports false",
+			err:        falseTimeoutWrapper{err: syscall.ETIMEDOUT},
+			wantReason: ReasonTCPTimeout,
+		},
+		// The Winsock rows below prove the Windows mappings on whatever host
+		// runs the suite: the raw numbers from the shared table (winsock.go)
+		// are matched unconditionally, so no Windows runner is needed.
+		{
+			name: "winsock reset during TLS", err: WSAECONNRESET, marks: midTLS,
+			wantReason: ReasonTLSReset,
+		},
+		{
+			name: "winsock connection aborted before TLS", err: WSAECONNABORTED, marks: tcpOnly,
+			wantReason: ReasonConnectionReset,
+		},
+		{
+			name: "winsock timeout awaiting the response", err: WSAETIMEDOUT, marks: afterTLS,
+			wantReason: ReasonResponseTimeout,
+		},
+		{
 			name: "opaque TLS residual", err: errors.New("tls: bad record MAC"), marks: midTLS,
 			wantReason: ReasonTLSHandshake,
 		},
@@ -723,32 +755,6 @@ func TestClassifyDialFailurePrecedence(t *testing.T) {
 			}
 			assertNoIdentifyingLeak(t, newDialError(reason).Error(), "")
 		})
-	}
-}
-
-// TestSocketErrnoConstantsAreDistinct guards the platform errno table. Go
-// defines the E* names on Windows as invented values unrelated to the Winsock
-// numbers the net stack returns, so a table that silently collapsed or zeroed
-// would make every socket failure on that platform report "unclassified" while
-// every test here still passed.
-func TestSocketErrnoConstantsAreDistinct(t *testing.T) {
-	named := map[string]syscall.Errno{
-		"connection refused":  errnoConnectionRefused,
-		"network unreachable": errnoNetworkUnreachable,
-		"host unreachable":    errnoHostUnreachable,
-		"connection reset":    errnoConnectionReset,
-		"broken pipe":         errnoBrokenPipe,
-		"timed out":           errnoTimedOut,
-	}
-	seen := make(map[syscall.Errno]string, len(named))
-	for name, errno := range named {
-		if errno == 0 {
-			t.Errorf("%s errno is zero, which would match every non-syscall error", name)
-		}
-		if previous, duplicate := seen[errno]; duplicate {
-			t.Errorf("%s and %s share errno %d, collapsing two distinct tokens", name, previous, errno)
-		}
-		seen[errno] = name
 	}
 }
 

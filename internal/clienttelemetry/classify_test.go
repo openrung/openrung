@@ -144,28 +144,16 @@ func TestClassifyErrorUsesWSSTaxonomy(t *testing.T) {
 	}
 }
 
-// TestWSSFailureReasonAllowlist pins the allowlist to wsscore's current token
-// set. Passing every constant through proves the allowlist is complete, and —
-// because the allowlist is literals, not the constants — a renamed or changed
-// token value in wsscore fails here instead of flowing into telemetry, which is
-// the consumer-side decision point the frozen-set contract requires.
+// TestWSSFailureReasonAllowlist checks the projection over the real allowlist:
+// every allowed token passes through unchanged, and anything outside the
+// frozen set degrades to the generic transport-failure reason — never
+// verbatim. Completeness of the allowlist against wsscore's registry and the
+// contract vectors is checked in contract_vectors_test.go, which is what makes
+// a renamed or added wsscore token fail there instead of flowing into
+// telemetry — the consumer-side decision point the frozen-set contract
+// requires.
 func TestWSSFailureReasonAllowlist(t *testing.T) {
-	tokens := []string{
-		wsscore.ReasonWSUpgrade, wsscore.ReasonHTTP401, wsscore.ReasonHTTP403,
-		wsscore.ReasonHTTP421, wsscore.ReasonRateLimited, wsscore.ReasonHTTP502,
-		wsscore.ReasonHTTP503, wsscore.ReasonHTTPOther,
-		wsscore.ReasonWSSubprotocol,
-		wsscore.ReasonDNSBogon, wsscore.ReasonDNSFailure,
-		wsscore.ReasonCancelled,
-		wsscore.ReasonConnectionRefused, wsscore.ReasonNetworkUnreachable,
-		wsscore.ReasonConnectionReset, wsscore.ReasonTLSReset, wsscore.ReasonResponseReset,
-		wsscore.ReasonTLSNotTLS, wsscore.ReasonCertExpired, wsscore.ReasonCertVerify,
-		wsscore.ReasonTLSAlert, wsscore.ReasonTLSHandshake,
-		wsscore.ReasonTCPTimeout, wsscore.ReasonTLSTimeout,
-		wsscore.ReasonResponseTimeout, wsscore.ReasonHandshakeTimeout,
-		wsscore.ReasonUnclassified,
-	}
-	for _, token := range tokens {
+	for _, token := range wssReasonAllowlist {
 		if got := wssFailureReason(token); got != token {
 			t.Errorf("wssFailureReason(%q) = %q, want the token unchanged", token, got)
 		}
@@ -176,6 +164,30 @@ func TestWSSFailureReasonAllowlist(t *testing.T) {
 	for _, unrecognized := range []string{"", "future_token", "unknown", "d111111abcdef8.cloudfront.net"} {
 		if got := wssFailureReason(unrecognized); got != "wss_transport_failed" {
 			t.Errorf("wssFailureReason(%q) = %q, want %q", unrecognized, got, "wss_transport_failed")
+		}
+	}
+}
+
+// falseTimeoutWrapper implements net.Error with Timeout() == false while
+// wrapping another error — the shape a custom transport wrapper can produce.
+// errors.As binds it before the errno it wraps, so without the explicit
+// ETIMEDOUT match at the timeout rung this ladder degraded the wrapped errno
+// to "unknown" while wsscore's taxonomy kept its timeout family, and the
+// platform chose the token.
+type falseTimeoutWrapper struct{ err error }
+
+func (w falseTimeoutWrapper) Error() string   { return "wrapped: " + w.err.Error() }
+func (w falseTimeoutWrapper) Timeout() bool   { return false }
+func (w falseTimeoutWrapper) Temporary() bool { return false }
+func (w falseTimeoutWrapper) Unwrap() error   { return w.err }
+
+func TestClassifyShadowedTimeoutErrnos(t *testing.T) {
+	for name, errno := range map[string]syscall.Errno{
+		"ETIMEDOUT":    syscall.ETIMEDOUT,
+		"WSAETIMEDOUT": wsscore.WSAETIMEDOUT,
+	} {
+		if got := ClassifyError(falseTimeoutWrapper{err: errno}); got != "timeout" {
+			t.Errorf("ClassifyError(%s behind a false-Timeout wrapper) = %q, want %q", name, got, "timeout")
 		}
 	}
 }

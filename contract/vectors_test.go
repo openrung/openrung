@@ -16,10 +16,11 @@ var knownSuites = []string{"go", "kotlin", "swift", "ts"}
 var vectorFiles = []string{ClassificationVectors, RelayDecodeVectors, BrokerFrontsVectors}
 
 // vectorHeader is the part of every vector file's shape that is common to all
-// of them, whatever their rows look like.
+// of them, whatever their rows look like. Version is deliberately not here:
+// version validation lives in LoadVersioned, which every Go suite loads its
+// file through.
 type vectorHeader struct {
-	Version int      `json:"version"`
-	Suites  []string `json:"suites"`
+	Suites []string `json:"suites"`
 }
 
 // TestVectorFileHeaders checks the declaration every vector file carries.
@@ -38,9 +39,6 @@ func TestVectorFileHeaders(t *testing.T) {
 			var header vectorHeader
 			if err := Load(name, &header); err != nil {
 				t.Fatalf("load: %v", err)
-			}
-			if header.Version < 1 {
-				t.Errorf("version = %d, want a positive version", header.Version)
 			}
 			if len(header.Suites) == 0 {
 				t.Fatal("declares no consuming suites")

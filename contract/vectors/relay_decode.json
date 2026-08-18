@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "contract": "openrung-relay-decode-v1",
   "suites": ["go", "kotlin", "swift", "ts"],
   "comment": "Golden cross-repo vectors for decoding a signed relay directory into a client relay model, and for the usability filter applied to it. Consumed by the four suites named in 'suites' — Go (contract/relay_decode_test.go, against brokerapi's wire validation, internal/relay's model, and internal/client's selector) in this repo, and Kotlin, Swift, and Jest (src/model/relay.ts) in openrung-mobile-app, which vendors this file and checks the vendored copy against a pinned openrung ref. A decoder that drops or renames a field here silently changes which relays a deployed client will try, so an existing row may only change together with a bump of 'version' here and in every vendored copy, so the change lands in all four suites at once.",
@@ -443,26 +443,26 @@
   ],
   "invalid": {
     "suites": ["go"],
-    "note": "Wire-schema rejections enforced by brokerapi before any client model sees the body. Kotlin and Swift inherit them through the same native module; the TypeScript model only ever receives an already-validated snapshot, so the Jest suite does not run these.",
+    "note": "Wire-schema rejections enforced by brokerapi before any client model sees the body. Kotlin and Swift inherit them through the same native module; the TypeScript model only ever receives an already-validated snapshot, so the Jest suite does not run these. Each case's 'reason' is a stable rejection code, not error wording: the Go suite translates it to the substring of brokerapi's current error message in its own non-vendored fixture (relayInvalidReasonMessages in contract/relay_decode_test.go), so a Go-internal reword changes that fixture instead of forcing a version bump and a re-vendor of this file.",
     "cases": [
       {
         "id": "missing_count",
-        "reason": "relay list requires count, server_time, and relays",
+        "reason": "relay_list_missing_required_field",
         "body": {"server_time": "2026-08-17T12:00:00Z", "not_after": "2026-08-17T12:30:00Z", "key_id": "0f1a2b3c4d5e6f70", "channel": "api", "limit": 5, "relays": []}
       },
       {
         "id": "missing_server_time",
-        "reason": "relay list requires count, server_time, and relays",
+        "reason": "relay_list_missing_required_field",
         "body": {"count": 0, "not_after": "2026-08-17T12:30:00Z", "key_id": "0f1a2b3c4d5e6f70", "channel": "api", "limit": 5, "relays": []}
       },
       {
         "id": "missing_relays",
-        "reason": "relay list requires count, server_time, and relays",
+        "reason": "relay_list_missing_required_field",
         "body": {"count": 0, "server_time": "2026-08-17T12:00:00Z", "not_after": "2026-08-17T12:30:00Z", "key_id": "0f1a2b3c4d5e6f70", "channel": "api", "limit": 5}
       },
       {
         "id": "relay_missing_client_id",
-        "reason": "relay 0 is missing a required client field",
+        "reason": "relay_missing_required_field",
         "body": {
           "count": 1, "server_time": "2026-08-17T12:00:00Z", "not_after": "2026-08-17T12:30:00Z",
           "key_id": "0f1a2b3c4d5e6f70", "channel": "api", "limit": 5,
@@ -478,7 +478,7 @@
       },
       {
         "id": "relay_version_without_alias",
-        "reason": "relay 0 is missing a required client field",
+        "reason": "relay_missing_required_field",
         "note": "The legacy volunteer_version alias is load-bearing: released native clients require it, so a broker that emits only relay_version is rejected here rather than silently decoding to a blank version. This is why no valid case pins relay_version/volunteer_version precedence — they never disagree on the wire.",
         "body": {
           "count": 1, "server_time": "2026-08-17T12:00:00Z", "not_after": "2026-08-17T12:30:00Z",
@@ -496,7 +496,7 @@
       },
       {
         "id": "wss_front_missing_protocol_version",
-        "reason": "WSS front requires id, url, and protocol_version",
+        "reason": "wss_front_missing_required_field",
         "note": "The nested front shape is decoded strictly — it selects a censorship-circumvention transport, so it must not be normalized before wsscore sees it.",
         "body": {
           "count": 1, "server_time": "2026-08-17T12:00:00Z", "not_after": "2026-08-17T12:30:00Z",
@@ -515,7 +515,7 @@
       },
       {
         "id": "wss_front_unknown_field",
-        "reason": "unknown field",
+        "reason": "unknown_field",
         "body": {
           "count": 1, "server_time": "2026-08-17T12:00:00Z", "not_after": "2026-08-17T12:30:00Z",
           "key_id": "0f1a2b3c4d5e6f70", "channel": "api", "limit": 5,

@@ -49,3 +49,36 @@ func Load(name string, target any) error {
 	}
 	return nil
 }
+
+// LoadVersioned decodes one vector file into target after checking the file's
+// top-level "version" against wantVersion — the version the calling suite was
+// written against, which each suite pins in its own constant. The vectors are
+// a cross-repo contract: an edited row has to reach the mobile repo's suites
+// too, so the file's version moves with the edit, every Go suite's pin moves
+// deliberately with the version, and the vendored copies are refreshed. The
+// mismatch error below is the single copy of that guidance; version
+// validation lives here and nowhere else.
+func LoadVersioned(name string, wantVersion int, target any) error {
+	data, err := Raw(name)
+	if err != nil {
+		return err
+	}
+	var header struct {
+		Version int `json:"version"`
+	}
+	if err := json.Unmarshal(data, &header); err != nil {
+		return fmt.Errorf("decode contract vectors %s: %w", name, err)
+	}
+	if header.Version < 1 {
+		return fmt.Errorf("contract vectors %s carry version %d, want a positive version", name, header.Version)
+	}
+	if header.Version != wantVersion {
+		return fmt.Errorf("contract vectors %s are version %d, this suite was written against %d — "+
+			"bump the suite's pinned version constant together with the file, and re-vendor it in openrung-mobile-app",
+			name, header.Version, wantVersion)
+	}
+	if err := json.Unmarshal(data, target); err != nil {
+		return fmt.Errorf("decode contract vectors %s: %w", name, err)
+	}
+	return nil
+}
