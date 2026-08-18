@@ -70,6 +70,15 @@ type Config struct {
 	// can show where relays are located. Nil disables lookups;
 	// descriptors then carry empty geo fields.
 	GeoIP GeoIPResolver
+	// RelayRanking is the directory ordering mode (see ParseRankingMode) and
+	// should carry the same value the relay store was constructed with; the
+	// zero value is the default global mode. Diversity slots apply only to
+	// global ranking — legacy ordering is served untouched.
+	RelayRanking RankingMode
+	// RelayPageDiversityDisabled turns off the geographic diversity slots in
+	// the ranked relay page (OPENRUNG_RELAY_PAGE_DIVERSITY=false), serving the
+	// pure global-order page head — the rollback lever for the diverse page.
+	RelayPageDiversityDisabled bool
 	// SigningSeed is the 32-byte Ed25519 seed that signs every relay-list
 	// response body. Required: cmd/broker validates OPENRUNG_RELAY_SIGNING_KEY
 	// with ParseSigningSeed and refuses to start without it, because serving
@@ -99,6 +108,7 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 	relayLedger := newRelayIDLedger(relayLedgerTTL, relayLedgerMaxEntries)
 	seedRelayLedger(relayLedger, store)
 	newIDCap := newNewRelayCap(cfg.MaxNewRelayIDsPerIPPerDay, newRelayCapWindow, cfg.RegistrationCapExemptCIDRs)
+	diversifyPages := !cfg.RelayPageDiversityDisabled && normalizeRankingMode(cfg.RelayRanking) == RankingModeGlobal
 	registerRelay := rateLimited(relayRegistrationLimiter, clientIP, 10, registerHandler(store, cfg, clientIP, relayLedger, newIDCap))
 	heartbeatRelay := rateLimited(relayRegistrationLimiter, clientIP, 10, heartbeatHandler(store, cfg, relayLedger))
 
@@ -119,8 +129,8 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 	})
 	mux.HandleFunc("POST /api/v1/relays/register", registerRelay)
 	mux.HandleFunc("POST /api/v1/relays/", heartbeatRelay)
-	mux.HandleFunc("GET /api/v1/relays", rateLimited(relayListLimiter, clientIP, 10, listRelaysHandler(store, cfg.TelemetrySink, clientIP, clientSeen, relaySigner)))
-	mux.HandleFunc("GET /api/v1/relays.mirror", rateLimited(relayListLimiter, clientIP, 10, listRelaysMirrorHandler(store, relaySigner)))
+	mux.HandleFunc("GET /api/v1/relays", rateLimited(relayListLimiter, clientIP, 10, listRelaysHandler(store, cfg.TelemetrySink, clientIP, clientSeen, relaySigner, diversifyPages)))
+	mux.HandleFunc("GET /api/v1/relays.mirror", rateLimited(relayListLimiter, clientIP, 10, listRelaysMirrorHandler(store, relaySigner, diversifyPages)))
 	if wssIssuer != nil {
 		mux.HandleFunc("POST /api/v1/wss/tickets", rateLimitedBy(wssTicketLimiter, wssTicketRateKey(clientIP), 10, wssTicketHandler(store, wssIssuer)))
 	}
@@ -368,7 +378,7 @@ func geoLookupHost(desc *relay.Descriptor) string {
 	return desc.PublicHost
 }
 
-func listRelaysHandler(store RelayStore, telemetrySink TelemetrySink, clientIP *clientIPResolver, clientSeen *clientSeenDeduper, s signer) http.HandlerFunc {
+func listRelaysHandler(store RelayStore, telemetrySink TelemetrySink, clientIP *clientIPResolver, clientSeen *clientSeenDeduper, s signer, diversify bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Relay availability is real-time: shared caches (Cloudflare's edge in
 		// production) must never store a copy, and clients cannot bust an edge
@@ -387,14 +397,19 @@ func listRelaysHandler(store RelayStore, telemetrySink TelemetrySink, clientIP *
 		}
 
 		now := time.Now().UTC()
-		// Ask both stores for the ranked set, then reserve one already-advertised
-		// per-relay WSS-capable Foundation descriptor in a short page. This never
-		// attaches a shared URL or changes ordering when the page already has one.
+		// Ask both stores for the ranked set, apply the geographic diversity
+		// slots to the page head, then reserve one already-advertised per-relay
+		// WSS-capable Foundation descriptor in a short page. Diversity runs
+		// first so the WSS reservation keeps final authority over the last
+		// slot: a page must never lose its WSS fallback to a diversity fill.
 		relays, err := store.List(now, 0)
 		if err != nil {
 			slog.Error("could not list relays", "error", err)
 			writeError(w, http.StatusServiceUnavailable, "could not list relays")
 			return
+		}
+		if diversify {
+			relays = diversifyRelayPage(relays, limit)
 		}
 		relays = reserveWSSCandidate(relays, limit)
 		s.writeSigned(w, relay.ListResponse{
@@ -422,7 +437,7 @@ const mirrorRelayLimit = 20
 // exact body bytes plus the signature header value to static mirrors, which
 // clients try only after every API candidate fails. The body carries no limit
 // field — the mirror is not request-shaped, so there is nothing to echo.
-func listRelaysMirrorHandler(store RelayStore, s signer) http.HandlerFunc {
+func listRelaysMirrorHandler(store RelayStore, s signer, diversify bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Same caching rule as the API list: errors must not be cached either.
 		w.Header().Set("Cache-Control", "no-store")
@@ -432,6 +447,9 @@ func listRelaysMirrorHandler(store RelayStore, s signer) http.HandlerFunc {
 			slog.Error("could not list relays for mirror", "error", err)
 			writeError(w, http.StatusServiceUnavailable, "could not list relays")
 			return
+		}
+		if diversify {
+			relays = diversifyRelayPage(relays, mirrorRelayLimit)
 		}
 		relays = reserveWSSCandidate(relays, mirrorRelayLimit)
 		s.writeSigned(w, relay.ListResponse{

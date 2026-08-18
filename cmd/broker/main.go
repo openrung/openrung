@@ -67,6 +67,9 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// Rollback lever for the geographic diversity slots in the ranked relay
+	// page; enabled unless explicitly turned off (and inert in legacy ranking).
+	pageDiversity := envEnabled("OPENRUNG_RELAY_PAGE_DIVERSITY")
 
 	// Fail closed: with no registration token, anyone can register a relay and
 	// poison the directory that clients route their VPN traffic through. Require
@@ -146,6 +149,8 @@ func run() error {
 		GeoIP:                      geoResolver,
 		SigningSeed:                signingSeed,
 		WSSTicketSigningSeed:       wssTicketSeed,
+		RelayRanking:               rankingMode,
+		RelayPageDiversityDisabled: !pageDiversity,
 	}
 	// The Postgres store aggregates dashboard queries in SQL; the JSONL sink's
 	// dashboard is aggregated in Go from its in-memory record set.
@@ -189,7 +194,7 @@ func run() error {
 		close(shutdownDone)
 	}()
 
-	slog.Info("starting broker", "version", buildinfo.Version(baseVersion), "revision", buildinfo.Revision(), "addr", *addr, "lease_ttl", leaseTTL.String(), "telemetry_store", *telemetryStore, "telemetry_file", *telemetryFile, "relay_store", *relayStore, "relay_ranking", rankingMode, "dashboard_enabled", dashboardToken != "", "operational_api_enabled", apiToken != "", "foundation_registration_enabled", foundationToken != "", "wss_ticket_issuance_enabled", len(wssTicketSeed) != 0, "status_interval", statusInterval.String(), "geoip_enabled", geoResolver != nil)
+	slog.Info("starting broker", "version", buildinfo.Version(baseVersion), "revision", buildinfo.Revision(), "addr", *addr, "lease_ttl", leaseTTL.String(), "telemetry_store", *telemetryStore, "telemetry_file", *telemetryFile, "relay_store", *relayStore, "relay_ranking", rankingMode, "relay_page_diversity", pageDiversity, "dashboard_enabled", dashboardToken != "", "operational_api_enabled", apiToken != "", "foundation_registration_enabled", foundationToken != "", "wss_ticket_issuance_enabled", len(wssTicketSeed) != 0, "status_interval", statusInterval.String(), "geoip_enabled", geoResolver != nil)
 	err = server.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {
 		<-shutdownDone
@@ -329,6 +334,17 @@ func envTrue(key string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// envEnabled is the default-enabled counterpart of envTrue: only an explicit
+// falsy value disables the behavior.
+func envEnabled(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
 	}
 }
 
