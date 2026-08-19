@@ -376,11 +376,44 @@ func TestSplitTunnelValidation(t *testing.T) {
 				RuleSetDirectory: "/rulesets",
 			}
 		},
+		"excluded packages in proxy mode": func(input *SingBoxConfigInput) {
+			// exclude_package is a TUN inbound field; in ModeProxy it would be
+			// a silent no-op and the excluded apps' traffic would still be
+			// carried through the proxy.
+			input.Mode = ModeProxy
+			input.ProxyListenPort = 2080
+			input.SplitTunnel = &SplitTunnelRules{
+				ExcludedPackages: []string{"com.tencent.mm"},
+			}
+		},
 	} {
 		input := base
 		mutate(&input)
 		if _, err := BuildSingBoxConfig(input); err == nil {
 			t.Fatalf("%s: expected an error", name)
+		}
+	}
+}
+
+func TestDoHFailoverRejectsUnrepresentableDNSServers(t *testing.T) {
+	// A hostname server would be self-referential (nothing can bootstrap its
+	// own resolver chain), and an unknown IP would be emitted with no
+	// tls.server_name, reintroducing the IP-SAN fragility dohTLSServerNames
+	// exists to prevent.
+	for name, servers := range map[string][]string{
+		"hostname server": {"dns.google"},
+		"unpinned IP":     {"1.1.1.1", "9.9.9.9"},
+	} {
+		input := mobileInput(mobileRelay(t))
+		input.DNSServers = servers
+		if _, err := BuildSingBoxConfig(input); err == nil {
+			t.Fatalf("%s: expected an error", name)
+		}
+		// The TCP shape's legacy emission keeps tolerating the same servers.
+		input.DNSShape = DNSShapeTCPProxied
+		input.ClashAPI = false
+		if _, err := BuildSingBoxConfig(input); err != nil {
+			t.Fatalf("%s: the TCP shape must stay tolerant: %v", name, err)
 		}
 	}
 }

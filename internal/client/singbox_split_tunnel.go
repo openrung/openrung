@@ -80,14 +80,23 @@ var splitTunnelDirectResolvers = map[string]*splitTunnelDirectResolver{
 }
 
 // validateSplitTunnel rejects split-tunnel inputs the emission below cannot
-// represent safely. Bypass countries require the DoH failover DNS shape: the
-// probe-priority pins that keep a country rule set (geosite-cn ships
-// gstatic-class hosts) from capturing probe lookups only exist in that shape,
-// and shipping country ROUTE rules without them recreates the confirmed
+// represent safely. Excluded packages require the TUN inbound:
+// exclude_package is a TUN field, so in ModeProxy the setting would be a
+// silent no-op and apps the caller believes leave the VPN would still be
+// carried through the proxy. Bypass countries require the DoH failover DNS
+// shape: the probe-priority pins that keep a country rule set (geosite-cn
+// ships gstatic-class hosts) from capturing probe lookups only exist in that
+// shape, and shipping country ROUTE rules without them recreates the confirmed
 // CONNECTED-over-a-dead-tunnel regression mobile's tests guard against.
 func validateSplitTunnel(input SingBoxConfigInput) error {
 	rules := input.SplitTunnel
-	if rules == nil || len(rules.BypassCountries) == 0 {
+	if rules == nil {
+		return nil
+	}
+	if len(rules.ExcludedPackages) > 0 && input.Mode == ModeProxy {
+		return errors.New("split-tunnel excluded packages require ModeTUN: exclude_package is a TUN inbound field")
+	}
+	if len(rules.BypassCountries) == 0 {
 		return nil
 	}
 	if input.DNSShape != DNSShapeDoHFailover {

@@ -75,6 +75,26 @@ var dohTLSServerNames = map[string]string{
 	"8.8.8.8": "dns.google",
 }
 
+// validateDoHDNSServers rejects proxied resolvers the DoH failover emission
+// cannot represent safely. A hostname server would be self-referential: its
+// address could only be resolved by route.default_domain_resolver = "dns-0",
+// which is the very chain it belongs to, and we emit no bootstrap resolver. An
+// IP literal without a dohTLSServerNames entry would be emitted with no tls
+// block, verifying the bare IP against the certificate — the IP-SAN fragility
+// that map exists to prevent. Only DNSShapeDoHFailover validates: the TCP
+// shape's byte-identical legacy emission keeps tolerating anything.
+func validateDoHDNSServers(dnsServers []string) error {
+	for _, server := range dnsServers {
+		if net.ParseIP(server) == nil {
+			return fmt.Errorf("DoH failover DNS server %q is not an IP literal; a hostname server has no bootstrap resolver", server)
+		}
+		if _, ok := dohTLSServerNames[server]; !ok {
+			return fmt.Errorf("DoH failover DNS server %q has no pinned TLS server name; add it to dohTLSServerNames first", server)
+		}
+	}
+	return nil
+}
+
 // Per-evaluate budget before the next resolver runs, and the terminal/global
 // budget (DNSShapeDoHFailover only).
 const (
@@ -158,6 +178,11 @@ func BuildSingBoxConfig(input SingBoxConfigInput) ([]byte, error) {
 	dnsServers := input.DNSServers
 	if len(dnsServers) == 0 {
 		dnsServers = []string{"1.1.1.1", "8.8.8.8"}
+	}
+	if input.DNSShape == DNSShapeDoHFailover {
+		if err := validateDoHDNSServers(dnsServers); err != nil {
+			return nil, err
+		}
 	}
 	mtu := input.MTU
 	if mtu == 0 {
@@ -354,23 +379,22 @@ func buildDNSConfig(input SingBoxConfigInput, dnsServers, probeSuffixes []string
 	for i, server := range dnsServers {
 		// DoH over 443 via the proxy: relays answer 443 on every transport,
 		// while TCP/53 gets no replies under WSS. IP-literal servers need no
-		// bootstrap resolver (defaults: port 443, path /dns-query).
-		object := map[string]any{
+		// bootstrap resolver (defaults: port 443, path /dns-query);
+		// validateDoHDNSServers has already rejected anything else, and
+		// guarantees the dohTLSServerNames lookup below succeeds. TLS
+		// authenticates the provider hostname while the dial stays on the IP
+		// literal, so a provider dropping IP SANs from its certificate cannot
+		// break resolution.
+		servers = append(servers, map[string]any{
 			"tag":    fmt.Sprintf("dns-%d", i),
 			"type":   "https",
 			"server": server,
 			"detour": "proxy",
-		}
-		// TLS authenticates the provider hostname while the dial stays on the
-		// IP literal, so a provider dropping IP SANs from its certificate
-		// cannot break resolution.
-		if serverName, ok := dohTLSServerNames[server]; ok {
-			object["tls"] = map[string]any{
+			"tls": map[string]any{
 				"enabled":     true,
-				"server_name": serverName,
-			}
-		}
-		servers = append(servers, object)
+				"server_name": dohTLSServerNames[server],
+			},
+		})
 	}
 	for _, country := range bypassCountries {
 		resolver := splitTunnelDirectResolvers[country]
