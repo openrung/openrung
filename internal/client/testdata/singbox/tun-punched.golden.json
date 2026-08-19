@@ -1,0 +1,87 @@
+{
+  "dns": {
+    "final": "dns-0",
+    "servers": [
+      {
+        "detour": "proxy",
+        "server": "1.1.1.1",
+        "tag": "dns-0",
+        "type": "tcp"
+      },
+      {
+        "detour": "proxy",
+        "server": "8.8.8.8",
+        "tag": "dns-1",
+        "type": "tcp"
+      }
+    ]
+  },
+  "inbounds": [
+    {
+      "address": [
+        "172.19.0.1/30",
+        "fdfe:dcba:9876::1/126"
+      ],
+      "auto_route": true,
+      "dns_mode": "hijack",
+      "endpoint_independent_nat": true,
+      "mtu": 1500,
+      "route_exclude_address": [
+        "203.0.113.10/32",
+        "198.51.100.7/32"
+      ],
+      "stack": "system",
+      "strict_route": true,
+      "tag": "tun-in",
+      "type": "tun"
+    }
+  ],
+  "log": {
+    "level": "info",
+    "timestamp": true
+  },
+  "outbounds": [
+    {
+      "flow": "xtls-rprx-vision",
+      "network": "tcp",
+      "packet_encoding": "xudp",
+      "server": "127.0.0.1",
+      "server_port": 54321,
+      "tag": "proxy",
+      "tls": {
+        "enabled": true,
+        "reality": {
+          "enabled": true,
+          "public_key": "public-key",
+          "short_id": "5f7a8d9c01ab23cd"
+        },
+        "server_name": "www.cloudflare.com",
+        "utls": {
+          "enabled": true,
+          "fingerprint": "chrome"
+        }
+      },
+      "type": "vless",
+      "uuid": "2c08df10-4ef4-4ab9-95c6-cb1e94cdb2ff"
+    },
+    {
+      "tag": "direct",
+      "type": "direct"
+    },
+    {
+      "tag": "block",
+      "type": "block"
+    }
+  ],
+  "route": {
+    "auto_detect_interface": true,
+    "default_domain_resolver": "dns-0",
+    "final": "proxy",
+    "rules": [
+      {
+        "action": "hijack-dns",
+        "protocol": "dns"
+      }
+    ]
+  }
+}
