@@ -68,6 +68,109 @@ func goldenCases() []goldenCase {
 				BridgePort:         54321,
 			},
 		},
+
+		// The mobile-shaped cases below mirror the emissions
+		// SingBoxConfiguration.kt / SingBoxConfiguration.swift produce (release
+		// log level, MTU 1400, DoH failover DNS, traffic accounting), so the
+		// mobile-parity structural tests and these goldens together pin the
+		// superset against the mobile generators' own test expectations.
+		{
+			// Full-device Android TUN on the direct relay path.
+			name: "mobile-tun-android",
+			input: SingBoxConfigInput{
+				Relay:            ipRelay,
+				MTU:              1400,
+				LogLevel:         "warn",
+				DNSShape:         DNSShapeDoHFailover,
+				RouteFindProcess: true,
+				ClashAPI:         true,
+			},
+		},
+		{
+			// iOS never emits find_process (nor exclude_package).
+			name: "mobile-tun-ios",
+			input: SingBoxConfigInput{
+				Relay:    ipRelay,
+				MTU:      1400,
+				LogLevel: "warn",
+				DNSShape: DNSShapeDoHFailover,
+				ClashAPI: true,
+			},
+		},
+		{
+			// Mobile's punched AND WSS shape — both hand sing-box the same
+			// loopback bridge, and the platform-protected outer socket means
+			// no route_exclude_address may appear (VpnService.protect exempts
+			// only the Go socket; a peer /32 would leak other apps' traffic).
+			name: "mobile-bridge-android",
+			input: SingBoxConfigInput{
+				Relay:                 ipRelay,
+				MTU:                   1400,
+				LogLevel:              "warn",
+				DNSShape:              DNSShapeDoHFailover,
+				RouteFindProcess:      true,
+				ClashAPI:              true,
+				BridgeHost:            "127.0.0.1",
+				BridgePort:            54321,
+				BridgeOwnsOuterSocket: true,
+			},
+		},
+		{
+			// Iran split tunneling: route bypass + LAN bypass + per-app
+			// exclusion, but NO dns-direct-ir server or country DNS rules —
+			// Iran has no verifiable encrypted in-country resolver today.
+			name: "mobile-split-ir-android",
+			input: SingBoxConfigInput{
+				Relay:            ipRelay,
+				MTU:              1400,
+				LogLevel:         "warn",
+				DNSShape:         DNSShapeDoHFailover,
+				RouteFindProcess: true,
+				ClashAPI:         true,
+				SplitTunnel: &SplitTunnelRules{
+					BypassLAN:        true,
+					BypassCountries:  []string{SplitTunnelCountryIR},
+					ExcludedPackages: []string{"com.tencent.mm", "org.telegram.messenger"},
+					RuleSetDirectory: "/data/user/0/rulesets",
+				},
+			},
+		},
+		{
+			// China split tunneling on iOS: AliDNS direct resolver plus the
+			// probe pins that keep geosite-cn from capturing probe lookups.
+			name: "mobile-split-cn-ios",
+			input: SingBoxConfigInput{
+				Relay:    ipRelay,
+				MTU:      1400,
+				LogLevel: "warn",
+				DNSShape: DNSShapeDoHFailover,
+				ClashAPI: true,
+				SplitTunnel: &SplitTunnelRules{
+					BypassLAN:        true,
+					BypassCountries:  []string{SplitTunnelCountryCN},
+					RuleSetDirectory: "/var/mobile/rulesets",
+				},
+			},
+		},
+		{
+			// Both countries in canonical order, matching the Kotlin
+			// "both countries plus lan keep the full canonical rule order"
+			// expectation.
+			name: "mobile-split-ir-cn-android",
+			input: SingBoxConfigInput{
+				Relay:            ipRelay,
+				MTU:              1400,
+				LogLevel:         "warn",
+				DNSShape:         DNSShapeDoHFailover,
+				RouteFindProcess: true,
+				ClashAPI:         true,
+				SplitTunnel: &SplitTunnelRules{
+					BypassLAN:        true,
+					BypassCountries:  []string{SplitTunnelCountryIR, SplitTunnelCountryCN},
+					RuleSetDirectory: "/data/user/0/rulesets",
+				},
+			},
+		},
 	}
 }
 

@@ -1,0 +1,226 @@
+{
+  "dns": {
+    "final": "dns-1",
+    "rules": [
+      {
+        "action": "evaluate",
+        "disable_cache": true,
+        "disable_optimistic_cache": true,
+        "domain_suffix": [
+          "probe.openrung.org",
+          "cp.cloudflare.com"
+        ],
+        "server": "dns-0",
+        "timeout": "2s"
+      },
+      {
+        "action": "respond",
+        "domain_suffix": [
+          "probe.openrung.org",
+          "cp.cloudflare.com"
+        ],
+        "match_response": true,
+        "response_rcode": "NOERROR"
+      },
+      {
+        "action": "respond",
+        "domain_suffix": [
+          "probe.openrung.org",
+          "cp.cloudflare.com"
+        ],
+        "match_response": true,
+        "response_rcode": "NXDOMAIN"
+      },
+      {
+        "disable_cache": true,
+        "disable_optimistic_cache": true,
+        "domain_suffix": [
+          "probe.openrung.org",
+          "cp.cloudflare.com"
+        ],
+        "server": "dns-1",
+        "timeout": "3s"
+      },
+      {
+        "action": "evaluate",
+        "rule_set": [
+          "geosite-cn"
+        ],
+        "server": "dns-direct-cn",
+        "timeout": "2s"
+      },
+      {
+        "action": "respond",
+        "match_response": true,
+        "response_rcode": "NOERROR",
+        "rule_set": [
+          "geosite-cn"
+        ]
+      },
+      {
+        "action": "respond",
+        "match_response": true,
+        "response_rcode": "NXDOMAIN",
+        "rule_set": [
+          "geosite-cn"
+        ]
+      },
+      {
+        "action": "evaluate",
+        "server": "dns-0",
+        "timeout": "2s"
+      },
+      {
+        "action": "respond",
+        "match_response": true,
+        "response_rcode": "NOERROR"
+      },
+      {
+        "action": "respond",
+        "match_response": true,
+        "response_rcode": "NXDOMAIN"
+      },
+      {
+        "server": "dns-1",
+        "timeout": "3s"
+      }
+    ],
+    "servers": [
+      {
+        "detour": "proxy",
+        "server": "1.1.1.1",
+        "tag": "dns-0",
+        "tls": {
+          "enabled": true,
+          "server_name": "cloudflare-dns.com"
+        },
+        "type": "https"
+      },
+      {
+        "detour": "proxy",
+        "server": "8.8.8.8",
+        "tag": "dns-1",
+        "tls": {
+          "enabled": true,
+          "server_name": "dns.google"
+        },
+        "type": "https"
+      },
+      {
+        "server": "223.5.5.5",
+        "tag": "dns-direct-cn",
+        "tls": {
+          "enabled": true,
+          "server_name": "dns.alidns.com"
+        },
+        "type": "https"
+      }
+    ],
+    "timeout": "3s"
+  },
+  "experimental": {
+    "clash_api": {}
+  },
+  "inbounds": [
+    {
+      "address": [
+        "172.19.0.1/30",
+        "fdfe:dcba:9876::1/126"
+      ],
+      "auto_route": true,
+      "dns_mode": "hijack",
+      "endpoint_independent_nat": true,
+      "mtu": 1400,
+      "route_exclude_address": [
+        "203.0.113.10/32"
+      ],
+      "stack": "system",
+      "strict_route": true,
+      "tag": "tun-in",
+      "type": "tun"
+    }
+  ],
+  "log": {
+    "level": "warn",
+    "timestamp": true
+  },
+  "outbounds": [
+    {
+      "flow": "xtls-rprx-vision",
+      "network": "tcp",
+      "packet_encoding": "xudp",
+      "server": "203.0.113.10",
+      "server_port": 443,
+      "tag": "proxy",
+      "tls": {
+        "enabled": true,
+        "reality": {
+          "enabled": true,
+          "public_key": "public-key",
+          "short_id": "5f7a8d9c01ab23cd"
+        },
+        "server_name": "www.cloudflare.com",
+        "utls": {
+          "enabled": true,
+          "fingerprint": "chrome"
+        }
+      },
+      "type": "vless",
+      "uuid": "2c08df10-4ef4-4ab9-95c6-cb1e94cdb2ff"
+    },
+    {
+      "tag": "direct",
+      "type": "direct"
+    },
+    {
+      "tag": "block",
+      "type": "block"
+    }
+  ],
+  "route": {
+    "auto_detect_interface": true,
+    "default_domain_resolver": "dns-0",
+    "final": "proxy",
+    "rule_set": [
+      {
+        "format": "binary",
+        "path": "/var/mobile/rulesets/geosite-cn.srs",
+        "tag": "geosite-cn",
+        "type": "local"
+      },
+      {
+        "format": "binary",
+        "path": "/var/mobile/rulesets/geoip-cn.srs",
+        "tag": "geoip-cn",
+        "type": "local"
+      }
+    ],
+    "rules": [
+      {
+        "action": "hijack-dns",
+        "protocol": "dns"
+      },
+      {
+        "action": "sniff"
+      },
+      {
+        "domain_suffix": [
+          "probe.openrung.org",
+          "cp.cloudflare.com"
+        ],
+        "outbound": "proxy"
+      },
+      {
+        "ip_is_private": true,
+        "outbound": "direct"
+      },
+      {
+        "outbound": "direct",
+        "rule_set": [
+          "geosite-cn",
+          "geoip-cn"
+        ]
+      }
+    ]
+  }
+}
