@@ -11,21 +11,34 @@ import (
 const maxDiversitySlots = 2
 
 // relayRegions maps ISO country codes to the coarse regions used for page
-// diversity. Deliberately tiny and fleet-shaped: a code outside the map (or a
-// descriptor whose geo lookup has not resolved) belongs to no region, so it
-// can neither claim a diversity slot nor count a region as represented.
+// diversity. It covers every country the fleet's deploy targets span (the
+// Hetzner/Linode hosts plus deploy/relay/aws/wss-origin-targets.json), and
+// resolveRelayGeo warns when a relay resolves to a code outside the map, so
+// the map falling behind the fleet is visible instead of silently shrinking
+// coverage. A code outside the map (or an unresolved geo lookup) belongs to
+// no region: it can neither claim a diversity slot nor count a region as
+// represented, and it is never protected from displacement.
 var relayRegions = map[string]string{
 	"KR": "asia",
 	"JP": "asia",
 	"SG": "asia",
 	"IN": "asia",
+	"HK": "asia",
+	"ID": "asia",
 	"DE": "europe",
 	"FI": "europe",
 	"SE": "europe",
+	"US": "americas",
+	"BR": "americas",
+	"AU": "oceania",
+}
+
+func regionForCountryCode(code string) string {
+	return relayRegions[strings.ToUpper(code)]
 }
 
 func relayRegion(desc relay.Descriptor) string {
-	return relayRegions[strings.ToUpper(desc.CountryCode)]
+	return regionForCountryCode(desc.CountryCode)
 }
 
 // diversifyRelayPage rewrites the head of the globally ranked relay list —
@@ -43,33 +56,67 @@ func diversifyRelayPage(relays []relay.Descriptor, limit int) []relay.Descriptor
 		return relays
 	}
 
-	represented := make(map[string]bool)
+	// representatives counts each known region's relays on the page so a fill
+	// never displaces a region's only representative: coverage must only ever
+	// grow, or the pass could trade one missing region for another.
+	representatives := make(map[string]int)
+	pageHasWSS := false
 	for _, desc := range relays[:limit] {
 		if region := relayRegion(desc); region != "" {
-			represented[region] = true
+			representatives[region]++
 		}
+		pageHasWSS = pageHasWSS || wssRelayEligible(desc)
 	}
 
 	// Global order below the fold picks each missing region's best relay.
 	var fills []int
+	fillHasWSS := false
+	claimed := make(map[string]bool)
 	for i := limit; i < len(relays) && len(fills) < maxDiversitySlots; i++ {
 		region := relayRegion(relays[i])
-		if region == "" || represented[region] {
+		if region == "" || representatives[region] > 0 || claimed[region] {
 			continue
 		}
-		represented[region] = true
+		claimed[region] = true
 		fills = append(fills, i)
+		fillHasWSS = fillHasWSS || wssRelayEligible(relays[i])
 	}
 	if len(fills) == 0 {
 		return relays
 	}
 
-	out := append([]relay.Descriptor(nil), relays...)
+	// reserveWSSCandidate overwrites the last slot when the page carries no
+	// WSS-eligible relay and one exists below the fold. When no fill would
+	// satisfy the reservation itself, keep fills out of that slot, or the
+	// reservation would silently cancel a fill.
 	slot := limit - 1
+	if !pageHasWSS && !fillHasWSS {
+		for _, desc := range relays[limit:] {
+			if wssRelayEligible(desc) {
+				slot = limit - 2
+				break
+			}
+		}
+	}
+
+	out := append([]relay.Descriptor(nil), relays...)
 	for _, fill := range fills {
+		// The victim is the deepest page slot that is neither the global #1
+		// nor its region's only representative on the page.
+		for slot >= 1 {
+			region := relayRegion(out[slot])
+			if region == "" || representatives[region] > 1 {
+				break
+			}
+			slot--
+		}
 		if slot < 1 {
 			break
 		}
+		if region := relayRegion(out[slot]); region != "" {
+			representatives[region]--
+		}
+		representatives[relayRegion(out[fill])]++
 		out[slot], out[fill] = out[fill], out[slot]
 		slot--
 	}

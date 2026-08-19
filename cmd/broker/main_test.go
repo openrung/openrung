@@ -122,3 +122,22 @@ func TestParseOptionalWSSTicketSeed(t *testing.T) {
 		}
 	}
 }
+
+func TestParseRelayPageDiversity(t *testing.T) {
+	for _, value := range []string{"", "1", "true", "yes", " On "} {
+		if enabled, err := parseRelayPageDiversity(value); err != nil || !enabled {
+			t.Errorf("parseRelayPageDiversity(%q) = (%v, %v), want enabled", value, enabled, err)
+		}
+	}
+	for _, value := range []string{"0", "false", "no", "off", "Disabled", "none"} {
+		if enabled, err := parseRelayPageDiversity(value); err != nil || enabled {
+			t.Errorf("parseRelayPageDiversity(%q) = (%v, %v), want disabled", value, enabled, err)
+		}
+	}
+	// A rollback typo must refuse to start, never silently stay enabled.
+	for _, value := range []string{"banana", "enable", "flase"} {
+		if _, err := parseRelayPageDiversity(value); err == nil {
+			t.Errorf("parseRelayPageDiversity(%q) accepted an unrecognized value", value)
+		}
+	}
+}

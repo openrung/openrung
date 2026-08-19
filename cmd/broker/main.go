@@ -69,7 +69,10 @@ func run() error {
 	}
 	// Rollback lever for the geographic diversity slots in the ranked relay
 	// page; enabled unless explicitly turned off (and inert in legacy ranking).
-	pageDiversity := envEnabled("OPENRUNG_RELAY_PAGE_DIVERSITY")
+	pageDiversity, err := parseRelayPageDiversity(os.Getenv("OPENRUNG_RELAY_PAGE_DIVERSITY"))
+	if err != nil {
+		return err
+	}
 
 	// Fail closed: with no registration token, anyone can register a relay and
 	// poison the directory that clients route their VPN traffic through. Require
@@ -337,14 +340,20 @@ func envTrue(key string) bool {
 	}
 }
 
-// envEnabled is the default-enabled counterpart of envTrue: only an explicit
-// falsy value disables the behavior.
-func envEnabled(key string) bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
-	case "0", "false", "no", "off":
-		return false
+// parseRelayPageDiversity maps OPENRUNG_RELAY_PAGE_DIVERSITY onto the
+// diversity rollback lever: empty or truthy enables, an explicit falsy value
+// (including the off/disabled/none vocabulary the geoip knob accepts)
+// disables, and anything else refuses to start — this flag exists to be set
+// mid-incident, when a typo that silently left the feature enabled would be
+// worse than a visible crash-loop.
+func parseRelayPageDiversity(value string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "1", "true", "yes", "on":
+		return true, nil
+	case "0", "false", "no", "off", "disabled", "none":
+		return false, nil
 	default:
-		return true
+		return false, errors.New("OPENRUNG_RELAY_PAGE_DIVERSITY must be a boolean value such as true or false")
 	}
 }
 

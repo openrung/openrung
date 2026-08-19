@@ -383,7 +383,7 @@ docker inspect openrung-broker \
 | `OPENRUNG_RELAY_STORE`               | no       | `memory`                            | Relay state backend: `memory` or `postgres`                    |
 | `OPENRUNG_RELAY_DATABASE_URL`        | if pg    | —                                   | PostgreSQL URL when `OPENRUNG_RELAY_STORE=postgres`            |
 | `OPENRUNG_RELAY_RANKING`             | no       | `global`                            | Relay ranking mode: `global` or `legacy`                       |
-| `OPENRUNG_RELAY_PAGE_DIVERSITY`      | no       | enabled                             | Set `false` to disable the geographic diversity slots in the ranked relay page (global mode only) |
+| `OPENRUNG_RELAY_PAGE_DIVERSITY`      | no       | enabled                             | Set `false` to disable the geographic diversity slots in the ranked relay page (global mode only); unrecognized values refuse to start |
 | `OPENRUNG_GEOIP_ENDPOINT`            | no       | ipwho.is                            | IP-geolocation endpoint for relay city/country; `off` disables |
 | `OPENRUNG_TELEMETRY_STORE`           | no       | `jsonl`                             | Telemetry backend: `jsonl` or `postgres`                       |
 | `OPENRUNG_TELEMETRY_DATABASE_URL`    | no       | relay database URL                  | PostgreSQL URL when `OPENRUNG_TELEMETRY_STORE=postgres`        |

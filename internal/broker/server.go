@@ -365,6 +365,13 @@ func resolveRelayGeo(ctx context.Context, store RelayStore, resolver GeoIPResolv
 		return
 	}
 	desc.GeoLocation = geo
+	if geo.CountryCode != "" && regionForCountryCode(geo.CountryCode) == "" {
+		// The fleet has outgrown the page-diversity region map: this relay can
+		// neither win nor satisfy a diversity slot until relayRegions learns
+		// its country. Warn here (once per resolution, not per list request)
+		// so the drift is visible.
+		slog.Warn("relay country code is not in the page-diversity region map", "relay_id", desc.ID, "country_code", geo.CountryCode)
+	}
 	slog.Info("relay location resolved", "relay_id", desc.ID, "city", geo.City, "country", geo.Country)
 }
 
@@ -400,8 +407,9 @@ func listRelaysHandler(store RelayStore, telemetrySink TelemetrySink, clientIP *
 		// Ask both stores for the ranked set, apply the geographic diversity
 		// slots to the page head, then reserve one already-advertised per-relay
 		// WSS-capable Foundation descriptor in a short page. Diversity runs
-		// first so the WSS reservation keeps final authority over the last
-		// slot: a page must never lose its WSS fallback to a diversity fill.
+		// first and keeps its fills out of the slot the WSS reservation will
+		// claim, so the page never loses its WSS fallback to a diversity fill
+		// and the reservation never cancels a fill.
 		relays, err := store.List(now, 0)
 		if err != nil {
 			slog.Error("could not list relays", "error", err)

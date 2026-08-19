@@ -65,6 +65,41 @@ func TestDiversifyRelayPage(t *testing.T) {
 			want: []string{"us1", "us2", "us3", "de1", "kr1"},
 		},
 		{
+			name: "three missing regions fill only two slots",
+			relays: []relay.Descriptor{
+				geoRelay("kr1", "KR"), geoRelay("kr2", "KR"), geoRelay("kr3", "KR"),
+				geoRelay("kr4", "KR"), geoRelay("kr5", "KR"),
+				geoRelay("au1", "AU"), geoRelay("us1", "US"), geoRelay("de1", "DE"),
+			},
+			limit: 5,
+			// Global order picks which missing regions win the capped slots:
+			// oceania and americas rank above europe, so de1 stays below.
+			want: []string{"kr1", "kr2", "kr3", "us1", "au1"},
+		},
+		{
+			name: "a fill never evicts a region's only representative",
+			relays: []relay.Descriptor{
+				geoRelay("us1", "US"), geoRelay("us2", "US"), geoRelay("us3", "US"),
+				geoRelay("us4", "US"), geoRelay("kr1", "KR"),
+				geoRelay("de1", "DE"),
+			},
+			limit: 5,
+			// kr1 holds the tail slot but is asia's only page relay, so the
+			// europe fill displaces us4 instead.
+			want: []string{"us1", "us2", "us3", "de1", "kr1"},
+		},
+		{
+			name: "no displaceable slot leaves the page unchanged",
+			relays: []relay.Descriptor{
+				geoRelay("us1", "US"), geoRelay("kr1", "KR"), geoRelay("de1", "DE"),
+				geoRelay("au1", "AU"),
+			},
+			limit: 3,
+			// Every tail relay is its region's only representative, so the
+			// oceania fill has no victim and the page stays the global head.
+			want: []string{"us1", "kr1", "de1"},
+		},
+		{
 			name: "fleet smaller than the page is untouched",
 			relays: []relay.Descriptor{
 				geoRelay("kr1", "KR"), geoRelay("kr2", "KR"), geoRelay("de1", "DE"),
@@ -121,6 +156,36 @@ func TestDiversifyRelayPage(t *testing.T) {
 				t.Fatalf("full list length changed: %d, want %d", len(got), len(tc.relays))
 			}
 		})
+	}
+}
+
+// TestDiversityFillSurvivesWSSReservation pins the interplay between the two
+// page-composition passes on the live fleet's shape: a head of WSS-less
+// volunteers, the diversity fill also WSS-less, and the only WSS-capable
+// foundation relay below the fold. The fill must move to the second-to-last
+// slot so the WSS reservation's overwrite of the last slot cannot cancel it.
+func TestDiversityFillSurvivesWSSReservation(t *testing.T) {
+	wssJP := relay.Descriptor{
+		ID: "jp-wss", NodeClass: relay.NodeClassFoundation, Transport: relay.TransportDirect,
+		ExitMode: relay.ExitModeDirect, PublicPort: 443, IdentityPublicKey: "identity",
+		WSSFronts:   []relay.WSSFrontDescriptor{{ID: "front-a", ProtocolVersion: relay.WSSProtocolVersion}},
+		GeoLocation: relay.GeoLocation{CountryCode: "JP"},
+	}
+	relays := []relay.Descriptor{
+		geoRelay("kr1", "KR"), geoRelay("kr2", "KR"), geoRelay("kr3", "KR"),
+		geoRelay("kr4", "KR"), geoRelay("kr5", "KR"),
+		geoRelay("kr6", "KR"), geoRelay("de1", "DE"), wssJP,
+	}
+	page := reserveWSSCandidate(diversifyRelayPage(relays, 5), 5)
+	want := []string{"kr1", "kr2", "kr3", "de1", "jp-wss"}
+	got := relayIDs(page)
+	if len(got) != len(want) {
+		t.Fatalf("page = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("page = %v, want %v", got, want)
+		}
 	}
 }
 
