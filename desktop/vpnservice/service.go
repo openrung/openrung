@@ -5,7 +5,7 @@
 //
 // The engine itself — state machine, connect ladder, ranking, WSS fallback,
 // punch attempt, health monitoring, directory cache — lives in
-// openrung/internal/connectcore (docs/adr/001). This package is the thin
+// openrung/internal/connectcore (ADR-001). This package is the thin
 // desktop adapter over it: Wails event emission with the log ring and its
 // coalescing, plus the internal/clientstate, internal/proxymode, and
 // internal/proxyconfig wiring behind the engine's platform interfaces.

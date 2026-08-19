@@ -66,7 +66,7 @@ func (h *engineHost) shellProxyHelper() (proxyconfig.Info, error) {
 
 // The adapters below mirror desktop/vpnservice/adapters.go over the shared
 // packages; the copies collapse when connectcore is promoted to a nested
-// module (docs/adr/001 D3) and can own them.
+// module (ADR-001 D3) and can own them.
 
 // storeAdapter implements connectcore.Persistence over internal/clientstate.
 // The engine treats the proxy snapshot as opaque; this adapter is where it

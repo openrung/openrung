@@ -11,7 +11,7 @@ import (
 )
 
 // TUN-mode replacements for the proxy-mode readiness and probe helpers
-// (docs/adr/001 PR B3). Proxy mode dials the loopback mixed inbound to learn
+// (ADR-001 PR B3). Proxy mode dials the loopback mixed inbound to learn
 // that sing-box came up and probes the internet through it; a TUN inbound
 // binds no port, so readiness asks the kernel whether the tunnel now owns the
 // default path and the probes ride that path.

@@ -1,5 +1,5 @@
 // Package connectcore is the UI-agnostic client connection engine
-// (docs/adr/001): the connect state machine, candidate ladder and ranking,
+// (ADR-001): the connect state machine, candidate ladder and ranking,
 // WSS front fallback, punch attempt, mid-session health monitoring and
 // failover, directory cache, and probes. The state machine semantics mirror
 // the mobile native bridge contract (openrung-mobile-app

@@ -12,7 +12,7 @@ import (
 )
 
 // The fixtures under testdata/ are a config directory as the desktop app wrote
-// it before these primitives moved out of desktop/persist (docs/adr/001 PR A3).
+// it before these primitives moved out of desktop/persist (ADR-001 PR A3).
 // A user upgrading across that move keeps their directory, so the directory
 // name, the file names, and the JSON encodings are a compatibility contract:
 // the current build must load them, and must write them back byte for byte.

@@ -16,7 +16,7 @@ import (
 )
 
 // The interactive client is a pure view over the shared connection engine
-// (docs/adr/001 Track B): engine events arrive as Bubble Tea messages through
+// (ADR-001 Track B): engine events arrive as Bubble Tea messages through
 // tuiSink, and engineDriver is the only command surface out. No brokerapi,
 // sing-box, WSS, or punch calls live in this layer.
 

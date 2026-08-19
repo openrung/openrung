@@ -21,7 +21,7 @@ import (
 	"openrung/internal/relay"
 )
 
-// The headless subcommands are thin engine drivers (docs/adr/001 B1): check
+// The headless subcommands are thin engine drivers (ADR-001 B1): check
 // and config keep their historical fetch-and-select behavior for scripts, and
 // connect -headless drives the shared engine the way the TUI does, minus the
 // terminal UI.

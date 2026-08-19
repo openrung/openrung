@@ -1,7 +1,7 @@
 package connectcore
 
 // Engine connection and discovery tuning, moved verbatim from desktop/config
-// (docs/adr/001 PR A1) so the engine carries its own policy. Shared broker
+// (ADR-001 PR A1) so the engine carries its own policy. Shared broker
 // endpoints and candidate ordering come from brokerapi.
 
 import (

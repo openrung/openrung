@@ -7,7 +7,7 @@ import (
 	"openrung/internal/client"
 )
 
-// Capture mode (docs/adr/001 PR B3). The engine's default is the
+// Capture mode (ADR-001 PR B3). The engine's default is the
 // zero-privilege proxy mode the desktop app has always run; TUN mode drives
 // the same ladder, telemetry, and recovery machinery through
 // client.ModeTUN's full-device inbound instead.
