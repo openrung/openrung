@@ -430,11 +430,15 @@ func TestTunnelDNSAddress(t *testing.T) {
 		t.Fatalf("DefaultTunnelDNSAddress drifted: %s", DefaultTunnelDNSAddress)
 	}
 	// Octet carry, so a future tunnel address change cannot silently derive a
-	// wrong hijack address.
-	if got, err := TunnelDNSAddress("10.0.0.255/30"); err != nil || got != "10.0.1.0" {
+	// wrong hijack address. The /23 keeps the successor inside the prefix.
+	if got, err := TunnelDNSAddress("10.0.0.255/23"); err != nil || got != "10.0.1.0" {
 		t.Fatalf("expected 10.0.1.0, got %s (%v)", got, err)
 	}
-	for _, invalid := range []string{"172.19.0.1", "fdfe:dcba:9876::1/126", "bogus/30"} {
+	// sing-tun refuses to derive a hijack address whose successor escapes the
+	// TUN prefix (HasNextAddress), so returning one here would fail every
+	// probe on a healthy tunnel: the last address of a prefix must be
+	// rejected, exactly like a non-IPv4 input.
+	for _, invalid := range []string{"172.19.0.1", "fdfe:dcba:9876::1/126", "bogus/30", "10.0.0.255/30", "172.19.0.3/30"} {
 		if _, err := TunnelDNSAddress(invalid); err == nil {
 			t.Fatalf("expected %q to be rejected", invalid)
 		}

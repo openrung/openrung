@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 
 	"openrung/internal/relay"
@@ -608,19 +609,22 @@ func localRuleSetObject(directory, tag string) map[string]any {
 // route rule. A datagram addressed to a public resolver (1.1.1.1) is NOT
 // tagged, matches no rule, and dies on the TCP-only proxy outbound, so
 // mobile's fresh-DNS probe must target this address.
+//
+// sing-tun only performs that derivation when the successor stays inside the
+// TUN prefix (HasNextAddress: prefix.Contains(addr.Next())); otherwise it
+// hijacks no IPv4 address at all. A tunnel address whose successor escapes the
+// prefix is therefore rejected here — returning it would hand probes an
+// address sing-box never hijacks and fail them on a healthy tunnel.
 func TunnelDNSAddress(tunnelIPv4Address string) (string, error) {
-	address, _, found := strings.Cut(tunnelIPv4Address, "/")
-	if !found {
-		return "", fmt.Errorf("tunnel address has no prefix length: %s", tunnelIPv4Address)
+	prefix, err := netip.ParsePrefix(tunnelIPv4Address)
+	if err != nil || !prefix.Addr().Is4() {
+		return "", fmt.Errorf("tunnel address is not an IPv4 prefix: %s", tunnelIPv4Address)
 	}
-	ip := net.ParseIP(address)
-	if ip == nil || ip.To4() == nil {
-		return "", fmt.Errorf("tunnel address is not IPv4: %s", tunnelIPv4Address)
+	next := prefix.Addr().Next()
+	if !prefix.Contains(next) {
+		return "", fmt.Errorf("tunnel address %s has no successor inside its prefix for sing-tun to hijack", tunnelIPv4Address)
 	}
-	ip = ip.To4()
-	value := uint32(ip[0])<<24 | uint32(ip[1])<<16 | uint32(ip[2])<<8 | uint32(ip[3])
-	next := value + 1
-	return net.IPv4(byte(next>>24), byte(next>>16), byte(next>>8), byte(next)).String(), nil
+	return next.String(), nil
 }
 
 func validateRelayForConfig(candidate relay.Descriptor) error {
