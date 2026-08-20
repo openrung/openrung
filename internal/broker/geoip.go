@@ -16,7 +16,7 @@ import (
 )
 
 // DefaultGeoIPEndpoint matches the provider the Android client and CLI already
-// use for their own public-IP geo (see internal/clienttelemetry). The looked-up
+// use for their own public-IP geo (see connectcore/clienttelemetry). The looked-up
 // host is appended to the endpoint path.
 const DefaultGeoIPEndpoint = "https://ipwho.is/"
 

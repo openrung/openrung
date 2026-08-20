@@ -305,18 +305,22 @@ cmd/relayhub/        Relay hub for CGNAT volunteer-run relays
 cmd/wsssidecar/      Relay-local WSS/CDN origin with a fixed loopback target.
 cmd/client/          Terminal client (TUI; proxy and TUN capture modes).
 internal/broker/     Broker store and HTTP handlers.
-internal/client/     Client engine, relay selection, and sing-box config.
-internal/clienttelemetry/  Client metrics reporting to the broker.
 internal/punch/      NAT hole-punch QUIC layer (session, transport, bridges) over punchcore.
-internal/relay/      Shared relay descriptor models.
+internal/relay/      Server-side relay registration and identity models.
 internal/relayhub/   Relay hub configuration.
 internal/tunnel/     Reverse-tunnel transport (hub + relay client, yamux).
 internal/relayruntime/  Relay runtime, Xray config, and broker client helpers.
 internal/wssbridge/  Relay-side tickets, replay/origin authentication,
                      admission limits, and sidecar orchestration over wsscore.
-brokerapi/           Shared broker control-plane Go client (nested module
-                     github.com/openrung/openrung/brokerapi) for desktop,
-                     Android, and iOS bindings.
+brokerapi/           Shared broker control-plane Go client and exported relay
+                     schema (nested module github.com/openrung/openrung/brokerapi)
+                     for desktop, Android, and iOS bindings.
+connectcore/         Client policy engine — connect ladder, ranking, WSS
+                     fallback and punch policy, telemetry classifier/outbox,
+                     sing-box config builder, discovery, and the cross-repo
+                     contract vectors (nested Go module
+                     github.com/openrung/openrung/connectcore) consumed by the
+                     terminal client, desktop app, and mobile bindings.
 punchcore/           Shared NAT hole-punch protocol core (nested Go module
                      github.com/openrung/openrung/punchcore) consumed by the
                      servers and the desktop, Android, and iOS clients.

@@ -26,8 +26,8 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/openrung/openrung/wsscore"
 
-	"openrung/internal/client"
-	"openrung/internal/relay"
+	"github.com/openrung/openrung/brokerapi"
+	"github.com/openrung/openrung/connectcore/client"
 	"openrung/internal/wssbridge"
 )
 
@@ -204,7 +204,7 @@ func runIssued(ctx context.Context, cfg config) error {
 	if err != nil {
 		return errors.New("read ticket response")
 	}
-	var response relay.WSSSessionTicketResponse
+	var response brokerapi.WSSTicketResponse
 	decoder := json.NewDecoder(strings.NewReader(string(raw)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&response); err != nil {
@@ -591,23 +591,23 @@ func endToEndProbeTicket(ctx context.Context, cfg config, ticket string) error {
 	return nil
 }
 
-func loadRelayDescriptor(path, relayID string) (relay.Descriptor, error) {
+func loadRelayDescriptor(path, relayID string) (brokerapi.RelayDescriptor, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return relay.Descriptor{}, errors.New("read public relay descriptor")
+		return brokerapi.RelayDescriptor{}, errors.New("read public relay descriptor")
 	}
-	var descriptor relay.Descriptor
+	var descriptor brokerapi.RelayDescriptor
 	if err := json.Unmarshal(raw, &descriptor); err != nil {
-		return relay.Descriptor{}, errors.New("decode public relay descriptor")
+		return brokerapi.RelayDescriptor{}, errors.New("decode public relay descriptor")
 	}
 	if descriptor.ID != relayID {
 		var list struct {
-			Relays []relay.Descriptor `json:"relays"`
+			Relays []brokerapi.RelayDescriptor `json:"relays"`
 		}
 		if err := json.Unmarshal(raw, &list); err != nil {
-			return relay.Descriptor{}, errors.New("decode public relay list")
+			return brokerapi.RelayDescriptor{}, errors.New("decode public relay list")
 		}
-		descriptor = relay.Descriptor{}
+		descriptor = brokerapi.RelayDescriptor{}
 		for _, candidate := range list.Relays {
 			if candidate.ID == relayID {
 				descriptor = candidate
@@ -616,12 +616,12 @@ func loadRelayDescriptor(path, relayID string) (relay.Descriptor, error) {
 		}
 	}
 	if descriptor.ID != relayID {
-		return relay.Descriptor{}, errors.New("public relay descriptor does not match matrix relay")
+		return brokerapi.RelayDescriptor{}, errors.New("public relay descriptor does not match matrix relay")
 	}
 	return descriptor, nil
 }
 
-func runRealityProbe(ctx context.Context, cfg config, descriptor relay.Descriptor, bridgeHost string, bridgePort int) error {
+func runRealityProbe(ctx context.Context, cfg config, descriptor brokerapi.RelayDescriptor, bridgeHost string, bridgePort int) error {
 	proxyPort, err := availableLoopbackPort()
 	if err != nil {
 		return err

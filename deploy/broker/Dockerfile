@@ -22,6 +22,7 @@ COPY go.mod go.sum ./
 # The root go.mod replaces the in-repo nested modules, so their go.mod files
 # must exist before `go mod download`.
 COPY brokerapi/go.mod brokerapi/
+COPY connectcore/go.mod connectcore/
 COPY punchcore/go.mod punchcore/
 COPY wsscore/go.mod wsscore/
 RUN go mod download

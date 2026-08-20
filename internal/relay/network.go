@@ -1,12 +1,10 @@
 package relay
 
-import (
-	"net"
-	"strings"
-)
+import "github.com/openrung/openrung/brokerapi"
 
+// IsIPv6Host delegates to the client-facing schema's helper so the broker's
+// family-aware ranking and the clients' family selection judge hosts
+// identically.
 func IsIPv6Host(host string) bool {
-	host = strings.Trim(host, "[]")
-	ip := net.ParseIP(host)
-	return ip != nil && ip.To4() == nil
+	return brokerapi.IsIPv6Host(host)
 }

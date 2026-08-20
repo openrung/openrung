@@ -1,8 +1,8 @@
 // Command client is the OpenRung end-user terminal client (ADR-001
-// Track B): an interactive TUI over the shared connection engine in
-// internal/connectcore — the same engine the desktop GUI drives — plus thin
-// headless subcommands for scripts. The view layer holds no connection logic:
-// engine events in, engine commands out.
+// Track B): an interactive TUI over the shared connection engine in the
+// nested connectcore module — the same engine the desktop GUI drives — plus
+// thin headless subcommands for scripts. The view layer holds no connection
+// logic: engine events in, engine commands out.
 package main
 
 import (
@@ -12,9 +12,9 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/openrung/openrung/connectcore"
+	"github.com/openrung/openrung/connectcore/proxyconfig"
 	"openrung/internal/buildinfo"
-	"openrung/internal/connectcore"
-	"openrung/internal/proxyconfig"
 )
 
 //go:embed VERSION

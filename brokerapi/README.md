@@ -12,7 +12,10 @@ and iOS gomobile bindings all use one implementation of:
 - identity, application, platform, and no-store request headers;
 - redirect refusal;
 - relay discovery and front racing;
-- telemetry, WSS-ticket, health-probe, and speed-test requests.
+- telemetry, WSS-ticket, health-probe, and speed-test requests;
+- the exported client-facing relay schema (`relay_schema.go`): the decoded
+  descriptor and list-response models, shared wire constants, and the
+  read-side node-class rule every client decodes the verified bytes with.
 
 The ECH config is compiled into this module. It is never bootstrapped through
 DNS. A certificate-authenticated Cloudflare retry config is adopted in memory

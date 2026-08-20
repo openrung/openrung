@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const versionPath = fileURLToPath(new URL('../VERSION', import.meta.url));
 const configPath = fileURLToPath(new URL('../wails.json', import.meta.url));
 const semanticVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
-const appVersionVariable = 'openrung/internal/client.appVersion';
+const appVersionVariable = 'github.com/openrung/openrung/connectcore/client.appVersion';
 
 // desktop/VERSION is the canonical version source. wails.json keeps an
 // info.productVersion copy because Wails stamps it into the native package

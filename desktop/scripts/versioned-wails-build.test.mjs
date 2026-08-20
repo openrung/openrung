@@ -55,20 +55,20 @@ test('injects the app version while preserving other build arguments', () => {
     '-tags',
     'webkit2_41',
     '-ldflags',
-    '-X openrung/internal/client.appVersion=0.1.3',
+    '-X github.com/openrung/openrung/connectcore/client.appVersion=0.1.3',
   ]);
 });
 
 test('merges separate and equals-form caller ldflags before the app version', () => {
   assert.deepEqual(
     versionedWailsBuildArgs(
-      ['-ldflags', '-s -w', '-debug', '-ldflags=-X openrung/internal/client.appVersion=custom'],
+      ['-ldflags', '-s -w', '-debug', '-ldflags=-X github.com/openrung/openrung/connectcore/client.appVersion=custom'],
       '0.1.3',
     ),
     [
       '-debug',
       '-ldflags',
-      '-s -w -X openrung/internal/client.appVersion=custom -X openrung/internal/client.appVersion=0.1.3',
+      '-s -w -X github.com/openrung/openrung/connectcore/client.appVersion=custom -X github.com/openrung/openrung/connectcore/client.appVersion=0.1.3',
     ],
   );
 });

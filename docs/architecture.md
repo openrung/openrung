@@ -305,6 +305,17 @@ for loopback development endpoints. Certificate validation, signed-directory
 verification, and redirect refusal are not caller-selectable compatibility
 options.
 
+`brokerapi/relay_schema.go` additionally exports the client-facing relay
+schema — the decoded descriptor and list-response models, the shared wire
+constants (protocol, transport, channel, node class), and the read-side
+`EffectiveNodeClass` rule — so every fetchable client decodes the verified
+bytes into one Go model instead of a root-internal one. The broker's
+server-side relay model (registration requests, identity and WSS-capability
+proofs, and the never-serialized lease/exit fields) stays in the root module's
+`internal/relay`, which aliases the shared constants; the cross-repo
+`relay_decode` contract vectors pin that both models keep decoding the same
+directory bytes the same way.
+
 Connections to the exact Cloudflare broker front opportunistically use
 Encrypted Client Hello. The initial ECH configuration is compiled into the
 module rather than fetched through DNS; an authenticated server retry
@@ -397,6 +408,65 @@ Relay registration/heartbeat clients and the relay data path remain outside
 4. Mobile repositories explicitly update the pinned tag, rebuild their native
    binding, run platform VPN tests, and publish their own application release.
    A module tag alone does not update a mobile binary.
+
+### Client Policy Engine
+
+The nested `connectcore/` Go module
+(`github.com/openrung/openrung/connectcore`) is the UI-agnostic client policy
+engine (ADR-001, promoted out of root `internal/` by D3 so mobile can fetch
+it). The terminal client and the desktop app drive the in-tree module through
+local `replace` directives; the mobile repository pins released tags. The
+module root owns the connection engine — the connect state machine, candidate
+ladder and client-side latency ranking, relay-local WSS front fallback, the
+punch-attempt policy, mid-session health monitoring and automatic failover,
+the directory cache, and the internet/readiness probes — with the state
+machine mirroring the mobile native bridge contract, so every client that
+drives it behaves like the mobile reference implementation.
+
+Its subpackages carry the rest of the client policy layer: `client` (the
+sing-box config builder for both capture modes and mobile's DNS/split-tunnel
+shapes, the sing-box process runner, relay usability and selection, and thin
+broker-client adapters), `clienttelemetry` (the closed failure-reason
+classifier and the telemetry event model, outbox, and session manager),
+`discovery` (staggered multi-front directory fetching over `brokerapi`,
+decoded into the exported relay schema), `proxyconfig` (the stable local
+proxy endpoint and shell integration), and `contract` (the embedded cross-repo
+contract vectors and their Go loaders — the JSON files under
+`connectcore/contract/vectors/` are what the mobile repository vendors).
+
+The module deliberately does not own platform authority or heavyweight
+transports. Everything platform-specific reaches the engine through narrow
+interfaces: event sink, persistence, OS proxy control, elevation, and the NAT
+punch transport (`PunchEstablisher`), whose quic-go implementation stays in
+the root module's `internal/punch` and is wired in by each host. Relay wire
+types come from `brokerapi`'s exported relay schema and WSS transport
+mechanics from `wsscore`, both pinned by version in the module's `go.mod` for
+external consumers while in-repo builds resolve them through local `replace`
+directives.
+
+#### connectcore pin/upgrade procedure
+
+1. Change `connectcore/` in an OpenRung pull request. The root module and the
+   desktop app consume the in-tree source through local `replace` directives,
+   so the terminal client, desktop app, and this module's own tests all
+   exercise the same source.
+2. Bump `connectcore/VERSION` in the same pull request. Except for a
+   `README.md`-only edit, CI rejects a module change without a fresh semantic
+   version, and builds the module standalone (`go build ./...` inside it) —
+   the build a fetching consumer sees.
+3. A connectcore change that relies on new `brokerapi`, `wsscore`, or
+   `punchcore` API must, in the same pull request, bump that sibling module's
+   VERSION and update `connectcore/go.mod`'s `require` to it: external
+   consumers resolve the siblings through those requirements, not the local
+   replaces, so a stale require would fetch a version the new code cannot
+   compile against.
+4. Merge. The tag workflow creates `connectcore/v$(VERSION)` on the merge
+   commit, making the module fetchable at that version. Editing a contract
+   vector file additionally requires its own version bump and re-vendoring in
+   the mobile repository (see `connectcore/contract/README.md`).
+5. Mobile repositories explicitly update the pinned tag, rebuild their native
+   bindings, run platform VPN tests, and publish their own application
+   release. A module tag alone does not update a mobile binary.
 
 ### Mobile Client
 
