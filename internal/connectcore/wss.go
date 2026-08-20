@@ -311,7 +311,7 @@ func (s *Engine) attemptWSSCandidate(
 	go serveWSS(result, serveCtx, bridge)
 	s.appendLog(fmt.Sprintf("connected through WSS front %s", front.ID))
 	return s.startCandidate(result, client.SingBoxConfigInput{
-		Relay: candidate, Mode: client.ModeProxy,
+		Relay: candidate, Mode: client.ModeProxy, SplitTunnel: s.SplitTunnel(),
 		ProxyListenAddress: proxyconfig.Host, ProxyListenPort: proxyPort,
 		BridgeHost: ip.String(), BridgePort: port,
 	})

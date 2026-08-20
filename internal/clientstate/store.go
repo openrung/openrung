@@ -23,6 +23,7 @@ const (
 	proxyPortLockFile = "proxy-port.lock"
 	proxyEnvFile      = "proxy-env-%d.sh"
 	proxySnapshotHdr  = "proxy-snapshot.json"
+	routingPrefsFile  = "routing.json"
 )
 
 // RecentNode mirrors the contract's RecentNode (openrung-mobile-app
@@ -36,6 +37,10 @@ type RecentNode struct {
 
 type proxyEndpoint struct {
 	Port int `json:"port"`
+}
+
+type routingPreferences struct {
+	SplitTunnel bool `json:"splitTunnel"`
 }
 
 // Store reads and writes the on-disk state. dir is resolved once; it is a field
@@ -81,6 +86,25 @@ func (s *Store) LoadRecents() []RecentNode {
 // SaveRecents persists the recents list (best-effort).
 func (s *Store) SaveRecents(recents []RecentNode) error {
 	return s.writeJSON(recentsFile, recents)
+}
+
+// LoadSplitTunnel returns the persisted desktop routing preference. Missing,
+// unreadable, and corrupt files preserve the historical full-proxy default.
+func (s *Store) LoadSplitTunnel() bool {
+	data, err := os.ReadFile(filepath.Join(s.dir, routingPrefsFile))
+	if err != nil {
+		return false
+	}
+	var prefs routingPreferences
+	if err := json.Unmarshal(data, &prefs); err != nil {
+		return false
+	}
+	return prefs.SplitTunnel
+}
+
+// SaveSplitTunnel atomically persists the desktop routing preference.
+func (s *Store) SaveSplitTunnel(enabled bool) error {
+	return s.writeJSON(routingPrefsFile, routingPreferences{SplitTunnel: enabled})
 }
 
 // LoadProxyPort returns the stable per-install loopback proxy port. Missing,

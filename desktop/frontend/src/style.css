@@ -734,6 +734,45 @@ button {
   opacity: 0.42;
 }
 
+.or-switch {
+  position: relative;
+  flex: none;
+  width: 42px;
+  height: 24px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--or-border-dim, #294f35);
+  background: rgba(125, 169, 137, 0.18);
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.or-switch.is-on {
+  border-color: var(--or-terminal-green, #65f58a);
+  background: rgba(101, 245, 138, 0.28);
+}
+
+.or-switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.or-switch-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--or-dim-text, #7da989);
+  transition: transform 140ms ease, background 140ms ease;
+}
+
+.or-switch.is-on .or-switch-thumb {
+  transform: translateX(18px);
+  background: var(--or-terminal-green, #65f58a);
+  box-shadow: 0 0 8px var(--or-glow-soft, rgba(101, 245, 138, 0.25));
+}
+
 /* about screen */
 .or-about-hero {
   display: flex;

@@ -13,6 +13,7 @@ package vpnservice
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"sync"
 	"time"
@@ -128,6 +129,9 @@ func (s *Service) Startup(ctx context.Context) {
 	if store, err := clientstate.New(); err == nil {
 		s.store = store
 		s.engine.Persistence = storeAdapter{store: store}
+		if store.LoadSplitTunnel() {
+			_ = s.engine.SetSplitTunnel(true)
+		}
 	}
 	// Crash recovery and persisted recents; the engine's log lines arrive
 	// through the sink.
@@ -170,6 +174,34 @@ func (s *Service) Connect(brokerURL, targetCountry, targetRelayID string) error 
 
 func (s *Service) Disconnect() error {
 	return s.engine.Disconnect()
+}
+
+// GetSplitTunnel returns the persisted routing policy currently selected for
+// the next connection.
+func (s *Service) GetSplitTunnel() bool {
+	return s.engine.SplitTunnel()
+}
+
+// SetSplitTunnel changes and persists the routing policy. A live connection
+// must be disconnected first so its direct/proxy rules cannot change midway.
+func (s *Service) SetSplitTunnel(enabled bool) error {
+	if s.store == nil {
+		return errors.New("routing settings storage is unavailable")
+	}
+	previous := s.engine.SplitTunnel()
+	if err := s.engine.SetSplitTunnel(enabled); err != nil {
+		return err
+	}
+	if err := s.store.SaveSplitTunnel(enabled); err != nil {
+		_ = s.engine.SetSplitTunnel(previous)
+		return err
+	}
+	if enabled {
+		s.appendLog("split tunneling enabled: mainland China and private networks use direct routing")
+	} else {
+		s.appendLog("split tunneling disabled: all configured proxy traffic uses the relay")
+	}
+	return nil
 }
 
 func (s *Service) GetState() NativeVpnState {

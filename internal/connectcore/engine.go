@@ -272,6 +272,9 @@ type Engine struct {
 	// mode is the capture mode (see mode.go). Its zero value is ModeProxy, so
 	// a host that never calls SetMode keeps the pre-B3 behavior.
 	mode Mode
+	// splitTunnel is the routing policy applied to every generated candidate
+	// config. Its zero value preserves the historical full-proxy behavior.
+	splitTunnel bool
 
 	directory *directoryCache
 
@@ -904,7 +907,9 @@ func (s *Engine) attemptDirectCandidate(ctx context.Context, conn *connection, c
 // route exclusions — BuildSingBoxConfig owns) in TUN mode.
 func (s *Engine) candidateConfigInput(cand relay.Descriptor, port int) client.SingBoxConfigInput {
 	mode := s.Mode()
-	input := client.SingBoxConfigInput{Relay: cand, Mode: mode.inboundMode()}
+	input := client.SingBoxConfigInput{
+		Relay: cand, Mode: mode.inboundMode(), SplitTunnel: s.SplitTunnel(),
+	}
 	if mode == ModeTUN {
 		input.MTU = s.TunnelMTU
 		return input

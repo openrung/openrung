@@ -41,6 +41,10 @@ type SingBoxConfigInput struct {
 	TunnelIPv6Address string
 	DNSServers        []string
 	MTU               int
+	// SplitTunnel sends private networks and the built-in mainland-China
+	// domain set through the direct outbound while keeping the proxy as the
+	// fail-closed default for every other destination.
+	SplitTunnel bool
 	// Mode selects the inbound (TUN by default; mixed loopback for proxy mode).
 	Mode InboundMode
 	// ProxyListenAddress and ProxyListenPort configure the mixed inbound in
@@ -98,15 +102,20 @@ func BuildSingBoxConfig(input SingBoxConfigInput) ([]byte, error) {
 		serverPort = input.BridgePort
 	}
 
+	directOutbound := map[string]any{
+		"type": "direct",
+		"tag":  "direct",
+	}
+	if input.SplitTunnel {
+		directOutbound["domain_resolver"] = "dns-direct"
+	}
+
 	cfg := map[string]any{
 		"log": map[string]any{
 			"level":     "info",
 			"timestamp": true,
 		},
-		"dns": map[string]any{
-			"servers": dnsServerObjects(dnsServers),
-			"final":   "dns-0",
-		},
+		"dns": buildDNSConfig(dnsServers, input.SplitTunnel),
 		"inbounds": []any{
 			inbound,
 		},
@@ -134,26 +143,13 @@ func BuildSingBoxConfig(input SingBoxConfigInput) ([]byte, error) {
 					},
 				},
 			},
-			map[string]any{
-				"type": "direct",
-				"tag":  "direct",
-			},
+			directOutbound,
 			map[string]any{
 				"type": "block",
 				"tag":  "block",
 			},
 		},
-		"route": map[string]any{
-			"auto_detect_interface":   true,
-			"default_domain_resolver": "dns-0",
-			"rules": []any{
-				map[string]any{
-					"protocol": "dns",
-					"action":   "hijack-dns",
-				},
-			},
-			"final": "proxy",
-		},
+		"route": buildRouteConfig(input.Mode, input.SplitTunnel),
 	}
 
 	return json.MarshalIndent(cfg, "", "  ")

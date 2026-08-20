@@ -224,3 +224,33 @@ func TestStoreAdapterRoundTripsSnapshotAndRecents(t *testing.T) {
 		t.Fatalf("recents round trip = %+v", got)
 	}
 }
+
+func TestSplitTunnelPreferencePersistsThroughService(t *testing.T) {
+	store := clientstate.NewInDir(t.TempDir())
+	s := withStore(New(), store)
+	if s.GetSplitTunnel() {
+		t.Fatal("split tunneling should default off")
+	}
+	if err := s.SetSplitTunnel(true); err != nil {
+		t.Fatalf("SetSplitTunnel(true): %v", err)
+	}
+	if !s.GetSplitTunnel() || !store.LoadSplitTunnel() {
+		t.Fatal("service did not apply and persist split tunneling")
+	}
+	if err := s.SetSplitTunnel(false); err != nil {
+		t.Fatalf("SetSplitTunnel(false): %v", err)
+	}
+	if s.GetSplitTunnel() || store.LoadSplitTunnel() {
+		t.Fatal("service did not apply and persist full-proxy routing")
+	}
+}
+
+func TestSplitTunnelRequiresSettingsStorage(t *testing.T) {
+	s := New()
+	if err := s.SetSplitTunnel(true); err == nil {
+		t.Fatal("SetSplitTunnel succeeded without persistent settings storage")
+	}
+	if s.GetSplitTunnel() {
+		t.Fatal("failed SetSplitTunnel changed the engine policy")
+	}
+}
