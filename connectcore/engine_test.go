@@ -1,7 +1,10 @@
 package connectcore
 
 import (
+	"context"
 	"errors"
+	"io"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -9,6 +12,7 @@ import (
 
 	"github.com/openrung/openrung/brokerapi"
 	"github.com/openrung/openrung/connectcore/client"
+	"github.com/openrung/openrung/connectcore/clienttelemetry"
 	"github.com/openrung/openrung/connectcore/proxyconfig"
 )
 
@@ -527,5 +531,76 @@ func TestApplySystemProxyRestoresSnapshotWhenSetFails(t *testing.T) {
 	}
 	if got, ok := proxy.restores[0].(testProxySnapshot); !ok || got != snap {
 		t.Fatalf("restored snapshot = %+v, want %+v", proxy.restores[0], snap)
+	}
+}
+
+// captureTransport records the last request body it saw and answers 200, so a
+// telemetry flush can be inspected without a real broker.
+type captureTransport struct {
+	mu   sync.Mutex
+	body []byte
+}
+
+func (c *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	c.body = append([]byte(nil), body...)
+	c.mu.Unlock()
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("{}")),
+		Header:     http.Header{},
+	}, nil
+}
+
+func TestAttachGeoAttributesStampsSessionTelemetry(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	orig := lookupGeoAttributes
+	lookupGeoAttributes = func(context.Context, *http.Client) map[string]string {
+		return map[string]string{"country": "Testland", "country_code": "TL", "isp": "Test ISP"}
+	}
+	t.Cleanup(func() { lookupGeoAttributes = orig })
+
+	transport := &captureTransport{}
+	mgr, err := clienttelemetry.New("https://broker.test", "test", &http.Client{Transport: transport})
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	if _, err := mgr.BeginSession(); err != nil {
+		t.Fatalf("begin session: %v", err)
+	}
+
+	attachGeoAttributes(context.Background(), mgr)
+
+	mgr.Record("connection_succeeded", "relay_1", nil, nil)
+	if err := mgr.Flush(context.Background()); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	body := string(transport.body)
+	for _, want := range []string{`"country":"Testland"`, `"country_code":"TL"`, `"isp":"Test ISP"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("flushed telemetry missing %s:\n%s", want, body)
+		}
+	}
+}
+
+func TestAttachGeoAttributesNilManagerSkipsLookup(t *testing.T) {
+	orig := lookupGeoAttributes
+	called := false
+	lookupGeoAttributes = func(context.Context, *http.Client) map[string]string {
+		called = true
+		return nil
+	}
+	t.Cleanup(func() { lookupGeoAttributes = orig })
+
+	attachGeoAttributes(context.Background(), nil)
+	if called {
+		t.Fatal("nil manager must not trigger a public-IP lookup")
 	}
 }

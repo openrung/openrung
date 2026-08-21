@@ -72,6 +72,11 @@ type State struct {
 // os.UserConfigDir()/openrung/client-id with correct per-OS paths.
 var clientID = clienttelemetry.ClientID
 
+// lookupGeoAttributes resolves the client's public-IP geo for telemetry. It is
+// a package var so tests can stub it; it wraps
+// clienttelemetry.LookupGeoAttributes (ipwho.is, best-effort).
+var lookupGeoAttributes = clienttelemetry.LookupGeoAttributes
+
 // PlatformCLI identifies the terminal client (cmd/client) on the engine's
 // broker traffic. brokerapi maps only the GUI/mobile platforms to fixed
 // identification headers, so CLI requests carry no platform header; the label
@@ -662,6 +667,9 @@ func (s *Engine) connectFlow(ctx context.Context, conn *connection, brokerURL st
 			s.mu.Unlock()
 		}
 		mgr.Record("connection_attempted", "", nil, nil)
+		// Concurrent so connect never waits on it; heartbeats and later
+		// events pick the attributes up once resolved.
+		go attachGeoAttributes(ctx, mgr)
 	}
 
 	// TUN mode binds no local port, so it neither resolves nor reserves the

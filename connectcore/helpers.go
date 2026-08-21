@@ -39,6 +39,18 @@ func (s *Engine) newManager(brokerURL string) *clienttelemetry.Manager {
 	return mgr
 }
 
+// attachGeoAttributes resolves the client's public-IP geo and attaches it to
+// the session's telemetry (country/city/ISP on the broker dashboard, the way
+// the mobile apps report it). Best-effort and nil-safe. It must be started
+// before the tunnel or OS proxy comes up — afterwards the lookup would ride
+// the tunnel and report the relay's geo instead of the client's.
+func attachGeoAttributes(ctx context.Context, mgr *clienttelemetry.Manager) {
+	if mgr == nil {
+		return
+	}
+	mgr.SetGeoAttributes(lookupGeoAttributes(ctx, nil))
+}
+
 func managerClientID(mgr *clienttelemetry.Manager) string {
 	if mgr == nil {
 		return ""
