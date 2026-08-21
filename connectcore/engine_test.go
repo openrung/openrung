@@ -560,8 +560,13 @@ func TestAttachGeoAttributesStampsSessionTelemetry(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
+	// The lookup blocks on gate, so the test can prove done is not closed
+	// while the lookup is still in flight — the property the ladder and
+	// finalize barriers rely on.
+	gate := make(chan struct{})
 	orig := lookupGeoAttributes
 	lookupGeoAttributes = func(context.Context, *http.Client) map[string]string {
+		<-gate
 		return map[string]string{"country": "Testland", "country_code": "TL", "isp": "Test ISP"}
 	}
 	t.Cleanup(func() { lookupGeoAttributes = orig })
@@ -575,13 +580,26 @@ func TestAttachGeoAttributesStampsSessionTelemetry(t *testing.T) {
 		t.Fatalf("begin session: %v", err)
 	}
 
-	attachGeoAttributes(context.Background(), mgr)
+	done := attachGeoAttributes(mgr)
+	select {
+	case <-done:
+		t.Fatal("done closed while the lookup was still in flight")
+	default:
+	}
 
+	close(gate)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("done never closed after the lookup returned")
+	}
+
+	// Joining done must guarantee the attributes are attached: an event
+	// recorded after the join carries them.
 	mgr.Record("connection_succeeded", "relay_1", nil, nil)
 	if err := mgr.Flush(context.Background()); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
-
 	body := string(transport.body)
 	for _, want := range []string{`"country":"Testland"`, `"country_code":"TL"`, `"isp":"Test ISP"`} {
 		if !strings.Contains(body, want) {
@@ -599,8 +617,61 @@ func TestAttachGeoAttributesNilManagerSkipsLookup(t *testing.T) {
 	}
 	t.Cleanup(func() { lookupGeoAttributes = orig })
 
-	attachGeoAttributes(context.Background(), nil)
+	done := attachGeoAttributes(nil)
+	select {
+	case <-done:
+	default:
+		t.Fatal("nil manager must return an already-closed channel")
+	}
 	if called {
 		t.Fatal("nil manager must not trigger a public-IP lookup")
+	}
+}
+
+// A connect that fails before the lookup completes must still flush its
+// terminal events with geo attached: finalizeConn joins the lookup before
+// recording connection_failed.
+func TestFinalizeConnJoinsGeoBeforeTerminalFlush(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	gate := make(chan struct{})
+	orig := lookupGeoAttributes
+	lookupGeoAttributes = func(context.Context, *http.Client) map[string]string {
+		<-gate
+		return map[string]string{"country": "Testland"}
+	}
+	t.Cleanup(func() { lookupGeoAttributes = orig })
+
+	transport := &captureTransport{}
+	mgr, err := clienttelemetry.New("https://broker.test", "test", &http.Client{Transport: transport})
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	if _, err := mgr.BeginSession(); err != nil {
+		t.Fatalf("begin session: %v", err)
+	}
+
+	s := New()
+	conn := &connection{
+		cancel:  func() {},
+		done:    make(chan struct{}),
+		mgr:     mgr,
+		geoDone: attachGeoAttributes(mgr),
+	}
+
+	// Release the lookup only once finalizeConn is already waiting on it.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		close(gate)
+	}()
+	s.finalizeConn(conn, "relay_connect", errors.New("ladder exhausted"))
+
+	body := string(transport.body)
+	if !strings.Contains(body, `"connection_failed"`) {
+		t.Fatalf("terminal flush missing connection_failed:\n%s", body)
+	}
+	if !strings.Contains(body, `"country":"Testland"`) {
+		t.Fatalf("connection_failed flushed without geo:\n%s", body)
 	}
 }

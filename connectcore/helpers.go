@@ -39,16 +39,33 @@ func (s *Engine) newManager(brokerURL string) *clienttelemetry.Manager {
 	return mgr
 }
 
+// geoLookupTimeout is the hard backstop on the public-IP geo lookup, above
+// LookupGeoAttributes' own 4s HTTP client timeout: the returned channel must
+// always close so the joins in connectFlow and finalizeConn are bounded.
+const geoLookupTimeout = 5 * time.Second
+
 // attachGeoAttributes resolves the client's public-IP geo and attaches it to
 // the session's telemetry (country/city/ISP on the broker dashboard, the way
-// the mobile apps report it). Best-effort and nil-safe. It must be started
-// before the tunnel or OS proxy comes up — afterwards the lookup would ride
-// the tunnel and report the relay's geo instead of the client's.
-func attachGeoAttributes(ctx context.Context, mgr *clienttelemetry.Manager) {
+// the mobile apps report it). Best-effort and nil-safe. The returned channel
+// closes once the attributes are attached (or the lookup gave up); callers
+// must join it before the tunnel or OS proxy comes up — afterwards the lookup
+// would ride the tunnel and report the relay's geo instead of the client's —
+// and before a terminal flush, or a fast-failing session loses geo. The
+// lookup deliberately runs on its own bounded context, not the connect
+// context, so a cancelled connect can still stamp its terminal events.
+func attachGeoAttributes(mgr *clienttelemetry.Manager) <-chan struct{} {
+	done := make(chan struct{})
 	if mgr == nil {
-		return
+		close(done)
+		return done
 	}
-	mgr.SetGeoAttributes(lookupGeoAttributes(ctx, nil))
+	go func() {
+		defer close(done)
+		ctx, cancel := context.WithTimeout(context.Background(), geoLookupTimeout)
+		defer cancel()
+		mgr.SetGeoAttributes(lookupGeoAttributes(ctx, nil))
+	}()
+	return done
 }
 
 func managerClientID(mgr *clienttelemetry.Manager) string {

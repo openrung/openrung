@@ -103,6 +103,11 @@ type connection struct {
 	snapshotTaken bool // snapshot captured once; survives a recovery proxy release
 	snapshot      OSProxySnapshot
 	mgr           *clienttelemetry.Manager
+	// geoDone closes once the public-IP geo lookup has attached its result (or
+	// given up); nil until the lookup starts. Only the runConnect goroutine
+	// touches it: joined before the candidate ladder (the lookup must never
+	// ride the tunnel) and before the terminal records/flush in finalizeConn.
+	geoDone <-chan struct{}
 
 	// active is the promoted (live) candidate's resources; nil while the ladder
 	// is still trying candidates or after a teardown. Only the runConnect
@@ -667,9 +672,9 @@ func (s *Engine) connectFlow(ctx context.Context, conn *connection, brokerURL st
 			s.mu.Unlock()
 		}
 		mgr.Record("connection_attempted", "", nil, nil)
-		// Concurrent so connect never waits on it; heartbeats and later
-		// events pick the attributes up once resolved.
-		go attachGeoAttributes(ctx, mgr)
+		// Concurrent with the fetch and ladder so connect rarely waits on it;
+		// joined at the promote and finalize barriers below.
+		conn.geoDone = attachGeoAttributes(mgr)
 	}
 
 	// TUN mode binds no local port, so it neither resolves nor reserves the
@@ -715,6 +720,18 @@ func (s *Engine) connectFlow(ctx context.Context, conn *connection, brokerURL st
 	if !s.tunMode() {
 		if err := EnsureProxyPortAvailable(port); err != nil {
 			return "proxy_port", err
+		}
+	}
+	// Join the geo lookup before the ladder: a TUN candidate installs routes
+	// as it is tried (readiness waits for them), so from the first dial on the
+	// lookup could ride the tunnel and report the relay's geo, not the
+	// client's. Bounded by geoLookupTimeout, and usually free — the broker
+	// fetch and latency ranking above take longer than the lookup.
+	if conn.geoDone != nil {
+		select {
+		case <-conn.geoDone:
+		case <-ctx.Done():
+			return "", nil
 		}
 	}
 	res, err := s.runLadder(ctx, conn, ladder, port)
@@ -1223,6 +1240,16 @@ func (s *Engine) finalizeConn(conn *connection, stage string, err error) {
 	disconnecting := conn.disconnecting
 	activeRelayID := conn.activeRelayID
 	s.mu.Unlock()
+
+	// Join the geo lookup before the terminal records and flush: a session
+	// that ends before the lookup completes (a fast ladder failure, an early
+	// disconnect) would otherwise flush without geo. Already closed whenever
+	// the session reached the ladder (its barrier joined it); otherwise bounded
+	// by geoLookupTimeout, and the tunnel is already down here so the lookup
+	// still observes the client's own network.
+	if conn.geoDone != nil {
+		<-conn.geoDone
+	}
 
 	switch {
 	case disconnecting, err == nil:
