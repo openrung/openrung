@@ -19,13 +19,14 @@ import (
 const defaultPunchPort = "9444"
 
 // PunchEstablisher runs one NAT punch attempt against relayID via the hub
-// punch coordinator and, on success, returns the live punched path. On any
-// failure it returns a nil path, a PunchResult whose Reason/NATClass are
-// suitable for telemetry, and the error. This module owns when to punch and
-// how the outcome is reported; the QUIC transport mechanics live outside it —
-// in this repository the root module's internal/punch provides the
-// implementation, and hosts assign it to Engine.PunchEstablisher (or
-// PunchOptions.Establish). A host with no establisher never punches.
+// punch coordinator and, on success, returns the live punched path with a
+// non-nil Bridge. On any failure it returns a nil path, a PunchResult whose
+// Reason/NATClass are suitable for telemetry, and the error. This module owns
+// when to punch and how the outcome is reported; the QUIC transport mechanics
+// live outside it — in this repository the root module's internal/enginepunch
+// adapts internal/punch's QUIC transport, and hosts assign its Establish to
+// Engine.PunchEstablisher (or PunchOptions.Establish). A host with no
+// establisher never punches.
 type PunchEstablisher func(ctx context.Context, hub punchcore.HubClient, relayID string) (*PunchPath, punchcore.PunchResult, error)
 
 // PunchBridge is a punched path's loopback bridge lifecycle. Serve runs the
@@ -40,6 +41,8 @@ type PunchBridge interface {
 // dials BridgeHost:BridgePort in place of the relay's public endpoint, PeerIP
 // is excluded from TUN routes so the punched QUIC datagrams are not captured
 // by the client's own tunnel, and Bridge carries the serve/teardown lifecycle.
+// A path returned by AttemptPunch always has a non-nil Bridge: an establisher
+// that produces one without is degraded to the hub fallback, never served.
 type PunchPath struct {
 	BridgeHost string
 	BridgePort int
@@ -49,8 +52,14 @@ type PunchPath struct {
 	Bridge     PunchBridge
 }
 
-// Close tears down the punched path.
-func (p *PunchPath) Close() error { return p.Bridge.Close() }
+// Close tears down the punched path. It tolerates a nil path or missing
+// bridge so teardown of a defensively-handled establishment cannot panic.
+func (p *PunchPath) Close() error {
+	if p == nil || p.Bridge == nil {
+		return nil
+	}
+	return p.Bridge.Close()
+}
 
 // PunchOptions configures a single punch attempt. The zero value is the safe
 // default: punching disabled, no override, hub TLS verified.
@@ -82,8 +91,11 @@ type PunchOptions struct {
 	Notify func(Notice)
 
 	// Establish is the host's punch implementation (see PunchEstablisher).
-	// Nil disables punching regardless of Enabled: the attempt is skipped
-	// silently, exactly as if the relay were not punch-capable.
+	// Nil disables punching regardless of Enabled, taking the hub path — but
+	// the skip is recorded as punch_skipped (reason no_establisher): enabling
+	// punching without wiring an establisher is a host misconfiguration, and
+	// without the event the loss would be indistinguishable in telemetry from
+	// "no punch-capable relays advertised".
 	Establish PunchEstablisher
 }
 
@@ -103,8 +115,13 @@ func AttemptPunch(ctx context.Context, mgr *clienttelemetry.Manager, selected br
 		return nil
 	}
 	if opts.Establish == nil {
-		// No punch implementation is wired; take the hub path exactly as if
-		// the relay were not punch-capable.
+		// No punch implementation is wired; take the hub path, but leave a
+		// telemetry and log trail (see PunchOptions.Establish for why the
+		// skip must be observable).
+		mgr.Record("punch_skipped", selected.ID, map[string]string{"reason": "no_establisher"}, nil)
+		if opts.Log != nil {
+			opts.Log("punch enabled but no establisher is wired; using relay hub")
+		}
 		return nil
 	}
 
@@ -124,6 +141,25 @@ func AttemptPunch(ctx context.Context, mgr *clienttelemetry.Manager, selected br
 		}
 		mgr.Record("punch_failed", selected.ID,
 			map[string]string{"reason": res.Reason, "nat_class": res.NATClass}, nil)
+		return nil
+	}
+
+	if est == nil || est.Bridge == nil {
+		// A nil path or bridge from a non-erroring establisher is an
+		// implementation bug in the host's PunchEstablisher; degrade it to
+		// the hub fallback instead of panicking on first Bridge use.
+		if opts.Log != nil {
+			opts.Log("punch establisher returned no usable path; using relay hub")
+		}
+		if opts.Notify != nil {
+			opts.Notify(Notice{
+				Kind:    NoticePunchOutcome,
+				RelayID: selected.ID,
+				Reason:  "failed (invalid establishment); using relay hub",
+			})
+		}
+		mgr.Record("punch_failed", selected.ID,
+			map[string]string{"reason": "invalid_establishment", "nat_class": res.NATClass}, nil)
 		return nil
 	}
 

@@ -27,8 +27,8 @@ the client policy layer:
 Everything platform-specific reaches the engine through narrow interfaces
 (`interfaces.go`): event sink, persistence, OS proxy control, elevation, and
 the NAT punch transport (`PunchEstablisher` — implemented in the root module's
-`internal/punch`, since the quic-go transport deliberately stays out of this
-module). Relay wire types come from `brokerapi`'s exported relay schema, and
+`internal/enginepunch` over the quic-go transport in `internal/punch`, which
+deliberately stays out of this module). Relay wire types come from `brokerapi`'s exported relay schema, and
 the WSS transport mechanics from `wsscore`; both are sibling nested modules
 this module pins by version for external consumers, while in-repo builds use
 local `replace` directives.

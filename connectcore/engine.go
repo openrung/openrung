@@ -263,11 +263,11 @@ type Engine struct {
 	PunchInsecure bool
 
 	// PunchEstablisher is the host's punch implementation (in this repository
-	// the root module's internal/punch, whose EstablishForEngine the desktop
+	// the root module's internal/enginepunch, whose Establish the desktop
 	// and terminal hosts assign here). Nil disables punching regardless of
-	// PunchEnabled — the engine then takes the hub path exactly as if no relay
-	// were punch-capable — so a host without a QUIC punch transport still runs
-	// the full ladder.
+	// PunchEnabled — the engine takes the hub path and records punch_skipped
+	// (reason no_establisher) for punch-capable relays — so a host without a
+	// QUIC punch transport still runs the full ladder.
 	PunchEstablisher PunchEstablisher
 
 	// connectMu serializes the Connect/Disconnect mutation surface. Hosts may
