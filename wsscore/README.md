@@ -194,7 +194,7 @@ mappings testable on the Linux-only CI, which the earlier build-tagged split
 pins needed a Windows test run CI does not provide. A range check now catches a
 reversion to the portable names on any host, a source-parsing registry test
 keeps `WinsockErrnos()` in lockstep with the constant block, and the exported
-table is also consumed by `openrung/internal/clienttelemetry`, whose divergence
+table is also consumed by the `connectcore` module's `clienttelemetry` package, whose divergence
 test pins where its client taxonomy deliberately disagrees with this one
 (WSAECONNABORTED, the timeout split, WSAEACCES).
 

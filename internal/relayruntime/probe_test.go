@@ -31,10 +31,10 @@ func freeTCPPort(t *testing.T) int {
 	return port
 }
 
-// TestDetectDirectReachableReachable wires the real hub prober to the relay
+// TestProbeDirectReachabilityReachable wires the real hub prober to the relay
 // detection client on loopback: the relay opens its temporary listener, the hub
-// dials it back at the observed source IP, and detection reports reachable.
-func TestDetectDirectReachableReachable(t *testing.T) {
+// dials it back at the observed source IP, and the probe reports reachable.
+func TestProbeDirectReachabilityReachable(t *testing.T) {
 	prober := tunnel.NewReachabilityProber("token123", testLogger())
 	mux := http.NewServeMux()
 	prober.Register(mux)
@@ -42,29 +42,29 @@ func TestDetectDirectReachableReachable(t *testing.T) {
 	defer ts.Close()
 
 	port := freeTCPPort(t)
-	reachable, host, err := DetectDirectReachable(context.Background(), ts.URL, "token123", "::", port, ts.Client())
-	if err != nil {
-		t.Fatalf("detect: %v", err)
+	result := ProbeDirectReachability(context.Background(), ts.URL, "token123", "::", port, ts.Client())
+	if result.Err != nil {
+		t.Fatalf("probe: %v", result.Err)
 	}
-	if !reachable {
-		t.Fatal("expected reachable on loopback")
+	if result.Outcome != DirectProbeReachable {
+		t.Fatalf("outcome = %q, want reachable on loopback", result.Outcome)
 	}
-	if host != "127.0.0.1" {
-		t.Fatalf("observed host = %q, want 127.0.0.1", host)
+	if result.ObservedHost != "127.0.0.1" {
+		t.Fatalf("observed host = %q, want 127.0.0.1", result.ObservedHost)
 	}
 }
 
-// TestDetectDirectReachableHubDown returns an inconclusive error (not a false
+// TestProbeDirectReachabilityHubDown returns an inconclusive error (not a false
 // "reachable") when the hub HTTP API cannot be reached.
-func TestDetectDirectReachableHubDown(t *testing.T) {
+func TestProbeDirectReachabilityHubDown(t *testing.T) {
 	// A URL that refuses connections.
 	deadURL := "http://127.0.0.1:1"
 	port := freeTCPPort(t)
-	reachable, _, err := DetectDirectReachable(context.Background(), deadURL, "", "::", port, &http.Client{})
-	if err == nil {
+	result := ProbeDirectReachability(context.Background(), deadURL, "", "::", port, &http.Client{})
+	if result.Err == nil {
 		t.Fatal("expected an error when the hub is unreachable")
 	}
-	if reachable {
+	if result.Outcome == DirectProbeReachable {
 		t.Fatal("must not report reachable when the probe could not run")
 	}
 }

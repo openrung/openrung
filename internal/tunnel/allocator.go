@@ -66,13 +66,6 @@ func (a *PortAllocator) Release(port int) {
 	delete(a.inUse, port)
 }
 
-// InUse reports how many ports are currently allocated.
-func (a *PortAllocator) InUse() int {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return len(a.inUse)
-}
-
 func portBindable(port int) bool {
 	listener, err := net.Listen("tcp", net.JoinHostPort("", strconv.Itoa(port)))
 	if err != nil {
