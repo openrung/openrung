@@ -3,8 +3,8 @@ package vpnservice
 import (
 	"testing"
 
+	"github.com/openrung/openrung/connectcore"
 	"openrung/internal/clientstate"
-	"openrung/internal/connectcore"
 )
 
 var _ connectcore.Persistence = storeAdapter{}

@@ -23,6 +23,7 @@ Shared Go modules are versioned separately from deployable applications:
 | Module | Version source | Module tag | Consumers |
 | --- | --- | --- | --- |
 | `github.com/openrung/openrung/brokerapi` | `brokerapi/VERSION` | `brokerapi/vX.Y.Z` | Root and desktop clients in this repository; pinned mobile broker bindings |
+| `github.com/openrung/openrung/connectcore` | `connectcore/VERSION` | `connectcore/vX.Y.Z` | Terminal client and desktop app in this repository; pinned mobile engine bindings |
 | `github.com/openrung/openrung/punchcore` | `punchcore/VERSION` | `punchcore/vX.Y.Z` | Relay/hub and desktop code in this repository; pinned mobile punch bindings |
 | `github.com/openrung/openrung/wsscore` | `wsscore/VERSION` | `wsscore/vX.Y.Z` | Desktop client and relay sidecar in this repository; pinned Android and iOS WSS bindings |
 
@@ -58,7 +59,8 @@ namespace, and no workflow triggers on them anymore.
 ## Two release models
 
 **Modules: merge = release.** Except for a module `README.md`-only edit, a
-pull request that changes files in `brokerapi/`, `punchcore/`, or `wsscore/`
+pull request that changes files in `brokerapi/`, `connectcore/`, `punchcore/`,
+or `wsscore/`
 must also advance that module's strict `X.Y.Z` `VERSION`; CI rejects a version
 whose nested tag already exists. After merge, the matching `*-tag` workflow
 creates `<module>/vX.Y.Z` on the merge commit. Consumers pin that tag rather
@@ -103,7 +105,7 @@ a symbol outside the proven set.
 The Wails apps do not link `internal/buildinfo`; they use two other
 mechanisms, fed from the same `VERSION` files:
 
-- `internal/client.appVersion` is the telemetry identity sent in the
+- `connectcore/client.appVersion` (symbol `github.com/openrung/openrung/connectcore/client.appVersion`) is the telemetry identity sent in the
   `X-OpenRung-App-Version` header. The desktop packaging scripts stamp it from
   `desktop/VERSION` (`desktop/scripts/versioned-wails-build.mjs`), and the
   client CLI release stamps it from `cmd/client/VERSION`. The symbol path is

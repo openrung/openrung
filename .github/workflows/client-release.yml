@@ -63,13 +63,13 @@ jobs:
           REVISION: ${{ steps.version.outputs.revision }}
         run: |
           set -euo pipefail
-          # internal/client.appVersion is the telemetry identity (the symbol
-          # the desktop app also stamps; proven resolvable by
+          # connectcore/client.appVersion is the telemetry identity (the
+          # symbol the desktop app also stamps; proven resolvable by
           # desktop/scripts/version-injection.test.mjs). The buildinfo symbols
           # feed the `openrung-client version` output (proven resolvable by
           # internal/buildinfo/injection_test.go).
           ldflags="-s -w"
-          ldflags="$ldflags -X openrung/internal/client.appVersion=$BUILD_VERSION"
+          ldflags="$ldflags -X github.com/openrung/openrung/connectcore/client.appVersion=$BUILD_VERSION"
           ldflags="$ldflags -X openrung/internal/buildinfo.version=$BUILD_VERSION"
           ldflags="$ldflags -X openrung/internal/buildinfo.revision=$REVISION"
 

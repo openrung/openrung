@@ -1,0 +1,596 @@
+package discovery
+
+import (
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/openrung/openrung/brokerapi"
+
+	"github.com/openrung/openrung/connectcore/client"
+)
+
+// relayBody is unsigned: every httptest server here is a loopback host, which
+// brokerapi exempts from the relay-list signature requirement — the same
+// development-flow allowance as the loopback cleartext exception.
+const relayBody = `{"count":1,"server_time":"2026-07-06T00:00:00Z","relays":[{"id":"r1","public_host":"1.2.3.4","public_port":443,"protocol":"vless-reality-vision","client_id":"client","reality_public_key":"key","short_id":"01","server_name":"example.com","flow":"xtls-rprx-vision","exit_mode":"direct","max_sessions":1,"max_mbps":10,"volunteer_version":"1.0.0","registered_at":"2026-07-06T00:00:00Z","last_heartbeat_at":"2026-07-06T00:00:00Z","expires_at":"2099-07-06T00:10:00Z"}]}`
+
+// noOverride wraps urls as a pure-race candidate list — what
+// brokerapi.BrokerCandidates builds when no genuine user override is set.
+func noOverride(urls ...string) brokerapi.Candidates {
+	return brokerapi.Candidates{URLs: urls}
+}
+
+// withOverride wraps urls as a candidate list whose FIRST entry is a genuine
+// user override, matching what brokerapi.BrokerCandidates builds for one.
+func withOverride(urls ...string) brokerapi.Candidates {
+	return brokerapi.Candidates{URLs: urls, OverrideFirst: true}
+}
+
+func TestDiscoveryStaggerSharedDefault(t *testing.T) {
+	// Lock the intended shared tuning value that FirstReachable falls back to
+	// (moved here with the rest of the deleted desktop/config package). Mobile
+	// consumes this same brokerapi constant through its native binding rather
+	// than copying it into AppConfig.
+	if brokerapi.DefaultDiscoveryStagger != 2500*time.Millisecond {
+		t.Fatalf("DefaultDiscoveryStagger = %v, want shared 2.5s default", brokerapi.DefaultDiscoveryStagger)
+	}
+}
+
+func TestListRelaysSuccess(t *testing.T) {
+	var gotVersion, gotPlatform string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotVersion = r.Header.Get("X-OpenRung-App-Version")
+		gotPlatform = r.Header.Get("X-OpenRung-Desktop")
+		w.Write([]byte(relayBody))
+	}))
+	defer srv.Close()
+
+	resp, err := ListRelays(context.Background(), srv.URL, Options{Limit: 20})
+	if err != nil {
+		t.Fatalf("ListRelays: %v", err)
+	}
+	if len(resp.Relays) != 1 || resp.Relays[0].ID != "r1" {
+		t.Fatalf("unexpected relays: %+v", resp.Relays)
+	}
+	if gotVersion == "" {
+		t.Error("X-OpenRung-App-Version header not sent")
+	}
+	if gotPlatform == "" {
+		t.Error("X-OpenRung-Desktop header not sent")
+	}
+}
+
+// TestListRelaysSignatureNonLoopback checks that this desktop adapter does not
+// bypass brokerapi's production signature requirement. Detailed signature and
+// key-rotation vectors live in the brokerapi module itself.
+func TestListRelaysSignatureNonLoopback(t *testing.T) {
+	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(relayBody)),
+			Header:     make(http.Header),
+			Request:    r,
+		}, nil
+	})}
+	_, err := ListRelays(context.Background(), "https://broker.example.com", Options{
+		Limit:      20,
+		HTTPClient: httpClient,
+	})
+	if err == nil {
+		t.Fatal("unsigned non-loopback response must fail")
+	}
+	if !strings.Contains(err.Error(), "unsigned/invalid relay list") {
+		t.Fatalf("want the unsigned/invalid marker, got: %v", err)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func TestListRelaysRateLimited(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "12")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	_, err := ListRelays(context.Background(), srv.URL, Options{})
+	var rl *RateLimitedError
+	if !errors.As(err, &rl) {
+		t.Fatalf("want *RateLimitedError, got %v", err)
+	}
+	if rl.RetryAfter != 12*time.Second {
+		t.Fatalf("RetryAfter = %v, want 12s", rl.RetryAfter)
+	}
+}
+
+func TestFirstReachableFailsOverToSecond(t *testing.T) {
+	// First candidate 429s, second serves relays. The race must let the second
+	// candidate win after its staggered start, so a rate-limited primary never
+	// takes the map offline.
+	limited := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer limited.Close()
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(relayBody))
+	}))
+	defer good.Close()
+
+	fetch, err := FirstReachable(context.Background(), noOverride(limited.URL, good.URL), Options{Stagger: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("FirstReachable: %v", err)
+	}
+	if fetch.BrokerURL != good.URL {
+		t.Fatalf("served by %q, want %q", fetch.BrokerURL, good.URL)
+	}
+	if len(fetch.Response.Relays) != 1 {
+		t.Fatalf("unexpected relays: %+v", fetch.Response.Relays)
+	}
+}
+
+func TestFirstReachableHealthyPrimaryWinsWithoutStartingFallback(t *testing.T) {
+	// A healthy primary answers well inside the stagger, so the fallback must
+	// never see a request — neither before the winner returns nor from a stray
+	// timer afterwards.
+	const stagger = 500 * time.Millisecond
+
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(relayBody))
+	}))
+	defer primary.Close()
+	var fallbackHits atomic.Int64
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHits.Add(1)
+		w.Write([]byte(relayBody))
+	}))
+	defer fallback.Close()
+
+	fetch, err := FirstReachable(context.Background(), noOverride(primary.URL, fallback.URL), Options{Stagger: stagger})
+	if err != nil {
+		t.Fatalf("FirstReachable: %v", err)
+	}
+	if fetch.BrokerURL != primary.URL {
+		t.Fatalf("served by %q, want primary %q", fetch.BrokerURL, primary.URL)
+	}
+	if hits := fallbackHits.Load(); hits != 0 {
+		t.Fatalf("fallback received %d request(s) before the stagger elapsed, want 0", hits)
+	}
+	// The race ended with the primary's success; the stagger timer must be dead.
+	time.Sleep(2 * stagger)
+	if hits := fallbackHits.Load(); hits != 0 {
+		t.Fatalf("fallback received %d request(s) after the race ended, want 0", hits)
+	}
+}
+
+func TestFirstReachableHangingPrimaryLosesToSecondAfterStagger(t *testing.T) {
+	// The primary accepts the request and hangs. The race must start the second
+	// candidate one stagger later and return its success without waiting out
+	// the primary's request timeout.
+	const stagger = 300 * time.Millisecond
+
+	hung := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done() // hang until the race aborts this attempt
+	}))
+	defer hung.Close()
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(relayBody))
+	}))
+	defer good.Close()
+
+	begun := time.Now()
+	fetch, err := FirstReachable(context.Background(), noOverride(hung.URL, good.URL), Options{Stagger: stagger})
+	elapsed := time.Since(begun)
+	if err != nil {
+		t.Fatalf("FirstReachable: %v", err)
+	}
+	if fetch.BrokerURL != good.URL {
+		t.Fatalf("served by %q, want %q", fetch.BrokerURL, good.URL)
+	}
+	if elapsed < stagger {
+		t.Fatalf("second candidate won after %v, before the %v stagger", elapsed, stagger)
+	}
+	if elapsed > 10*stagger {
+		t.Fatalf("second candidate won after %v, want shortly after the %v stagger", elapsed, stagger)
+	}
+}
+
+func TestFirstReachableAllFailReturnsPrimaryError(t *testing.T) {
+	// Both candidates fail, the secondary strictly after the primary (it starts
+	// one stagger later). The primary's error is the meaningful diagnostic, so
+	// it must win over the last-observed one.
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte(`{"error":"primary exploded"}`))
+	}))
+	defer primary.Close()
+	secondary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "5")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer secondary.Close()
+
+	_, err := FirstReachable(context.Background(), noOverride(primary.URL, secondary.URL), Options{Stagger: 50 * time.Millisecond})
+	if err == nil {
+		t.Fatal("want error when every candidate fails")
+	}
+	var rl *RateLimitedError
+	if errors.As(err, &rl) {
+		t.Fatalf("got the secondary's rate-limit error %v, want the primary's error", err)
+	}
+	var statusErr *client.BrokerStatusError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("want the primary's 503, got %v", err)
+	}
+}
+
+func TestFirstReachableSingleCandidateBehavesSequentially(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		var hits atomic.Int64
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			hits.Add(1)
+			w.Write([]byte(relayBody))
+		}))
+		defer srv.Close()
+
+		fetch, err := FirstReachable(context.Background(), noOverride(srv.URL), Options{})
+		if err != nil {
+			t.Fatalf("FirstReachable: %v", err)
+		}
+		if fetch.BrokerURL != srv.URL || len(fetch.Response.Relays) != 1 {
+			t.Fatalf("unexpected fetch: %+v", fetch)
+		}
+		if got := hits.Load(); got != 1 {
+			t.Fatalf("candidate received %d requests, want exactly 1", got)
+		}
+	})
+
+	t.Run("failure propagates unchanged without stagger wait", func(t *testing.T) {
+		var hits atomic.Int64
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			hits.Add(1)
+			w.Header().Set("Retry-After", "7")
+			w.WriteHeader(http.StatusTooManyRequests)
+		}))
+		defer srv.Close()
+
+		begun := time.Now()
+		// Default stagger on purpose: a lone failing candidate must return
+		// immediately, not wait out brokerapi.DefaultDiscoveryStagger.
+		_, err := FirstReachable(context.Background(), noOverride(srv.URL), Options{})
+		elapsed := time.Since(begun)
+
+		var rl *RateLimitedError
+		if !errors.As(err, &rl) {
+			t.Fatalf("want *RateLimitedError, got %v", err)
+		}
+		if rl.BrokerURL != srv.URL || rl.RetryAfter != 7*time.Second {
+			t.Fatalf("error lost detail: %+v", rl)
+		}
+		if got := hits.Load(); got != 1 {
+			t.Fatalf("candidate received %d requests, want exactly 1", got)
+		}
+		if elapsed >= 2*time.Second {
+			t.Fatalf("single-candidate failure took %v, want an immediate return", elapsed)
+		}
+	})
+}
+
+func TestFirstReachableCancelsLosersOnceWinnerReturns(t *testing.T) {
+	// The hanging loser's request must be aborted (observed server-side via the
+	// request context) as soon as the winner's response is in.
+	const stagger = 200 * time.Millisecond
+
+	loserCanceled := make(chan struct{})
+	loser := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+		close(loserCanceled)
+	}))
+	defer loser.Close()
+	winner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(relayBody))
+	}))
+	defer winner.Close()
+
+	fetch, err := FirstReachable(context.Background(), noOverride(loser.URL, winner.URL), Options{Stagger: stagger})
+	if err != nil {
+		t.Fatalf("FirstReachable: %v", err)
+	}
+	if fetch.BrokerURL != winner.URL {
+		t.Fatalf("served by %q, want %q", fetch.BrokerURL, winner.URL)
+	}
+	select {
+	case <-loserCanceled:
+		// The losing attempt's HTTP request was aborted.
+	case <-time.After(5 * time.Second):
+		t.Fatal("losing attempt was not canceled after the winner returned")
+	}
+}
+
+func TestFirstReachableParentCancelStopsStartedAttempts(t *testing.T) {
+	// Both candidates hang. Once BOTH attempts are in flight the caller cancels;
+	// cancellation must abort both and return promptly with context.Canceled —
+	// not deadlock or wait out the 15s per-attempt request timeout.
+	const stagger = 100 * time.Millisecond
+
+	primaryStarted := make(chan struct{})
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(primaryStarted)
+		<-r.Context().Done() // hang until the aborted attempt lands
+	}))
+	defer primary.Close()
+	secondaryStarted := make(chan struct{})
+	secondary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(secondaryStarted)
+		<-r.Context().Done()
+	}))
+	defer secondary.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	type outcome struct {
+		fetch Fetch
+		err   error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		fetch, err := FirstReachable(ctx, noOverride(primary.URL, secondary.URL), Options{Stagger: stagger})
+		done <- outcome{fetch: fetch, err: err}
+	}()
+
+	// Only cancel once both attempts have reached their servers.
+	select {
+	case <-primaryStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("primary attempt never reached its server")
+	}
+	select {
+	case <-secondaryStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("secondary attempt never reached its server")
+	}
+	cancel()
+
+	select {
+	case res := <-done:
+		if !errors.Is(res.err, context.Canceled) {
+			t.Fatalf("want context.Canceled, got %v (fetch %+v)", res.err, res.fetch)
+		}
+	case <-time.After(5 * time.Second):
+		// Well under the 15s per-attempt timeout: a return only after that
+		// timeout would mean cancellation did not propagate.
+		t.Fatal("FirstReachable did not return within 5s of parent cancellation")
+	}
+}
+
+func TestFirstReachableParentCancelBeforeStaggerSkipsUnstartedCandidate(t *testing.T) {
+	// The caller cancels while only candidate[0] is in flight (the stagger is
+	// far from elapsing). The race must return without waiting on a candidate
+	// that never started, and the fallback must never see a request.
+	const stagger = time.Minute // never elapses within the test's lifetime
+
+	primaryStarted := make(chan struct{})
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(primaryStarted)
+		<-r.Context().Done()
+	}))
+	defer primary.Close()
+	var fallbackHits atomic.Int64
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHits.Add(1)
+		w.Write([]byte(relayBody))
+	}))
+	defer fallback.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	type outcome struct {
+		fetch Fetch
+		err   error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		fetch, err := FirstReachable(ctx, noOverride(primary.URL, fallback.URL), Options{Stagger: stagger})
+		done <- outcome{fetch: fetch, err: err}
+	}()
+
+	select {
+	case <-primaryStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("primary attempt never reached its server")
+	}
+	cancel()
+
+	select {
+	case res := <-done:
+		if !errors.Is(res.err, context.Canceled) {
+			t.Fatalf("want context.Canceled, got %v (fetch %+v)", res.err, res.fetch)
+		}
+	case <-time.After(5 * time.Second):
+		// A hang here would mean the drain waited for the never-started
+		// fallback's result, which can never arrive.
+		t.Fatal("FirstReachable did not return within 5s of parent cancellation")
+	}
+	if hits := fallbackHits.Load(); hits != 0 {
+		t.Fatalf("fallback received %d request(s), want 0 — it must never start after cancellation", hits)
+	}
+}
+
+func TestFirstReachableOverrideSlowerThanStaggerStillWins(t *testing.T) {
+	// A GENUINE user override that is merely slower than the stagger must not
+	// be outrun by a default front: the override phase runs alone with its full
+	// per-attempt timeout, so the default is never contacted — neither while
+	// the override is pending nor after it wins.
+	const stagger = 100 * time.Millisecond
+
+	override := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(4 * stagger) // slower than the stagger, well inside the 15s attempt timeout
+		w.Write([]byte(relayBody))
+	}))
+	defer override.Close()
+	var defaultHits atomic.Int64
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defaultHits.Add(1)
+		w.Write([]byte(relayBody))
+	}))
+	defer fallback.Close()
+
+	fetch, err := FirstReachable(context.Background(), withOverride(override.URL, fallback.URL), Options{Stagger: stagger})
+	if err != nil {
+		t.Fatalf("FirstReachable: %v", err)
+	}
+	if fetch.BrokerURL != override.URL {
+		t.Fatalf("served by %q, want the override %q", fetch.BrokerURL, override.URL)
+	}
+	if hits := defaultHits.Load(); hits != 0 {
+		t.Fatalf("default front received %d request(s) while the override was pending, want 0", hits)
+	}
+}
+
+func TestFirstReachableOverrideFailureRacesRemainingDefaults(t *testing.T) {
+	// Once the override FAILS, the staggered race starts over the remaining
+	// candidates with the usual semantics: the first default immediately, the
+	// next one stagger later, first success wins.
+	const stagger = 200 * time.Millisecond
+
+	override := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer override.Close()
+	hangingDefault := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done() // hang until the race aborts this attempt
+	}))
+	defer hangingDefault.Close()
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(relayBody))
+	}))
+	defer good.Close()
+
+	fetch, err := FirstReachable(context.Background(), withOverride(override.URL, hangingDefault.URL, good.URL), Options{Stagger: stagger})
+	if err != nil {
+		t.Fatalf("FirstReachable: %v", err)
+	}
+	if fetch.BrokerURL != good.URL {
+		t.Fatalf("served by %q, want %q", fetch.BrokerURL, good.URL)
+	}
+}
+
+func TestFirstReachableOverrideAllFailSurfacesOverrideError(t *testing.T) {
+	// The override is candidates[0]: when it and every default fail, ITS error
+	// is the surfaced diagnostic — the user configured that broker, so its
+	// failure is what they need to see, not a default front's.
+	override := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte(`{"error":"override exploded"}`))
+	}))
+	defer override.Close()
+	rateLimited := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "5")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer rateLimited.Close()
+
+	_, err := FirstReachable(context.Background(), withOverride(override.URL, rateLimited.URL), Options{Stagger: 50 * time.Millisecond})
+	if err == nil {
+		t.Fatal("want error when every candidate fails")
+	}
+	var rl *RateLimitedError
+	if errors.As(err, &rl) {
+		t.Fatalf("got the default front's rate-limit error %v, want the override's error", err)
+	}
+	var statusErr *client.BrokerStatusError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("want the override's 503, got %v", err)
+	}
+}
+
+func TestFirstReachableOverrideSingleCandidateFailurePropagatesUnchanged(t *testing.T) {
+	// A lone override reduces to exactly one attempt whose error keeps its
+	// detail — there is no remainder to race and no stagger wait.
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Retry-After", "7")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	_, err := FirstReachable(context.Background(), withOverride(srv.URL), Options{})
+	var rl *RateLimitedError
+	if !errors.As(err, &rl) {
+		t.Fatalf("want *RateLimitedError, got %v", err)
+	}
+	if rl.BrokerURL != srv.URL || rl.RetryAfter != 7*time.Second {
+		t.Fatalf("error lost detail: %+v", rl)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("override received %d requests, want exactly 1", got)
+	}
+}
+
+func TestFirstReachableOverrideParentCancelMidRaceSurfacesCancellation(t *testing.T) {
+	// The override fails fast, the remaining default hangs, then the caller
+	// cancels. The surfaced error must be the cancellation — what the caller
+	// classifies on — not the override's stale failure.
+	const stagger = 100 * time.Millisecond
+
+	override := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer override.Close()
+	defaultStarted := make(chan struct{})
+	hangingDefault := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(defaultStarted)
+		<-r.Context().Done()
+	}))
+	defer hangingDefault.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	type outcome struct {
+		fetch Fetch
+		err   error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		fetch, err := FirstReachable(ctx, withOverride(override.URL, hangingDefault.URL), Options{Stagger: stagger})
+		done <- outcome{fetch: fetch, err: err}
+	}()
+
+	select {
+	case <-defaultStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("default attempt never reached its server")
+	}
+	cancel()
+
+	select {
+	case res := <-done:
+		if !errors.Is(res.err, context.Canceled) {
+			t.Fatalf("want context.Canceled, got %v (fetch %+v)", res.err, res.fetch)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("FirstReachable did not return within 5s of parent cancellation")
+	}
+}
+
+func TestFirstReachableNoCandidates(t *testing.T) {
+	_, err := FirstReachable(context.Background(), brokerapi.Candidates{}, Options{})
+	if err == nil {
+		t.Fatal("want error for empty candidate list")
+	}
+}

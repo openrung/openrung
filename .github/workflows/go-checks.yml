@@ -2,8 +2,8 @@ name: go-checks
 
 # Vet + test every Go module in the repo on each PR and push to main. This is
 # the compile/test gate for the module edges between the root module, the
-# nested brokerapi, punchcore, and wsscore modules, and the two Wails app
-# modules. The app modules are gated on their Go service subpackages only, not
+# nested brokerapi, connectcore, punchcore, and wsscore modules, and the two
+# Wails app modules. The app modules are gated on their Go service subpackages only, not
 # `./...`, which would require frontend/dist to exist. These checks are the
 # normal PR gate for their Go suites; the Volunteer Desktop release workflow
 # also repeats the native direct-setup/service subset on each platform before
@@ -112,6 +112,38 @@ jobs:
           go vet ./...
           go test -race ./...
 
+      # Standalone, not just through the root module's replace. Note this is
+      # still not the build a fetching consumer sees: connectcore's own
+      # replace directives resolve the sibling modules from in-tree source.
+      # The require-pin step below keeps the published requires equal to the
+      # sibling versions this step actually tests.
+      - name: connectcore module (vet + test)
+        working-directory: connectcore
+        run: |
+          go vet ./...
+          go test -race ./...
+
+      # connectcore is fetched by external consumers through its go.mod
+      # requires, while every in-repo build resolves siblings through replace
+      # directives — so the requires are never compiled against here. Keeping
+      # each require equal to the sibling's VERSION file means the
+      # configuration CI tests is the one external consumers fetch; a stale
+      # require would publish a tag that fails to resolve or compile only
+      # outside this repository.
+      - name: connectcore sibling require pins
+        run: |
+          for sibling in brokerapi punchcore wsscore; do
+            version="v$(cat "$sibling/VERSION")"
+            require="$(cd connectcore && go mod edit -json | \
+              jq -r --arg path "github.com/openrung/openrung/$sibling" \
+              '.Require[] | select(.Path == $path) | .Version')"
+            if [ "$require" != "$version" ]; then
+              echo "connectcore/go.mod requires $sibling $require but $sibling/VERSION is $version; bump them together (docs/architecture.md, connectcore pin/upgrade procedure)" >&2
+              exit 1
+            fi
+            echo "connectcore requires $sibling $version (== $sibling/VERSION)"
+          done
+
       - name: desktop module (vet + test + build)
         working-directory: desktop
         run: |
@@ -120,11 +152,12 @@ jobs:
           go build ./vpnservice/...
 
       # The desktop packaging script stamps the build version by setting
-      # openrung/internal/client.appVersion with -X, but the linker silently
-      # ignores -X for a symbol it cannot resolve. Renaming that variable would
-      # otherwise leave every release reporting "dev" with this whole job green.
-      # Belongs here, not in desktop-frontend.yml: it needs Go, and it has to
-      # run when internal/client changes.
+      # github.com/openrung/openrung/connectcore/client.appVersion with -X,
+      # but the linker silently ignores -X for a symbol it cannot resolve.
+      # Renaming that variable would otherwise leave every release reporting
+      # "dev" with this whole job green. Belongs here, not in
+      # desktop-frontend.yml: it needs Go, and it has to run when
+      # connectcore/client changes.
       - name: Desktop version injection contract
         working-directory: desktop
         run: node --test scripts/version-injection.test.mjs
@@ -237,6 +270,53 @@ jobs:
             exit 1
           fi
           echo "wsscore/VERSION -> $version (will tag $tag on merge)"
+
+  # Keep the client policy engine module releasable by requiring every
+  # non-documentation change to declare a fresh module version.
+  # Push-mode and the PR-only tag probe: see the note on punchcore-version.
+  connectcore-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require a fresh VERSION when connectcore changes
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            oldrev="$(git merge-base "origin/${{ github.base_ref }}" HEAD)"
+          else
+            oldrev="${{ github.event.before }}"
+            if ! git cat-file -e "$oldrev^{commit}" 2>/dev/null; then
+              echo "no reachable before-commit (branch creation or forced push); nothing to compare"
+              exit 0
+            fi
+          fi
+          changed="$(git diff --name-only "$oldrev" HEAD -- connectcore/ ':!connectcore/README.md')"
+          if [ -z "$changed" ]; then
+            echo "connectcore/ untouched"
+            exit 0
+          fi
+          if git diff --quiet "$oldrev" HEAD -- connectcore/VERSION; then
+            echo "connectcore/ changed without a connectcore/VERSION bump:" >&2
+            echo "$changed" >&2
+            exit 1
+          fi
+          version="$(tr -d '[:space:]' < connectcore/VERSION)"
+          if ! printf '%s\n' "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "invalid connectcore/VERSION \"$version\" (want X.Y.Z)" >&2
+            exit 1
+          fi
+          tag="connectcore/v$version"
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "connectcore/VERSION -> $version"
+            exit 0
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "connectcore/VERSION is $version but $tag already exists; bump to a new version" >&2
+            exit 1
+          fi
+          echo "connectcore/VERSION -> $version (will tag $tag on merge)"
 
   # Keep the independently consumable broker control-plane client releasable
   # by requiring every non-documentation change to declare a fresh version.

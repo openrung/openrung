@@ -90,7 +90,7 @@ copied command.
 
 `cmd/client` is an interactive terminal client for Linux, macOS, and Windows
 (proxy mode everywhere; TUN mode on macOS and Linux).
-It is a view over the same `internal/connectcore` engine the desktop app
+It is a view over the same `connectcore` module engine the desktop app
 drives, so relay ranking, the connect ladder, direct-first WSS fallback, NAT
 punching, telemetry, and mid-session failover behave identically in both — with
 the two TUN-mode differences noted under [Capture modes](#capture-modes). The
@@ -264,7 +264,7 @@ concern now, and `-mtu` applies only to a TUN device.
 ### Reuse notes
 
 Everything platform-specific reaches the engine through the narrow interfaces
-in `internal/connectcore/interfaces.go`, so Linux, macOS, and Windows share one
+in the `connectcore` module’s `interfaces.go`, so Linux, macOS, and Windows share one
 implementation.
 
 Windows TUN mode is disabled pending graceful shutdown support, as described

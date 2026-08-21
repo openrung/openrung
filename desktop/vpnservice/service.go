@@ -4,11 +4,11 @@
 // state layer ports to desktop unchanged.
 //
 // The engine itself — state machine, connect ladder, ranking, WSS fallback,
-// punch attempt, health monitoring, directory cache — lives in
-// openrung/internal/connectcore (ADR-001). This package is the thin
-// desktop adapter over it: Wails event emission with the log ring and its
-// coalescing, plus the internal/clientstate, internal/proxymode, and
-// internal/proxyconfig wiring behind the engine's platform interfaces.
+// punch attempt, health monitoring, directory cache — lives in the nested
+// connectcore module (ADR-001). This package is the thin desktop adapter over
+// it: Wails event emission with the log ring and its coalescing, plus the
+// internal/clientstate, internal/proxymode, and connectcore/proxyconfig
+// wiring behind the engine's platform interfaces.
 package vpnservice
 
 import (
@@ -17,12 +17,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/openrung/openrung/brokerapi"
+
+	"github.com/openrung/openrung/connectcore"
+	"github.com/openrung/openrung/connectcore/clienttelemetry"
+	"github.com/openrung/openrung/connectcore/proxyconfig"
+
 	"openrung/internal/clientstate"
-	"openrung/internal/clienttelemetry"
-	"openrung/internal/connectcore"
-	"openrung/internal/proxyconfig"
+	"openrung/internal/enginepunch"
 	"openrung/internal/proxymode"
-	"openrung/internal/relay"
 )
 
 type ConnectionStatus string
@@ -114,6 +117,9 @@ func New() *Service {
 	// cert); the punched data path pins the relay's per-session cert either
 	// way. The CLI has always defaulted to verifying it (-punch-insecure).
 	engine.PunchInsecure = true
+	// The engine module owns punch policy; the QUIC punch transport lives in
+	// the root module and is wired in here.
+	engine.PunchEstablisher = enginepunch.Establish
 	engine.Sink = &engineSink{s: s}
 	engine.OSProxy = osProxyAdapter{ctrl: proxymode.New()}
 	s.engine = engine
@@ -233,7 +239,7 @@ func (s *Service) GetProxyInfo() (NativeProxyInfo, error) {
 // ListRelaysForDirectory is Wails-bound. It returns the broker's relay list for
 // the frontend to aggregate into map regions (the TS loadExitNodeDirectory,
 // ported from mobile, does the grouping).
-func (s *Service) ListRelaysForDirectory() (relay.ListResponse, error) {
+func (s *Service) ListRelaysForDirectory() (brokerapi.RelayListResponse, error) {
 	return s.engine.ListRelaysForDirectory()
 }
 

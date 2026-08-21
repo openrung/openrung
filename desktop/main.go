@@ -13,8 +13,8 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"github.com/openrung/openrung/connectcore/proxyconfig"
 	"openrung/desktop/vpnservice"
-	"openrung/internal/proxyconfig"
 )
 
 //go:embed all:frontend/dist

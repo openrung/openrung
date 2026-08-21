@@ -23,7 +23,6 @@ const (
 	relaySigningKeyActiveHex  = "176c03cbc70833285abcea75f2a0e137bd687629142408c22806a86308bd4974"
 	relaySigningKeyStandbyHex = "5b2698cfa7a796c671a30aabd5475d55095b91464221f051837eb8fe01f36ea2"
 
-	relayChannelAPI       = "api"
 	notAfterSkewAllowance = 5 * time.Minute
 )
 
@@ -92,8 +91,8 @@ func verifyRelayList(
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return RelayList{}, verificationFailure("signed body is not valid JSON: %v", err)
 	}
-	if envelope.Channel != relayChannelAPI {
-		return RelayList{}, verificationFailure("channel %q does not match the %q channel this candidate was fetched from", envelope.Channel, relayChannelAPI)
+	if envelope.Channel != ChannelAPI {
+		return RelayList{}, verificationFailure("channel %q does not match the %q channel this candidate was fetched from", envelope.Channel, ChannelAPI)
 	}
 	if envelope.Limit != effectiveRelayLimit(requestedLimit) {
 		return RelayList{}, verificationFailure("echoed limit %d does not match requested limit %d", envelope.Limit, effectiveRelayLimit(requestedLimit))

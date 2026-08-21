@@ -3,9 +3,9 @@ package vpnservice
 import (
 	"errors"
 
+	"github.com/openrung/openrung/connectcore"
+	"github.com/openrung/openrung/connectcore/proxyconfig"
 	"openrung/internal/clientstate"
-	"openrung/internal/connectcore"
-	"openrung/internal/proxyconfig"
 	"openrung/internal/proxymode"
 )
 

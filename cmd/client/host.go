@@ -4,9 +4,11 @@ import (
 	"errors"
 	"runtime"
 
+	"github.com/openrung/openrung/connectcore"
+	"github.com/openrung/openrung/connectcore/proxyconfig"
+
 	"openrung/internal/clientstate"
-	"openrung/internal/connectcore"
-	"openrung/internal/proxyconfig"
+	"openrung/internal/enginepunch"
 	"openrung/internal/proxymode"
 )
 
@@ -29,6 +31,9 @@ func newEngineHost(sink connectcore.EventSink, singBoxPath string) *engineHost {
 	// same OS (the broker stores unknown platform strings as ordinary
 	// attributes and sends no platform header for them).
 	engine.Platform = connectcore.PlatformCLI
+	// The engine module owns punch policy; the QUIC punch transport lives in
+	// the root module and is wired in here.
+	engine.PunchEstablisher = enginepunch.Establish
 	engine.OSProxy = osProxyAdapter{ctrl: proxymode.New()}
 	// TUN mode is gated on this hook; proxy mode never invokes it.
 	engine.Elevation = elevation{}
@@ -65,8 +70,10 @@ func (h *engineHost) shellProxyHelper() (proxyconfig.Info, error) {
 }
 
 // The adapters below mirror desktop/vpnservice/adapters.go over the shared
-// packages; the copies collapse when connectcore is promoted to a nested
-// module (ADR-001 D3) and can own them.
+// packages. They stay host-side copies even now that connectcore is a nested
+// module (ADR-001 D3): they wrap internal/clientstate and internal/proxymode,
+// which the fetchable module must not depend on. Collapsing them into one
+// root-module host package is a possible follow-up.
 
 // storeAdapter implements connectcore.Persistence over internal/clientstate.
 // The engine treats the proxy snapshot as opaque; this adapter is where it

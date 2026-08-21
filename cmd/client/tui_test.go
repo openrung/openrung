@@ -11,9 +11,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"openrung/internal/connectcore"
-	"openrung/internal/proxyconfig"
-	"openrung/internal/relay"
+	"github.com/openrung/openrung/brokerapi"
+	"github.com/openrung/openrung/connectcore"
+	"github.com/openrung/openrung/connectcore/proxyconfig"
 )
 
 // fakeDriver records the engine commands the model issues, standing in for
@@ -147,8 +147,8 @@ func TestRelaysEnterPinsSelectionAndConnects(t *testing.T) {
 	m := newTestModel(driver)
 	m.view = viewRelays
 	m.relays = []connectcore.DirectoryRelay{
-		{Relay: relay.Descriptor{ID: "relay_a"}},
-		{Relay: relay.Descriptor{ID: "relay_b"}},
+		{Relay: brokerapi.RelayDescriptor{ID: "relay_a"}},
+		{Relay: brokerapi.RelayDescriptor{ID: "relay_b"}},
 	}
 
 	m, _ = update(t, m, keyMsg("down"))
@@ -172,8 +172,8 @@ func TestRelaysEnterPinsSelectionAndConnects(t *testing.T) {
 func TestConnectedStateStampsSessionStartAndRendersStatus(t *testing.T) {
 	driver := &fakeDriver{}
 	driver.info = connectcore.ConnectionInfo{
-		Relay:     relay.Descriptor{ID: "relay_a", NodeClass: relay.NodeClassFoundation, GeoLocation: relay.GeoLocation{CountryCode: "kr"}},
-		Transport: relay.TransportDirect,
+		Relay:     brokerapi.RelayDescriptor{ID: "relay_a", NodeClass: brokerapi.NodeClassFoundation, RelayGeoLocation: brokerapi.RelayGeoLocation{CountryCode: "kr"}},
+		Transport: brokerapi.TransportDirect,
 		ProxyPort: 43210,
 	}
 	driver.infoOK = true
@@ -384,7 +384,7 @@ func TestRelaysWindowFollowsCursor(t *testing.T) {
 	m.height = 12 // body of 8 rows: notice-free header + 7 relay rows visible
 	for i := 0; i < 30; i++ {
 		m.relays = append(m.relays, connectcore.DirectoryRelay{
-			Relay: relay.Descriptor{ID: fmt.Sprintf("relay_%02d", i), Label: fmt.Sprintf("node-%02d", i)},
+			Relay: brokerapi.RelayDescriptor{ID: fmt.Sprintf("relay_%02d", i), Label: fmt.Sprintf("node-%02d", i)},
 		})
 	}
 

@@ -34,15 +34,15 @@ func TestReleaseLdflagsReachThisPackage(t *testing.T) {
 
 // Release builds inject versions from several places outside the Go module
 // graph. Keep every -X symbol they reference inside the set proven resolvable
-// (this package's vars by the probe above; internal/client.appVersion by
+// (this package's vars by the probe above; connectcore/client.appVersion by
 // desktop/scripts/version-injection.test.mjs). A Dockerfile still pointing at
 // the pre-buildinfo main.version symbol, or a typo in a new workflow, fails
 // here instead of silently shipping fallback versions.
 func TestInjectionSitesUseProvenSymbols(t *testing.T) {
 	proven := map[string]bool{
-		"openrung/internal/buildinfo.version":  true,
-		"openrung/internal/buildinfo.revision": true,
-		"openrung/internal/client.appVersion":  true,
+		"openrung/internal/buildinfo.version":                        true,
+		"openrung/internal/buildinfo.revision":                       true,
+		"github.com/openrung/openrung/connectcore/client.appVersion": true,
 	}
 
 	files, err := filepath.Glob(filepath.Join("..", "..", "deploy", "*", "Dockerfile"))

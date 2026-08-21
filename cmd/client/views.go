@@ -7,8 +7,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"openrung/internal/connectcore"
-	"openrung/internal/relay"
+	"github.com/openrung/openrung/brokerapi"
+	"github.com/openrung/openrung/connectcore"
 )
 
 // Rendering only: everything here formats state the engine already delivered.
@@ -193,7 +193,7 @@ func displayBroker(brokerURL string) string {
 
 func transportLabel(info connectcore.ConnectionInfo) string {
 	switch info.Transport {
-	case relay.TransportDirect:
+	case brokerapi.TransportDirect:
 		return "direct"
 	case "punch":
 		return "punched (direct NAT path)"
@@ -207,7 +207,7 @@ func transportLabel(info connectcore.ConnectionInfo) string {
 func nodeClassBadge(nodeClass string) string {
 	// A missing or unrecognized class is the volunteer class, per the
 	// descriptor contract; EffectiveNodeClass is that rule.
-	if relay.EffectiveNodeClass(nodeClass) == relay.NodeClassFoundation {
+	if brokerapi.EffectiveNodeClass(nodeClass) == brokerapi.NodeClassFoundation {
 		return foundationBadge
 	}
 	return volunteerBadge
@@ -357,7 +357,7 @@ func recentsLine(recents []connectcore.RecentNode) string {
 
 // relayDisplayName is the list name for a relay: its geo label, with the
 // friendly label alongside when both exist.
-func relayDisplayName(r relay.Descriptor) string {
+func relayDisplayName(r brokerapi.RelayDescriptor) string {
 	geo := geoDisplayLabel(r)
 	if label := strings.TrimSpace(r.Label); label != "" && label != geo {
 		return geo + " (" + label + ")"
@@ -367,7 +367,7 @@ func relayDisplayName(r relay.Descriptor) string {
 
 // geoDisplayLabel mirrors the engine's geoLabel presentation rule: city and
 // country when known, never a raw IP.
-func geoDisplayLabel(r relay.Descriptor) string {
+func geoDisplayLabel(r brokerapi.RelayDescriptor) string {
 	city := strings.TrimSpace(r.City)
 	country := strings.TrimSpace(r.Country)
 	switch {

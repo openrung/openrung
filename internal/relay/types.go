@@ -1,3 +1,12 @@
+// Package relay is the broker's server-side relay model: registration and
+// heartbeat requests, identity and WSS-capability proofs, and the directory
+// types the broker serializes. The client-facing half of the schema — the
+// decoded descriptor and list-response models plus the shared wire constants
+// and their rationale — was promoted to brokerapi/relay_schema.go (ADR-001
+// D3) so fetchable clients can consume it; this package aliases those
+// constants so both sides keep the same literals, and the cross-repo
+// relay_decode contract vectors pin that both models decode the same
+// directory bytes the same way.
 package relay
 
 import (
@@ -8,54 +17,29 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/openrung/openrung/brokerapi"
 	"github.com/openrung/openrung/wsscore"
 )
 
 const (
-	ProtocolVLESSRealityVision = "vless-reality-vision"
-	FlowVision                 = "xtls-rprx-vision"
-	ExitModeDirect             = "direct"
-	ExitModeDedicated          = "dedicated"
-
-	// TransportDirect means clients reach the relay directly at its
-	// advertised public endpoint. TransportTunnel means the endpoint is a relay
-	// hub forwarding opaque bytes to a relay behind CGNAT over a reverse
-	// tunnel.
-	TransportDirect = "direct"
-	TransportTunnel = "tunnel"
+	ProtocolVLESSRealityVision = brokerapi.ProtocolVLESSRealityVision
+	FlowVision                 = brokerapi.FlowVision
+	ExitModeDirect             = brokerapi.ExitModeDirect
+	ExitModeDedicated          = brokerapi.ExitModeDedicated
+	TransportDirect            = brokerapi.TransportDirect
+	TransportTunnel            = brokerapi.TransportTunnel
 
 	// WSSProtocolVersion is the opaque Reality-over-WebSocket protocol spoken
 	// between a desktop client's loopback adapter and a relay-local sidecar.
 	// Unknown versions are ignored so direct Reality remains backward-compatible.
 	WSSProtocolVersion = wsscore.ProtocolVersion
 
-	// ChannelAPI, ChannelMirror, and ChannelInventory name the signed
-	// relay-list channels. The value lives inside the signed body so a
-	// long-lived mirror artifact can never be replayed into an API slot (or
-	// vice versa): consumers check it against the channel they actually
-	// fetched from.
-	//
-	// ChannelInventory is the credentialed operational snapshot served by
-	// GET /admin/api/relays/inventory: the complete active relay set in stable
-	// relay-ID order, never the client-facing candidate ranking. It is a
-	// distinct channel precisely so an operator snapshot — untruncated, and so
-	// a superset of any client page — can never be replayed into a client's
-	// API or mirror slot, where the differing ordering and page contract would
-	// otherwise go unnoticed.
-	ChannelAPI       = "api"
-	ChannelMirror    = "mirror"
-	ChannelInventory = "inventory"
+	ChannelAPI       = brokerapi.ChannelAPI
+	ChannelMirror    = brokerapi.ChannelMirror
+	ChannelInventory = brokerapi.ChannelInventory
 
-	// NodeClassFoundation marks a relay operated by the OpenRung Foundation
-	// itself; NodeClassVolunteer (the default) marks community-operated
-	// hardware. The class records provenance — who runs the relay — not a
-	// quality score: reliability is measured per-relay by telemetry either
-	// way. The broker only accepts a foundation claim from a registration
-	// that presents the foundation token, and the class travels inside the
-	// signed relay-list body, so clients can trust it without any new
-	// verification machinery.
-	NodeClassFoundation = "foundation"
-	NodeClassVolunteer  = "volunteer"
+	NodeClassFoundation = brokerapi.NodeClassFoundation
+	NodeClassVolunteer  = brokerapi.NodeClassVolunteer
 )
 
 type RegisterRequest struct {
@@ -157,20 +141,9 @@ func (r *RegisterRequest) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// GeoLocation is the broker-resolved physical location of the relay's exit:
-// exit_host for tunnel relays, public_host for direct relays. It is derived by
-// the broker, never supplied by the relay, and is best-effort: all fields
-// are empty when the lookup has not succeeded (yet).
-type GeoLocation struct {
-	City        string `json:"city,omitempty"`
-	Country     string `json:"country,omitempty"`
-	CountryCode string `json:"country_code,omitempty"`
-	// Latitude/Longitude let clients place the relay on a map. Zero values are
-	// omitted, so "no coordinates" and "0,0" (open ocean) are indistinguishable
-	// by design.
-	Latitude  float64 `json:"latitude,omitempty"`
-	Longitude float64 `json:"longitude,omitempty"`
-}
+// GeoLocation aliases the client-facing schema's relay geolocation so the
+// server model embeds the exact struct clients decode.
+type GeoLocation = brokerapi.RelayGeoLocation
 
 // WSSFrontDescriptor advertises one CDN path to the sidecar colocated with a
 // relay. ID is bound into tickets and to that front's origin-token set; URL is
@@ -178,6 +151,10 @@ type GeoLocation struct {
 // independent CDN distributions without creating a shared data-plane service.
 type WSSFrontDescriptor = wsscore.Front
 
+// Descriptor is the broker's server-side relay model: the client-facing
+// fields of brokerapi.RelayDescriptor (identical JSON tags in identical
+// order, so the serialized shapes cannot drift) plus the never-serialized
+// operational fields below that must not live in the fetchable module.
 type Descriptor struct {
 	ID         string `json:"id"`
 	Label      string `json:"label,omitempty"`
@@ -340,51 +317,25 @@ type HeartbeatResponse struct {
 }
 
 // WSSSessionTicketRequest asks for one short-lived, single-use ticket bound to
-// an exact relay and one of that relay's currently advertised CDN fronts.
-type WSSSessionTicketRequest struct {
-	RelayID string `json:"relay_id"`
-	FrontID string `json:"front_id"`
-}
+// an exact relay and one of that relay's currently advertised CDN fronts. It
+// aliases the client-facing schema so the request the broker decodes and the
+// request clients send are one definition (the client-only Identity field is
+// json:"-" and never appears in a body).
+type WSSSessionTicketRequest = brokerapi.WSSTicketRequest
 
 // WSSSessionTicketResponse returns the opaque ticket with the exact URL chosen
 // from the same live descriptor. Clients reject a response URL that differs
 // from the signed directory entry and send Ticket only as an Authorization
-// bearer during the WebSocket upgrade.
-type WSSSessionTicketResponse struct {
-	Ticket    string    `json:"ticket"`
-	ExpiresAt time.Time `json:"expires_at"`
-	URL       string    `json:"url"`
-}
+// bearer during the WebSocket upgrade. Aliasing the client-facing schema also
+// gives the broker side its bearer-redacting String/GoString for free.
+type WSSSessionTicketResponse = brokerapi.WSSTicketResponse
 
-type ErrorResponse struct {
-	Error string `json:"error"`
-}
-
-// EffectiveNodeClass reads the class a client should act on from the value in
-// a signed descriptor. Only the exact literal NodeClassFoundation grants the
-// foundation class; an absent, unrecognized, or differently-cased value is the
-// volunteer class.
-//
-// This is the read-side counterpart of NormalizeNodeClass and deliberately
-// behaves differently. NormalizeNodeClass validates operator input at ingest,
-// where an unrecognized class is an operator error worth rejecting, and where
-// trimming and lowercasing are a convenience. Here the value has already been
-// through that gate and is covered by the relay-list signature, so the only
-// question left is what to do with a value this client does not know — and the
-// answer has to be the less-privileged class, since the foundation class gates
-// the WSS transport. Strictness is the point: a value that merely resembles
-// "foundation" must not be read as it.
-func EffectiveNodeClass(class string) string {
-	if class == NodeClassFoundation {
-		return NodeClassFoundation
-	}
-	return NodeClassVolunteer
-}
+type ErrorResponse = brokerapi.ErrorResponse
 
 // NormalizeNodeClass trims, lowercases, and validates an operator-supplied
 // node class. Empty means "unstated" and normalizes to NodeClassVolunteer, so
 // every descriptor downstream carries a concrete class. It is the ingest-side
-// gate; clients reading a descriptor want EffectiveNodeClass instead.
+// gate; clients reading a descriptor want brokerapi.EffectiveNodeClass instead.
 func NormalizeNodeClass(class string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(class)) {
 	case "", NodeClassVolunteer:

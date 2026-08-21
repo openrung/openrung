@@ -15,10 +15,9 @@ import (
 
 	"github.com/openrung/openrung/brokerapi"
 
-	"openrung/internal/client"
-	"openrung/internal/connectcore"
-	"openrung/internal/discovery"
-	"openrung/internal/relay"
+	"github.com/openrung/openrung/connectcore"
+	"github.com/openrung/openrung/connectcore/client"
+	"github.com/openrung/openrung/connectcore/discovery"
 )
 
 // The headless subcommands are thin engine drivers (ADR-001 B1): check
@@ -200,7 +199,7 @@ func (s *consoleSink) Log(entry connectcore.LogEntry) {
 // fetchSelectedRelay fetches relay candidates and selects one for the
 // fetch-and-print subcommands. It sends no identity headers: check and config
 // begin no telemetry session, exactly as before the rewrite.
-func fetchSelectedRelay(ctx context.Context, cfg commonConfig) (relay.Descriptor, []byte, error) {
+func fetchSelectedRelay(ctx context.Context, cfg commonConfig) (brokerapi.RelayDescriptor, []byte, error) {
 	// When pinning a specific relay, fetch the full candidate set so the target
 	// isn't ranked out of a small -limit window.
 	target := cfg.target()
@@ -210,31 +209,31 @@ func fetchSelectedRelay(ctx context.Context, cfg commonConfig) (relay.Descriptor
 	}
 	resp, err := fetchRelayList(ctx, cfg.BrokerURL, limit)
 	if err != nil {
-		return relay.Descriptor{}, nil, err
+		return brokerapi.RelayDescriptor{}, nil, err
 	}
 
 	matched, _, err := connectcore.FilterCandidates(resp.Relays, target)
 	if err != nil {
-		return relay.Descriptor{}, nil, err
+		return brokerapi.RelayDescriptor{}, nil, err
 	}
 	resp.Relays = matched
 
 	family, err := client.ParseRelayFamily(cfg.Family)
 	if err != nil {
-		return relay.Descriptor{}, nil, err
+		return brokerapi.RelayDescriptor{}, nil, err
 	}
 
 	selected, err := client.SelectRelayForFamily(resp, family)
 	if err != nil {
 		if errors.Is(err, client.ErrNoUsableRelay) {
-			return relay.Descriptor{}, nil, fmt.Errorf("no usable relay returned by broker")
+			return brokerapi.RelayDescriptor{}, nil, fmt.Errorf("no usable relay returned by broker")
 		}
-		return relay.Descriptor{}, nil, err
+		return brokerapi.RelayDescriptor{}, nil, err
 	}
 
 	configJSON, err := client.BuildSingBoxConfig(client.SingBoxConfigInput{Relay: selected, MTU: cfg.MTU})
 	if err != nil {
-		return relay.Descriptor{}, nil, err
+		return brokerapi.RelayDescriptor{}, nil, err
 	}
 	return selected, configJSON, nil
 }
@@ -243,7 +242,7 @@ func fetchSelectedRelay(ctx context.Context, cfg commonConfig) (relay.Descriptor
 // explicit -broker is a single deterministic endpoint (scripts depend on that),
 // while an empty one races the built-in HTTPS fronts via the same
 // brokerapi.BrokerCandidates/FirstReachable policy the connect path uses.
-func fetchRelayList(ctx context.Context, brokerURL string, limit int) (relay.ListResponse, error) {
+func fetchRelayList(ctx context.Context, brokerURL string, limit int) (brokerapi.RelayListResponse, error) {
 	if strings.TrimSpace(brokerURL) != "" {
 		broker := client.BrokerClient{BaseURL: brokerURL}
 		return broker.ListRelays(ctx, limit, "", "")
@@ -253,12 +252,12 @@ func fetchRelayList(ctx context.Context, brokerURL string, limit int) (relay.Lis
 		Platform: connectcore.PlatformCLI,
 	})
 	if err != nil {
-		return relay.ListResponse{}, err
+		return brokerapi.RelayListResponse{}, err
 	}
 	return fetch.Response, nil
 }
 
-func printSelectedRelay(out io.Writer, selected relay.Descriptor) {
+func printSelectedRelay(out io.Writer, selected brokerapi.RelayDescriptor) {
 	expires := selected.ExpiresAt.Format(time.RFC3339)
 	fmt.Fprintf(
 		out,
