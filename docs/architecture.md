@@ -437,8 +437,9 @@ contract vectors and their Go loaders — the JSON files under
 The module deliberately does not own platform authority or heavyweight
 transports. Everything platform-specific reaches the engine through narrow
 interfaces: event sink, persistence, OS proxy control, elevation, and the NAT
-punch transport (`PunchEstablisher`), whose quic-go implementation stays in
-the root module's `internal/punch` and is wired in by each host. Relay wire
+punch transport (`PunchEstablisher`), implemented in the root module's
+`internal/enginepunch` over `internal/punch`'s quic-go transport and wired in
+by each host. Relay wire
 types come from `brokerapi`'s exported relay schema and WSS transport
 mechanics from `wsscore`, both pinned by version in the module's `go.mod` for
 external consumers while in-repo builds resolve them through local `replace`
@@ -454,16 +455,23 @@ directives.
    `README.md`-only edit, CI rejects a module change without a fresh semantic
    version, and builds the module standalone (`go build ./...` inside it) —
    the build a fetching consumer sees.
-3. A connectcore change that relies on new `brokerapi`, `wsscore`, or
-   `punchcore` API must, in the same pull request, bump that sibling module's
-   VERSION and update `connectcore/go.mod`'s `require` to it: external
-   consumers resolve the siblings through those requirements, not the local
-   replaces, so a stale require would fetch a version the new code cannot
-   compile against.
+3. Keep `connectcore/go.mod`'s sibling `require` lines equal to the
+   `brokerapi`, `wsscore`, and `punchcore` VERSION files — CI enforces the
+   equality on every pull request. External consumers resolve the siblings
+   through those requirements, not the local replaces, and in-repo builds only
+   ever test in-tree sibling source, so the pins must track the versions being
+   tested: a sibling VERSION bump therefore also updates connectcore's
+   `require` (and, being a module change, `connectcore/VERSION`) in the same
+   pull request.
 4. Merge. The tag workflow creates `connectcore/v$(VERSION)` on the merge
-   commit, making the module fetchable at that version. Editing a contract
-   vector file additionally requires its own version bump and re-vendoring in
-   the mobile repository (see `connectcore/contract/README.md`).
+   commit, making the module fetchable at that version. Sibling tags publish
+   from independent workflows on that same commit; if one fails while another
+   succeeds, the module is unfetchable (its require names an untagged sibling
+   version) until the failed job is re-run — the tag jobs are idempotent, so
+   re-running the failed workflow on the merge commit is the whole recovery.
+   Editing a contract vector file additionally requires its own version bump
+   and re-vendoring in the mobile repository (see
+   `connectcore/contract/README.md`).
 5. Mobile repositories explicitly update the pinned tag, rebuild their native
    bindings, run platform VPN tests, and publish their own application
    release. A module tag alone does not update a mobile binary.

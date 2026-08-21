@@ -22,18 +22,19 @@ func (c BrokerClient) RequestWSSSessionTicket(
 	clientID string,
 	sessionID string,
 ) (brokerapi.WSSTicketResponse, error) {
+	// Inject the identity and pass the request through whole, so a field
+	// added to WSSTicketRequest can never be silently zeroed on this path.
+	ticketRequest.Identity = brokerapi.Identity{
+		ClientID:  clientID,
+		SessionID: sessionID,
+	}
 	return brokerapi.NewClient(c.HTTPClient, brokerapi.Options{
 		AppVersion: AppVersion(),
 		Platform:   c.Platform,
-	}).RequestWSSTicket(ctx, c.BaseURL, brokerapi.WSSTicketRequest{
-		RelayID: ticketRequest.RelayID,
-		FrontID: ticketRequest.FrontID,
-		Identity: brokerapi.Identity{
-			ClientID:  clientID,
-			SessionID: sessionID,
-		},
-	})
+	}).RequestWSSTicket(ctx, c.BaseURL, ticketRequest)
 }
 
-// WSSTicketStatusError remains as a compatibility alias for desktop failover.
+// WSSTicketStatusError aliases brokerapi's typed ticket status error for this
+// package's callers; the engine's WSS fallback ladder matches on it to decide
+// front failover and Retry-After handling.
 type WSSTicketStatusError = brokerapi.WSSTicketStatusError

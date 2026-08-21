@@ -317,36 +317,25 @@ type HeartbeatResponse struct {
 }
 
 // WSSSessionTicketRequest asks for one short-lived, single-use ticket bound to
-// an exact relay and one of that relay's currently advertised CDN fronts.
-type WSSSessionTicketRequest struct {
-	RelayID string `json:"relay_id"`
-	FrontID string `json:"front_id"`
-}
+// an exact relay and one of that relay's currently advertised CDN fronts. It
+// aliases the client-facing schema so the request the broker decodes and the
+// request clients send are one definition (the client-only Identity field is
+// json:"-" and never appears in a body).
+type WSSSessionTicketRequest = brokerapi.WSSTicketRequest
 
 // WSSSessionTicketResponse returns the opaque ticket with the exact URL chosen
 // from the same live descriptor. Clients reject a response URL that differs
 // from the signed directory entry and send Ticket only as an Authorization
-// bearer during the WebSocket upgrade.
-type WSSSessionTicketResponse struct {
-	Ticket    string    `json:"ticket"`
-	ExpiresAt time.Time `json:"expires_at"`
-	URL       string    `json:"url"`
-}
+// bearer during the WebSocket upgrade. Aliasing the client-facing schema also
+// gives the broker side its bearer-redacting String/GoString for free.
+type WSSSessionTicketResponse = brokerapi.WSSTicketResponse
 
 type ErrorResponse = brokerapi.ErrorResponse
-
-// EffectiveNodeClass is the read-side node-class rule; the rationale lives
-// with the client-facing schema (brokerapi.EffectiveNodeClass). It is the
-// counterpart of the ingest-side NormalizeNodeClass below, which rejects an
-// unrecognized class where this degrades it to the volunteer class.
-func EffectiveNodeClass(class string) string {
-	return brokerapi.EffectiveNodeClass(class)
-}
 
 // NormalizeNodeClass trims, lowercases, and validates an operator-supplied
 // node class. Empty means "unstated" and normalizes to NodeClassVolunteer, so
 // every descriptor downstream carries a concrete class. It is the ingest-side
-// gate; clients reading a descriptor want EffectiveNodeClass instead.
+// gate; clients reading a descriptor want brokerapi.EffectiveNodeClass instead.
 func NormalizeNodeClass(class string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(class)) {
 	case "", NodeClassVolunteer:

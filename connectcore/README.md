@@ -28,7 +28,11 @@ Everything platform-specific reaches the engine through narrow interfaces
 (`interfaces.go`): event sink, persistence, OS proxy control, elevation, and
 the NAT punch transport (`PunchEstablisher` — implemented in the root module's
 `internal/enginepunch` over the quic-go transport in `internal/punch`, which
-deliberately stays out of this module). Relay wire types come from `brokerapi`'s exported relay schema, and
+deliberately stays out of this module). Hosts report their application version
+either at link time (`-X …/connectcore/client.appVersion=…`, used by the
+in-repo builds) or in code via `client.SetAppVersion` — the route for fetched
+consumers such as mobile bindings, which cannot inject a dependency's private
+symbol and would otherwise report the `dev` default in telemetry. Relay wire types come from `brokerapi`'s exported relay schema, and
 the WSS transport mechanics from `wsscore`; both are sibling nested modules
 this module pins by version for external consumers, while in-repo builds use
 local `replace` directives.

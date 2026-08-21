@@ -112,13 +112,37 @@ jobs:
           go vet ./...
           go test -race ./...
 
-      # Standalone, not just through the root module's replace: this is the
-      # build mobile consumers see when they fetch the module.
+      # Standalone, not just through the root module's replace. Note this is
+      # still not the build a fetching consumer sees: connectcore's own
+      # replace directives resolve the sibling modules from in-tree source.
+      # The require-pin step below keeps the published requires equal to the
+      # sibling versions this step actually tests.
       - name: connectcore module (vet + test)
         working-directory: connectcore
         run: |
           go vet ./...
           go test -race ./...
+
+      # connectcore is fetched by external consumers through its go.mod
+      # requires, while every in-repo build resolves siblings through replace
+      # directives — so the requires are never compiled against here. Keeping
+      # each require equal to the sibling's VERSION file means the
+      # configuration CI tests is the one external consumers fetch; a stale
+      # require would publish a tag that fails to resolve or compile only
+      # outside this repository.
+      - name: connectcore sibling require pins
+        run: |
+          for sibling in brokerapi punchcore wsscore; do
+            version="v$(cat "$sibling/VERSION")"
+            require="$(cd connectcore && go mod edit -json | \
+              jq -r --arg path "github.com/openrung/openrung/$sibling" \
+              '.Require[] | select(.Path == $path) | .Version')"
+            if [ "$require" != "$version" ]; then
+              echo "connectcore/go.mod requires $sibling $require but $sibling/VERSION is $version; bump them together (docs/architecture.md, connectcore pin/upgrade procedure)" >&2
+              exit 1
+            fi
+            echo "connectcore requires $sibling $version (== $sibling/VERSION)"
+          done
 
       - name: desktop module (vet + test + build)
         working-directory: desktop
