@@ -7,8 +7,11 @@ BROKER_IMAGE ?= openrung-broker:latest
 fmt:
 	gofmt -w brokerapi cmd internal punchcore wsscore
 
+# with_utls compiles the bundled sing-box runtime's uTLS/Reality client in
+# (internal/singboxruntime); every cmd/client build and root-module test run
+# wants it, and the release workflow builds with it.
 test:
-	go test ./...
+	go test -tags with_utls ./...
 	cd brokerapi && go test ./...
 	cd punchcore && go test ./...
 	cd wsscore && go test ./...
@@ -35,7 +38,7 @@ relayhub:
 		-control-addr :9443
 
 client:
-	go run ./cmd/client check -broker http://localhost:8080
+	go run -tags with_utls ./cmd/client check -broker http://localhost:8080
 
 # Build the relay runtime image.
 docker-build:

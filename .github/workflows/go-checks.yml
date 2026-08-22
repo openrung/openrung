@@ -89,10 +89,16 @@ jobs:
             echo "$app/wails.json info.productVersion == $app/VERSION ($version)"
           done
 
+      # with_utls compiles the bundled sing-box runtime's uTLS/Reality client
+      # in — the configuration every shipped cmd/client binary uses (see
+      # client-release.yml). The extra untagged vet keeps a plain `go build`
+      # compiling for contributors, whose binary refuses Reality configs with
+      # upstream's rebuild hint.
       - name: Root module (vet + test)
         run: |
           go vet ./...
-          go test -race ./...
+          go vet -tags with_utls ./...
+          go test -race -tags with_utls ./...
 
       - name: brokerapi module (vet + test)
         working-directory: brokerapi

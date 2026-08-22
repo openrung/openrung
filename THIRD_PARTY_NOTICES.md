@@ -40,9 +40,12 @@ commit each release is built against.
 
 - **Component:** `github.com/SagerNet/sing-box` (the `libbox` mobile library,
   statically linked into the OpenRung mobile app — developed in its own
-  repository — and, since the desktop GUI, the sing-box engine **binary
-  bundled into desktop release packages** and run as a supervised subprocess;
-  the pinned version lives in `.github/workflows/desktop-release.yml`)
+  repository —; since the desktop GUI, the sing-box engine **binary
+  bundled into desktop release packages** and run as a supervised subprocess
+  (the pinned version lives in `.github/workflows/desktop-release.yml`); and,
+  since client CLI 0.5.0, the sing-box engine **statically linked into
+  `openrung-client`** through `internal/singboxruntime` — the pinned version
+  lives in the root `go.mod`)
 - **License:** GNU General Public License v3.0 or later (**GPL-3.0-or-later**),
   with an additional permitted term.
 - **Upstream:** https://github.com/SagerNet/sing-box
@@ -52,10 +55,11 @@ commit each release is built against.
   *"In addition, no derivative work may use the name or imply association with
   this application without prior consent."*
 
-sing-box is **statically linked** into the OpenRung mobile app. Under
-GPL-3.0 §5, the resulting combined work — including OpenRung's own first-party
-code in that app — is licensed to recipients under **GPL-3.0-or-later**.
-OpenRung as a whole is licensed under GPL-3.0-or-later (see `LICENSE`).
+sing-box is **statically linked** into the OpenRung mobile app and into the
+`openrung-client` terminal client. Under GPL-3.0 §5, each resulting combined
+work — including OpenRung's own first-party code in those binaries — is
+licensed to recipients under **GPL-3.0-or-later**. OpenRung as a whole is
+licensed under GPL-3.0-or-later (see `LICENSE`).
 
 The mobile app's repository must carry the full sing-box notices, including
 the libbox transitive set (`gvisor`, `quic-go`, `wireguard-go`, `utls`,

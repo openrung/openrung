@@ -98,14 +98,14 @@ view layer holds no connection logic.
 
 ### Requirements
 
-- A local `sing-box` binary. Use sing-box 1.14 or newer so the generated TUN
-  config can install native DNS settings for the tunnel. Install it with
-  Homebrew if needed:
-
-  ```sh
-  brew install sing-box
-  ```
-
+- No sing-box install: the client bundles its own sing-box engine (the pinned
+  version is in the root `go.mod`, printed by `openrung-client version`) and
+  runs it by re-invoking its own binary as the tunnel child process. Build
+  from source with `-tags with_utls` — as the Makefile and the release
+  workflow do — or the bundled engine cannot dial any relay's Reality
+  endpoint. Pass `-sing-box <path>` to substitute an external sing-box binary
+  (1.14 or newer, so the generated TUN config can install native DNS settings
+  for the tunnel).
 - Nothing else for proxy mode. TUN mode additionally needs root, and is macOS
   and Linux only — see [Capture modes](#capture-modes).
 - Against the public fleet, no broker URL is needed: the client races the
@@ -254,8 +254,9 @@ telemetry session and start no tunnel.
 
 Common flags: `-broker` (empty races the built-in HTTPS fronts), `-relay-id`
 and `-relay-label` to pin a target, `-relay-family` for `check`/`config`,
-`-mtu` for the TUN device, and `-sing-box` to point at a specific binary. Run
-`go run ./cmd/client help` for the full list.
+`-mtu` for the TUN device, and `-sing-box` to substitute an external sing-box
+binary for the bundled engine. Run `go run ./cmd/client help` for the full
+list.
 
 Some pre-rewrite flags are still parsed but no longer honored, and say so on
 startup rather than failing: `-limit` and `-config-out` are the engine's

@@ -11,10 +11,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/openrung/openrung/connectcore"
 	"github.com/openrung/openrung/connectcore/proxyconfig"
 	"openrung/internal/buildinfo"
+	"openrung/internal/singboxruntime"
 )
 
 //go:embed VERSION
@@ -44,6 +46,8 @@ func run(args []string) error {
 		return runConfig(args[1:])
 	case "connect":
 		return runConnect(args[1:])
+	case "run":
+		return runSingBox(args[1:])
 	case "-version", "--version", "version":
 		fmt.Println(versionInfo())
 		return nil
@@ -56,7 +60,21 @@ func run(args []string) error {
 }
 
 func versionInfo() string {
-	return buildinfo.Info("client", baseVersion)
+	return fmt.Sprintf("%s\nsing-box/%s (bundled, %s)",
+		buildinfo.Info("client", baseVersion),
+		strings.TrimPrefix(singboxruntime.Version(), "v"),
+		utlsBuildLabel())
+}
+
+// utlsBuildLabel distinguishes a release-shaped build from a plain `go build`
+// in version output: without the with_utls tag the bundled runtime cannot
+// reach any relay's Reality endpoint, and this label is the first place to
+// look when a locally built client fails at tunnel creation.
+func utlsBuildLabel() string {
+	if singboxruntime.UTLSEnabled {
+		return "with_utls"
+	}
+	return "NO with_utls — cannot dial Reality relays; rebuild with -tags with_utls"
 }
 
 // connectConfig is the connect subcommand's flag surface: the historical
@@ -88,7 +106,7 @@ func runConnect(args []string) error {
 	fs := flag.NewFlagSet("connect", flag.ContinueOnError)
 	cfg := connectConfig{}
 	addCommonFlags(fs, &cfg.commonConfig)
-	fs.StringVar(&cfg.SingBoxPath, "sing-box", "sing-box", "path to sing-box binary")
+	fs.StringVar(&cfg.SingBoxPath, "sing-box", "", "path to an external sing-box binary (default: the bundled sing-box runtime)")
 	fs.StringVar(&cfg.ConfigOut, "config-out", "", "deprecated: the engine manages its own config; use the config subcommand")
 	fs.BoolVar(&cfg.PunchEnabled, "punch", true, "attempt a direct NAT-punched path before falling back to the relay")
 	fs.StringVar(&cfg.PunchURL, "punch-url", "", "override the hub punch coordinator base URL (else use the relay's advertised punch_endpoint)")
@@ -97,6 +115,17 @@ func runConnect(args []string) error {
 	fs.BoolVar(&cfg.TUN, "tun", false, "route the whole device through a TUN interface instead of the local proxy ("+tunModeSummary+")")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	// The empty default selects the bundled sing-box: the engine's runner
+	// re-execs this binary into the internal run subcommand (singbox.go). An
+	// explicit -sing-box keeps its historical external-binary meaning.
+	if cfg.SingBoxPath == "" {
+		exe, err := bundledSingBoxPath()
+		if err != nil {
+			return fmt.Errorf("resolve own executable for the bundled sing-box runtime (pass -sing-box to use an external binary): %w", err)
+		}
+		cfg.SingBoxPath = exe
 	}
 
 	if cfg.Headless {
@@ -128,7 +157,7 @@ func legacyFlagWarnings(cfg connectConfig) []string {
 
 func usageError() error {
 	printUsage()
-	return fmt.Errorf("expected one of: check, config, connect")
+	return fmt.Errorf("expected one of: check, config, connect, run")
 }
 
 func printUsage() {
@@ -147,7 +176,10 @@ Commands:
            stream logs until interrupted.
   check    Fetch relay candidates and print the selected usable relay.
   config   Generate a sing-box TUN client config for the selected relay.
-  version  Print the client version and exit.
+  run      Internal: run the bundled sing-box with -c <config>. The connect
+           engine invokes it on this binary; it also works standalone in
+           place of "sing-box run -c <config>".
+  version  Print the client and bundled sing-box versions and exit.
 
 Keys (interactive):
   c connect  d disconnect  r refresh relays  1-4/tab switch view  q quit
@@ -157,7 +189,8 @@ Connect flags:
                   Settings can also toggle it while disconnected. Without it
                   the client runs the zero-privilege proxy mode: a loopback
                   mixed HTTP/SOCKS inbound with the OS proxy pointed at it.
-  -sing-box       Path to the sing-box binary (default: resolved via PATH).
+  -sing-box       Path to an external sing-box binary. By default the client
+                  runs its bundled sing-box; no separate install is needed.
   -punch          Attempt a direct NAT-punched path before the relay hub.
 
 Common flags:
