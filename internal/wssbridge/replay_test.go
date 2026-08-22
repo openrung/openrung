@@ -13,23 +13,21 @@ import (
 	"time"
 )
 
-// MemoryReplayStore is a bounded single-process replay store, kept as a test
-// double: the production sidecar command always uses DurableReplayStore.
-type MemoryReplayStore struct {
+type memoryReplayStore struct {
 	mu         sync.Mutex
 	index      replayIndex
 	maxEntries int
 	now        func() time.Time
 }
 
-func NewMemoryReplayStore(maxEntries int) *MemoryReplayStore {
+func newMemoryReplayStore(maxEntries int) *memoryReplayStore {
 	if maxEntries <= 0 {
 		maxEntries = defaultReplayEntries
 	}
-	return &MemoryReplayStore{index: newReplayIndex(), maxEntries: maxEntries, now: time.Now}
+	return &memoryReplayStore{index: newReplayIndex(), maxEntries: maxEntries, now: time.Now}
 }
 
-func (s *MemoryReplayStore) Consume(ctx context.Context, jti string, expiresAt time.Time) (bool, error) {
+func (s *memoryReplayStore) Consume(ctx context.Context, jti string, expiresAt time.Time) (bool, error) {
 	if err := validateReplayConsume(ctx, jti, expiresAt); err != nil {
 		return false, err
 	}
@@ -56,7 +54,7 @@ func (s *MemoryReplayStore) Consume(ctx context.Context, jti string, expiresAt t
 
 func TestMemoryReplayStoreSingleUseBoundAndExpiryCleanup(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
-	store := NewMemoryReplayStore(1)
+	store := newMemoryReplayStore(1)
 	store.now = func() time.Time { return now }
 	if consumed, err := store.Consume(context.Background(), "ticket-jti-00000001", now.Add(time.Minute)); err != nil || !consumed {
 		t.Fatalf("first consume = %t, %v", consumed, err)

@@ -268,7 +268,7 @@ func TestHubClientEndToEnd(t *testing.T) {
 	// Teardown: cancel the client; the hub should free the allocated port.
 	clientCancel()
 	if !eventually(3*time.Second, func() bool { return alloc.allocatedCount() == 0 }) {
-		t.Fatalf("port not released after teardown, InUse=%d", alloc.allocatedCount())
+		t.Fatalf("port not released after teardown, allocatedCount=%d", alloc.allocatedCount())
 	}
 }
 

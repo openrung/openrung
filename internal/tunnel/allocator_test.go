@@ -17,8 +17,6 @@ func freePort(t *testing.T) int {
 	return port
 }
 
-// inUse reports how many ports are currently allocated — test-only
-// observability; production code never inspects the pool size.
 func (a *PortAllocator) allocatedCount() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -52,7 +50,7 @@ func TestPortAllocatorAllocateReleaseExhaust(t *testing.T) {
 		t.Fatalf("Allocate returned %d, want %d", got, port)
 	}
 	if alloc.allocatedCount() != 1 {
-		t.Fatalf("InUse = %d, want 1", alloc.allocatedCount())
+		t.Fatalf("allocatedCount = %d, want 1", alloc.allocatedCount())
 	}
 
 	if _, err := alloc.Allocate(); !errors.Is(err, errPortsExhausted) {
@@ -61,7 +59,7 @@ func TestPortAllocatorAllocateReleaseExhaust(t *testing.T) {
 
 	alloc.Release(port)
 	if alloc.allocatedCount() != 0 {
-		t.Fatalf("InUse after release = %d, want 0", alloc.allocatedCount())
+		t.Fatalf("allocatedCount after release = %d, want 0", alloc.allocatedCount())
 	}
 	if _, err := alloc.Allocate(); err != nil {
 		t.Fatalf("Allocate after release: %v", err)
