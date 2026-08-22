@@ -72,6 +72,11 @@ type State struct {
 // os.UserConfigDir()/openrung/client-id with correct per-OS paths.
 var clientID = clienttelemetry.ClientID
 
+// lookupGeoAttributes resolves the client's public-IP geo for telemetry. It is
+// a package var so tests can stub it; it wraps
+// clienttelemetry.LookupGeoAttributes (ipwho.is, best-effort).
+var lookupGeoAttributes = clienttelemetry.LookupGeoAttributes
+
 // PlatformCLI identifies the terminal client (cmd/client) on the engine's
 // broker traffic. brokerapi maps only the GUI/mobile platforms to fixed
 // identification headers, so CLI requests carry no platform header; the label
@@ -98,6 +103,13 @@ type connection struct {
 	snapshotTaken bool // snapshot captured once; survives a recovery proxy release
 	snapshot      OSProxySnapshot
 	mgr           *clienttelemetry.Manager
+	// geo is the in-flight public-IP geo lookup; nil until it starts. Only the
+	// runConnect goroutine touches it. Nothing waits on it (telemetry never
+	// delays connecting or teardown): it is abandoned before the candidate
+	// ladder — from the first dial a TUN candidate can capture traffic, and a
+	// lookup finishing after that would record the relay's geo as the
+	// client's — and again in finalizeConn so no lookup outlives its session.
+	geo *geoLookup
 
 	// active is the promoted (live) candidate's resources; nil while the ladder
 	// is still trying candidates or after a teardown. Only the runConnect
@@ -662,6 +674,9 @@ func (s *Engine) connectFlow(ctx context.Context, conn *connection, brokerURL st
 			s.mu.Unlock()
 		}
 		mgr.Record("connection_attempted", "", nil, nil)
+		// Concurrent with the broker fetch and ranking; abandoned (never
+		// waited for) at the ladder and finalize boundaries below.
+		conn.geo = attachGeoAttributes(mgr)
 	}
 
 	// TUN mode binds no local port, so it neither resolves nor reserves the
@@ -709,6 +724,12 @@ func (s *Engine) connectFlow(ctx context.Context, conn *connection, brokerURL st
 			return "proxy_port", err
 		}
 	}
+	// Telemetry must never delay connecting: an unfinished geo lookup is
+	// cancelled here, not waited for. A TUN candidate installs routes as it
+	// is tried (readiness waits for them), so from the first dial on a
+	// still-running lookup could ride the tunnel and report the relay's geo,
+	// not the client's; a result that already arrived is pre-tunnel and kept.
+	conn.geo.abandon()
 	res, err := s.runLadder(ctx, conn, ladder, port)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -1215,6 +1236,13 @@ func (s *Engine) finalizeConn(conn *connection, stage string, err error) {
 	disconnecting := conn.disconnecting
 	activeRelayID := conn.activeRelayID
 	s.mu.Unlock()
+
+	// The terminal records and flush below never wait for the geo lookup —
+	// best-effort metadata must not delay teardown. Cancel it (idempotent;
+	// flows that failed before the ladder still have it running) so no
+	// lookup outlives its session; a session that ends before the lookup
+	// completes simply flushes without geo.
+	conn.geo.abandon()
 
 	switch {
 	case disconnecting, err == nil:
