@@ -560,9 +560,8 @@ func TestAttachGeoAttributesStampsSessionTelemetry(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
-	// The lookup blocks on gate, so the test can prove done is not closed
-	// while the lookup is still in flight — the property the ladder and
-	// finalize barriers rely on.
+	// The lookup blocks on gate, so the test can prove done tracks the
+	// lookup's actual lifetime.
 	gate := make(chan struct{})
 	orig := lookupGeoAttributes
 	lookupGeoAttributes = func(context.Context, *http.Client) map[string]string {
@@ -580,22 +579,22 @@ func TestAttachGeoAttributesStampsSessionTelemetry(t *testing.T) {
 		t.Fatalf("begin session: %v", err)
 	}
 
-	done := attachGeoAttributes(mgr)
+	g := attachGeoAttributes(mgr)
 	select {
-	case <-done:
+	case <-g.done:
 		t.Fatal("done closed while the lookup was still in flight")
 	default:
 	}
 
 	close(gate)
 	select {
-	case <-done:
+	case <-g.done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("done never closed after the lookup returned")
 	}
 
-	// Joining done must guarantee the attributes are attached: an event
-	// recorded after the join carries them.
+	// Once the lookup has finished, the attributes are attached: an event
+	// recorded afterwards carries them.
 	mgr.Record("connection_succeeded", "relay_1", nil, nil)
 	if err := mgr.Flush(context.Background()); err != nil {
 		t.Fatalf("flush: %v", err)
@@ -617,29 +616,72 @@ func TestAttachGeoAttributesNilManagerSkipsLookup(t *testing.T) {
 	}
 	t.Cleanup(func() { lookupGeoAttributes = orig })
 
-	done := attachGeoAttributes(nil)
-	select {
-	case <-done:
-	default:
-		t.Fatal("nil manager must return an already-closed channel")
+	if g := attachGeoAttributes(nil); g != nil {
+		t.Fatal("nil manager must return a nil lookup")
 	}
+	(*geoLookup)(nil).abandon() // must be a safe no-op
 	if called {
 		t.Fatal("nil manager must not trigger a public-IP lookup")
 	}
 }
 
-// A connect that fails before the lookup completes must still flush its
-// terminal events with geo attached: finalizeConn joins the lookup before
-// recording connection_failed.
-func TestFinalizeConnJoinsGeoBeforeTerminalFlush(t *testing.T) {
+// abandon must cancel an in-flight lookup without waiting for it, and the
+// abandoned lookup must not stamp geo on later events.
+func TestGeoLookupAbandonCancelsWithoutWaiting(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
-	gate := make(chan struct{})
 	orig := lookupGeoAttributes
-	lookupGeoAttributes = func(context.Context, *http.Client) map[string]string {
-		<-gate
-		return map[string]string{"country": "Testland"}
+	lookupGeoAttributes = func(ctx context.Context, _ *http.Client) map[string]string {
+		<-ctx.Done() // a blocked/censored ipwho.is: only the cancel releases it
+		return nil
+	}
+	t.Cleanup(func() { lookupGeoAttributes = orig })
+
+	transport := &captureTransport{}
+	mgr, err := clienttelemetry.New("https://broker.test", "test", &http.Client{Transport: transport})
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	if _, err := mgr.BeginSession(); err != nil {
+		t.Fatalf("begin session: %v", err)
+	}
+
+	g := attachGeoAttributes(mgr)
+	g.abandon()
+	g.abandon() // idempotent
+
+	// Well under geoLookupTimeout: only the abandon can have released it.
+	select {
+	case <-g.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("abandon did not cancel the in-flight lookup")
+	}
+
+	mgr.Record("connection_failed", "", nil, nil)
+	if err := mgr.Flush(context.Background()); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	body := string(transport.body)
+	if !strings.Contains(body, `"connection_failed"`) {
+		t.Fatalf("flush missing connection_failed:\n%s", body)
+	}
+	if strings.Contains(body, `"country"`) {
+		t.Fatalf("abandoned lookup must not stamp geo:\n%s", body)
+	}
+}
+
+// finalizeConn must not block on a stuck geo lookup: teardown proceeds
+// immediately, the terminal events flush without geo, and the lookup is
+// cancelled rather than left running past its session.
+func TestFinalizeConnAbandonsStuckGeoLookup(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	orig := lookupGeoAttributes
+	lookupGeoAttributes = func(ctx context.Context, _ *http.Client) map[string]string {
+		<-ctx.Done()
+		return nil
 	}
 	t.Cleanup(func() { lookupGeoAttributes = orig })
 
@@ -654,24 +696,22 @@ func TestFinalizeConnJoinsGeoBeforeTerminalFlush(t *testing.T) {
 
 	s := New()
 	conn := &connection{
-		cancel:  func() {},
-		done:    make(chan struct{}),
-		mgr:     mgr,
-		geoDone: attachGeoAttributes(mgr),
+		cancel: func() {},
+		done:   make(chan struct{}),
+		mgr:    mgr,
+		geo:    attachGeoAttributes(mgr),
 	}
+	s.finalizeConn(conn, "broker_fetch", errors.New("boom"))
 
-	// Release the lookup only once finalizeConn is already waiting on it.
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		close(gate)
-	}()
-	s.finalizeConn(conn, "relay_connect", errors.New("ladder exhausted"))
-
+	// finalizeConn returned while the lookup was stuck; it must also have
+	// cancelled it (done closes well under geoLookupTimeout).
+	select {
+	case <-conn.geo.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("finalizeConn did not cancel the in-flight lookup")
+	}
 	body := string(transport.body)
 	if !strings.Contains(body, `"connection_failed"`) {
 		t.Fatalf("terminal flush missing connection_failed:\n%s", body)
-	}
-	if !strings.Contains(body, `"country":"Testland"`) {
-		t.Fatalf("connection_failed flushed without geo:\n%s", body)
 	}
 }

@@ -40,32 +40,47 @@ func (s *Engine) newManager(brokerURL string) *clienttelemetry.Manager {
 }
 
 // geoLookupTimeout is the hard backstop on the public-IP geo lookup, above
-// LookupGeoAttributes' own 4s HTTP client timeout: the returned channel must
-// always close so the joins in connectFlow and finalizeConn are bounded.
+// LookupGeoAttributes' own 4s HTTP client timeout, for flows that never reach
+// an abandon point.
 const geoLookupTimeout = 5 * time.Second
 
-// attachGeoAttributes resolves the client's public-IP geo and attaches it to
-// the session's telemetry (country/city/ISP on the broker dashboard, the way
-// the mobile apps report it). Best-effort and nil-safe. The returned channel
-// closes once the attributes are attached (or the lookup gave up); callers
-// must join it before the tunnel or OS proxy comes up — afterwards the lookup
-// would ride the tunnel and report the relay's geo instead of the client's —
-// and before a terminal flush, or a fast-failing session loses geo. The
-// lookup deliberately runs on its own bounded context, not the connect
-// context, so a cancelled connect can still stamp its terminal events.
-func attachGeoAttributes(mgr *clienttelemetry.Manager) <-chan struct{} {
-	done := make(chan struct{})
-	if mgr == nil {
-		close(done)
-		return done
+// geoLookup tracks the in-flight public-IP geo lookup. Nothing ever waits on
+// it — telemetry must never delay connecting or teardown; callers abandon it
+// at the points where its result could no longer be trusted or used.
+type geoLookup struct {
+	cancel context.CancelFunc
+	done   chan struct{} // closed once the lookup goroutine has finished (tests synchronize on it)
+}
+
+// abandon cancels an unfinished lookup without waiting for it. Nil-safe and
+// idempotent. A lookup that already completed keeps its attached result: the
+// response was fetched before the cancel, so it is the client's own geo.
+func (g *geoLookup) abandon() {
+	if g == nil {
+		return
 	}
+	g.cancel()
+}
+
+// attachGeoAttributes resolves the client's public-IP geo in the background
+// and attaches it to the session's telemetry (country/city/ISP on the broker
+// dashboard, the way the mobile apps report it). Best-effort: events recorded
+// before the lookup completes simply lack geo, and connect never waits on it.
+// The caller must abandon the returned lookup before the tunnel can capture
+// traffic — afterwards a still-running lookup would ride the tunnel and
+// report the relay's geo instead of the client's.
+func attachGeoAttributes(mgr *clienttelemetry.Manager) *geoLookup {
+	if mgr == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), geoLookupTimeout)
+	g := &geoLookup{cancel: cancel, done: make(chan struct{})}
 	go func() {
-		defer close(done)
-		ctx, cancel := context.WithTimeout(context.Background(), geoLookupTimeout)
+		defer close(g.done)
 		defer cancel()
 		mgr.SetGeoAttributes(lookupGeoAttributes(ctx, nil))
 	}()
-	return done
+	return g
 }
 
 func managerClientID(mgr *clienttelemetry.Manager) string {
