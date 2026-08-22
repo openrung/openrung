@@ -101,9 +101,12 @@ view layer holds no connection logic.
 - No sing-box install: the client bundles its own sing-box engine (the pinned
   version is in the root `go.mod`, printed by `openrung-client version`) and
   runs it by re-invoking its own binary as the tunnel child process. Build
-  from source with `-tags with_utls` — as the Makefile and the release
-  workflow do — or the bundled engine cannot dial any relay's Reality
-  endpoint. Pass `-sing-box <path>` to substitute an external sing-box binary
+  from source with `-tags with_utls,with_external_windivert` — as the
+  Makefile and the release workflow do — or the bundled engine cannot dial
+  any relay's Reality endpoint (with_utls), and Windows builds embed a driver
+  the client never uses (with_external_windivert keeps WinDivert out; see
+  THIRD_PARTY_NOTICES.md §8). Pass `-sing-box <path>` to substitute an
+  external sing-box binary
   (1.14 or newer, so the generated TUN config can install native DNS settings
   for the tunnel).
 - Nothing else for proxy mode. TUN mode additionally needs root, and is macOS

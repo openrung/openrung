@@ -162,9 +162,10 @@ relays register with the public OpenRung broker automatically.
 You need Go 1.25+. Running a relay also requires an
 [Xray-core](https://github.com/XTLS/Xray-core) binary that supports
 `xray x25519` and `xray run -config`. The terminal client bundles its own
-sing-box engine — no separate install; build it with `-tags with_utls` (as
-the Makefile and release workflow do) so it can dial Reality relays, and pass
-`-sing-box <path>` only to substitute an external binary.
+sing-box engine — no separate install; build it with
+`-tags with_utls,with_external_windivert` (as the Makefile and release
+workflow do: uTLS to dial Reality relays, and no embedded WinDivert driver),
+and pass `-sing-box <path>` only to substitute an external binary.
 
 #### Start the broker
 

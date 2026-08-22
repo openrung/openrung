@@ -4,10 +4,14 @@
 // `run` subcommand: connectcore's SingBoxRunner keeps supervising the tunnel
 // as a child process (`<client> run -c <config>`), and that child lands here.
 //
-// Reality/uTLS support is compiled in only with the `with_utls` build tag
-// (see Makefile and .github/workflows/client-release.yml); every OpenRung
-// relay endpoint needs it, and a build without the tag fails at tunnel
-// creation with upstream's "rebuild with -tags with_utls" error.
+// Client builds carry two sing-box build tags (see Makefile and
+// .github/workflows/client-release.yml): `with_utls` compiles the
+// uTLS/Reality client in — every OpenRung relay endpoint needs it, and a
+// build without it fails at tunnel creation with upstream's "rebuild with
+// -tags with_utls" error — and `with_external_windivert` keeps sing-box's
+// embedded WinDivert64.sys driver (LGPLv3; serves Windows bridge/tlsspoof
+// backends this client never uses) out of the Windows binary and the release
+// archives (THIRD_PARTY_NOTICES.md section 8).
 package singboxruntime
 
 import (

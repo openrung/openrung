@@ -86,9 +86,12 @@ jobs:
             # with_utls compiles the bundled sing-box runtime's uTLS/Reality
             # client in; without it the binary cannot dial any relay's Reality
             # endpoint (the version smoke test below fails on a build that
-            # lost the tag).
+            # lost the tag). with_external_windivert keeps sing-box's embedded
+            # WinDivert64.sys (LGPLv3, unused by this client) out of the
+            # Windows binary and the release archives — the driver-content
+            # check below fails a build that regresses this.
             CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
-              go build -trimpath -tags with_utls -ldflags "$ldflags" -o "$outdir/$bin" ./cmd/client
+              go build -trimpath -tags with_utls,with_external_windivert -ldflags "$ldflags" -o "$outdir/$bin" ./cmd/client
             # GPL text plus the attribution the statically linked third-party
             # set (sing-box and its transitive set, yamux, gorilla/websocket,
             # quic-go, golang.org/x/*) requires on every distribution channel.
@@ -123,6 +126,22 @@ jobs:
             echo "bundled sing-box line mismatch: got \"$got\", want second line \"$want_singbox\"" >&2
             exit 1
           fi
+
+      # The release archives must ship no WinDivert driver: it is LGPLv3
+      # (license-text obligations THIRD_PARTY_NOTICES.md deliberately does not
+      # carry for this channel) and serves sing-box Windows backends the
+      # client never uses. A build that silently drops the
+      # with_external_windivert tag re-embeds it; compare against the exact
+      # driver bytes from the pinned sing-box module.
+      - name: Assert no embedded WinDivert driver (windows)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="$(go list -m -f '{{.Version}}' github.com/sagernet/sing-box)"
+          asset="$(go env GOMODCACHE)/github.com/sagernet/sing-box@${ver}/common/windivert/assets/WinDivert64.sys"
+          exe="dist/openrung-client-windows-amd64/openrung-client.exe"
+          python3 -c 'import sys; a=open(sys.argv[1],"rb").read(4096); e=open(sys.argv[2],"rb").read(); sys.exit("windows binary embeds WinDivert64.sys: the with_external_windivert build tag was lost (see THIRD_PARTY_NOTICES.md section 8)" if a in e else 0)' "$asset" "$exe"
+          echo "no WinDivert driver bytes in the windows binary"
 
       - name: Checksums
         shell: bash

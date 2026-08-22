@@ -89,16 +89,26 @@ jobs:
             echo "$app/wails.json info.productVersion == $app/VERSION ($version)"
           done
 
-      # with_utls compiles the bundled sing-box runtime's uTLS/Reality client
-      # in — the configuration every shipped cmd/client binary uses (see
-      # client-release.yml). The extra untagged vet keeps a plain `go build`
-      # compiling for contributors, whose binary refuses Reality configs with
-      # upstream's rebuild hint.
+      # The bundled sing-box runtime's build tags — the configuration every
+      # shipped cmd/client binary uses (see client-release.yml): with_utls
+      # compiles the uTLS/Reality client in, and with_external_windivert keeps
+      # the LGPLv3 WinDivert64.sys driver out of the binary (it serves
+      # Windows bridge/tlsspoof backends the client never uses, and shipping
+      # it would carry license-text obligations — THIRD_PARTY_NOTICES.md §8).
+      # The extra untagged vet keeps a plain `go build` compiling for
+      # contributors, whose binary refuses Reality configs with upstream's
+      # rebuild hint.
       - name: Root module (vet + test)
         run: |
           go vet ./...
-          go vet -tags with_utls ./...
-          go test -race -tags with_utls ./...
+          go vet -tags with_utls,with_external_windivert ./...
+          go test -race -tags with_utls,with_external_windivert ./...
+
+      # with_external_windivert only alters GOOS=windows compilation, which
+      # nothing else in this workflow exercises; without this the tag's
+      # windows path would first compile at release time.
+      - name: Client windows cross-build (bundled sing-box tags)
+        run: GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -tags with_utls,with_external_windivert -o /dev/null ./cmd/client
 
       - name: brokerapi module (vet + test)
         working-directory: brokerapi
