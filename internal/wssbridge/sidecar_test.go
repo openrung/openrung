@@ -67,7 +67,7 @@ func newSidecarFixture(t *testing.T, mutate func(*SidecarOptions)) *sidecarFixtu
 	stats := &SidecarStats{}
 	opts := SidecarOptions{
 		RelayID: "relay-a", Verifier: verifier, Stats: stats,
-		ReplayStore: NewMemoryReplayStore(100_000),
+		ReplayStore: newMemoryReplayStore(100_000),
 		FrontOriginTokens: map[string][]string{
 			"front-a": {testOriginOld, testOriginNew},
 			"front-b": {testOriginB},

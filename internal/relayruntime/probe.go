@@ -49,20 +49,14 @@ type DirectProbeResult struct {
 	Err          error
 }
 
-// DetectDirectReachable opens a temporary TCP listener on port, asks the hub to
-// dial it back at the relay's observed public IP, and reports whether that
-// inbound connection succeeded. The temporary listener answers each accepted
-// connection with the nonce line so the hub can confirm it reached this
-// relay. reachable=false with err=nil means "probed, not reachable" (→
-// tunnel); a non-nil err means the probe itself could not run (hub HTTP API
-// unreachable), which the caller treats as inconclusive.
-func DetectDirectReachable(ctx context.Context, hubHTTPBase, token, listenHost string, port int, httpClient *http.Client) (reachable bool, observedHost string, err error) {
-	result := ProbeDirectReachability(ctx, hubHTTPBase, token, listenHost, port, httpClient)
-	return result.Outcome == DirectProbeReachable, result.ObservedHost, result.Err
-}
-
-// ProbeDirectReachability is the structured form of DetectDirectReachable.
-// Direct mode is safe to advertise only when Outcome is DirectProbeReachable.
+// ProbeDirectReachability opens a temporary TCP listener on port, asks the hub
+// to dial it back at the relay's observed public IP, and reports the outcome.
+// The temporary listener answers each accepted connection with the nonce line
+// so the hub can confirm it reached this relay. Direct mode is safe to
+// advertise only when Outcome is DirectProbeReachable; any other Outcome with
+// a nil Err means "probed, not reachable" (→ tunnel), and a non-nil Err means
+// the probe itself could not run (hub HTTP API unreachable), which the caller
+// treats as inconclusive.
 func ProbeDirectReachability(ctx context.Context, hubHTTPBase, token, listenHost string, port int, httpClient *http.Client) DirectProbeResult {
 	nonceBytes := make([]byte, 8)
 	if _, err := rand.Read(nonceBytes); err != nil {

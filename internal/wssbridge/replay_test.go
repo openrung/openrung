@@ -13,9 +13,48 @@ import (
 	"time"
 )
 
+type memoryReplayStore struct {
+	mu         sync.Mutex
+	index      replayIndex
+	maxEntries int
+	now        func() time.Time
+}
+
+func newMemoryReplayStore(maxEntries int) *memoryReplayStore {
+	if maxEntries <= 0 {
+		maxEntries = defaultReplayEntries
+	}
+	return &memoryReplayStore{index: newReplayIndex(), maxEntries: maxEntries, now: time.Now}
+}
+
+func (s *memoryReplayStore) Consume(ctx context.Context, jti string, expiresAt time.Time) (bool, error) {
+	if err := validateReplayConsume(ctx, jti, expiresAt); err != nil {
+		return false, err
+	}
+	if s == nil || s.maxEntries <= 0 || s.now == nil {
+		return false, errors.New("replay store is not initialized")
+	}
+	nowUnixNano := s.now().UTC().UnixNano()
+	if expiresAt.UTC().UnixNano() <= nowUnixNano {
+		return false, ErrExpiredTicket
+	}
+	key := newReplayKey(jti)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.index.prune(nowUnixNano)
+	if s.index.contains(key, nowUnixNano) {
+		return false, nil
+	}
+	if len(s.index.entries) >= s.maxEntries {
+		return false, ErrReplayStoreFull
+	}
+	s.index.insert(key, expiresAt.UTC().UnixNano())
+	return true, nil
+}
+
 func TestMemoryReplayStoreSingleUseBoundAndExpiryCleanup(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
-	store := NewMemoryReplayStore(1)
+	store := newMemoryReplayStore(1)
 	store.now = func() time.Time { return now }
 	if consumed, err := store.Consume(context.Background(), "ticket-jti-00000001", now.Add(time.Minute)); err != nil || !consumed {
 		t.Fatalf("first consume = %t, %v", consumed, err)

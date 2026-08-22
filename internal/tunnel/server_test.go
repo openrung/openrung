@@ -267,8 +267,8 @@ func TestHubClientEndToEnd(t *testing.T) {
 
 	// Teardown: cancel the client; the hub should free the allocated port.
 	clientCancel()
-	if !eventually(3*time.Second, func() bool { return alloc.InUse() == 0 }) {
-		t.Fatalf("port not released after teardown, InUse=%d", alloc.InUse())
+	if !eventually(3*time.Second, func() bool { return alloc.allocatedCount() == 0 }) {
+		t.Fatalf("port not released after teardown, allocatedCount=%d", alloc.allocatedCount())
 	}
 }
 
@@ -394,8 +394,8 @@ func TestHubRejectsBadToken(t *testing.T) {
 	if registers, _, _ := registrar.stats(); registers != 0 {
 		t.Fatalf("register called on auth failure: %d", registers)
 	}
-	if alloc.InUse() != 0 {
-		t.Fatalf("port allocated on auth failure: %d", alloc.InUse())
+	if alloc.allocatedCount() != 0 {
+		t.Fatalf("port allocated on auth failure: %d", alloc.allocatedCount())
 	}
 }
 

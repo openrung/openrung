@@ -17,6 +17,12 @@ func freePort(t *testing.T) int {
 	return port
 }
 
+func (a *PortAllocator) allocatedCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.inUse)
+}
+
 func TestPortAllocatorInvalidRange(t *testing.T) {
 	if _, err := NewPortAllocator(0, 10); err == nil {
 		t.Fatal("expected error for start < 1")
@@ -43,8 +49,8 @@ func TestPortAllocatorAllocateReleaseExhaust(t *testing.T) {
 	if got != port {
 		t.Fatalf("Allocate returned %d, want %d", got, port)
 	}
-	if alloc.InUse() != 1 {
-		t.Fatalf("InUse = %d, want 1", alloc.InUse())
+	if alloc.allocatedCount() != 1 {
+		t.Fatalf("allocatedCount = %d, want 1", alloc.allocatedCount())
 	}
 
 	if _, err := alloc.Allocate(); !errors.Is(err, errPortsExhausted) {
@@ -52,8 +58,8 @@ func TestPortAllocatorAllocateReleaseExhaust(t *testing.T) {
 	}
 
 	alloc.Release(port)
-	if alloc.InUse() != 0 {
-		t.Fatalf("InUse after release = %d, want 0", alloc.InUse())
+	if alloc.allocatedCount() != 0 {
+		t.Fatalf("allocatedCount after release = %d, want 0", alloc.allocatedCount())
 	}
 	if _, err := alloc.Allocate(); err != nil {
 		t.Fatalf("Allocate after release: %v", err)

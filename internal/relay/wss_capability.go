@@ -24,9 +24,7 @@ const (
 	// relay-local sidecar. A front URL cannot select any other sidecar route.
 	WSSBridgePath = wsscore.BridgePath
 
-	MaxWSSFronts        = wsscore.MaxFronts
-	MaxWSSFrontIDBytes  = wsscore.MaxFrontIDBytes
-	MaxWSSFrontURLBytes = wsscore.MaxFrontURLBytes
+	MaxWSSFronts = wsscore.MaxFronts
 	// Capability and identity expiry are required to match exactly, so keep
 	// their signer TTL and verifier ceiling tied together as well.
 	MaxWSSCapabilityProofWindow = MaxIdentityProofWindow

@@ -42,23 +42,23 @@ func TestProbePinnedSelfSignedHubSelectsDirect(t *testing.T) {
 
 	// Matching pin: the HTTPS probe validates, the hub dials the relay's
 	// loopback listener back, and detection reports reachable → direct mode.
-	reachable, host, err := relayruntime.DetectDirectReachable(
+	result := relayruntime.ProbeDirectReachability(
 		context.Background(), ts.URL, "", "::", port, eng.probeClient(Config{HubCertFingerprint: fp}))
-	if err != nil {
-		t.Fatalf("probe under matching pin must not error (it forces tunnel fallback): %v", err)
+	if result.Err != nil {
+		t.Fatalf("probe under matching pin must not error (it forces tunnel fallback): %v", result.Err)
 	}
-	if !reachable {
+	if result.Outcome != relayruntime.DirectProbeReachable {
 		t.Fatal("probe under matching pin must report reachable so auto mode selects direct")
 	}
-	if host != "127.0.0.1" {
-		t.Fatalf("observed host = %q, want 127.0.0.1", host)
+	if result.ObservedHost != "127.0.0.1" {
+		t.Fatalf("observed host = %q, want 127.0.0.1", result.ObservedHost)
 	}
 
 	// Wrong pin: the probe must fail cert validation (→ inconclusive → tunnel),
 	// proving the pin is genuinely enforced and not merely skipping verification.
-	_, _, err = relayruntime.DetectDirectReachable(
+	wrongPin := relayruntime.ProbeDirectReachability(
 		context.Background(), ts.URL, "", "::", freePort(t), eng.probeClient(Config{HubCertFingerprint: strings.Repeat("00", 32)}))
-	if err == nil {
+	if wrongPin.Err == nil {
 		t.Fatal("probe under a wrong pin must fail, not silently succeed")
 	}
 }
@@ -74,9 +74,9 @@ func TestProbeUnpinnedSelfSignedHubFails(t *testing.T) {
 	defer ts.Close()
 
 	eng := New(Config{}, Events{})
-	_, _, err := relayruntime.DetectDirectReachable(
+	unpinned := relayruntime.ProbeDirectReachability(
 		context.Background(), ts.URL, "", "::", freePort(t), eng.probeClient(Config{}))
-	if err == nil {
+	if unpinned.Err == nil {
 		t.Fatal("unpinned probe against a self-signed hub must fail standard verification")
 	}
 }
