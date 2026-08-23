@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -38,14 +40,16 @@ func (r SingBoxRunner) Run(ctx context.Context, configPath string) error {
 
 	cmd := exec.Command(resolved, "run", "-c", configPath)
 	configureSingBoxProcess(cmd)
-	cmd.Stdout = r.Stdout
-	if cmd.Stdout == nil {
-		cmd.Stdout = io.Discard
-	}
-	cmd.Stderr = r.Stderr
-	if cmd.Stderr == nil {
-		cmd.Stderr = io.Discard
-	}
+	// Each stream gets its own recorder (interleaved chunks from shared
+	// recording would splice half-lines together), remembering sing-box's own
+	// words so an abnormal exit reports more than a bare exit status — the
+	// user-facing Error row is built from the returned error, and "exit
+	// status 1" alone sends users to the logs for something like a missing
+	// with_utls build tag that the child said out loud.
+	stdout := &crashLineRecorder{next: r.Stdout}
+	stderr := &crashLineRecorder{next: r.Stderr}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start sing-box: %w", err)
@@ -59,6 +63,9 @@ func (r SingBoxRunner) Run(ctx context.Context, configPath string) error {
 	select {
 	case err := <-waitCh:
 		if err != nil {
+			if line := firstCrashLine(stderr, stdout); line != "" {
+				return fmt.Errorf("sing-box exited: %s (%w)", line, err)
+			}
 			return fmt.Errorf("sing-box exited: %w", err)
 		}
 		return errors.New("sing-box exited")
@@ -84,4 +91,78 @@ func (r SingBoxRunner) Run(ctx context.Context, configPath string) error {
 			}
 		}
 	}
+}
+
+// crashLineRecorderMaxLine bounds the memory a single unbroken output line can
+// pin; anything longer is flushed as if a newline had arrived.
+const crashLineRecorderMaxLine = 512
+
+// crashLineRecorder tees writes through to next while remembering the child's
+// most recent error-looking line (and, failing that, its last non-empty line)
+// so an abnormal exit can quote the process instead of just its exit status.
+type crashLineRecorder struct {
+	next io.Writer
+
+	mu      sync.Mutex
+	partial []byte
+	errLine string
+	last    string
+}
+
+func (r *crashLineRecorder) Write(p []byte) (int, error) {
+	r.mu.Lock()
+	for _, b := range p {
+		if b == '\n' || len(r.partial) >= crashLineRecorderMaxLine {
+			r.recordLocked()
+			r.partial = r.partial[:0]
+		}
+		if b != '\n' {
+			r.partial = append(r.partial, b)
+		}
+	}
+	r.mu.Unlock()
+
+	if r.next == nil {
+		return len(p), nil
+	}
+	return r.next.Write(p)
+}
+
+func (r *crashLineRecorder) recordLocked() {
+	line := strings.TrimSpace(string(r.partial))
+	if line == "" {
+		return
+	}
+	lower := strings.ToLower(line)
+	// The bundled run shim prefixes its report with "error: "; drop it, since
+	// the quote lands inside an error chain that already says so.
+	line = strings.TrimSpace(strings.TrimPrefix(line, "error:"))
+	r.last = line
+	if strings.Contains(lower, "error") || strings.Contains(lower, "fatal") || strings.Contains(lower, "panic") {
+		r.errLine = line
+	}
+}
+
+// crashLine flushes any unterminated final line (a crashing process rarely
+// ends its last message with a newline) and returns the best quote.
+func (r *crashLineRecorder) crashLine() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.recordLocked()
+	r.partial = r.partial[:0]
+	if r.errLine != "" {
+		return r.errLine
+	}
+	return r.last
+}
+
+// firstCrashLine prefers the earlier recorders: stderr is where both sing-box
+// and the bundled run shim report failures, so it is passed first.
+func firstCrashLine(recorders ...*crashLineRecorder) string {
+	for _, rec := range recorders {
+		if line := rec.crashLine(); line != "" {
+			return line
+		}
+	}
+	return ""
 }
