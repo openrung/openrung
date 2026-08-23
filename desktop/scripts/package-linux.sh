@@ -34,11 +34,17 @@ cp "${BIN}" "${STAGE}/OpenRung"
 cp "${SINGBOX}" "${STAGE}/sing-box"          # resolver finds it next to the binary
 chmod +x "${STAGE}/OpenRung" "${STAGE}/sing-box"
 
+# The full repository notices and the GPL text must travel with the package
+# (the pointer .txt below is not a substitute for them).
+cp ../THIRD_PARTY_NOTICES.md "${STAGE}/THIRD_PARTY_NOTICES.md"
+cp ../LICENSE "${STAGE}/LICENSE"
+
 SB_VER="$("${SINGBOX}" version 2>/dev/null | head -1 || echo 'unknown version')"
 cat > "${STAGE}/THIRD_PARTY_NOTICES.txt" <<EOF
-This application bundles sing-box (${SB_VER}), licensed under GPL-3.0.
-Source: https://github.com/SagerNet/sing-box
-OpenRung is free software (GPL-3.0-or-later): https://github.com/openrung/openrung
+This application bundles sing-box (${SB_VER}), licensed GPL-3.0-or-later
+(text: LICENSE). Third-party notices are in THIRD_PARTY_NOTICES.md alongside
+this file. OpenRung is free software (GPL-3.0-or-later):
+https://github.com/openrung/openrung
 EOF
 
 OUT="build/bin/OpenRung-linux-${ARCH}.tar.gz"

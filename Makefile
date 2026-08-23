@@ -7,8 +7,15 @@ BROKER_IMAGE ?= openrung-broker:latest
 fmt:
 	gofmt -w brokerapi cmd internal punchcore wsscore
 
+# The bundled sing-box runtime's build tags (internal/singboxruntime): every
+# cmd/client build and root-module test run wants them, and the release
+# workflow builds with them.
+#   with_utls                the uTLS/Reality client — required to dial relays
+#   with_external_windivert  keep sing-box's embedded WinDivert64.sys driver
+#                            (LGPLv3; unused Windows bridge/tlsspoof backends)
+#                            OUT of the binary and the release archives
 test:
-	go test ./...
+	go test -tags with_utls,with_external_windivert ./...
 	cd brokerapi && go test ./...
 	cd punchcore && go test ./...
 	cd wsscore && go test ./...
@@ -35,7 +42,7 @@ relayhub:
 		-control-addr :9443
 
 client:
-	go run ./cmd/client check -broker http://localhost:8080
+	go run -tags with_utls,with_external_windivert ./cmd/client check -broker http://localhost:8080
 
 # Build the relay runtime image.
 docker-build:
