@@ -7,9 +7,29 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+// syncBuffer is a concurrency-safe writer: exec copies stdout and stderr on
+// separate goroutines, exactly like the engine's two logWriter values.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
 
 // TestRunKillGraceBoundsCancelTeardown proves a cancelled Run returns promptly
 // even when the child ignores the interrupt: the configurable grace (used by
@@ -64,7 +84,7 @@ func TestRunCrashErrorQuotesTheChildsOwnWords(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	var logged strings.Builder
+	var logged syncBuffer
 	runner := SingBoxRunner{Path: script, Stdout: &logged, Stderr: &logged}
 	err := runner.Run(context.Background(), config)
 	if err == nil {
