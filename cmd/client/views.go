@@ -23,8 +23,8 @@ var (
 	noteStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 	cursorStyle    = lipgloss.NewStyle().Bold(true)
 
-	foundationBadge = lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Render("[foundation]")
-	volunteerBadge  = lipgloss.NewStyle().Faint(true).Render("[volunteer]")
+	foundationBadgeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	volunteerBadgeStyle  = lipgloss.NewStyle().Faint(true)
 
 	statusStyles = map[connectcore.Status]lipgloss.Style{
 		connectcore.StatusDisconnected:  lipgloss.NewStyle().Faint(true),
@@ -81,31 +81,35 @@ func fitLines(body string, n int) string {
 }
 
 func (m tuiModel) headerView() string {
-	names := []string{"1 Status", "2 Relays", "3 Logs", "4 Settings"}
-	tabs := make([]string, 0, len(names)+1)
+	tr := m.tr()
+	tabs := make([]string, 0, len(tr.tabs)+2)
 	tabs = append(tabs, titleStyle.Render(" OpenRung "))
-	for i, name := range names {
+	for i, name := range tr.tabs {
 		style := tabStyle
 		if viewID(i) == m.view {
 			style = tabActiveStyle
 		}
 		tabs = append(tabs, style.Render(name))
 	}
+	// Not a view: 5 cycles the language in place, and the label stays
+	// trilingual so it is readable whatever language is active.
+	tabs = append(tabs, tabStyle.Render(languageTabLabel))
 	return strings.Join(tabs, " ")
 }
 
 func (m tuiModel) footerView() string {
-	help := "c connect · d disconnect · r refresh · 1-4/tab views · q quit"
+	tr := m.tr()
+	help := tr.helpGlobal
 	switch m.view {
 	case viewRelays:
-		help = "↑/↓ select · enter connect to selection · x clear target · " + help
+		help = tr.helpRelays + help
 	case viewLogs:
-		help = "↑/↓/pgup/pgdn scroll · " + help
+		help = tr.helpLogs + help
 	case viewSettings:
 		if m.settings.editing {
-			help = "enter apply · esc cancel"
+			help = tr.helpSettingsEdit
 		} else {
-			help = "↑/↓ field · enter edit · " + help
+			help = tr.helpSettings + help
 		}
 	}
 	return helpStyle.Render(help)
@@ -114,9 +118,10 @@ func (m tuiModel) footerView() string {
 // ---- Status ----
 
 func (m tuiModel) statusView() string {
+	tr := m.tr()
 	status := m.state.Status
 	rows := []string{
-		row("Status", statusStyles[status].Render(string(status))),
+		row(tr.labelStatus, statusStyles[status].Render(tr.statusName(status))),
 	}
 
 	relayLine := "—"
@@ -124,58 +129,58 @@ func (m tuiModel) statusView() string {
 		relayLine = *m.state.RelayLabel
 	}
 	if m.infoOK {
-		relayLine += "  " + nodeClassBadge(m.info.Relay.NodeClass)
+		relayLine += "  " + nodeClassBadge(tr, m.info.Relay.NodeClass)
 	}
-	rows = append(rows, row("Relay", relayLine))
+	rows = append(rows, row(tr.labelRelay, relayLine))
 
 	country, transport := "—", "—"
 	if m.infoOK {
 		if cc := strings.TrimSpace(m.info.Relay.CountryCode); cc != "" {
 			country = strings.ToUpper(cc)
 		}
-		transport = transportLabel(m.info)
+		transport = transportLabel(tr, m.info)
 	}
-	rows = append(rows, row("Country", country), row("Transport", transport))
+	rows = append(rows, row(tr.labelCountry, country), row(tr.labelTransport, transport))
 
 	session := "—"
 	if status == connectcore.StatusConnected && !m.connectedAt.IsZero() {
 		session = formatDuration(m.now.Sub(m.connectedAt))
 	}
-	rows = append(rows, row("Session", session))
+	rows = append(rows, row(tr.labelSession, session))
 
 	if status == connectcore.StatusConnected {
-		rows = append(rows, row("Health", healthLabel(m.health)))
+		rows = append(rows, row(tr.labelHealth, healthLabel(tr, m.health)))
 	}
 	if m.activity.Kind != "" {
 		stamp := m.activityAt.Format("15:04:05")
-		rows = append(rows, row("Activity", noteStyle.Render("["+stamp+"] "+noticeLine(m.activity))))
+		rows = append(rows, row(tr.labelActivity, noteStyle.Render("["+stamp+"] "+noticeLine(tr, m.activity))))
 	}
 
 	if m.settings.mode == connectcore.ModeTUN {
 		// No local endpoint exists in TUN mode; the tunnel device carries every
 		// application, so there is nothing for the user to configure.
-		rows = append(rows, row("Capture", "TUN — whole device"))
+		rows = append(rows, row(tr.labelCapture, tr.captureTUN))
 	} else {
 		proxy := m.proxyEndpoint
 		switch {
 		case m.proxyErr != "":
 			proxy = errorStyle.Render(m.proxyErr)
 		case proxy == "":
-			proxy = "resolving…"
+			proxy = tr.proxyResolving
 		}
-		rows = append(rows, row("Capture", "proxy — applications configured for the endpoint below"), row("Proxy", proxy))
+		rows = append(rows, row(tr.labelCapture, tr.captureProxy), row(tr.labelProxy, proxy))
 		if m.proxyWarn != "" {
 			rows = append(rows, row("", noteStyle.Render(m.proxyWarn)))
 		}
 	}
 
 	rows = append(rows,
-		row("Broker", displayBroker(m.settings.brokerURL)),
-		row("Target", describeTarget(m.settings.target)),
+		row(tr.labelBroker, displayBroker(tr, m.settings.brokerURL)),
+		row(tr.labelTarget, describeTarget(tr, m.settings.target)),
 	)
 
 	if m.state.LastError != nil {
-		rows = append(rows, "", row("Error", errorStyle.Render(*m.state.LastError)))
+		rows = append(rows, "", row(tr.labelError, errorStyle.Render(*m.state.LastError)))
 	}
 	return strings.Join(rows, "\n")
 }
@@ -184,86 +189,87 @@ func row(label, value string) string {
 	return labelStyle.Render(label) + " " + value
 }
 
-func displayBroker(brokerURL string) string {
+func displayBroker(tr *translation, brokerURL string) string {
 	if strings.TrimSpace(brokerURL) == "" {
-		return "default fronts"
+		return tr.defaultFronts
 	}
 	return brokerURL
 }
 
-func transportLabel(info connectcore.ConnectionInfo) string {
+func transportLabel(tr *translation, info connectcore.ConnectionInfo) string {
 	switch info.Transport {
 	case brokerapi.TransportDirect:
-		return "direct"
+		return tr.transportDirect
 	case "punch":
-		return "punched (direct NAT path)"
+		return tr.transportPunched
 	case "wss":
-		return "WSS front " + info.FrontID
+		return fmt.Sprintf(tr.transportWSS, info.FrontID)
 	default:
 		return info.Transport
 	}
 }
 
-func nodeClassBadge(nodeClass string) string {
+func nodeClassBadge(tr *translation, nodeClass string) string {
 	// A missing or unrecognized class is the volunteer class, per the
 	// descriptor contract; EffectiveNodeClass is that rule.
 	if brokerapi.EffectiveNodeClass(nodeClass) == brokerapi.NodeClassFoundation {
-		return foundationBadge
+		return foundationBadgeStyle.Render(tr.badgeFoundation)
 	}
-	return volunteerBadge
+	return volunteerBadgeStyle.Render(tr.badgeVolunteer)
 }
 
 // healthLabel renders the latest mid-session probe sweep. The engine only
 // probes while a candidate is promoted, so before the first sweep of a session
 // there is nothing to report yet.
-func healthLabel(health connectcore.Notice) string {
+func healthLabel(tr *translation, health connectcore.Notice) string {
 	if health.Kind == "" {
-		return helpStyle.Render("probing every 30s…")
+		return helpStyle.Render(tr.healthProbing)
 	}
 	if health.Failures == 0 {
-		return "ok"
+		return tr.healthOK
 	}
-	label := fmt.Sprintf("%d/%d probes failed", health.Failures, health.Threshold)
+	label := fmt.Sprintf(tr.healthFailed, health.Failures, health.Threshold)
 	if health.Reason != "" {
 		label += " — " + health.Reason
 	}
 	return errorStyle.Render(label)
 }
 
-// noticeLine formats a typed engine notice for the Activity row.
-func noticeLine(n connectcore.Notice) string {
+// noticeLine formats a typed engine notice for the Activity row. The reasons
+// interpolated into each line come from the engine and stay English.
+func noticeLine(tr *translation, n connectcore.Notice) string {
 	switch n.Kind {
 	case connectcore.NoticeFailoverStarted:
-		return fmt.Sprintf("failover: relay %s lost (%s); re-laddering", n.FromRelayID, n.Reason)
+		return fmt.Sprintf(tr.noticeFailoverStarted, n.FromRelayID, n.Reason)
 	case connectcore.NoticeFailoverCompleted:
-		line := fmt.Sprintf("failover: relay %s → %s (%s)", n.FromRelayID, n.RelayID, n.Reason)
+		line := fmt.Sprintf(tr.noticeFailoverCompleted, n.FromRelayID, n.RelayID, n.Reason)
 		if n.FrontID != "" {
-			line += " via WSS front " + n.FrontID
+			line += fmt.Sprintf(tr.noticeViaFront, n.FrontID)
 		}
 		return line
 	case connectcore.NoticeWSSFallback:
-		return fmt.Sprintf("WSS fallback: relay %s via front %s (direct path: %s)", n.RelayID, n.FrontID, n.Reason)
+		return fmt.Sprintf(tr.noticeWSSFallback, n.RelayID, n.FrontID, n.Reason)
 	case connectcore.NoticeWSSTicketRetry:
-		return fmt.Sprintf("WSS tickets rate-limited; retrying front %s in %s", n.FrontID, n.Wait)
+		return fmt.Sprintf(tr.noticeTicketRetry, n.FrontID, n.Wait)
 	case connectcore.NoticePunchOutcome:
-		return fmt.Sprintf("punch %s: %s", n.RelayID, n.Reason)
+		return fmt.Sprintf(tr.noticePunch, n.RelayID, n.Reason)
 	}
 	return n.Reason
 }
 
-func describeTarget(target connectcore.RelayTarget) string {
+func describeTarget(tr *translation, target connectcore.RelayTarget) string {
 	parts := make([]string, 0, 3)
 	if strings.TrimSpace(target.RelayID) != "" {
-		parts = append(parts, "relay "+target.RelayID)
+		parts = append(parts, fmt.Sprintf(tr.targetRelay, target.RelayID))
 	}
 	if strings.TrimSpace(target.Label) != "" {
-		parts = append(parts, "label "+target.Label)
+		parts = append(parts, fmt.Sprintf(tr.targetLabel, target.Label))
 	}
 	if strings.TrimSpace(target.Country) != "" {
-		parts = append(parts, "country "+strings.ToUpper(strings.TrimSpace(target.Country)))
+		parts = append(parts, fmt.Sprintf(tr.targetCountry, strings.ToUpper(strings.TrimSpace(target.Country))))
 	}
 	if len(parts) == 0 {
-		return "automatic (ranked)"
+		return tr.targetAutomatic
 	}
 	return strings.Join(parts, ", ")
 }
@@ -282,25 +288,29 @@ func formatDuration(d time.Duration) string {
 // ---- Relays ----
 
 func (m tuiModel) relaysView() string {
+	tr := m.tr()
 	var rows []string
 	// The engine-persisted recents (internal/clientstate), newest first — the
 	// same row the desktop main screen shows.
 	if line := recentsLine(m.state.Recents); line != "" {
-		rows = append(rows, helpStyle.Render("recents ")+truncate(line, max(1, m.width-8)))
+		prefix := helpStyle.Render(tr.recentsLabel)
+		rows = append(rows, prefix+truncate(line, max(1, m.width-lipgloss.Width(prefix))))
 	}
 	switch {
 	case m.refreshing:
-		rows = append(rows, helpStyle.Render("refreshing relay directory…"))
+		rows = append(rows, helpStyle.Render(tr.refreshingDirectory))
 	case m.relayErr != "":
-		rows = append(rows, errorStyle.Render("directory: "+m.relayErr))
+		rows = append(rows, errorStyle.Render(tr.directoryErrPrefix+m.relayErr))
 	case len(m.relays) == 0:
-		rows = append(rows, helpStyle.Render("no relays yet — press r to refresh"))
+		rows = append(rows, helpStyle.Render(tr.noRelaysYet))
 	}
 	if len(m.relays) == 0 {
 		return strings.Join(rows, "\n")
 	}
 
-	rows = append(rows, helpStyle.Render(fmt.Sprintf("   %-28s %-8s %-9s %s", "RELAY", "COUNTRY", "LATENCY", "CLASS")))
+	// padCell, not %-8s: the localized headers must pad by display width to
+	// stay aligned with the ASCII-formatted rows below.
+	rows = append(rows, helpStyle.Render("   "+padCell(tr.colRelay, 28)+" "+padCell(tr.colCountry, 8)+" "+padCell(tr.colLatency, 9)+" "+tr.colClass))
 
 	// Window the list to the rows the body has left after any notice lines and
 	// the column header, following the cursor: fitLines hard-truncates the body,
@@ -328,10 +338,10 @@ func (m tuiModel) relaysView() string {
 			truncate(relayDisplayName(entry.Relay), 28),
 			strings.ToUpper(strings.TrimSpace(entry.Relay.CountryCode)),
 			latencyLabel(entry.ProbeMS),
-			nodeClassBadge(entry.Relay.NodeClass),
+			nodeClassBadge(tr, entry.Relay.NodeClass),
 		)
 		if entry.Relay.ID == m.settings.target.RelayID && m.settings.target.RelayID != "" {
-			line += " " + noteStyle.Render("← target")
+			line += " " + noteStyle.Render(tr.targetMarker)
 		}
 		rows = append(rows, line)
 	}
@@ -401,7 +411,7 @@ func truncate(s string, n int) string {
 
 func (m tuiModel) logsView() string {
 	if !m.logReady {
-		return helpStyle.Render("no log output yet")
+		return helpStyle.Render(m.tr().noLogOutput)
 	}
 	return m.logView.View()
 }
@@ -409,17 +419,18 @@ func (m tuiModel) logsView() string {
 // ---- Settings ----
 
 func (m tuiModel) settingsView() string {
+	tr := m.tr()
 	fields := []struct {
 		id    settingsFieldID
 		name  string
 		value string
 	}{
-		{fieldBroker, "Broker URL", displayBroker(m.settings.brokerURL)},
-		{fieldMode, "Mode", modeLabel(m.settings.mode)},
-		{fieldRelayID, "Target relay id", orUnset(m.settings.target.RelayID)},
-		{fieldRelayLabel, "Target label", orUnset(m.settings.target.Label)},
-		{fieldCountry, "Target country", orUnset(m.settings.target.Country)},
-		{fieldShellHelper, "Shell proxy", m.shellHelperValue()},
+		{fieldBroker, tr.fieldNames[fieldBroker], displayBroker(tr, m.settings.brokerURL)},
+		{fieldMode, tr.fieldNames[fieldMode], modeLabel(tr, m.settings.mode)},
+		{fieldRelayID, tr.fieldNames[fieldRelayID], orUnset(tr, m.settings.target.RelayID)},
+		{fieldRelayLabel, tr.fieldNames[fieldRelayLabel], orUnset(tr, m.settings.target.Label)},
+		{fieldCountry, tr.fieldNames[fieldCountry], orUnset(tr, m.settings.target.Country)},
+		{fieldShellHelper, tr.fieldNames[fieldShellHelper], m.shellHelperValue()},
 	}
 
 	rows := make([]string, 0, len(fields)+2)
@@ -442,13 +453,13 @@ func (m tuiModel) settingsView() string {
 		// whole purpose is cleaning up a shell after the tunnel is gone.
 		rows = append(rows, "")
 		if m.state.Status == connectcore.StatusConnected {
-			rows = append(rows, "  "+labelStyle.Width(18).Render("Enable in a shell")+" "+m.settings.shell.EnableCommand)
+			rows = append(rows, "  "+labelStyle.Width(18).Render(tr.enableInShell)+" "+m.settings.shell.EnableCommand)
 		} else {
-			rows = append(rows, "  "+labelStyle.Width(18).Render("Enable in a shell")+" "+helpStyle.Render("available while connected"))
+			rows = append(rows, "  "+labelStyle.Width(18).Render(tr.enableInShell)+" "+helpStyle.Render(tr.availableWhileConnected))
 		}
 		rows = append(rows,
-			"  "+labelStyle.Width(18).Render("Restore that shell")+" "+m.settings.shell.DisableCommand,
-			"  "+helpStyle.Render("run the restore command after disconnect, failure, quit, or crash"),
+			"  "+labelStyle.Width(18).Render(tr.restoreShell)+" "+m.settings.shell.DisableCommand,
+			"  "+helpStyle.Render(tr.restoreAdvice),
 		)
 	}
 	if m.settings.note != "" {
@@ -459,37 +470,39 @@ func (m tuiModel) settingsView() string {
 
 // shellHelperValue is the Shell proxy row's summary cell.
 func (m tuiModel) shellHelperValue() string {
+	tr := m.tr()
 	switch {
 	case m.settings.mode == connectcore.ModeTUN:
-		return helpStyle.Render("not needed in TUN mode")
+		return helpStyle.Render(tr.notNeededTUN)
 	case m.settings.shellErr != "":
 		return errorStyle.Render(m.settings.shellErr)
 	case m.settings.shellOK:
-		return "commands below"
+		return tr.commandsBelow
 	case m.state.Status == connectcore.StatusConnected:
-		return helpStyle.Render("press enter to show the shell commands")
+		return helpStyle.Render(tr.pressEnterShell)
 	default:
-		return helpStyle.Render("available while connected")
+		return helpStyle.Render(tr.availableWhileConnected)
 	}
 }
 
 // modeLabel is the Settings Mode row: what the mode does and what it costs.
 // What TUN costs is platform-specific (sudo on Unix, unsupported on Windows),
-// so the wording comes from the same file as the check that enforces it.
-func modeLabel(mode connectcore.Mode) string {
+// so that wording comes from the same file as the check that enforces it —
+// and stays English in every language.
+func modeLabel(tr *translation, mode connectcore.Mode) string {
 	if mode == connectcore.ModeTUN {
-		return "TUN — whole device (" + tunModeSummary + ")"
+		return fmt.Sprintf(tr.modeTUN, tunModeSummary)
 	}
-	return "proxy — local mixed HTTP/SOCKS inbound (no privileges)"
+	return tr.modeProxy
 }
 
 // modeNote explains what a just-accepted mode changes, since the engine only
 // applies it on the next connect.
-func modeNote(mode connectcore.Mode) string {
+func modeNote(tr *translation, mode connectcore.Mode) string {
 	if mode == connectcore.ModeTUN {
-		return "TUN mode: the next connect captures every application — " + tunModeAdvice
+		return fmt.Sprintf(tr.modeNoteTUN, tunModeAdvice)
 	}
-	return "proxy mode: the next connect serves a local mixed proxy and points the system proxy at it"
+	return tr.modeNoteProxy
 }
 
 func toggleMode(mode connectcore.Mode) connectcore.Mode {
@@ -499,9 +512,9 @@ func toggleMode(mode connectcore.Mode) connectcore.Mode {
 	return connectcore.ModeTUN
 }
 
-func orUnset(value string) string {
+func orUnset(tr *translation, value string) string {
 	if strings.TrimSpace(value) == "" {
-		return helpStyle.Render("(unset)")
+		return helpStyle.Render(tr.unset)
 	}
 	return value
 }

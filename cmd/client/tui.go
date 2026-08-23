@@ -219,6 +219,7 @@ type tuiModel struct {
 	shellHelper func() (proxyconfig.Info, error)
 
 	view          viewID
+	lang          language
 	width, height int
 
 	state       connectcore.State
@@ -352,10 +353,10 @@ func (m tuiModel) setModeCmd(mode connectcore.Mode) tea.Cmd {
 }
 
 func (m tuiModel) shellHelperCmd() tea.Cmd {
-	helper := m.shellHelper
+	helper, tr := m.shellHelper, m.tr()
 	return func() tea.Msg {
 		if helper == nil {
-			return shellHelperMsg{err: "shell integration is unavailable in this build"}
+			return shellHelperMsg{err: tr.shellUnavailable}
 		}
 		info, err := helper()
 		if err != nil {
@@ -419,7 +420,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.settings.mode = msg.mode
-		m.settings.note = modeNote(msg.mode)
+		m.settings.note = modeNote(m.tr(), msg.mode)
 		// Switching into proxy mode needs the stable endpoint the launch-time
 		// resolution skipped.
 		if msg.mode == connectcore.ModeProxy && m.proxyEndpoint == "" && m.proxyErr == "" {
@@ -491,6 +492,11 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "4":
 		m.view = viewSettings
+		return m, nil
+	case "5":
+		// Cycle the UI language in place — no settings entry, so a user who
+		// cannot read the current language never has to navigate one.
+		m.lang = (m.lang + 1) % languageCount
 		return m, nil
 	case "tab":
 		m.view = (m.view + 1) % viewCount
@@ -568,11 +574,11 @@ func (m tuiModel) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Mirrors the desktop Settings gating: the enable command points a
 			// shell at the local endpoint, which only answers while connected.
 			if m.settings.mode == connectcore.ModeTUN {
-				m.settings.note = "TUN mode already routes every application; the shell proxy is a proxy-mode helper"
+				m.settings.note = m.tr().noteShellTUN
 				return m, nil
 			}
 			if m.state.Status != connectcore.StatusConnected {
-				m.settings.note = "connect first — the shell proxy only works while connected"
+				m.settings.note = m.tr().noteShellDisconnected
 				return m, nil
 			}
 			m.settings.note = ""
