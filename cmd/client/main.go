@@ -49,7 +49,7 @@ func run(args []string) error {
 	// re-execs this binary into it (internal/singboxruntime).
 	case singboxruntime.Subcommand:
 		return singboxruntime.RunSubcommand(args[1:])
-	case "-version", "--version", "version":
+	case "-v", "-version", "--version", "version":
 		fmt.Println(versionInfo())
 		return nil
 	case "-h", "--help", "help":
@@ -166,7 +166,7 @@ Commands:
   run      Internal: run the bundled sing-box with -c <config>. The connect
            engine invokes it on this binary; it also works standalone in
            place of "sing-box run -c <config>".
-  version  Print the client and bundled sing-box versions and exit.
+  version  Print the client and bundled sing-box versions and exit (-v).
 
 Keys (interactive):
   c connect  d disconnect  r refresh relays  1-4/tab switch view  q quit
