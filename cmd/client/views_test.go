@@ -72,6 +72,7 @@ func TestFooterShowsConnectionSummaryWhenConnected(t *testing.T) {
 	m.state = connectcore.State{Status: connectcore.StatusConnected, RelayLabel: &label}
 	m.infoOK = true
 	m.info = connectcore.ConnectionInfo{Relay: brokerapi.RelayDescriptor{
+		Label:            "merry-falcon",
 		RelayGeoLocation: brokerapi.RelayGeoLocation{CountryCode: "jp"},
 	}}
 	m.connectedAt = time.Now().Add(-90 * time.Second)
@@ -87,6 +88,41 @@ func TestFooterShowsConnectionSummaryWhenConnected(t *testing.T) {
 	m.state.Status = connectcore.StatusDisconnected
 	if footer := m.footerView(); strings.Contains(footer, "merry-falcon") || strings.Contains(footer, "00:01:30") {
 		t.Fatalf("disconnected footer still shows the session summary:\n%q", footer)
+	}
+}
+
+// The footer's relay identity comes from ONE source: with a descriptor,
+// every field — name (down to the "relay <id>" fallback) and flag — is the
+// descriptor's; the state label appears only with no descriptor at all. A
+// failover updates the state label before the next info poll, so any mixing
+// pairs the new relay's name with the old relay's flag.
+func TestFooterIdentityIsSingleSourced(t *testing.T) {
+	m := newTestModel(&fakeDriver{})
+	m.width = 120
+	newLabel := "Singapore"
+	m.state = connectcore.State{Status: connectcore.StatusConnected, RelayLabel: &newLabel}
+	m.connectedAt = time.Now().Add(-time.Minute)
+	m.now = time.Now()
+
+	// Stale descriptor: nameless, but still carrying the OLD country.
+	m.infoOK = true
+	m.info = connectcore.ConnectionInfo{Relay: brokerapi.RelayDescriptor{
+		ID:               "r9",
+		RelayGeoLocation: brokerapi.RelayGeoLocation{CountryCode: "jp"},
+	}}
+	footer := m.footerView()
+	if strings.Contains(footer, "Singapore") {
+		t.Fatalf("footer paired the state label with the descriptor's flag: %q", footer)
+	}
+	if !strings.Contains(footer, "relay r9 🇯🇵") {
+		t.Fatalf("footer did not fall back to the descriptor's own identity: %q", footer)
+	}
+
+	// No descriptor: the state label stands alone, flagless.
+	m.infoOK = false
+	footer = m.footerView()
+	if !strings.Contains(footer, "Singapore") || strings.Contains(footer, "🇯🇵") {
+		t.Fatalf("descriptor-less footer should be the bare state label: %q", footer)
 	}
 }
 

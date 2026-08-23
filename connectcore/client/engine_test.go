@@ -207,6 +207,36 @@ func TestRunSameWriterKeepsExecSerialization(t *testing.T) {
 	}
 }
 
+// Even in shared-writer mode, each stream assembles its own lines: a partial
+// stderr line interleaved with stdout output must come back whole, not
+// spliced into cross-stream mush like "stderr failurestdout chatter".
+func TestRunSharedWriterKeepsStreamsLineSeparate(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "stubbox")
+	stub := "#!/bin/sh\n" +
+		"printf 'error: real stderr failure' >&2\n" +
+		"echo 'benign stdout chatter'\n" +
+		"sleep 0.1\n" + // let both pipes drain so the interleave is real
+		"printf ' continues\\n' >&2\n" +
+		"exit 1\n"
+	if err := os.WriteFile(script, []byte(stub), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	config := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(config, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	var buf strings.Builder
+	err := SingBoxRunner{Path: script, Stdout: &buf, Stderr: &buf}.Run(context.Background(), config)
+	if err == nil || !strings.Contains(err.Error(), "real stderr failure continues") {
+		t.Fatalf("stderr line not assembled across the interleave: %v", err)
+	}
+	if strings.Contains(err.Error(), "chatter") {
+		t.Fatalf("quote spliced stdout into a stderr line: %v", err)
+	}
+}
+
 // A forced flush of an over-long line must not split a multi-byte rune: the
 // dangling bytes would put mojibake into the user-facing quote.
 func TestCrashLineRecorderKeepsRuneBoundaries(t *testing.T) {

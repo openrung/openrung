@@ -41,22 +41,25 @@ func (r SingBoxRunner) Run(ctx context.Context, configPath string) error {
 
 	cmd := exec.Command(resolved, "run", "-c", configPath)
 	configureSingBoxProcess(cmd)
-	// Each stream gets its own recorder (interleaved chunks from shared
-	// recording would splice half-lines together), remembering sing-box's own
-	// words so an abnormal exit reports more than a bare exit status — the
-	// user-facing Error row is built from the returned error, and "exit
-	// status 1" alone sends users to the logs for something like a missing
-	// with_utls build tag that the child said out loud.
+	// Each stream gets its own recorder — a shared one would splice a partial
+	// stderr line together with stdout chatter into a misleading quote — and
+	// the recorders remember sing-box's own words so an abnormal exit reports
+	// more than a bare exit status: the user-facing Error row is built from
+	// the returned error, and "exit status 1" alone sends users to the logs
+	// for something like a missing with_utls build tag the child said out
+	// loud.
 	//
-	// Except when the caller passed the SAME writer for both streams: os/exec
-	// serializes Write calls only while cmd.Stdout == cmd.Stderr, so wrapping
-	// one writer in two recorders would silently void that contract and race
-	// the caller's writer. One shared recorder preserves it.
-	stdout := &crashLineRecorder{next: r.Stdout}
-	stderr := stdout
-	if !sameWriter(r.Stdout, r.Stderr) {
-		stderr = &crashLineRecorder{next: r.Stderr}
+	// A caller that passed the SAME writer for both streams was relying on
+	// os/exec's serialized-Write guarantee for cmd.Stdout == cmd.Stderr; two
+	// distinct recorders void that on cmd, so the shared downstream writer
+	// gets an explicit lock instead.
+	stdoutNext, stderrNext := r.Stdout, r.Stderr
+	if stdoutNext != nil && sameWriter(r.Stdout, r.Stderr) {
+		shared := &syncWriter{w: stdoutNext}
+		stdoutNext, stderrNext = shared, shared
 	}
+	stdout := &crashLineRecorder{next: stdoutNext}
+	stderr := &crashLineRecorder{next: stderrNext}
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
@@ -128,6 +131,21 @@ func (e *crashError) TelemetrySafe() string {
 func sameWriter(a, b io.Writer) (same bool) {
 	defer func() { _ = recover() }()
 	return a == b
+}
+
+// syncWriter serializes Write calls to a downstream writer both recorders
+// share: exec copies the two streams on separate goroutines, and the caller's
+// single writer must still see one Write at a time — the guarantee os/exec
+// itself gives when cmd.Stdout == cmd.Stderr.
+type syncWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
 }
 
 const (
@@ -229,8 +247,7 @@ func (r *crashLineRecorder) tailLines() []crashLine {
 // before settling for a stream's last chatter: benign stderr noise must not
 // outrank an actual failure report on stdout. Within each tier the earlier
 // recorders win — stderr is where both sing-box and the bundled run shim
-// report failures, so it is passed first. Passing the same recorder twice
-// (shared-writer mode) is harmless.
+// report failures, so it is passed first.
 func firstCrashLine(recorders ...*crashLineRecorder) string {
 	tails := make([][]crashLine, len(recorders))
 	for i, rec := range recorders {

@@ -203,32 +203,23 @@ func (m tuiModel) footerConnectionSummary(budget int) string {
 	if m.state.Status != connectcore.StatusConnected {
 		return ""
 	}
-	// Label and flag come from the same descriptor: on a failover the state
-	// label updates before the next info poll lands, and a fresh label beside
-	// the old relay's flag would assert the wrong exit country. The state
-	// label is only the fallback for a descriptor with no name of its own.
-	label, flag := "", ""
+	// Every identity field comes from ONE source. With a descriptor, that is
+	// the descriptor — name (down to its "relay <id>" fallback) AND flag: on
+	// a failover the state label updates before the next info poll lands, and
+	// mixing the two would pair a fresh label with the old relay's flag,
+	// asserting the wrong exit country. Without a descriptor there is no
+	// flag, only the state label.
+	label := ""
 	if m.infoOK {
-		flag = countryFlag(m.info.Relay.CountryCode)
-		label = strings.TrimSpace(m.info.Relay.Label)
-		if label == "" {
-			city, country := strings.TrimSpace(m.info.Relay.City), strings.TrimSpace(m.info.Relay.Country)
-			switch {
-			case city != "" && country != "":
-				label = city + ", " + country
-			case country != "":
-				label = country
+		label = strings.TrimSpace(relayListName(m.info.Relay))
+		if flag := countryFlag(m.info.Relay.CountryCode); flag != "" {
+			if label != "" {
+				label += " "
 			}
+			label += flag
 		}
-	}
-	if label == "" && m.state.RelayLabel != nil {
+	} else if m.state.RelayLabel != nil {
 		label = strings.TrimSpace(*m.state.RelayLabel)
-	}
-	if flag != "" {
-		if label != "" {
-			label += " "
-		}
-		label += flag
 	}
 	duration := ""
 	if !m.connectedAt.IsZero() {
