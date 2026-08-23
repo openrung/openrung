@@ -35,16 +35,16 @@ var (
 		connectcore.StatusFailed:        lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true),
 	}
 
-	// The footer line is the always-visible connection signal: red while
-	// disconnected or failed, yellow through every transition, green while
-	// connected.
+	// The footer is a solid tmux-style status bar spanning the full terminal
+	// width — the always-visible connection signal: red while disconnected or
+	// failed, yellow through every transition, green while connected.
 	footerStyles = map[connectcore.Status]lipgloss.Style{
-		connectcore.StatusDisconnected:  lipgloss.NewStyle().Foreground(lipgloss.Color("1")),
-		connectcore.StatusFailed:        lipgloss.NewStyle().Foreground(lipgloss.Color("1")),
-		connectcore.StatusPreparing:     lipgloss.NewStyle().Foreground(lipgloss.Color("3")),
-		connectcore.StatusConnecting:    lipgloss.NewStyle().Foreground(lipgloss.Color("3")),
-		connectcore.StatusDisconnecting: lipgloss.NewStyle().Foreground(lipgloss.Color("3")),
-		connectcore.StatusConnected:     lipgloss.NewStyle().Foreground(lipgloss.Color("2")),
+		connectcore.StatusDisconnected:  lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("1")),
+		connectcore.StatusFailed:        lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("1")),
+		connectcore.StatusPreparing:     lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("3")),
+		connectcore.StatusConnecting:    lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("3")),
+		connectcore.StatusDisconnecting: lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("3")),
+		connectcore.StatusConnected:     lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("2")),
 	}
 )
 
@@ -129,18 +129,21 @@ func (m tuiModel) footerView() string {
 	if !ok {
 		style = helpStyle
 	}
+	// The bar is padded to the exact terminal width so the background paints
+	// edge to edge, with the connection summary right-aligned in the corner.
+	// The help yields when both cannot fit, since the summary is what a
+	// glance at the corner is for.
+	left := " " + help
 	right := m.footerConnectionSummary()
-	if right == "" || m.width < 1 {
-		return style.Render(help)
+	if right != "" {
+		right += " "
 	}
-	// Right-align the connection summary; the help yields when both cannot
-	// fit, since the summary is what a glance at the corner is for.
-	pad := m.width - lipgloss.Width(help) - lipgloss.Width(right)
-	if pad < 1 {
-		help = truncateWidth(help, m.width-lipgloss.Width(right)-1)
-		pad = max(1, m.width-lipgloss.Width(help)-lipgloss.Width(right))
+	pad := m.width - lipgloss.Width(left) - lipgloss.Width(right)
+	if pad < 1 && right != "" {
+		left = " " + truncateWidth(help, max(0, m.width-lipgloss.Width(right)-2))
+		pad = m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	}
-	return style.Render(help + strings.Repeat(" ", pad) + right)
+	return style.Render(left + strings.Repeat(" ", max(0, pad)) + right)
 }
 
 // footerConnectionSummary is the bottom-right corner while connected: the
