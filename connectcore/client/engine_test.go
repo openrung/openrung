@@ -119,3 +119,29 @@ func TestRunCrashErrorFallsBackToLastLine(t *testing.T) {
 		t.Fatalf("crash error did not quote the unterminated last line: %v", err)
 	}
 }
+
+// An error line on ANY stream outranks another stream's benign chatter:
+// stderr small talk must not shadow a fatal report that went to stdout.
+func TestRunCrashErrorPrefersStdoutErrorOverStderrChatter(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "stubbox")
+	stub := "#!/bin/sh\n" +
+		"echo 'shutting down cleanly' >&2\n" +
+		"echo 'FATAL: actual startup failure'\n" +
+		"exit 1\n"
+	if err := os.WriteFile(script, []byte(stub), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	config := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(config, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	err := SingBoxRunner{Path: script}.Run(context.Background(), config)
+	if err == nil || !strings.Contains(err.Error(), "FATAL: actual startup failure") {
+		t.Fatalf("crash error did not surface the stdout error line: %v", err)
+	}
+	if strings.Contains(err.Error(), "shutting down cleanly") {
+		t.Fatalf("crash error quoted stderr chatter over the real error: %v", err)
+	}
+}

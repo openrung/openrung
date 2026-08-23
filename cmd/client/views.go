@@ -106,7 +106,18 @@ func (m tuiModel) headerView() string {
 	// Not a view: 5 cycles the language in place, and the label stays
 	// trilingual so it is readable whatever language is active.
 	tabs = append(tabs, tabStyle.Render(languageTabLabel))
-	return strings.Join(tabs, " ")
+
+	// headerHeight budgets exactly one line, so on a narrow terminal trailing
+	// tabs are dropped whole rather than wrapped (the keys still work).
+	header := tabs[0]
+	for _, tab := range tabs[1:] {
+		candidate := header + " " + tab
+		if m.width > 0 && lipgloss.Width(candidate) > m.width {
+			break
+		}
+		header = candidate
+	}
+	return header
 }
 
 func (m tuiModel) footerView() string {
@@ -131,19 +142,30 @@ func (m tuiModel) footerView() string {
 	}
 	// The bar is padded to the exact terminal width so the background paints
 	// edge to edge, with the connection summary right-aligned in the corner.
-	// The help yields when both cannot fit, since the summary is what a
-	// glance at the corner is for.
-	left := " " + help
+	// The help always yields to the width — a wrapped footer breaks the
+	// fixed-height layout — and to the summary, since that corner glance is
+	// what the bar is for.
 	right := m.footerConnectionSummary()
 	if right != "" {
 		right += " "
 	}
-	pad := m.width - lipgloss.Width(left) - lipgloss.Width(right)
-	if pad < 1 && right != "" {
-		left = " " + truncateWidth(help, max(0, m.width-lipgloss.Width(right)-2))
-		pad = m.width - lipgloss.Width(left) - lipgloss.Width(right)
+	if m.width > 0 {
+		budget := m.width - lipgloss.Width(right) - 1 // leading space
+		if right != "" {
+			budget-- // one-cell gap between help and summary
+		}
+		if lipgloss.Width(help) > budget {
+			help = truncateWidth(help, max(0, budget))
+		}
 	}
-	return style.Render(left + strings.Repeat(" ", max(0, pad)) + right)
+	left := " " + help
+	pad := m.width - lipgloss.Width(left) - lipgloss.Width(right)
+	line := left + strings.Repeat(" ", max(0, pad)) + right
+	if m.width > 0 {
+		// Terminals narrower than the summary itself still get one line.
+		line = truncateWidth(line, m.width)
+	}
+	return style.Render(line)
 }
 
 // footerConnectionSummary is the bottom-right corner while connected: the
@@ -363,7 +385,7 @@ func (m tuiModel) relaysView() string {
 	// same row the desktop main screen shows.
 	if line := recentsLine(m.state.Recents); line != "" {
 		prefix := helpStyle.Render(tr.recentsLabel)
-		rows = append(rows, prefix+truncate(line, max(1, m.width-lipgloss.Width(prefix))))
+		rows = append(rows, prefix+truncateWidth(line, max(1, m.width-lipgloss.Width(prefix))))
 	}
 	switch {
 	case m.refreshing:
@@ -406,9 +428,9 @@ func (m tuiModel) relaysView() string {
 		if cc != "" {
 			cc += countryFlag(cc)
 		}
-		// padCell throughout: the flag emoji (and any CJK in a fallback name)
-		// would break %-8s byte-count alignment.
-		line := cursor + " " + padCell(truncate(relayListName(entry.Relay), 28), 28) +
+		// padCell and truncateWidth throughout: the flag emoji (and any CJK in
+		// a label) would break byte- or rune-count alignment.
+		line := cursor + " " + padCell(truncateWidth(relayListName(entry.Relay), 28), 28) +
 			" " + padCell(cc, 8) +
 			" " + padCell(latencyLabel(entry.ProbeMS), 9) +
 			" " + nodeClassBadge(tr, entry.Relay.NodeClass)
@@ -471,16 +493,8 @@ func latencyLabel(probeMS *int64) string {
 	return fmt.Sprintf("%d ms", *probeMS)
 }
 
-func truncate(s string, n int) string {
-	runes := []rune(s)
-	if len(runes) <= n {
-		return s
-	}
-	return string(runes[:n-1]) + "…"
-}
-
-// truncateWidth trims s to at most w display cells (unlike the rune-count
-// truncate, this stays correct for CJK and emoji).
+// truncateWidth trims s to at most w display cells (a rune-count cut would
+// under-trim CJK and emoji, which occupy two cells per rune).
 func truncateWidth(s string, w int) string {
 	if w < 1 {
 		return ""

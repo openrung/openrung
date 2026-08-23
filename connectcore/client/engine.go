@@ -143,25 +143,34 @@ func (r *crashLineRecorder) recordLocked() {
 	}
 }
 
-// crashLine flushes any unterminated final line (a crashing process rarely
-// ends its last message with a newline) and returns the best quote.
-func (r *crashLineRecorder) crashLine() string {
+// lines flushes any unterminated final line (a crashing process rarely ends
+// its last message with a newline) and returns the recorded error-looking
+// line and last non-empty line.
+func (r *crashLineRecorder) lines() (errLine, last string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.recordLocked()
 	r.partial = r.partial[:0]
-	if r.errLine != "" {
-		return r.errLine
-	}
-	return r.last
+	return r.errLine, r.last
 }
 
-// firstCrashLine prefers the earlier recorders: stderr is where both sing-box
-// and the bundled run shim report failures, so it is passed first.
+// firstCrashLine quotes an error-looking line from ANY stream before settling
+// for a stream's last chatter: benign stderr noise must not outrank an actual
+// failure report on stdout. Within each tier the earlier recorders win —
+// stderr is where both sing-box and the bundled run shim report failures, so
+// it is passed first.
 func firstCrashLine(recorders ...*crashLineRecorder) string {
+	lasts := make([]string, 0, len(recorders))
 	for _, rec := range recorders {
-		if line := rec.crashLine(); line != "" {
-			return line
+		errLine, last := rec.lines()
+		if errLine != "" {
+			return errLine
+		}
+		lasts = append(lasts, last)
+	}
+	for _, last := range lasts {
+		if last != "" {
+			return last
 		}
 	}
 	return ""
