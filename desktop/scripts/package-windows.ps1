@@ -29,11 +29,21 @@ New-Item -ItemType Directory -Path $stage | Out-Null
 Copy-Item $exe (Join-Path $stage 'OpenRung.exe')
 Copy-Item $singbox (Join-Path $stage 'sing-box.exe')   # resolver finds it next to the .exe
 
+# The full repository notices and the GPL text must travel with the package:
+# the Windows sing-box.exe embeds the wintun.dll and WinDivert64.sys driver
+# binaries, whose licenses (Wintun Prebuilt Binaries License; WinDivert's
+# LGPL-3.0 option) THIRD_PARTY_NOTICES.md section 8 / Appendix B carries.
+Copy-Item ..\THIRD_PARTY_NOTICES.md (Join-Path $stage 'THIRD_PARTY_NOTICES.md')
+Copy-Item ..\LICENSE (Join-Path $stage 'LICENSE')
+
 $sbVer = (& $singbox version 2>$null | Select-Object -First 1)
 @"
-This application bundles sing-box ($sbVer), licensed under GPL-3.0.
-Source: https://github.com/SagerNet/sing-box
-OpenRung is free software (GPL-3.0-or-later): https://github.com/openrung/openrung
+This application bundles sing-box ($sbVer) as sing-box.exe, licensed
+GPL-3.0-or-later (text: LICENSE). The Windows sing-box.exe embeds the
+wintun.dll and WinDivert64.sys driver binaries; their notices and license
+texts are in THIRD_PARTY_NOTICES.md (section 8 and Appendix B) alongside
+this file. OpenRung is free software (GPL-3.0-or-later):
+https://github.com/openrung/openrung
 "@ | Set-Content (Join-Path $stage 'THIRD_PARTY_NOTICES.txt')
 
 $out = 'build\bin\OpenRung-windows-amd64.zip'

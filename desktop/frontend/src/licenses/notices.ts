@@ -25,6 +25,8 @@ export interface LicenseComponent {
  */
 export const components: LicenseComponent[] = [
   { name: 'sing-box (bundled engine)', license: 'GPL-3.0-or-later', url: 'https://github.com/SagerNet/sing-box' },
+  { name: 'wintun.dll (inside sing-box.exe, Windows)', license: 'Wintun Prebuilt Binaries License', url: 'https://www.wintun.net' },
+  { name: 'WinDivert (inside sing-box.exe, Windows)', license: 'LGPL-3.0', url: 'https://github.com/basil00/WinDivert' },
   { name: 'gVisor', license: 'Apache-2.0', url: 'https://github.com/google/gvisor' },
   { name: 'quic-go', license: 'MIT', url: 'https://github.com/quic-go/quic-go' },
   { name: 'wireguard-go', license: 'MIT', url: 'https://git.zx2c4.com/wireguard-go' },
@@ -78,6 +80,29 @@ https://git.zx2c4.com/wireguard-go), and utls (BSD-3-Clause,
 https://github.com/refraction-networking/utls). The full transitive set is
 captured from the exact sing-box release each desktop build pins (see the
 desktop release workflow).
+
+### Windows driver binaries embedded in sing-box.exe
+
+The Windows build of the bundled sing-box.exe embeds two prebuilt driver
+binaries, byte-for-byte unmodified, extracted and loaded at runtime by
+sing-box's own code:
+
+- wintun.dll (Copyright (C) WireGuard LLC) — the DLL binary is licensed under
+  the Wintun Prebuilt Binaries License, reproduced in full in the appendix
+  below; it is distributed only as part of software that uses it solely
+  through the wintun.h API and is never modified. The Go wrapper code around
+  it is MIT (Copyright (C) 2017-2021 WireGuard LLC). OpenRung is not
+  affiliated with and does not claim endorsement by WireGuard LLC, the
+  WireGuard project, or the Wintun project. Upstream: https://www.wintun.net
+  (driver source, GPL-2.0: https://git.zx2c4.com/wintun/).
+- WinDivert64.sys v2.2.2 (https://github.com/basil00/WinDivert) —
+  redistributed by sing-box under WinDivert's LGPL-3.0 option; the GNU Lesser
+  General Public License v3.0 is reproduced in full in the appendix below
+  (it supplements the GPL-3.0, whose full text this screen also carries).
+  Complete corresponding source: https://github.com/basil00/WinDivert.
+
+The macOS and Linux sing-box builds embed no Windows drivers; this subsection
+applies to the Windows desktop package only.
 
 OpenRung's own code is GPL-3.0-or-later (see LICENSE); the distributed desktop
 bundle as a whole is licensed to recipients under GPL-3.0-or-later.
@@ -452,6 +477,261 @@ PERFORMANCE OF THIS SOFTWARE.
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
+
+### Wintun Prebuilt Binaries License (wintun.dll, Windows package)
+
+Prebuilt Binaries License
+-------------------------
+
+1. DEFINITIONS. "Software" means the precise contents of the "wintun.dll"
+   files that are included in the .zip file that contains this document as
+   downloaded from wintun.net/builds.
+
+2. LICENSE GRANT. WireGuard LLC grants to you a non-exclusive and
+   non-transferable right to use Software for lawful purposes under certain
+   obligations and limited rights as set forth in this agreement.
+
+3. RESTRICTIONS. Software is owned and copyrighted by WireGuard LLC. It is
+   licensed, not sold. Title to Software and all associated intellectual
+   property rights are retained by WireGuard. You must not:
+   a. reverse engineer, decompile, disassemble, extract from, or otherwise
+      modify the Software;
+   b. modify or create derivative work based upon Software in whole or in
+      parts, except insofar as only the API interfaces of the "wintun.h" file
+      distributed alongside the Software (the "Permitted API") are used;
+   c. remove any proprietary notices, labels, or copyrights from the Software;
+   d. resell, redistribute, lease, rent, transfer, sublicense, or otherwise
+      transfer rights of the Software without the prior written consent of
+      WireGuard LLC, except insofar as the Software is distributed alongside
+      other software that uses the Software only via the Permitted API;
+   e. use the name of WireGuard LLC, the WireGuard project, the Wintun
+      project, or the names of its contributors to endorse or promote products
+      derived from the Software without specific prior written consent.
+
+4. LIMITED WARRANTY. THE SOFTWARE IS PROVIDED "AS IS" AND WITHOUT WARRANTY OF
+   ANY KIND. WIREGUARD LLC HEREBY EXCLUDES AND DISCLAIMS ALL IMPLIED OR
+   STATUTORY WARRANTIES, INCLUDING ANY WARRANTIES OF MERCHANTABILITY, FITNESS
+   FOR A PARTICULAR PURPOSE, QUALITY, NON-INFRINGEMENT, TITLE, RESULTS,
+   EFFORTS, OR QUIET ENJOYMENT. THERE IS NO WARRANTY THAT THE PRODUCT WILL BE
+   ERROR-FREE OR WILL FUNCTION WITHOUT INTERRUPTION. YOU ASSUME THE ENTIRE
+   RISK FOR THE RESULTS OBTAINED USING THE PRODUCT. TO THE EXTENT THAT
+   WIREGUARD LLC MAY NOT DISCLAIM ANY WARRANTY AS A MATTER OF APPLICABLE LAW,
+   THE SCOPE AND DURATION OF SUCH WARRANTY WILL BE THE MINIMUM PERMITTED UNDER
+   SUCH LAW. ALL EXPRESS OR IMPLIED CONDITIONS, REPRESENTATIONS AND
+   WARRANTIES, INCLUDING ANY IMPLIED WARRANTY OF MERCHANTABILITY, FITNESS FOR
+   A PARTICULAR PURPOSE OR NON-INFRINGEMENT ARE DISCLAIMED, EXCEPT TO THE
+   EXTENT THAT THESE DISCLAIMERS ARE HELD TO BE LEGALLY INVALID.
+
+5. LIMITATION OF LIABILITY. To the extent not prohibited by law, in no event
+   WireGuard LLC or any third-party-developer will be liable for any lost
+   revenue, profit or data or for special, indirect, consequential, incidental
+   or punitive damages, however caused regardless of the theory of liability,
+   arising out of or related to the use of or inability to use Software, even
+   if WireGuard LLC has been advised of the possibility of such damages.
+   Solely you are responsible for determining the appropriateness of using
+   Software and accept full responsibility for all risks associated with its
+   exercise of rights under this agreement, including but not limited to the
+   risks and costs of program errors, compliance with applicable laws, damage
+   to or loss of data, programs or equipment, and unavailability or
+   interruption of operations. The foregoing limitations will apply even if
+   the above stated warranty fails of its essential purpose. You acknowledge,
+   that it is in the nature of software that software is complex and not
+   completely free of errors. In no event shall WireGuard LLC or any
+   third-party-developer be liable to you under any theory for any damages
+   suffered by you or any user of Software or for any special, incidental,
+   indirect, consequential or similar damages (including without limitation
+   damages for loss of business profits, business interruption, loss of
+   business information or any other pecuniary loss) arising out of the use or
+   inability to use Software, even if WireGuard LLC has been advised of the
+   possibility of such damages and regardless of the legal or quitable theory
+   (contract, tort, or otherwise) upon which the claim is based.
+
+6. TERMINATION. This agreement is affected until terminated. You may
+   terminate this agreement at any time. This agreement will terminate
+   immediately without notice from WireGuard LLC if you fail to comply with
+   the terms and conditions of this agreement. Upon termination, you must
+   delete Software and all copies of Software and cease all forms of
+   distribution of Software.
+
+7. SEVERABILITY. If any provision of this agreement is held to be
+   unenforceable, this agreement will remain in effect with the provision
+   omitted, unless omission would frustrate the intent of the parties, in
+   which case this agreement will immediately terminate.
+
+8. RESERVATION OF RIGHTS. All rights not expressly granted in this agreement
+   are reserved by WireGuard LLC. For example, WireGuard LLC reserves the
+   right at any time to cease development of Software, to alter distribution
+   details, features, specifications, capabilities, functions, licensing
+   terms, release dates, APIs, ABIs, general availability, or other
+   characteristics of the Software.
+
+### GNU Lesser General Public License v3.0 (WinDivert, Windows package)
+
+                   GNU LESSER GENERAL PUBLIC LICENSE
+                       Version 3, 29 June 2007
+
+ Copyright (C) 2007 Free Software Foundation, Inc. <https://fsf.org/>
+ Everyone is permitted to copy and distribute verbatim copies
+ of this license document, but changing it is not allowed.
+
+
+  This version of the GNU Lesser General Public License incorporates
+the terms and conditions of version 3 of the GNU General Public
+License, supplemented by the additional permissions listed below.
+
+  0. Additional Definitions.
+
+  As used herein, "this License" refers to version 3 of the GNU Lesser
+General Public License, and the "GNU GPL" refers to version 3 of the GNU
+General Public License.
+
+  "The Library" refers to a covered work governed by this License,
+other than an Application or a Combined Work as defined below.
+
+  An "Application" is any work that makes use of an interface provided
+by the Library, but which is not otherwise based on the Library.
+Defining a subclass of a class defined by the Library is deemed a mode
+of using an interface provided by the Library.
+
+  A "Combined Work" is a work produced by combining or linking an
+Application with the Library.  The particular version of the Library
+with which the Combined Work was made is also called the "Linked
+Version".
+
+  The "Minimal Corresponding Source" for a Combined Work means the
+Corresponding Source for the Combined Work, excluding any source code
+for portions of the Combined Work that, considered in isolation, are
+based on the Application, and not on the Linked Version.
+
+  The "Corresponding Application Code" for a Combined Work means the
+object code and/or source code for the Application, including any data
+and utility programs needed for reproducing the Combined Work from the
+Application, but excluding the System Libraries of the Combined Work.
+
+  1. Exception to Section 3 of the GNU GPL.
+
+  You may convey a covered work under sections 3 and 4 of this License
+without being bound by section 3 of the GNU GPL.
+
+  2. Conveying Modified Versions.
+
+  If you modify a copy of the Library, and, in your modifications, a
+facility refers to a function or data to be supplied by an Application
+that uses the facility (other than as an argument passed when the
+facility is invoked), then you may convey a copy of the modified
+version:
+
+   a) under this License, provided that you make a good faith effort to
+   ensure that, in the event an Application does not supply the
+   function or data, the facility still operates, and performs
+   whatever part of its purpose remains meaningful, or
+
+   b) under the GNU GPL, with none of the additional permissions of
+   this License applicable to that copy.
+
+  3. Object Code Incorporating Material from Library Header Files.
+
+  The object code form of an Application may incorporate material from
+a header file that is part of the Library.  You may convey such object
+code under terms of your choice, provided that, if the incorporated
+material is not limited to numerical parameters, data structure
+layouts and accessors, or small macros, inline functions and templates
+(ten or fewer lines in length), you do both of the following:
+
+   a) Give prominent notice with each copy of the object code that the
+   Library is used in it and that the Library and its use are
+   covered by this License.
+
+   b) Accompany the object code with a copy of the GNU GPL and this license
+   document.
+
+  4. Combined Works.
+
+  You may convey a Combined Work under terms of your choice that,
+taken together, effectively do not restrict modification of the
+portions of the Library contained in the Combined Work and reverse
+engineering for debugging such modifications, if you also do each of
+the following:
+
+   a) Give prominent notice with each copy of the Combined Work that
+   the Library is used in it and that the Library and its use are
+   covered by this License.
+
+   b) Accompany the Combined Work with a copy of the GNU GPL and this license
+   document.
+
+   c) For a Combined Work that displays copyright notices during
+   execution, include the copyright notice for the Library among
+   these notices, as well as a reference directing the user to the
+   copies of the GNU GPL and this license document.
+
+   d) Do one of the following:
+
+       0) Convey the Minimal Corresponding Source under the terms of this
+       License, and the Corresponding Application Code in a form
+       suitable for, and under terms that permit, the user to
+       recombine or relink the Application with a modified version of
+       the Linked Version to produce a modified Combined Work, in the
+       manner specified by section 6 of the GNU GPL for conveying
+       Corresponding Source.
+
+       1) Use a suitable shared library mechanism for linking with the
+       Library.  A suitable mechanism is one that (a) uses at run time
+       a copy of the Library already present on the user's computer
+       system, and (b) will operate properly with a modified version
+       of the Library that is interface-compatible with the Linked
+       Version.
+
+   e) Provide Installation Information, but only if you would otherwise
+   be required to provide such information under section 6 of the
+   GNU GPL, and only to the extent that such information is
+   necessary to install and execute a modified version of the
+   Combined Work produced by recombining or relinking the
+   Application with a modified version of the Linked Version. (If
+   you use option 4d0, the Installation Information must accompany
+   the Minimal Corresponding Source and Corresponding Application
+   Code. If you use option 4d1, you must provide the Installation
+   Information in the manner specified by section 6 of the GNU GPL
+   for conveying Corresponding Source.)
+
+  5. Combined Libraries.
+
+  You may place library facilities that are a work based on the
+Library side by side in a single library together with other library
+facilities that are not Applications and are not covered by this
+License, and convey such a combined library under terms of your
+choice, if you do both of the following:
+
+   a) Accompany the combined library with a copy of the same work based
+   on the Library, uncombined with any other library facilities,
+   conveyed under the terms of this License.
+
+   b) Give prominent notice with the combined library that part of it
+   is a work based on the Library, and explaining where to find the
+   accompanying uncombined form of the same work.
+
+  6. Revised Versions of the GNU Lesser General Public License.
+
+  The Free Software Foundation may publish revised and/or new versions
+of the GNU Lesser General Public License from time to time. Such new
+versions will be similar in spirit to the present version, but may
+differ in detail to address new problems or concerns.
+
+  Each version is given a distinguishing version number. If the
+Library as you received it specifies that a certain numbered version
+of the GNU Lesser General Public License "or any later version"
+applies to it, you have the option of following the terms and
+conditions either of that published version or of any later version
+published by the Free Software Foundation. If the Library as you
+received it does not specify a version number of the GNU Lesser
+General Public License, you may choose any version of the GNU Lesser
+General Public License ever published by the Free Software Foundation.
+
+  If the Library as you received it specifies that a proxy can decide
+whether future versions of the GNU Lesser General Public License shall
+apply, that proxy's public statement of acceptance of any version is
+permanent authorization for you to choose that version for the
+Library.
 
 GPL-3.0 follows below and is bundled in the repository as LICENSE.
 `;

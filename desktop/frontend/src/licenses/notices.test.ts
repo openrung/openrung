@@ -40,6 +40,24 @@ describe('bundled license notices', () => {
     expect(THIRD_PARTY_TEXT).toContain('GPL-3.0-or-later');
   });
 
+  it('covers the Windows driver binaries embedded in sing-box.exe', () => {
+    // The Windows sing-box.exe embeds wintun.dll and WinDivert64.sys
+    // (verified by byte content; THIRD_PARTY_NOTICES.md §8). Their license
+    // texts must reach recipients: the component list names them and the
+    // full-text screen reproduces both licenses verbatim.
+    const names = components.map(c => c.name);
+    expect(names.some(n => n.includes('wintun.dll'))).toBe(true);
+    expect(names.some(n => n.includes('WinDivert'))).toBe(true);
+    expect(THIRD_PARTY_TEXT).toContain('Wintun Prebuilt Binaries License');
+    expect(THIRD_PARTY_TEXT).toContain('WinDivert64.sys');
+    // The verbatim Wintun license, not just its name (§8 of the license
+    // requires its terms to accompany the binary).
+    expect(THIRD_PARTY_TEXT).toContain('RESERVATION OF RIGHTS');
+    // The full LGPL-3.0 for WinDivert.
+    expect(THIRD_PARTY_TEXT).toContain('GNU LESSER GENERAL PUBLIC LICENSE');
+    expect(THIRD_PARTY_TEXT).toContain('Combined Works');
+  });
+
   it('third-party notices carry complete license texts, not placeholders', () => {
     // The in-app copy is the only notice surface shipped with desktop
     // packages, so the appendix must reproduce the full texts.

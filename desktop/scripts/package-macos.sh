@@ -40,11 +40,17 @@ if [[ "${APP_ARCH}" != "unknown" && "${SB_ARCH}" != *"${APP_ARCH%% *}"* ]]; then
   echo "    WARNING: sing-box arch (${SB_ARCH}) may not match the app (${APP_ARCH}) — the friend's Mac needs a matching arch." >&2
 fi
 
+# The full repository notices and the GPL text must travel with the package
+# (the pointer .txt below is not a substitute for them).
+cp ../THIRD_PARTY_NOTICES.md "${RES}/THIRD_PARTY_NOTICES.md"
+cp ../LICENSE "${RES}/LICENSE"
+
 # GPL-3.0 corresponding-source notice for the bundled binary.
 SB_VER="$("${SINGBOX}" version 2>/dev/null | head -1 || echo 'unknown version')"
 cat > "${RES}/THIRD_PARTY_NOTICES.txt" <<EOF
-This application bundles sing-box (${SB_VER}), licensed under GPL-3.0.
-Source: https://github.com/SagerNet/sing-box
+This application bundles sing-box (${SB_VER}), licensed GPL-3.0-or-later
+(text: LICENSE in this folder). Third-party notices are in
+THIRD_PARTY_NOTICES.md alongside this file.
 
 OpenRung is free software (GPL-3.0-or-later).
 Source: https://github.com/openrung/openrung

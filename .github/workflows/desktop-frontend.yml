@@ -48,5 +48,12 @@ jobs:
         working-directory: desktop
         run: node --test scripts/versioned-wails-build.test.mjs
 
+      # Every staged desktop package must carry the repository's full
+      # THIRD_PARTY_NOTICES.md and LICENSE (the Windows sing-box.exe embeds
+      # driver binaries whose license texts live there).
+      - name: Test packaging notices contract
+        working-directory: desktop
+        run: node --test scripts/package-notices.test.mjs
+
       - name: Typecheck and build
         run: npm run build

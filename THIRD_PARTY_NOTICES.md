@@ -13,10 +13,14 @@ must surface it:
 - **Client CLI release archives (`openrung-client-*.tar.gz` / `.zip`)** — the
   file is copied into each archive alongside `LICENSE`
   (`.github/workflows/client-release.yml`).
-- **Desktop app (Wails GUI)** — the in-app "Open-source licenses" screen
-  renders these notices (`desktop/frontend/src/licenses/notices.ts` mirrors
-  section 7 of this file plus `LICENSE`; a frontend test pins the bundled GPL
-  text to `LICENSE`).
+- **Desktop app (Wails GUI)** — the packaging scripts
+  (`desktop/scripts/package-{windows.ps1,linux.sh,macos.sh}`) copy this file
+  and `LICENSE` into every staged package
+  (`desktop/scripts/package-notices.test.mjs` enforces it), and the in-app
+  "Open-source licenses" screen renders these notices
+  (`desktop/frontend/src/licenses/notices.ts` mirrors sections 7–8 of this
+  file plus `LICENSE`; a frontend test pins the bundled GPL text to `LICENSE`
+  and the Windows driver license texts).
 
 The OpenRung mobile app is developed and distributed from its own repository
 and must carry its own third-party notices (in-app "Open Source Licenses"
