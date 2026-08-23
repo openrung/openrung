@@ -1,9 +1,9 @@
 // In-app copy of the license texts shown on the Open-source licenses screen,
 // ported from openrung-mobile-app/src/licenses/notices.ts but inventorying the
-// DESKTOP bundle: the Wails app binary (Go), the embedded web frontend, and
-// the bundled sing-box engine binary. Mirrors this repository's LICENSE (full
-// GNU GPL-3.0 text) and the desktop section of THIRD_PARTY_NOTICES.md — keep
-// them in sync when either changes.
+// DESKTOP package: the Wails app binary (Go, including the statically linked
+// sing-box engine) and the embedded web frontend. Mirrors this repository's
+// LICENSE (full GNU GPL-3.0 text) and the desktop section of
+// THIRD_PARTY_NOTICES.md — keep them in sync when either changes.
 //
 // Inventory provenance (2026-07-11): Go modules from the union of
 //   `GOOS={darwin,windows,linux} go list -deps -tags desktop,production .`
@@ -24,9 +24,8 @@ export interface LicenseComponent {
  * with copyright lines lives in THIRD_PARTY_TEXT below.
  */
 export const components: LicenseComponent[] = [
-  { name: 'sing-box (bundled engine)', license: 'GPL-3.0-or-later', url: 'https://github.com/SagerNet/sing-box' },
-  { name: 'wintun.dll (inside sing-box.exe, Windows)', license: 'Wintun Prebuilt Binaries License', url: 'https://www.wintun.net' },
-  { name: 'WinDivert (inside sing-box.exe, Windows)', license: 'LGPL-3.0', url: 'https://github.com/basil00/WinDivert' },
+  { name: 'sing-box (linked engine)', license: 'GPL-3.0-or-later', url: 'https://github.com/SagerNet/sing-box' },
+  { name: 'wintun.dll (inside the Windows app binary)', license: 'Wintun Prebuilt Binaries License', url: 'https://www.wintun.net' },
   { name: 'gVisor', license: 'Apache-2.0', url: 'https://github.com/google/gvisor' },
   { name: 'quic-go', license: 'MIT', url: 'https://github.com/quic-go/quic-go' },
   { name: 'wireguard-go', license: 'MIT', url: 'https://git.zx2c4.com/wireguard-go' },
@@ -64,8 +63,9 @@ source of truth; this in-app copy is kept in sync with it by hand.
 
 ### sing-box — GPL-3.0-or-later
 
-- Component: github.com/SagerNet/sing-box — the tunnel engine binary bundled
-  inside the desktop release packages and run as a supervised subprocess.
+- Component: github.com/SagerNet/sing-box — the tunnel engine, statically
+  linked into the app binary and run by re-invoking the app itself as its own
+  tunnel child process.
 - License: GNU General Public License v3.0 or later (GPL-3.0-or-later), with
   an additional permitted term.
 - Upstream: https://github.com/SagerNet/sing-box
@@ -73,19 +73,22 @@ source of truth; this in-app copy is kept in sync with it by hand.
   work may use the name or imply association with this application without
   prior consent."
 
-The sing-box binary embeds, among others: gVisor (Apache-2.0,
-https://github.com/google/gvisor), quic-go (MIT,
+The engine brings its own transitive set into the app binary, among others:
+gVisor (Apache-2.0, https://github.com/google/gvisor), quic-go (MIT,
 https://github.com/quic-go/quic-go), wireguard-go (MIT,
 https://git.zx2c4.com/wireguard-go), and utls (BSD-3-Clause,
-https://github.com/refraction-networking/utls). The full transitive set is
-captured from the exact sing-box release each desktop build pins (see the
-desktop release workflow).
+https://github.com/refraction-networking/utls). It also brings sing-box's own
+GPL-3.0-or-later family (github.com/sagernet/sing, sing-mux, sing-tun,
+sing-vmess, sing-shadowsocks, sing-shadowtls, sing-quic, and the rest;
+Copyright (C) 2022 by nekohasekai), under these same terms. The full set is
+inventoried in the repository's THIRD_PARTY_NOTICES.md for the exact version
+pinned in the root go.mod, which is the same engine the OpenRung terminal
+client links.
 
-### Windows driver binaries embedded in sing-box.exe
+### Windows driver binary embedded in the app binary
 
-The Windows build of the bundled sing-box.exe embeds two prebuilt driver
-binaries, byte-for-byte unmodified, extracted and loaded at runtime by
-sing-box's own code:
+The Windows build embeds one prebuilt driver binary, byte-for-byte unmodified,
+which sing-box's own code extracts and loads at runtime:
 
 - wintun.dll (Copyright (C) WireGuard LLC) — the DLL binary is licensed under
   the Wintun Prebuilt Binaries License, reproduced in full in the appendix
@@ -94,18 +97,19 @@ sing-box's own code:
   it is MIT (Copyright (C) 2017-2021 WireGuard LLC). OpenRung is not
   affiliated with and does not claim endorsement by WireGuard LLC, the
   WireGuard project, or the Wintun project. Upstream: https://www.wintun.net
-  (driver source, GPL-2.0: https://git.zx2c4.com/wintun/).
-- WinDivert64.sys v2.2.2 (https://github.com/basil00/WinDivert) —
-  redistributed by sing-box under WinDivert's LGPL-3.0 option; the GNU Lesser
-  General Public License v3.0 is reproduced in full in the appendix below
-  (it supplements the GPL-3.0, whose full text this screen also carries).
-  Complete corresponding source: https://github.com/basil00/WinDivert.
+  (driver source, GPL-2.0: https://git.zx2c4.com/wintun/). The desktop app is
+  proxy-mode only, so it never extracts or loads this driver; the bytes
+  nevertheless ship inside the Windows binary and this notice applies.
 
-The macOS and Linux sing-box builds embed no Windows drivers; this subsection
-applies to the Windows desktop package only.
+sing-box can also embed WinDivert64.sys (LGPL-3.0), for Windows backends this
+app never uses. Every OpenRung build is compiled with with_external_windivert,
+so that driver is not in this package and its licence terms do not apply here.
+
+The macOS and Linux builds embed no Windows drivers; this subsection applies
+to the Windows desktop package only.
 
 OpenRung's own code is GPL-3.0-or-later (see LICENSE); the distributed desktop
-bundle as a whole is licensed to recipients under GPL-3.0-or-later.
+package as a whole is licensed to recipients under GPL-3.0-or-later.
 
 OpenRung is not affiliated with or endorsed by sing-box or SagerNet; the
 sing-box name is used only descriptively.
@@ -114,8 +118,8 @@ sing-box name is used only descriptively.
 
 ## 2. Application binary (Go) — permissive components
 
-Statically linked into the OpenRung desktop binary
-(union of the darwin/windows/linux production builds):
+Statically linked into the OpenRung desktop binary alongside the engine's own
+set above (union of the darwin/windows/linux production builds):
 
 ### MPL-2.0
 
@@ -564,174 +568,6 @@ Prebuilt Binaries License
    details, features, specifications, capabilities, functions, licensing
    terms, release dates, APIs, ABIs, general availability, or other
    characteristics of the Software.
-
-### GNU Lesser General Public License v3.0 (WinDivert, Windows package)
-
-                   GNU LESSER GENERAL PUBLIC LICENSE
-                       Version 3, 29 June 2007
-
- Copyright (C) 2007 Free Software Foundation, Inc. <https://fsf.org/>
- Everyone is permitted to copy and distribute verbatim copies
- of this license document, but changing it is not allowed.
-
-
-  This version of the GNU Lesser General Public License incorporates
-the terms and conditions of version 3 of the GNU General Public
-License, supplemented by the additional permissions listed below.
-
-  0. Additional Definitions.
-
-  As used herein, "this License" refers to version 3 of the GNU Lesser
-General Public License, and the "GNU GPL" refers to version 3 of the GNU
-General Public License.
-
-  "The Library" refers to a covered work governed by this License,
-other than an Application or a Combined Work as defined below.
-
-  An "Application" is any work that makes use of an interface provided
-by the Library, but which is not otherwise based on the Library.
-Defining a subclass of a class defined by the Library is deemed a mode
-of using an interface provided by the Library.
-
-  A "Combined Work" is a work produced by combining or linking an
-Application with the Library.  The particular version of the Library
-with which the Combined Work was made is also called the "Linked
-Version".
-
-  The "Minimal Corresponding Source" for a Combined Work means the
-Corresponding Source for the Combined Work, excluding any source code
-for portions of the Combined Work that, considered in isolation, are
-based on the Application, and not on the Linked Version.
-
-  The "Corresponding Application Code" for a Combined Work means the
-object code and/or source code for the Application, including any data
-and utility programs needed for reproducing the Combined Work from the
-Application, but excluding the System Libraries of the Combined Work.
-
-  1. Exception to Section 3 of the GNU GPL.
-
-  You may convey a covered work under sections 3 and 4 of this License
-without being bound by section 3 of the GNU GPL.
-
-  2. Conveying Modified Versions.
-
-  If you modify a copy of the Library, and, in your modifications, a
-facility refers to a function or data to be supplied by an Application
-that uses the facility (other than as an argument passed when the
-facility is invoked), then you may convey a copy of the modified
-version:
-
-   a) under this License, provided that you make a good faith effort to
-   ensure that, in the event an Application does not supply the
-   function or data, the facility still operates, and performs
-   whatever part of its purpose remains meaningful, or
-
-   b) under the GNU GPL, with none of the additional permissions of
-   this License applicable to that copy.
-
-  3. Object Code Incorporating Material from Library Header Files.
-
-  The object code form of an Application may incorporate material from
-a header file that is part of the Library.  You may convey such object
-code under terms of your choice, provided that, if the incorporated
-material is not limited to numerical parameters, data structure
-layouts and accessors, or small macros, inline functions and templates
-(ten or fewer lines in length), you do both of the following:
-
-   a) Give prominent notice with each copy of the object code that the
-   Library is used in it and that the Library and its use are
-   covered by this License.
-
-   b) Accompany the object code with a copy of the GNU GPL and this license
-   document.
-
-  4. Combined Works.
-
-  You may convey a Combined Work under terms of your choice that,
-taken together, effectively do not restrict modification of the
-portions of the Library contained in the Combined Work and reverse
-engineering for debugging such modifications, if you also do each of
-the following:
-
-   a) Give prominent notice with each copy of the Combined Work that
-   the Library is used in it and that the Library and its use are
-   covered by this License.
-
-   b) Accompany the Combined Work with a copy of the GNU GPL and this license
-   document.
-
-   c) For a Combined Work that displays copyright notices during
-   execution, include the copyright notice for the Library among
-   these notices, as well as a reference directing the user to the
-   copies of the GNU GPL and this license document.
-
-   d) Do one of the following:
-
-       0) Convey the Minimal Corresponding Source under the terms of this
-       License, and the Corresponding Application Code in a form
-       suitable for, and under terms that permit, the user to
-       recombine or relink the Application with a modified version of
-       the Linked Version to produce a modified Combined Work, in the
-       manner specified by section 6 of the GNU GPL for conveying
-       Corresponding Source.
-
-       1) Use a suitable shared library mechanism for linking with the
-       Library.  A suitable mechanism is one that (a) uses at run time
-       a copy of the Library already present on the user's computer
-       system, and (b) will operate properly with a modified version
-       of the Library that is interface-compatible with the Linked
-       Version.
-
-   e) Provide Installation Information, but only if you would otherwise
-   be required to provide such information under section 6 of the
-   GNU GPL, and only to the extent that such information is
-   necessary to install and execute a modified version of the
-   Combined Work produced by recombining or relinking the
-   Application with a modified version of the Linked Version. (If
-   you use option 4d0, the Installation Information must accompany
-   the Minimal Corresponding Source and Corresponding Application
-   Code. If you use option 4d1, you must provide the Installation
-   Information in the manner specified by section 6 of the GNU GPL
-   for conveying Corresponding Source.)
-
-  5. Combined Libraries.
-
-  You may place library facilities that are a work based on the
-Library side by side in a single library together with other library
-facilities that are not Applications and are not covered by this
-License, and convey such a combined library under terms of your
-choice, if you do both of the following:
-
-   a) Accompany the combined library with a copy of the same work based
-   on the Library, uncombined with any other library facilities,
-   conveyed under the terms of this License.
-
-   b) Give prominent notice with the combined library that part of it
-   is a work based on the Library, and explaining where to find the
-   accompanying uncombined form of the same work.
-
-  6. Revised Versions of the GNU Lesser General Public License.
-
-  The Free Software Foundation may publish revised and/or new versions
-of the GNU Lesser General Public License from time to time. Such new
-versions will be similar in spirit to the present version, but may
-differ in detail to address new problems or concerns.
-
-  Each version is given a distinguishing version number. If the
-Library as you received it specifies that a certain numbered version
-of the GNU Lesser General Public License "or any later version"
-applies to it, you have the option of following the terms and
-conditions either of that published version or of any later version
-published by the Free Software Foundation. If the Library as you
-received it does not specify a version number of the GNU Lesser
-General Public License, you may choose any version of the GNU Lesser
-General Public License ever published by the Free Software Foundation.
-
-  If the Library as you received it specifies that a proxy can decide
-whether future versions of the GNU Lesser General Public License shall
-apply, that proxy's public statement of acceptance of any version is
-permanent authorization for you to choose that version for the
-Library.
 
 GPL-3.0 follows below and is bundled in the repository as LICENSE.
 `;

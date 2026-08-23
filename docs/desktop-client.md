@@ -1,7 +1,8 @@
 # Desktop Clients
 
 OpenRung ships a Wails desktop app for Linux, macOS, and Windows. It runs a
-mixed HTTP/SOCKS proxy on loopback, requiring no administrator privileges.
+mixed HTTP/SOCKS proxy on loopback, requiring no administrator privileges, and
+installs as a single executable with the tunnel engine linked in.
 This repository also contains a terminal client (`cmd/client`) that drives the
 same connection engine from a TUI and can additionally route the whole device
 through a TUN interface. Both are described below.
@@ -26,6 +27,31 @@ state remain desktop application responsibilities. Android and iOS are
 maintained and released outside this repository and implement the same
 direct-first contract through their own platform orchestration over pinned
 `brokerapi` and `wsscore` releases.
+
+## Desktop App: Bundled Engine
+
+The app statically links the sing-box tunnel engine (`internal/singboxruntime`,
+pinned in the root `go.mod` — the same engine and pin as the terminal client)
+and starts a tunnel by re-invoking its own executable as the sing-box child
+process. A release package is therefore one binary plus its license notices:
+nothing to install, nothing to find on `PATH` — which is what a Finder- or
+launcher-started app never reliably had. The engine's supervision is unchanged
+from an external binary: it starts the child, watches its exit status, and
+interrupts it (then hard-kills after a grace period) on disconnect.
+
+`OpenRung version` prints the app version and the linked engine's version and
+build tags. Every package is built with `-tags with_utls` (Reality, which every
+relay endpoint needs) and `with_external_windivert`
+(`desktop/scripts/versioned-wails-build.mjs` injects both, and
+`verify-bundled-engine.mjs` refuses to package a binary that lost one). A plain
+`go build` still compiles, but the resulting app cannot dial any relay and says
+so in that version output.
+
+On Windows the engine cannot deliver an interrupt to the child, so teardown is
+a hard kill after the grace period. That costs nothing in proxy mode — the only
+mode the desktop app offers — because no device or routes are held; it is also
+why the terminal client refuses TUN mode there (see
+[Windows](#windows) below).
 
 ## Desktop App: Local Proxy
 

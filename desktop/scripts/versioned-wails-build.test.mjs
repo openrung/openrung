@@ -6,7 +6,9 @@ import test from 'node:test';
 
 import {
   appVersionFromSources,
+  mergedBuildTags,
   readAppVersion,
+  singBoxBuildTags,
   versionedWailsBuildArgs,
 } from './versioned-wails-build.mjs';
 
@@ -53,7 +55,41 @@ test('rejects drift between VERSION and the wails.json copy', () => {
 test('injects the app version while preserving other build arguments', () => {
   assert.deepEqual(versionedWailsBuildArgs(['-tags', 'webkit2_41'], '0.1.3'), [
     '-tags',
-    'webkit2_41',
+    'webkit2_41,with_utls,with_external_windivert',
+    '-ldflags',
+    '-X github.com/openrung/openrung/connectcore/client.appVersion=0.1.3',
+  ]);
+});
+
+// The bundled sing-box engine is only reachable through a with_utls build, so
+// a package built without it compiles, installs, and then fails every connect.
+// Injecting the tags here means no packaging script or workflow step can lose
+// them, and no caller -tags value can displace them.
+test('every build carries the sing-box engine build tags', () => {
+  assert.deepEqual(singBoxBuildTags, ['with_utls', 'with_external_windivert']);
+  for (const args of [[], ['-tags', 'webkit2_41'], ['-tags=webkit2_41'], ['-debug']]) {
+    const built = versionedWailsBuildArgs(args, '0.1.3');
+    const tags = built[built.indexOf('-tags') + 1].split(',');
+    for (const tag of singBoxBuildTags) {
+      assert.ok(tags.includes(tag), `${JSON.stringify(args)} lost the ${tag} build tag`);
+    }
+  }
+});
+
+test('merges tags into one comma-joined value Wails accepts', () => {
+  // Wails rejects a -tags value that mixes spaces and commas, and honors only
+  // the last of repeated flags — so both forms must collapse into one value.
+  assert.equal(mergedBuildTags([]), 'with_utls,with_external_windivert');
+  assert.equal(mergedBuildTags(['webkit2_41 hidden']), 'webkit2_41,hidden,with_utls,with_external_windivert');
+  assert.equal(
+    mergedBuildTags(['webkit2_41,hidden', 'extra']),
+    'webkit2_41,hidden,extra,with_utls,with_external_windivert',
+  );
+  // A caller that already passes one of ours must not duplicate it.
+  assert.equal(mergedBuildTags(['with_utls']), 'with_utls,with_external_windivert');
+  assert.deepEqual(versionedWailsBuildArgs(['-tags', 'a', '-tags=b'], '0.1.3'), [
+    '-tags',
+    'a,b,with_utls,with_external_windivert',
     '-ldflags',
     '-X github.com/openrung/openrung/connectcore/client.appVersion=0.1.3',
   ]);
@@ -67,6 +103,8 @@ test('merges separate and equals-form caller ldflags before the app version', ()
     ),
     [
       '-debug',
+      '-tags',
+      'with_utls,with_external_windivert',
       '-ldflags',
       '-s -w -X github.com/openrung/openrung/connectcore/client.appVersion=custom -X github.com/openrung/openrung/connectcore/client.appVersion=0.1.3',
     ],
@@ -82,6 +120,7 @@ test('rejects a non-semantic build version', () => {
   }
 });
 
-test('rejects a caller ldflags option without a value', () => {
+test('rejects a caller ldflags or tags option without a value', () => {
   assert.throws(() => versionedWailsBuildArgs(['-ldflags'], '0.1.3'), /-ldflags requires a value/);
+  assert.throws(() => versionedWailsBuildArgs(['-tags'], '0.1.3'), /-tags requires a value/);
 });

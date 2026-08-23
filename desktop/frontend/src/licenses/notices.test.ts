@@ -40,22 +40,29 @@ describe('bundled license notices', () => {
     expect(THIRD_PARTY_TEXT).toContain('GPL-3.0-or-later');
   });
 
-  it('covers the Windows driver binaries embedded in sing-box.exe', () => {
-    // The Windows sing-box.exe embeds wintun.dll and WinDivert64.sys
-    // (verified by byte content; THIRD_PARTY_NOTICES.md §8). Their license
-    // texts must reach recipients: the component list names them and the
-    // full-text screen reproduces both licenses verbatim.
+  it('covers the Windows driver binary embedded in the app binary', () => {
+    // The Windows app binary embeds wintun.dll through the linked sing-box
+    // engine (verified by byte content; THIRD_PARTY_NOTICES.md §8). Its
+    // license text must reach recipients: the component list names it and the
+    // full-text screen reproduces the license verbatim.
     const names = components.map(c => c.name);
     expect(names.some(n => n.includes('wintun.dll'))).toBe(true);
-    expect(names.some(n => n.includes('WinDivert'))).toBe(true);
     expect(THIRD_PARTY_TEXT).toContain('Wintun Prebuilt Binaries License');
-    expect(THIRD_PARTY_TEXT).toContain('WinDivert64.sys');
     // The verbatim Wintun license, not just its name (§8 of the license
     // requires its terms to accompany the binary).
     expect(THIRD_PARTY_TEXT).toContain('RESERVATION OF RIGHTS');
-    // The full LGPL-3.0 for WinDivert.
-    expect(THIRD_PARTY_TEXT).toContain('GNU LESSER GENERAL PUBLIC LICENSE');
-    expect(THIRD_PARTY_TEXT).toContain('Combined Works');
+  });
+
+  it('says WinDivert is excluded rather than claiming to ship it', () => {
+    // Every OpenRung build passes with_external_windivert, so the LGPLv3
+    // driver is not in the package and its text is deliberately absent — the
+    // packaging gate (desktop/scripts/verify-bundled-engine.mjs) fails a
+    // build whose bytes contain it. If that ever changes, this screen must
+    // carry the LGPL-3.0 text again, and this test is where it is written
+    // down.
+    expect(THIRD_PARTY_TEXT).toContain('with_external_windivert');
+    expect(THIRD_PARTY_TEXT).not.toContain('GNU LESSER GENERAL PUBLIC LICENSE');
+    expect(components.map(c => c.name).some(n => n.includes('WinDivert'))).toBe(false);
   });
 
   it('third-party notices carry complete license texts, not placeholders', () => {

@@ -7,6 +7,23 @@ const configPath = fileURLToPath(new URL('../wails.json', import.meta.url));
 const semanticVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const appVersionVariable = 'github.com/openrung/openrung/connectcore/client.appVersion';
 
+// The bundled sing-box engine's build tags (internal/singboxruntime). Every
+// desktop package must carry them, for the same reasons every cmd/client build
+// does (Makefile, .github/workflows/client-release.yml):
+//
+//   with_utls                the uTLS/Reality client — without it the linked
+//                            engine cannot dial any relay's Reality endpoint,
+//                            so the app builds and then fails every connect
+//   with_external_windivert  keeps sing-box's embedded WinDivert64.sys driver
+//                            (LGPLv3; serves Windows bridge/tlsspoof backends
+//                            this app never uses) out of the Windows binary
+//                            and the release packages
+//
+// They are injected here rather than spelled out in each packaging script so
+// no build path can lose them; the release workflow's version smoke test is
+// the second line of defence.
+export const singBoxBuildTags = ['with_utls', 'with_external_windivert'];
+
 // desktop/VERSION is the canonical version source. wails.json keeps an
 // info.productVersion copy because Wails stamps it into the native package
 // metadata (Info.plist, the Windows exe resource); refuse to build when the
@@ -47,6 +64,22 @@ export function readAppVersion(versionSource = versionPath, configSource = confi
   return appVersionFromSources(versionFileContents, config, versionSource, configSource);
 }
 
+// Wails accepts comma- OR space-separated tags but rejects a value mixing
+// both, and its -tags is a single flag (a second occurrence would silently win
+// over the first). So caller tags are split on either separator, merged with
+// the required sing-box tags, and re-emitted as one comma-joined value.
+export function mergedBuildTags(callerTags) {
+  const tags = [];
+  for (const value of [...callerTags, ...singBoxBuildTags]) {
+    for (const tag of String(value).split(/[\s,]+/)) {
+      if (tag !== '' && !tags.includes(tag)) {
+        tags.push(tag);
+      }
+    }
+  }
+  return tags.join(',');
+}
+
 export function versionedWailsBuildArgs(args, version) {
   if (typeof version !== 'string' || !semanticVersion.test(version)) {
     throw new Error(`build version ${JSON.stringify(version)} must be a semantic X.Y.Z version`);
@@ -54,20 +87,30 @@ export function versionedWailsBuildArgs(args, version) {
 
   const passthrough = [];
   const callerLdflags = [];
+  const callerTags = [];
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
-    if (argument === '-ldflags' || argument === '--ldflags') {
+    const collected = [
+      ['-ldflags', callerLdflags],
+      ['-tags', callerTags],
+    ].find(([name]) => argument === name || argument === `-${name}`);
+    if (collected !== undefined) {
       if (index + 1 >= args.length) {
         throw new Error(`${argument} requires a value`);
       }
-      callerLdflags.push(args[index + 1]);
+      collected[1].push(args[index + 1]);
       index += 1;
       continue;
     }
 
-    const equalsForm = ['-ldflags=', '--ldflags='].find((prefix) => argument.startsWith(prefix));
+    const equalsForm = [
+      ['-ldflags=', callerLdflags],
+      ['--ldflags=', callerLdflags],
+      ['-tags=', callerTags],
+      ['--tags=', callerTags],
+    ].find(([prefix]) => argument.startsWith(prefix));
     if (equalsForm !== undefined) {
-      callerLdflags.push(argument.slice(equalsForm.length));
+      equalsForm[1].push(argument.slice(equalsForm[0].length));
       continue;
     }
 
@@ -78,7 +121,7 @@ export function versionedWailsBuildArgs(args, version) {
   // caller cannot accidentally replace the version from desktop/VERSION.
   const versionLdflag = `-X ${appVersionVariable}=${version}`;
   const ldflags = [...callerLdflags.filter((value) => value.trim() !== ''), versionLdflag].join(' ');
-  return [...passthrough, '-ldflags', ldflags];
+  return [...passthrough, '-tags', mergedBuildTags(callerTags), '-ldflags', ldflags];
 }
 
 function displayArgument(argument) {

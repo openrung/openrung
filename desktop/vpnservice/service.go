@@ -88,8 +88,9 @@ var clientID = clienttelemetry.ClientID
 type Service struct {
 	Emitter func(NativeVpnState)
 
-	// SingBoxPath overrides the sing-box binary path (defaults to "sing-box"
-	// resolved via PATH). Packaging points this at the bundled binary; it is
+	// SingBoxPath is the binary the engine runs the tunnel from (empty means
+	// "sing-box" resolved via PATH). Package main points it at the app's own
+	// executable, which re-execs into the bundled engine's run shim; it is
 	// forwarded to the engine in Startup, before any bound method can connect.
 	SingBoxPath string
 
