@@ -49,11 +49,18 @@ jobs:
         run: node --test scripts/versioned-wails-build.test.mjs
 
       # Every staged desktop package must carry the repository's full
-      # THIRD_PARTY_NOTICES.md and LICENSE (the Windows sing-box.exe embeds
-      # driver binaries whose license texts live there).
+      # THIRD_PARTY_NOTICES.md and LICENSE (the linked sing-box engine embeds
+      # a Windows driver binary whose license text lives there).
       - name: Test packaging notices contract
         working-directory: desktop
         run: node --test scripts/package-notices.test.mjs
+
+      # The acceptance check every packaging script runs on the binary it just
+      # built: right engine version, with_utls present, app version stamped
+      # in, no LGPLv3 WinDivert driver in a Windows package.
+      - name: Test bundled engine verification
+        working-directory: desktop
+        run: node --test scripts/verify-bundled-engine.test.mjs
 
       - name: Typecheck and build
         run: npm run build

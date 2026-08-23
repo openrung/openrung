@@ -25,7 +25,7 @@ export function LicensesScreen({ onBack, onOpenFullText }: Props) {
 
       <p className="or-licenses-intro">
         OpenRung is free software licensed under GPL-3.0-or-later because it is built from
-        GPL-licensed code and bundles the sing-box engine. The complete corresponding source for
+        GPL-licensed code and links the sing-box engine. The complete corresponding source for
         this build is available at the link below.
       </p>
 

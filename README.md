@@ -161,11 +161,12 @@ relays register with the public OpenRung broker automatically.
 
 You need Go 1.25+. Running a relay also requires an
 [Xray-core](https://github.com/XTLS/Xray-core) binary that supports
-`xray x25519` and `xray run -config`. The terminal client bundles its own
-sing-box engine — no separate install; build it with
-`-tags with_utls,with_external_windivert` (as the Makefile and release
-workflow do: uTLS to dial Reality relays, and no embedded WinDivert driver),
-and pass `-sing-box <path>` only to substitute an external binary.
+`xray x25519` and `xray run -config`. The terminal client and the desktop app
+bundle their own sing-box engine — no separate install; build them with
+`-tags with_utls,with_external_windivert` (as the Makefile, the desktop
+packaging scripts, and the release workflows do: uTLS to dial Reality relays,
+and no embedded WinDivert driver), and pass the client's `-sing-box <path>`
+only to substitute an external binary.
 
 #### Start the broker
 
@@ -389,8 +390,8 @@ and thank you for helping people reach the open internet.
 OpenRung is licensed under the **GNU General Public License v3.0 or later**
 (GPL-3.0-or-later). See [`LICENSE`](LICENSE).
 
-The mobile app (maintained in its own repository) and the terminal client
-(`cmd/client`) statically link
+The mobile app (maintained in its own repository), the terminal client
+(`cmd/client`), and the desktop app statically link
 [sing-box](https://github.com/SagerNet/sing-box) (GPL-3.0-or-later), so the
 combined apps — and the project as a whole — are GPL-3.0-or-later. The relay
 transport's VLESS + REALITY + Vision support comes

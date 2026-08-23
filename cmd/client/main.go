@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/openrung/openrung/connectcore"
 	"github.com/openrung/openrung/connectcore/proxyconfig"
@@ -46,8 +45,10 @@ func run(args []string) error {
 		return runConfig(args[1:])
 	case "connect":
 		return runConnect(args[1:])
-	case "run":
-		return runSingBox(args[1:])
+	// The bundled sing-box engine's process face: the engine's runner
+	// re-execs this binary into it (internal/singboxruntime).
+	case singboxruntime.Subcommand:
+		return singboxruntime.RunSubcommand(args[1:])
 	case "-version", "--version", "version":
 		fmt.Println(versionInfo())
 		return nil
@@ -60,21 +61,7 @@ func run(args []string) error {
 }
 
 func versionInfo() string {
-	return fmt.Sprintf("%s\nsing-box/%s (bundled, %s)",
-		buildinfo.Info("client", baseVersion),
-		strings.TrimPrefix(singboxruntime.Version(), "v"),
-		utlsBuildLabel())
-}
-
-// utlsBuildLabel distinguishes a release-shaped build from a plain `go build`
-// in version output: without the with_utls tag the bundled runtime cannot
-// reach any relay's Reality endpoint, and this label is the first place to
-// look when a locally built client fails at tunnel creation.
-func utlsBuildLabel() string {
-	if singboxruntime.UTLSEnabled {
-		return "with_utls"
-	}
-	return "NO with_utls — cannot dial Reality relays; rebuild with -tags with_utls"
+	return buildinfo.Info("client", baseVersion) + "\n" + singboxruntime.VersionLine()
 }
 
 // connectConfig is the connect subcommand's flag surface: the historical
@@ -118,12 +105,12 @@ func runConnect(args []string) error {
 	}
 
 	// The empty default selects the bundled sing-box: the engine's runner
-	// re-execs this binary into the internal run subcommand (singbox.go). An
-	// explicit -sing-box keeps its historical external-binary meaning.
+	// re-execs this binary into the internal run subcommand. An explicit
+	// -sing-box keeps its historical external-binary meaning.
 	if cfg.SingBoxPath == "" {
-		exe, err := bundledSingBoxPath()
+		exe, err := singboxruntime.SelfPath()
 		if err != nil {
-			return fmt.Errorf("resolve own executable for the bundled sing-box runtime (pass -sing-box to use an external binary): %w", err)
+			return fmt.Errorf("%w (pass -sing-box to use an external binary)", err)
 		}
 		cfg.SingBoxPath = exe
 	}

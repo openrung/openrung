@@ -34,9 +34,10 @@ commit each release is built against.
 > and take the union across `GOOS={linux,windows,darwin}`)
 > for the server binaries and the client CLI;
 > for the desktop app, the union of
-> `GOOS={darwin,windows,linux} go list -deps -tags desktop,production .`
-> run inside `desktop/`, plus the runtime `dependencies` of
-> `desktop/frontend/package.json`.
+> `GOOS={darwin,windows,linux} go list -deps -tags desktop,production,with_utls,with_external_windivert .`
+> run inside `desktop/` (the tags every desktop package is built with — see
+> `desktop/scripts/versioned-wails-build.mjs`), plus the runtime
+> `dependencies` of `desktop/frontend/package.json`.
 
 ---
 
@@ -46,12 +47,13 @@ commit each release is built against.
 
 - **Component:** `github.com/SagerNet/sing-box` (the `libbox` mobile library,
   statically linked into the OpenRung mobile app — developed in its own
-  repository —; since the desktop GUI, the sing-box engine **binary
-  bundled into desktop release packages** and run as a supervised subprocess
-  (the pinned version lives in `.github/workflows/desktop-release.yml`); and,
-  since client CLI 0.5.0, the sing-box engine **statically linked into
-  `openrung-client`** through `internal/singboxruntime` — the pinned version
-  lives in the root `go.mod`)
+  repository —; and the sing-box engine **statically linked into
+  `openrung-client`** (since client CLI 0.5.0) **and into the desktop app**
+  (since desktop 0.1.5) through `internal/singboxruntime` — one pinned
+  version for both, in the root `go.mod`. Desktop packages through v0.1.3
+  instead bundled an upstream sing-box **binary** and ran it as a supervised
+  subprocess; the version they pinned lived in
+  `.github/workflows/desktop-release.yml`.)
 - **License:** GNU General Public License v3.0 or later (**GPL-3.0-or-later**),
   with an additional permitted term.
 - **Upstream:** https://github.com/SagerNet/sing-box
@@ -61,27 +63,29 @@ commit each release is built against.
   *"In addition, no derivative work may use the name or imply association with
   this application without prior consent."*
 
-sing-box is **statically linked** into the OpenRung mobile app and into the
-`openrung-client` terminal client. Under GPL-3.0 §5, each resulting combined
-work — including OpenRung's own first-party code in those binaries — is
-licensed to recipients under **GPL-3.0-or-later**. OpenRung as a whole is
-licensed under GPL-3.0-or-later (see `LICENSE`).
+sing-box is **statically linked** into the OpenRung mobile app, the
+`openrung-client` terminal client, and the desktop app. Under GPL-3.0 §5, each
+resulting combined work — including OpenRung's own first-party code in those
+binaries — is licensed to recipients under **GPL-3.0-or-later**. OpenRung as a
+whole is licensed under GPL-3.0-or-later (see `LICENSE`).
 
 The mobile app's repository must carry the full sing-box notices, including
 the libbox transitive set (`gvisor`, `quic-go`, `wireguard-go`, `utls`,
 `sagernet/*`, …) captured from the exact sing-box commit each release is
 built against.
 
-The `openrung-client` static link brings sing-box's GPL-3.0-or-later family
-into the client binary as well: `github.com/sagernet/sing`, `…/sing-mux`,
+The `openrung-client` and desktop static links bring sing-box's
+GPL-3.0-or-later family into those binaries as well:
+`github.com/sagernet/sing`, `…/sing-mux`,
 `…/sing-shadowsocks`, `…/sing-shadowsocks2`, `…/sing-shadowtls`,
 `…/sing-snell`, `…/sing-tun`, `…/sing-vmess`, `…/fswatch` (all
 Copyright (C) 2022 by nekohasekai), and `github.com/anytls/sing-anytls`
 (Copyright (C) 2025 anytls) — same GPL-3.0-or-later terms; the text is this
 repository's `LICENSE`. The permissively licensed remainder of that
 transitive set is inventoried in section 5, and the Windows driver binary it
-embeds in section 8. Client CLI builds pass `with_external_windivert`, so
-the WinDivert driver is **excluded** from every client archive (section 8).
+embeds in section 8. Every client CLI and desktop build passes
+`with_external_windivert`, so the WinDivert driver is **excluded** from every
+OpenRung release archive and package (section 8).
 
 OpenRung is **not affiliated with or endorsed by** sing-box or SagerNet; the
 sing-box name is used only descriptively.
@@ -184,8 +188,8 @@ apply to the Docker image channel only.
   Gorilla WebSocket Authors (statically linked into the relay-local WSS
   sidecar, the client CLI, and the desktop application)
 - `github.com/godbus/dbus/v5` v5.2.2 — Copyright (c) 2013, Georg Reinke,
-  Google (client CLI Linux builds, via sing-box's `resolved` service; also in
-  the desktop app — section 7.2)
+  Google (Linux builds of the client CLI and the desktop app, via sing-box's
+  `resolved` service and Wails' notifications — section 7.2)
 
 ### BSD-3-Clause
 
@@ -202,7 +206,8 @@ across the binaries; versions per the root `go.mod`):
 - Go standard library / runtime — Copyright (c) The Go Authors
   (source: https://github.com/golang/go)
 
-Client CLI only (the bundled sing-box engine's transitive set):
+Client CLI and desktop app (the linked sing-box engine's transitive set — one
+root `go.mod` pin, so one set for both):
 
 - `golang.org/x/exp` and `golang.org/x/mod` v0.37.0 — Copyright (c) The Go
   Authors
@@ -219,9 +224,9 @@ Client CLI only (the bundled sing-box engine's transitive set):
 
 ### Apache-2.0
 
-Client CLI only (the bundled sing-box engine's transitive set). Full text:
-https://www.apache.org/licenses/LICENSE-2.0 — none of these ship a NOTICE
-file:
+Client CLI and desktop app (the linked sing-box engine's transitive set).
+Full text: https://www.apache.org/licenses/LICENSE-2.0 — none of these ship a
+NOTICE file:
 
 - `github.com/caddyserver/certmagic` v0.25.3 and `github.com/mholt/acmez/v3`
   v3.1.6 — Copyright Matthew Holt
@@ -237,12 +242,13 @@ file:
 ### ISC
 
 - `github.com/coder/websocket` v1.8.14 — Copyright (c) 2025 Coder (client
-  CLI only, via sing-box's API service)
+  CLI and desktop app, via sing-box's API service)
 
 ### Public domain (CC0 / Unlicense)
 
-- `github.com/zeebo/blake3` v0.2.4 — CC0-1.0 (client CLI only)
-- `github.com/logrusorgru/aurora` v2.0.3 — Unlicense (client CLI only)
+- `github.com/zeebo/blake3` v0.2.4 — CC0-1.0 (client CLI and desktop app)
+- `github.com/logrusorgru/aurora` v2.0.3 — Unlicense (client CLI and desktop
+  app)
 
 ### MIT
 
@@ -281,8 +287,8 @@ across `GOOS={darwin,linux,windows}`; versions per the root `go.mod`):
 - `github.com/rivo/uniseg` v0.4.7 — Copyright (c) 2019 Oliver Kuederle
 - `github.com/xo/terminfo` — Copyright (c) 2016 Anmol Sethi
 
-Client CLI only (the bundled sing-box engine's transitive set; versions per
-the root `go.mod`):
+Client CLI and desktop app (the linked sing-box engine's transitive set;
+versions per the root `go.mod`):
 
 - `github.com/andybalholm/brotli` v1.1.0 — Copyright (c) 2009-2016 the Brotli
   Authors
@@ -331,26 +337,32 @@ the rest of `desktop/frontend`'s `devDependencies`), and all GitHub Actions.
 
 ## 7. Desktop app (Wails GUI)
 
-The desktop release packages bundle three layers. The in-app "Open-source
-licenses" screen renders this section (via
+A desktop release package is one executable plus these notices. The in-app
+"Open-source licenses" screen renders this section (via
 `desktop/frontend/src/licenses/notices.ts`) so recipients get the notices
 offline.
 
-### 7.1 Bundled sing-box engine binary — GPL-3.0-or-later
+### 7.1 Linked sing-box engine — GPL-3.0-or-later
 
-See section 1. The binary embeds, among others: gVisor (Apache-2.0), quic-go
-(MIT), wireguard-go (MIT), utls (BSD-3-Clause), `sagernet/*`. Capture the
-transitive set from the exact sing-box version pinned in
-`.github/workflows/desktop-release.yml`.
+See section 1: the engine is statically linked into the app binary (it is no
+longer a separate bundled binary), from the same root `go.mod` pin as
+`openrung-client`, so its GPL-3.0-or-later family and its permissively
+licensed transitive set are exactly the entries sections 1 and 5 already
+inventory for the client CLI — gVisor (Apache-2.0), quic-go (MIT),
+wireguard-go (MIT), utls (BSD-3-Clause), `sagernet/*`, and the rest.
 
-The upstream official Windows build of this binary embeds two Windows driver
-binaries — `wintun.dll` and `WinDivert64.sys` (verified by byte content for
-the pinned 1.14.0-alpha.35) — so distributing the Windows desktop package
-carries their notices too; see section 8.
+Windows builds of the engine embed the prebuilt `wintun.dll` driver binary, so
+distributing the Windows desktop package carries its notice too; see section
+8. WinDivert is **not** in the package: every desktop build passes
+`with_external_windivert` (`desktop/scripts/versioned-wails-build.mjs`, and
+`desktop/scripts/verify-bundled-engine.mjs` fails a package whose bytes
+contain the driver anyway).
 
-### 7.2 Application binary (Go) — statically linked
+### 7.2 Application binary (Go) — the rest of the static link
 
-Union of `GOOS={darwin,windows,linux} go list -deps -tags desktop,production`
+The engine's own transitive set is section 7.1's; this is what the Wails app
+adds on top. Union of
+`GOOS={darwin,windows,linux} go list -deps -tags desktop,production`
 (2026-07-11, versions per `desktop/go.mod`):
 
 **MPL-2.0**
@@ -411,17 +423,17 @@ Runtime `dependencies` of `desktop/frontend/package.json`:
 
 ## 8. Embedded Windows driver binaries (sing-box engine)
 
-Windows builds of the sing-box engine — the `openrung-client.exe` static link
-and the desktop package's bundled `sing-box.exe` — carry prebuilt Windows
-driver binaries inside the executable. They are embedded byte-for-byte
-unmodified and extracted/loaded at runtime by sing-box's own code.
+Windows builds of the sing-box engine — the `openrung-client.exe` and
+`OpenRung.exe` static links — carry a prebuilt Windows driver binary inside
+the executable. It is embedded byte-for-byte unmodified and
+extracted/loaded at runtime by sing-box's own code.
 
 ### wintun.dll — Wintun Prebuilt Binaries License (+ MIT wrapper)
 
 - **Component:** `wintun.dll` v0.14.1 — Copyright (C) WireGuard LLC —
-  embedded by `github.com/sagernet/sing-tun` (`internal/wintun`) into
-  `openrung-client.exe` Windows builds, and present inside the desktop
-  package's `sing-box.exe`. The Go wrapper code around it is MIT
+  embedded by `github.com/sagernet/sing-tun` (`internal/wintun`) into the
+  Windows builds of `openrung-client.exe` and the desktop app's
+  `OpenRung.exe`. The Go wrapper code around it is MIT
   (Copyright (C) 2017-2021 WireGuard LLC).
 - **License (the DLL binary):** the Wintun **Prebuilt Binaries License** —
   reproduced in full in Appendix B, as its distribution terms require
@@ -433,28 +445,33 @@ unmodified and extracted/loaded at runtime by sing-box's own code.
   Wintun project; the names are used only descriptively.
 - **Upstream:** https://www.wintun.net (source of the driver itself, GPL-2.0,
   at https://git.zx2c4.com/wintun/)
-- Note: the OpenRung terminal client refuses TUN mode on Windows, so this
-  driver is never extracted or loaded by `openrung-client.exe`; the bytes
-  nevertheless ship inside the Windows binary and these notices apply.
+- Note: the terminal client refuses TUN mode on Windows and the desktop app
+  is proxy-mode only, so this driver is never extracted or loaded by either
+  executable; the bytes nevertheless ship inside the Windows binaries and
+  these notices apply.
 
-### WinDivert — excluded from client CLI archives; desktop channel only
+### WinDivert — excluded from every OpenRung channel
 
 - sing-box's Windows bridge/TLS-spoof backends embed
   `WinDivert64.sys` v2.2.2 (https://github.com/basil00/WinDivert,
   redistributed by sing-box under WinDivert's **LGPL-3.0** option) unless
   built with `with_external_windivert`.
-- **Client CLI:** every `openrung-client` build passes
-  `with_external_windivert` (Makefile, go-checks, client-release), so **no
-  OpenRung client archive contains WinDivert**, and the release workflow
-  fails if the driver's bytes reappear in the Windows binary. A feature that
-  someday needs it must ship `WinDivert64.sys` next to the executable and
-  extend these notices with the LGPL-3.0 text.
-- **Desktop packages (Windows):** the bundled upstream `sing-box.exe` embeds
-  the driver. LGPL-3.0 notice for that channel: WinDivert is Copyright (c)
-  Basil, licensed LGPL-3.0 (text: https://www.gnu.org/licenses/lgpl-3.0.txt;
-  it incorporates GPL-3.0, bundled in this repository as `LICENSE`); complete
-  corresponding source: https://github.com/basil00/WinDivert (v2.2.2). It is
-  embedded unmodified and used only through its public driver interface.
+- Every OpenRung build of the engine passes that tag — the client CLI's
+  (Makefile, go-checks, client-release) and the desktop app's
+  (`desktop/scripts/versioned-wails-build.mjs`, go-checks) — so **no OpenRung
+  archive or package contains WinDivert**. Both channels also fail their
+  build if the driver's bytes reappear in a Windows binary: the client in
+  `client-release.yml`, the desktop app in
+  `desktop/scripts/verify-bundled-engine.mjs`, which every packaging script
+  runs before staging.
+- Desktop packages up to v0.1.3 bundled an upstream `sing-box.exe`, which
+  embeds the driver, and carried its LGPL-3.0 notice here. A feature that
+  someday needs the driver again must ship `WinDivert64.sys` next to the
+  executable and restore that notice with the LGPL-3.0 text: WinDivert is
+  Copyright (c) Basil, licensed LGPL-3.0
+  (text: https://www.gnu.org/licenses/lgpl-3.0.txt; it incorporates GPL-3.0,
+  bundled in this repository as `LICENSE`); complete corresponding source:
+  https://github.com/basil00/WinDivert (v2.2.2).
 
 ---
 

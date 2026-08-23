@@ -1,11 +1,11 @@
 // Guards the desktop packaging scripts' license-notices contract: every
 // staged desktop package must carry the repository's full
-// THIRD_PARTY_NOTICES.md and the GPL text (LICENSE), because the Windows
-// sing-box.exe embeds the wintun.dll and WinDivert64.sys driver binaries
-// whose license texts live there (section 8 / Appendix B) — a hand-written
-// summary .txt is not a substitute. The scripts only run on their native
-// OSes, so this is a static contract check on the script sources, in the
-// style of version-injection.test.mjs.
+// THIRD_PARTY_NOTICES.md and the GPL text (LICENSE), because the statically
+// linked sing-box engine is GPL-3.0-or-later and its Windows build embeds the
+// wintun.dll driver binary, whose license text lives there (section 8 /
+// Appendix B) — a hand-written summary .txt is not a substitute. The scripts
+// only run on their native OSes, so this is a static contract check on the
+// script sources, in the style of version-injection.test.mjs.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -35,7 +35,8 @@ for (const script of packagingScripts) {
 
 test('the repository notices carry the Windows driver licenses the scripts rely on', () => {
   const notices = read('../../THIRD_PARTY_NOTICES.md');
-  // Section 8 documents both drivers embedded in the Windows sing-box.exe...
+  // Section 8 documents the driver the Windows engine embeds, and why the
+  // other one (WinDivert, LGPLv3) is kept out of every OpenRung build...
   assert.ok(notices.includes('wintun.dll'), 'THIRD_PARTY_NOTICES.md must cover wintun.dll');
   assert.ok(notices.includes('WinDivert64.sys'), 'THIRD_PARTY_NOTICES.md must cover WinDivert');
   // ...Appendix B reproduces the Wintun Prebuilt Binaries License verbatim

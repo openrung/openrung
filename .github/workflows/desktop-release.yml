@@ -1,28 +1,23 @@
 name: desktop-release
 
 # Builds the OpenRung desktop app for macOS, Linux, and Windows on their native
-# runners (Wails cannot cross-compile — it links each OS's native webview), with
-# sing-box bundled into each. Run manually (Actions → desktop-release → Run) or
-# on a desktop-vX.Y.Z tag. Artifacts appear on the run's summary page.
+# runners (Wails cannot cross-compile — it links each OS's native webview). Each
+# package is a single executable: the sing-box engine is statically linked
+# (internal/singboxruntime, pinned in the root go.mod like the client CLI's) and
+# run by re-invoking the app itself, so there is no binary to fetch here.
+# Run manually (Actions → desktop-release → Run) or on a desktop-vX.Y.Z tag.
+# Artifacts appear on the run's summary page.
 #
 # Historical releases up to v0.1.3 live in the retired bare v* tag namespace;
 # new tags always carry the component prefix.
 on:
   workflow_dispatch:
-    inputs:
-      singbox_version:
-        description: sing-box version to bundle (no leading v)
-        default: "1.14.0-alpha.35"
   push:
     # desktop-v[0-9]*, not desktop-v*: the glob's * matches any run of non-/
     # characters, so desktop-v* would also match desktop-volunteer-v0.1.1 and
     # publish a desktop release onto the volunteer app's tag. Requiring a digit
     # after the v keeps this workflow on desktop tags only.
     tags: ["desktop-v[0-9]*"]
-
-env:
-  # sing-box release to bundle. Bump as needed; must exist as a GitHub release.
-  SING_BOX_VERSION: ${{ github.event.inputs.singbox_version || '1.14.0-alpha.35' }}
 
 jobs:
   version:
@@ -68,11 +63,11 @@ jobs:
       matrix:
         include:
           - os: macos-14
-            sbfile: darwin-arm64
+            target: darwin-arm64
           - os: ubuntu-22.04
-            sbfile: linux-amd64
+            target: linux-amd64
           - os: windows-latest
-            sbfile: windows-amd64
+            target: windows-amd64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -97,23 +92,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential libgtk-3-dev libwebkit2gtk-4.1-dev
 
-      - name: Fetch sing-box (unix)
-        if: runner.os != 'Windows'
-        run: |
-          V="$SING_BOX_VERSION"
-          curl -sSL -o sb.tar.gz "https://github.com/SagerNet/sing-box/releases/download/v$V/sing-box-$V-${{ matrix.sbfile }}.tar.gz"
-          tar -xzf sb.tar.gz
-          echo "SING_BOX=$PWD/sing-box-$V-${{ matrix.sbfile }}/sing-box" >> "$GITHUB_ENV"
-
-      - name: Fetch sing-box (windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $V = "$env:SING_BOX_VERSION"
-          Invoke-WebRequest -Uri "https://github.com/SagerNet/sing-box/releases/download/v$V/sing-box-$V-windows-amd64.zip" -OutFile sb.zip
-          Expand-Archive sb.zip -DestinationPath sb
-          "SING_BOX=$PWD\sb\sing-box-$V-windows-amd64\sing-box.exe" | Out-File -FilePath $env:GITHUB_ENV -Append
-
+      # Every packaging script below runs scripts/verify-bundled-engine.mjs on
+      # the binary it just built and refuses to package it unless the linked
+      # sing-box is the module pin, the build carries `with_utls` (without it
+      # the app installs fine and then fails every connect), the app version
+      # was stamped in, and — on Windows — the LGPLv3 WinDivert driver is
+      # absent. That is this workflow's build-tag gate; there is no separate
+      # smoke-test step.
       - name: Package (macOS)
         if: runner.os == 'macOS'
         run: |
@@ -132,7 +117,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: OpenRung-${{ matrix.sbfile }}
+          name: OpenRung-${{ matrix.target }}
           path: |
             desktop/build/bin/OpenRung-*.zip
             desktop/build/bin/OpenRung-*.tar.gz

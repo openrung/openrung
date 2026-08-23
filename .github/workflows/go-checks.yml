@@ -3,11 +3,12 @@ name: go-checks
 # Vet + test every Go module in the repo on each PR and push to main. This is
 # the compile/test gate for the module edges between the root module, the
 # nested brokerapi, connectcore, punchcore, and wsscore modules, and the two
-# Wails app modules. The app modules are gated on their Go service subpackages only, not
-# `./...`, which would require frontend/dist to exist. These checks are the
-# normal PR gate for their Go suites; the Volunteer Desktop release workflow
-# also repeats the native direct-setup/service subset on each platform before
-# packaging.
+# Wails app modules. The app modules are tested through their Go service
+# subpackages only, not `./...`, which would require frontend/dist to exist;
+# the desktop app's package main is instead compile-checked by a Windows
+# cross-build over a placeholder dist. These checks are the normal PR gate for
+# their Go suites; the Volunteer Desktop release workflow also repeats the
+# native direct-setup/service subset on each platform before packaging.
 
 on:
   pull_request:
@@ -166,6 +167,23 @@ jobs:
           go vet ./vpnservice/...
           go test -race ./vpnservice/...
           go build ./vpnservice/...
+
+      # The desktop app statically links the sing-box engine and re-invokes
+      # itself as the tunnel child process, so its package main now carries
+      # that wiring — but ./... needs the embedded frontend/dist (gitignored,
+      # built by Wails) and its native webview, so nothing here compiles it.
+      # A Windows cross-build does: Wails' Windows backend is pure Go
+      # (go-webview2), so this needs no webview packages, and it compiles the
+      # whole app with the engine's build tags — the same tags every desktop
+      # package carries (desktop/scripts/versioned-wails-build.mjs), including
+      # the windows-only with_external_windivert path.
+      - name: desktop app cross-build (bundled sing-box tags)
+        working-directory: desktop
+        run: |
+          mkdir -p frontend/dist
+          echo '<!doctype html><title>go-checks placeholder</title>' > frontend/dist/index.html
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
+            go build -tags desktop,production,with_utls,with_external_windivert -o /dev/null .
 
       # The desktop packaging script stamps the build version by setting
       # github.com/openrung/openrung/connectcore/client.appVersion with -X,
