@@ -34,6 +34,18 @@ var (
 		connectcore.StatusDisconnecting: lipgloss.NewStyle().Foreground(lipgloss.Color("3")),
 		connectcore.StatusFailed:        lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true),
 	}
+
+	// The footer line is the always-visible connection signal: red while
+	// disconnected or failed, yellow through every transition, green while
+	// connected.
+	footerStyles = map[connectcore.Status]lipgloss.Style{
+		connectcore.StatusDisconnected:  lipgloss.NewStyle().Foreground(lipgloss.Color("1")),
+		connectcore.StatusFailed:        lipgloss.NewStyle().Foreground(lipgloss.Color("1")),
+		connectcore.StatusPreparing:     lipgloss.NewStyle().Foreground(lipgloss.Color("3")),
+		connectcore.StatusConnecting:    lipgloss.NewStyle().Foreground(lipgloss.Color("3")),
+		connectcore.StatusDisconnecting: lipgloss.NewStyle().Foreground(lipgloss.Color("3")),
+		connectcore.StatusConnected:     lipgloss.NewStyle().Foreground(lipgloss.Color("2")),
+	}
 )
 
 const (
@@ -112,7 +124,61 @@ func (m tuiModel) footerView() string {
 			help = tr.helpSettings + help
 		}
 	}
-	return helpStyle.Render(help)
+
+	style, ok := footerStyles[m.state.Status]
+	if !ok {
+		style = helpStyle
+	}
+	right := m.footerConnectionSummary()
+	if right == "" || m.width < 1 {
+		return style.Render(help)
+	}
+	// Right-align the connection summary; the help yields when both cannot
+	// fit, since the summary is what a glance at the corner is for.
+	pad := m.width - lipgloss.Width(help) - lipgloss.Width(right)
+	if pad < 1 {
+		help = truncateWidth(help, m.width-lipgloss.Width(right)-1)
+		pad = max(1, m.width-lipgloss.Width(help)-lipgloss.Width(right))
+	}
+	return style.Render(help + strings.Repeat(" ", pad) + right)
+}
+
+// footerConnectionSummary is the bottom-right corner while connected: the
+// relay label, its country flag, and the running session duration.
+func (m tuiModel) footerConnectionSummary() string {
+	if m.state.Status != connectcore.StatusConnected {
+		return ""
+	}
+	label := ""
+	if m.state.RelayLabel != nil {
+		label = strings.TrimSpace(*m.state.RelayLabel)
+	}
+	if m.infoOK {
+		if flag := countryFlag(m.info.Relay.CountryCode); flag != "" {
+			if label != "" {
+				label += " "
+			}
+			label += flag
+		}
+	}
+	parts := make([]string, 0, 2)
+	if label != "" {
+		parts = append(parts, label)
+	}
+	if !m.connectedAt.IsZero() {
+		parts = append(parts, formatDuration(m.now.Sub(m.connectedAt)))
+	}
+	return strings.Join(parts, " ")
+}
+
+// countryFlag maps a 2-letter ISO country code to its regional-indicator
+// emoji ("jp" → 🇯🇵), or "" for anything else.
+func countryFlag(cc string) string {
+	cc = strings.ToUpper(strings.TrimSpace(cc))
+	if len(cc) != 2 || cc[0] < 'A' || cc[0] > 'Z' || cc[1] < 'A' || cc[1] > 'Z' {
+		return ""
+	}
+	return string(0x1F1E6+rune(cc[0])-'A') + string(0x1F1E6+rune(cc[1])-'A')
 }
 
 // ---- Status ----
@@ -136,7 +202,7 @@ func (m tuiModel) statusView() string {
 	country, transport := "—", "—"
 	if m.infoOK {
 		if cc := strings.TrimSpace(m.info.Relay.CountryCode); cc != "" {
-			country = strings.ToUpper(cc)
+			country = strings.ToUpper(cc) + countryFlag(cc)
 		}
 		transport = transportLabel(tr, m.info)
 	}
@@ -333,13 +399,16 @@ func (m tuiModel) relaysView() string {
 		if i == m.relayCursor {
 			cursor = cursorStyle.Render("▸ ")
 		}
-		line := fmt.Sprintf("%s %-28s %-8s %-9s %s",
-			cursor,
-			truncate(relayDisplayName(entry.Relay), 28),
-			strings.ToUpper(strings.TrimSpace(entry.Relay.CountryCode)),
-			latencyLabel(entry.ProbeMS),
-			nodeClassBadge(tr, entry.Relay.NodeClass),
-		)
+		cc := strings.ToUpper(strings.TrimSpace(entry.Relay.CountryCode))
+		if cc != "" {
+			cc += countryFlag(cc)
+		}
+		// padCell throughout: the flag emoji (and any CJK in a fallback name)
+		// would break %-8s byte-count alignment.
+		line := cursor + " " + padCell(truncate(relayListName(entry.Relay), 28), 28) +
+			" " + padCell(cc, 8) +
+			" " + padCell(latencyLabel(entry.ProbeMS), 9) +
+			" " + nodeClassBadge(tr, entry.Relay.NodeClass)
 		if entry.Relay.ID == m.settings.target.RelayID && m.settings.target.RelayID != "" {
 			line += " " + noteStyle.Render(tr.targetMarker)
 		}
@@ -365,14 +434,14 @@ func recentsLine(recents []connectcore.RecentNode) string {
 	return strings.Join(parts, " · ")
 }
 
-// relayDisplayName is the list name for a relay: its geo label, with the
-// friendly label alongside when both exist.
-func relayDisplayName(r brokerapi.RelayDescriptor) string {
-	geo := geoDisplayLabel(r)
-	if label := strings.TrimSpace(r.Label); label != "" && label != geo {
-		return geo + " (" + label + ")"
+// relayListName is the list name for a relay: its friendly label alone (the
+// COUNTRY column already carries the geography), falling back to the geo
+// label only when a relay has no label.
+func relayListName(r brokerapi.RelayDescriptor) string {
+	if label := strings.TrimSpace(r.Label); label != "" {
+		return label
 	}
-	return geo
+	return geoDisplayLabel(r)
 }
 
 // geoDisplayLabel mirrors the engine's geoLabel presentation rule: city and
@@ -405,6 +474,22 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string(runes[:n-1]) + "…"
+}
+
+// truncateWidth trims s to at most w display cells (unlike the rune-count
+// truncate, this stays correct for CJK and emoji).
+func truncateWidth(s string, w int) string {
+	if w < 1 {
+		return ""
+	}
+	if lipgloss.Width(s) <= w {
+		return s
+	}
+	runes := []rune(s)
+	for len(runes) > 0 && lipgloss.Width(string(runes))+1 > w {
+		runes = runes[:len(runes)-1]
+	}
+	return string(runes) + "…"
 }
 
 // ---- Logs ----
