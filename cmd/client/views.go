@@ -95,7 +95,7 @@ func fitLines(body string, n int) string {
 func (m tuiModel) headerView() string {
 	tr := m.tr()
 	tabs := make([]string, 0, len(tr.tabs)+2)
-	tabs = append(tabs, titleStyle.Render(" OpenRung "))
+	tabs = append(tabs, titleStyle.Render(" OpenRung v"+strings.TrimSpace(baseVersion)+" "))
 	for i, name := range tr.tabs {
 		style := tabStyle
 		if viewID(i) == m.view {
