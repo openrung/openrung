@@ -108,9 +108,12 @@ func TestFooterSummaryWinsOnNarrowTerminals(t *testing.T) {
 
 // Header and footer each budget exactly one line, so on a narrow terminal
 // they must shed content instead of wrapping — in every language and every
-// connection state, summary or not.
+// connection state, summary or not. What they shed follows priority: the
+// header keeps the active tab and the language control over the title and
+// inactive tabs, and the footer keeps the session duration over the label.
 func TestHeaderAndFooterNeverExceedNarrowWidths(t *testing.T) {
 	m := newTestModel(&fakeDriver{})
+	m.view = viewSettings
 	label := "merry-falcon"
 	for _, width := range []int{20, 40, 60} {
 		m.width = width
@@ -121,11 +124,22 @@ func TestHeaderAndFooterNeverExceedNarrowWidths(t *testing.T) {
 				if status == connectcore.StatusConnected {
 					m.connectedAt = m.now.Add(-time.Minute)
 				}
-				if w := lipgloss.Width(m.headerView()); w > width {
+				header := m.headerView()
+				if w := lipgloss.Width(header); w > width {
 					t.Errorf("width %d lang %d: header is %d cells wide", width, lang, w)
 				}
-				if w := lipgloss.Width(m.footerView()); w > width {
+				if !strings.Contains(header, m.tr().tabs[viewSettings]) {
+					t.Errorf("width %d lang %d: header dropped the active tab: %q", width, lang, header)
+				}
+				if width >= 40 && !strings.Contains(header, languageTabLabel) {
+					t.Errorf("width %d lang %d: header dropped the language control: %q", width, lang, header)
+				}
+				footer := m.footerView()
+				if w := lipgloss.Width(footer); w > width {
 					t.Errorf("width %d lang %d status %s: footer is %d cells wide", width, lang, status, w)
+				}
+				if status == connectcore.StatusConnected && !strings.Contains(footer, "00:01:00") {
+					t.Errorf("width %d lang %d: footer lost the session duration: %q", width, lang, footer)
 				}
 			}
 		}

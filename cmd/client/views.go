@@ -107,17 +107,44 @@ func (m tuiModel) headerView() string {
 	// trilingual so it is readable whatever language is active.
 	tabs = append(tabs, tabStyle.Render(languageTabLabel))
 
-	// headerHeight budgets exactly one line, so on a narrow terminal trailing
-	// tabs are dropped whole rather than wrapped (the keys still work).
-	header := tabs[0]
-	for _, tab := range tabs[1:] {
-		candidate := header + " " + tab
-		if m.width > 0 && lipgloss.Width(candidate) > m.width {
-			break
-		}
-		header = candidate
+	// headerHeight budgets exactly one line, so a narrow terminal sheds whole
+	// tabs (the keys still work). Shedding goes by importance, not position:
+	// the active tab and the language control — the one thing a reader stuck
+	// in the wrong language must still find — outrank the title, which
+	// outranks inactive view tabs. Whatever fits renders in bar order.
+	type slot struct {
+		order int
+		label string
 	}
-	return header
+	priority := make([]slot, 0, len(tabs))
+	priority = append(priority,
+		slot{1 + int(m.view), tabs[1+int(m.view)]},
+		slot{len(tabs) - 1, tabs[len(tabs)-1]},
+		slot{0, tabs[0]},
+	)
+	for i := viewID(0); i < viewCount; i++ {
+		if i != m.view {
+			priority = append(priority, slot{1 + int(i), tabs[1+int(i)]})
+		}
+	}
+
+	picked := make([]string, len(tabs))
+	used := -1 // the first rendered tab pays no separator
+	for _, s := range priority {
+		w := lipgloss.Width(s.label) + 1
+		if m.width > 0 && used+w > m.width {
+			continue
+		}
+		used += w
+		picked[s.order] = s.label
+	}
+	parts := make([]string, 0, len(picked))
+	for _, label := range picked {
+		if label != "" {
+			parts = append(parts, label)
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 func (m tuiModel) footerView() string {
@@ -145,7 +172,11 @@ func (m tuiModel) footerView() string {
 	// The help always yields to the width — a wrapped footer breaks the
 	// fixed-height layout — and to the summary, since that corner glance is
 	// what the bar is for.
-	right := m.footerConnectionSummary()
+	summaryBudget := 0 // ≤0 = unlimited
+	if m.width > 0 {
+		summaryBudget = m.width - 2 // the bar's leading and trailing space
+	}
+	right := m.footerConnectionSummary(summaryBudget)
 	if right != "" {
 		right += " "
 	}
@@ -160,17 +191,15 @@ func (m tuiModel) footerView() string {
 	}
 	left := " " + help
 	pad := m.width - lipgloss.Width(left) - lipgloss.Width(right)
-	line := left + strings.Repeat(" ", max(0, pad)) + right
-	if m.width > 0 {
-		// Terminals narrower than the summary itself still get one line.
-		line = truncateWidth(line, m.width)
-	}
-	return style.Render(line)
+	return style.Render(left + strings.Repeat(" ", max(0, pad)) + right)
 }
 
 // footerConnectionSummary is the bottom-right corner while connected: the
-// relay label, its country flag, and the running session duration.
-func (m tuiModel) footerConnectionSummary() string {
+// relay label, its country flag, and the running session duration, fitted to
+// budget cells (≤0 = unlimited). The duration anchors the right edge, so when
+// space runs out the label gives way first — a glance at the corner should
+// always answer "how long", even on a terminal too narrow for "to what".
+func (m tuiModel) footerConnectionSummary(budget int) string {
 	if m.state.Status != connectcore.StatusConnected {
 		return ""
 	}
@@ -186,14 +215,30 @@ func (m tuiModel) footerConnectionSummary() string {
 			label += flag
 		}
 	}
+	duration := ""
+	if !m.connectedAt.IsZero() {
+		duration = formatDuration(m.now.Sub(m.connectedAt))
+	}
+
 	parts := make([]string, 0, 2)
 	if label != "" {
 		parts = append(parts, label)
 	}
-	if !m.connectedAt.IsZero() {
-		parts = append(parts, formatDuration(m.now.Sub(m.connectedAt)))
+	if duration != "" {
+		parts = append(parts, duration)
 	}
-	return strings.Join(parts, " ")
+	summary := strings.Join(parts, " ")
+	if budget <= 0 || lipgloss.Width(summary) <= budget {
+		return summary
+	}
+	if duration == "" {
+		return truncateWidth(label, budget)
+	}
+	label = truncateWidth(label, max(0, budget-lipgloss.Width(duration)-1))
+	if label == "" {
+		return truncateWidth(duration, budget)
+	}
+	return label + " " + duration
 }
 
 // countryFlag maps a 2-letter ISO country code to its regional-indicator
