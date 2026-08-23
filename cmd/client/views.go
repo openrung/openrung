@@ -23,8 +23,8 @@ var (
 	noteStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 	cursorStyle    = lipgloss.NewStyle().Bold(true)
 
-	foundationBadge = lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Render("[foundation]")
-	volunteerBadge  = lipgloss.NewStyle().Faint(true).Render("[volunteer]")
+	foundationBadgeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	volunteerBadgeStyle  = lipgloss.NewStyle().Faint(true)
 
 	statusStyles = map[connectcore.Status]lipgloss.Style{
 		connectcore.StatusDisconnected:  lipgloss.NewStyle().Faint(true),
@@ -33,6 +33,18 @@ var (
 		connectcore.StatusConnected:     lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Bold(true),
 		connectcore.StatusDisconnecting: lipgloss.NewStyle().Foreground(lipgloss.Color("3")),
 		connectcore.StatusFailed:        lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true),
+	}
+
+	// The footer is a solid tmux-style status bar spanning the full terminal
+	// width — the always-visible connection signal: red while disconnected or
+	// failed, yellow through every transition, green while connected.
+	footerStyles = map[connectcore.Status]lipgloss.Style{
+		connectcore.StatusDisconnected:  lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("1")),
+		connectcore.StatusFailed:        lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("1")),
+		connectcore.StatusPreparing:     lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("3")),
+		connectcore.StatusConnecting:    lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("3")),
+		connectcore.StatusDisconnecting: lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("3")),
+		connectcore.StatusConnected:     lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("2")),
 	}
 )
 
@@ -81,42 +93,177 @@ func fitLines(body string, n int) string {
 }
 
 func (m tuiModel) headerView() string {
-	names := []string{"1 Status", "2 Relays", "3 Logs", "4 Settings"}
-	tabs := make([]string, 0, len(names)+1)
+	tr := m.tr()
+	tabs := make([]string, 0, len(tr.tabs)+2)
 	tabs = append(tabs, titleStyle.Render(" OpenRung "))
-	for i, name := range names {
+	for i, name := range tr.tabs {
 		style := tabStyle
 		if viewID(i) == m.view {
 			style = tabActiveStyle
 		}
 		tabs = append(tabs, style.Render(name))
 	}
-	return strings.Join(tabs, " ")
+	// Not a view: 5 cycles the language in place, and the label stays
+	// trilingual so it is readable whatever language is active.
+	tabs = append(tabs, tabStyle.Render(languageTabLabel))
+
+	// headerHeight budgets exactly one line, so a narrow terminal sheds whole
+	// tabs (the keys still work). Shedding goes by importance, not position:
+	// the active tab and the language control — the one thing a reader stuck
+	// in the wrong language must still find — outrank the title, which
+	// outranks inactive view tabs. Whatever fits renders in bar order.
+	type slot struct {
+		order int
+		label string
+	}
+	priority := make([]slot, 0, len(tabs))
+	priority = append(priority,
+		slot{1 + int(m.view), tabs[1+int(m.view)]},
+		slot{len(tabs) - 1, tabs[len(tabs)-1]},
+		slot{0, tabs[0]},
+	)
+	for i := viewID(0); i < viewCount; i++ {
+		if i != m.view {
+			priority = append(priority, slot{1 + int(i), tabs[1+int(i)]})
+		}
+	}
+
+	picked := make([]string, len(tabs))
+	used := -1 // the first rendered tab pays no separator
+	for _, s := range priority {
+		w := lipgloss.Width(s.label) + 1
+		if m.width > 0 && used+w > m.width {
+			continue
+		}
+		used += w
+		picked[s.order] = s.label
+	}
+	parts := make([]string, 0, len(picked))
+	for _, label := range picked {
+		if label != "" {
+			parts = append(parts, label)
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 func (m tuiModel) footerView() string {
-	help := "c connect · d disconnect · r refresh · 1-4/tab views · q quit"
+	tr := m.tr()
+	help := tr.helpGlobal
 	switch m.view {
 	case viewRelays:
-		help = "↑/↓ select · enter connect to selection · x clear target · " + help
+		help = tr.helpRelays + help
 	case viewLogs:
-		help = "↑/↓/pgup/pgdn scroll · " + help
+		help = tr.helpLogs + help
 	case viewSettings:
 		if m.settings.editing {
-			help = "enter apply · esc cancel"
+			help = tr.helpSettingsEdit
 		} else {
-			help = "↑/↓ field · enter edit · " + help
+			help = tr.helpSettings + help
 		}
 	}
-	return helpStyle.Render(help)
+
+	style, ok := footerStyles[m.state.Status]
+	if !ok {
+		style = helpStyle
+	}
+	// The bar is padded to the exact terminal width so the background paints
+	// edge to edge, with the connection summary right-aligned in the corner.
+	// The help always yields to the width — a wrapped footer breaks the
+	// fixed-height layout — and to the summary, since that corner glance is
+	// what the bar is for.
+	summaryBudget := 0 // ≤0 = unlimited
+	if m.width > 0 {
+		summaryBudget = m.width - 2 // the bar's leading and trailing space
+	}
+	right := m.footerConnectionSummary(summaryBudget)
+	if right != "" {
+		right += " "
+	}
+	if m.width > 0 {
+		budget := m.width - lipgloss.Width(right) - 1 // leading space
+		if right != "" {
+			budget-- // one-cell gap between help and summary
+		}
+		if lipgloss.Width(help) > budget {
+			help = truncateWidth(help, max(0, budget))
+		}
+	}
+	left := " " + help
+	pad := m.width - lipgloss.Width(left) - lipgloss.Width(right)
+	return style.Render(left + strings.Repeat(" ", max(0, pad)) + right)
+}
+
+// footerConnectionSummary is the bottom-right corner while connected: the
+// relay label, its country flag, and the running session duration, fitted to
+// budget cells (≤0 = unlimited). The duration anchors the right edge, so when
+// space runs out the label gives way first — a glance at the corner should
+// always answer "how long", even on a terminal too narrow for "to what".
+func (m tuiModel) footerConnectionSummary(budget int) string {
+	if m.state.Status != connectcore.StatusConnected {
+		return ""
+	}
+	// Every identity field comes from ONE source. With a descriptor, that is
+	// the descriptor — name (down to its "relay <id>" fallback) AND flag: on
+	// a failover the state label updates before the next info poll lands, and
+	// mixing the two would pair a fresh label with the old relay's flag,
+	// asserting the wrong exit country. Without a descriptor there is no
+	// flag, only the state label.
+	label := ""
+	if m.infoOK {
+		label = strings.TrimSpace(relayListName(m.info.Relay))
+		if flag := countryFlag(m.info.Relay.CountryCode); flag != "" {
+			if label != "" {
+				label += " "
+			}
+			label += flag
+		}
+	} else if m.state.RelayLabel != nil {
+		label = strings.TrimSpace(*m.state.RelayLabel)
+	}
+	duration := ""
+	if !m.connectedAt.IsZero() {
+		duration = formatDuration(m.now.Sub(m.connectedAt))
+	}
+
+	parts := make([]string, 0, 2)
+	if label != "" {
+		parts = append(parts, label)
+	}
+	if duration != "" {
+		parts = append(parts, duration)
+	}
+	summary := strings.Join(parts, " ")
+	if budget <= 0 || lipgloss.Width(summary) <= budget {
+		return summary
+	}
+	if duration == "" {
+		return truncateWidth(label, budget)
+	}
+	label = truncateWidth(label, max(0, budget-lipgloss.Width(duration)-1))
+	if label == "" {
+		return truncateWidth(duration, budget)
+	}
+	return label + " " + duration
+}
+
+// countryFlag maps a 2-letter ISO country code to its regional-indicator
+// emoji ("jp" → 🇯🇵), or "" for anything else.
+func countryFlag(cc string) string {
+	cc = strings.ToUpper(strings.TrimSpace(cc))
+	if len(cc) != 2 || cc[0] < 'A' || cc[0] > 'Z' || cc[1] < 'A' || cc[1] > 'Z' {
+		return ""
+	}
+	return string(0x1F1E6+rune(cc[0])-'A') + string(0x1F1E6+rune(cc[1])-'A')
 }
 
 // ---- Status ----
 
 func (m tuiModel) statusView() string {
+	tr := m.tr()
 	status := m.state.Status
 	rows := []string{
-		row("Status", statusStyles[status].Render(string(status))),
+		row(tr.labelStatus, statusStyles[status].Render(tr.statusName(status))),
 	}
 
 	relayLine := "—"
@@ -124,58 +271,58 @@ func (m tuiModel) statusView() string {
 		relayLine = *m.state.RelayLabel
 	}
 	if m.infoOK {
-		relayLine += "  " + nodeClassBadge(m.info.Relay.NodeClass)
+		relayLine += "  " + nodeClassBadge(tr, m.info.Relay.NodeClass)
 	}
-	rows = append(rows, row("Relay", relayLine))
+	rows = append(rows, row(tr.labelRelay, relayLine))
 
 	country, transport := "—", "—"
 	if m.infoOK {
 		if cc := strings.TrimSpace(m.info.Relay.CountryCode); cc != "" {
-			country = strings.ToUpper(cc)
+			country = strings.ToUpper(cc) + countryFlag(cc)
 		}
-		transport = transportLabel(m.info)
+		transport = transportLabel(tr, m.info)
 	}
-	rows = append(rows, row("Country", country), row("Transport", transport))
+	rows = append(rows, row(tr.labelCountry, country), row(tr.labelTransport, transport))
 
 	session := "—"
 	if status == connectcore.StatusConnected && !m.connectedAt.IsZero() {
 		session = formatDuration(m.now.Sub(m.connectedAt))
 	}
-	rows = append(rows, row("Session", session))
+	rows = append(rows, row(tr.labelSession, session))
 
 	if status == connectcore.StatusConnected {
-		rows = append(rows, row("Health", healthLabel(m.health)))
+		rows = append(rows, row(tr.labelHealth, healthLabel(tr, m.health)))
 	}
 	if m.activity.Kind != "" {
 		stamp := m.activityAt.Format("15:04:05")
-		rows = append(rows, row("Activity", noteStyle.Render("["+stamp+"] "+noticeLine(m.activity))))
+		rows = append(rows, row(tr.labelActivity, noteStyle.Render("["+stamp+"] "+noticeLine(tr, m.activity))))
 	}
 
 	if m.settings.mode == connectcore.ModeTUN {
 		// No local endpoint exists in TUN mode; the tunnel device carries every
 		// application, so there is nothing for the user to configure.
-		rows = append(rows, row("Capture", "TUN — whole device"))
+		rows = append(rows, row(tr.labelCapture, tr.captureTUN))
 	} else {
 		proxy := m.proxyEndpoint
 		switch {
 		case m.proxyErr != "":
 			proxy = errorStyle.Render(m.proxyErr)
 		case proxy == "":
-			proxy = "resolving…"
+			proxy = tr.proxyResolving
 		}
-		rows = append(rows, row("Capture", "proxy — applications configured for the endpoint below"), row("Proxy", proxy))
+		rows = append(rows, row(tr.labelCapture, tr.captureProxy), row(tr.labelProxy, proxy))
 		if m.proxyWarn != "" {
 			rows = append(rows, row("", noteStyle.Render(m.proxyWarn)))
 		}
 	}
 
 	rows = append(rows,
-		row("Broker", displayBroker(m.settings.brokerURL)),
-		row("Target", describeTarget(m.settings.target)),
+		row(tr.labelBroker, displayBroker(tr, m.settings.brokerURL)),
+		row(tr.labelTarget, describeTarget(tr, m.settings.target)),
 	)
 
 	if m.state.LastError != nil {
-		rows = append(rows, "", row("Error", errorStyle.Render(*m.state.LastError)))
+		rows = append(rows, "", row(tr.labelError, errorStyle.Render(*m.state.LastError)))
 	}
 	return strings.Join(rows, "\n")
 }
@@ -184,86 +331,87 @@ func row(label, value string) string {
 	return labelStyle.Render(label) + " " + value
 }
 
-func displayBroker(brokerURL string) string {
+func displayBroker(tr *translation, brokerURL string) string {
 	if strings.TrimSpace(brokerURL) == "" {
-		return "default fronts"
+		return tr.defaultFronts
 	}
 	return brokerURL
 }
 
-func transportLabel(info connectcore.ConnectionInfo) string {
+func transportLabel(tr *translation, info connectcore.ConnectionInfo) string {
 	switch info.Transport {
 	case brokerapi.TransportDirect:
-		return "direct"
+		return tr.transportDirect
 	case "punch":
-		return "punched (direct NAT path)"
+		return tr.transportPunched
 	case "wss":
-		return "WSS front " + info.FrontID
+		return fmt.Sprintf(tr.transportWSS, info.FrontID)
 	default:
 		return info.Transport
 	}
 }
 
-func nodeClassBadge(nodeClass string) string {
+func nodeClassBadge(tr *translation, nodeClass string) string {
 	// A missing or unrecognized class is the volunteer class, per the
 	// descriptor contract; EffectiveNodeClass is that rule.
 	if brokerapi.EffectiveNodeClass(nodeClass) == brokerapi.NodeClassFoundation {
-		return foundationBadge
+		return foundationBadgeStyle.Render(tr.badgeFoundation)
 	}
-	return volunteerBadge
+	return volunteerBadgeStyle.Render(tr.badgeVolunteer)
 }
 
 // healthLabel renders the latest mid-session probe sweep. The engine only
 // probes while a candidate is promoted, so before the first sweep of a session
 // there is nothing to report yet.
-func healthLabel(health connectcore.Notice) string {
+func healthLabel(tr *translation, health connectcore.Notice) string {
 	if health.Kind == "" {
-		return helpStyle.Render("probing every 30s…")
+		return helpStyle.Render(tr.healthProbing)
 	}
 	if health.Failures == 0 {
-		return "ok"
+		return tr.healthOK
 	}
-	label := fmt.Sprintf("%d/%d probes failed", health.Failures, health.Threshold)
+	label := fmt.Sprintf(tr.healthFailed, health.Failures, health.Threshold)
 	if health.Reason != "" {
 		label += " — " + health.Reason
 	}
 	return errorStyle.Render(label)
 }
 
-// noticeLine formats a typed engine notice for the Activity row.
-func noticeLine(n connectcore.Notice) string {
+// noticeLine formats a typed engine notice for the Activity row. The reasons
+// interpolated into each line come from the engine and stay English.
+func noticeLine(tr *translation, n connectcore.Notice) string {
 	switch n.Kind {
 	case connectcore.NoticeFailoverStarted:
-		return fmt.Sprintf("failover: relay %s lost (%s); re-laddering", n.FromRelayID, n.Reason)
+		return fmt.Sprintf(tr.noticeFailoverStarted, n.FromRelayID, n.Reason)
 	case connectcore.NoticeFailoverCompleted:
-		line := fmt.Sprintf("failover: relay %s → %s (%s)", n.FromRelayID, n.RelayID, n.Reason)
+		line := fmt.Sprintf(tr.noticeFailoverCompleted, n.FromRelayID, n.RelayID, n.Reason)
 		if n.FrontID != "" {
-			line += " via WSS front " + n.FrontID
+			line += fmt.Sprintf(tr.noticeViaFront, n.FrontID)
 		}
 		return line
 	case connectcore.NoticeWSSFallback:
-		return fmt.Sprintf("WSS fallback: relay %s via front %s (direct path: %s)", n.RelayID, n.FrontID, n.Reason)
+		return fmt.Sprintf(tr.noticeWSSFallback, n.RelayID, n.FrontID, n.Reason)
 	case connectcore.NoticeWSSTicketRetry:
-		return fmt.Sprintf("WSS tickets rate-limited; retrying front %s in %s", n.FrontID, n.Wait)
+		return fmt.Sprintf(tr.noticeTicketRetry, n.FrontID, n.Wait)
 	case connectcore.NoticePunchOutcome:
-		return fmt.Sprintf("punch %s: %s", n.RelayID, n.Reason)
+		return fmt.Sprintf(tr.noticePunch, n.RelayID, n.Reason)
 	}
 	return n.Reason
 }
 
-func describeTarget(target connectcore.RelayTarget) string {
+func describeTarget(tr *translation, target connectcore.RelayTarget) string {
 	parts := make([]string, 0, 3)
 	if strings.TrimSpace(target.RelayID) != "" {
-		parts = append(parts, "relay "+target.RelayID)
+		parts = append(parts, fmt.Sprintf(tr.targetRelay, target.RelayID))
 	}
 	if strings.TrimSpace(target.Label) != "" {
-		parts = append(parts, "label "+target.Label)
+		parts = append(parts, fmt.Sprintf(tr.targetLabel, target.Label))
 	}
 	if strings.TrimSpace(target.Country) != "" {
-		parts = append(parts, "country "+strings.ToUpper(strings.TrimSpace(target.Country)))
+		parts = append(parts, fmt.Sprintf(tr.targetCountry, strings.ToUpper(strings.TrimSpace(target.Country))))
 	}
 	if len(parts) == 0 {
-		return "automatic (ranked)"
+		return tr.targetAutomatic
 	}
 	return strings.Join(parts, ", ")
 }
@@ -282,25 +430,29 @@ func formatDuration(d time.Duration) string {
 // ---- Relays ----
 
 func (m tuiModel) relaysView() string {
+	tr := m.tr()
 	var rows []string
 	// The engine-persisted recents (internal/clientstate), newest first — the
 	// same row the desktop main screen shows.
 	if line := recentsLine(m.state.Recents); line != "" {
-		rows = append(rows, helpStyle.Render("recents ")+truncate(line, max(1, m.width-8)))
+		prefix := helpStyle.Render(tr.recentsLabel)
+		rows = append(rows, prefix+truncateWidth(line, max(1, m.width-lipgloss.Width(prefix))))
 	}
 	switch {
 	case m.refreshing:
-		rows = append(rows, helpStyle.Render("refreshing relay directory…"))
+		rows = append(rows, helpStyle.Render(tr.refreshingDirectory))
 	case m.relayErr != "":
-		rows = append(rows, errorStyle.Render("directory: "+m.relayErr))
+		rows = append(rows, errorStyle.Render(tr.directoryErrPrefix+m.relayErr))
 	case len(m.relays) == 0:
-		rows = append(rows, helpStyle.Render("no relays yet — press r to refresh"))
+		rows = append(rows, helpStyle.Render(tr.noRelaysYet))
 	}
 	if len(m.relays) == 0 {
 		return strings.Join(rows, "\n")
 	}
 
-	rows = append(rows, helpStyle.Render(fmt.Sprintf("   %-28s %-8s %-9s %s", "RELAY", "COUNTRY", "LATENCY", "CLASS")))
+	// padCell, not %-8s: the localized headers must pad by display width to
+	// stay aligned with the ASCII-formatted rows below.
+	rows = append(rows, helpStyle.Render("   "+padCell(tr.colRelay, 28)+" "+padCell(tr.colCountry, 8)+" "+padCell(tr.colLatency, 9)+" "+tr.colClass))
 
 	// Window the list to the rows the body has left after any notice lines and
 	// the column header, following the cursor: fitLines hard-truncates the body,
@@ -323,15 +475,18 @@ func (m tuiModel) relaysView() string {
 		if i == m.relayCursor {
 			cursor = cursorStyle.Render("▸ ")
 		}
-		line := fmt.Sprintf("%s %-28s %-8s %-9s %s",
-			cursor,
-			truncate(relayDisplayName(entry.Relay), 28),
-			strings.ToUpper(strings.TrimSpace(entry.Relay.CountryCode)),
-			latencyLabel(entry.ProbeMS),
-			nodeClassBadge(entry.Relay.NodeClass),
-		)
+		cc := strings.ToUpper(strings.TrimSpace(entry.Relay.CountryCode))
+		if cc != "" {
+			cc += countryFlag(cc)
+		}
+		// padCell and truncateWidth throughout: the flag emoji (and any CJK in
+		// a label) would break byte- or rune-count alignment.
+		line := cursor + " " + padCell(truncateWidth(relayListName(entry.Relay), 28), 28) +
+			" " + padCell(cc, 8) +
+			" " + padCell(latencyLabel(entry.ProbeMS), 9) +
+			" " + nodeClassBadge(tr, entry.Relay.NodeClass)
 		if entry.Relay.ID == m.settings.target.RelayID && m.settings.target.RelayID != "" {
-			line += " " + noteStyle.Render("← target")
+			line += " " + noteStyle.Render(tr.targetMarker)
 		}
 		rows = append(rows, line)
 	}
@@ -355,14 +510,14 @@ func recentsLine(recents []connectcore.RecentNode) string {
 	return strings.Join(parts, " · ")
 }
 
-// relayDisplayName is the list name for a relay: its geo label, with the
-// friendly label alongside when both exist.
-func relayDisplayName(r brokerapi.RelayDescriptor) string {
-	geo := geoDisplayLabel(r)
-	if label := strings.TrimSpace(r.Label); label != "" && label != geo {
-		return geo + " (" + label + ")"
+// relayListName is the list name for a relay: its friendly label alone (the
+// COUNTRY column already carries the geography), falling back to the geo
+// label only when a relay has no label.
+func relayListName(r brokerapi.RelayDescriptor) string {
+	if label := strings.TrimSpace(r.Label); label != "" {
+		return label
 	}
-	return geo
+	return geoDisplayLabel(r)
 }
 
 // geoDisplayLabel mirrors the engine's geoLabel presentation rule: city and
@@ -389,19 +544,27 @@ func latencyLabel(probeMS *int64) string {
 	return fmt.Sprintf("%d ms", *probeMS)
 }
 
-func truncate(s string, n int) string {
-	runes := []rune(s)
-	if len(runes) <= n {
+// truncateWidth trims s to at most w display cells (a rune-count cut would
+// under-trim CJK and emoji, which occupy two cells per rune).
+func truncateWidth(s string, w int) string {
+	if w < 1 {
+		return ""
+	}
+	if lipgloss.Width(s) <= w {
 		return s
 	}
-	return string(runes[:n-1]) + "…"
+	runes := []rune(s)
+	for len(runes) > 0 && lipgloss.Width(string(runes))+1 > w {
+		runes = runes[:len(runes)-1]
+	}
+	return string(runes) + "…"
 }
 
 // ---- Logs ----
 
 func (m tuiModel) logsView() string {
 	if !m.logReady {
-		return helpStyle.Render("no log output yet")
+		return helpStyle.Render(m.tr().noLogOutput)
 	}
 	return m.logView.View()
 }
@@ -409,17 +572,18 @@ func (m tuiModel) logsView() string {
 // ---- Settings ----
 
 func (m tuiModel) settingsView() string {
+	tr := m.tr()
 	fields := []struct {
 		id    settingsFieldID
 		name  string
 		value string
 	}{
-		{fieldBroker, "Broker URL", displayBroker(m.settings.brokerURL)},
-		{fieldMode, "Mode", modeLabel(m.settings.mode)},
-		{fieldRelayID, "Target relay id", orUnset(m.settings.target.RelayID)},
-		{fieldRelayLabel, "Target label", orUnset(m.settings.target.Label)},
-		{fieldCountry, "Target country", orUnset(m.settings.target.Country)},
-		{fieldShellHelper, "Shell proxy", m.shellHelperValue()},
+		{fieldBroker, tr.fieldNames[fieldBroker], displayBroker(tr, m.settings.brokerURL)},
+		{fieldMode, tr.fieldNames[fieldMode], modeLabel(tr, m.settings.mode)},
+		{fieldRelayID, tr.fieldNames[fieldRelayID], orUnset(tr, m.settings.target.RelayID)},
+		{fieldRelayLabel, tr.fieldNames[fieldRelayLabel], orUnset(tr, m.settings.target.Label)},
+		{fieldCountry, tr.fieldNames[fieldCountry], orUnset(tr, m.settings.target.Country)},
+		{fieldShellHelper, tr.fieldNames[fieldShellHelper], m.shellHelperValue()},
 	}
 
 	rows := make([]string, 0, len(fields)+2)
@@ -442,54 +606,70 @@ func (m tuiModel) settingsView() string {
 		// whole purpose is cleaning up a shell after the tunnel is gone.
 		rows = append(rows, "")
 		if m.state.Status == connectcore.StatusConnected {
-			rows = append(rows, "  "+labelStyle.Width(18).Render("Enable in a shell")+" "+m.settings.shell.EnableCommand)
+			rows = append(rows, "  "+labelStyle.Width(18).Render(tr.enableInShell)+" "+m.settings.shell.EnableCommand)
 		} else {
-			rows = append(rows, "  "+labelStyle.Width(18).Render("Enable in a shell")+" "+helpStyle.Render("available while connected"))
+			rows = append(rows, "  "+labelStyle.Width(18).Render(tr.enableInShell)+" "+helpStyle.Render(tr.availableWhileConnected))
 		}
 		rows = append(rows,
-			"  "+labelStyle.Width(18).Render("Restore that shell")+" "+m.settings.shell.DisableCommand,
-			"  "+helpStyle.Render("run the restore command after disconnect, failure, quit, or crash"),
+			"  "+labelStyle.Width(18).Render(tr.restoreShell)+" "+m.settings.shell.DisableCommand,
+			"  "+helpStyle.Render(tr.restoreAdvice),
 		)
 	}
-	if m.settings.note != "" {
-		rows = append(rows, "", noteStyle.Render(m.settings.note))
+	if m.settings.note.kind != noteNone {
+		rows = append(rows, "", noteStyle.Render(renderNote(tr, m.settings.note)))
 	}
 	return strings.Join(rows, "\n")
 }
 
 // shellHelperValue is the Shell proxy row's summary cell.
 func (m tuiModel) shellHelperValue() string {
+	tr := m.tr()
 	switch {
 	case m.settings.mode == connectcore.ModeTUN:
-		return helpStyle.Render("not needed in TUN mode")
-	case m.settings.shellErr != "":
-		return errorStyle.Render(m.settings.shellErr)
+		return helpStyle.Render(tr.notNeededTUN)
+	case m.settings.shellErr.kind != noteNone:
+		return errorStyle.Render(renderNote(tr, m.settings.shellErr))
 	case m.settings.shellOK:
-		return "commands below"
+		return tr.commandsBelow
 	case m.state.Status == connectcore.StatusConnected:
-		return helpStyle.Render("press enter to show the shell commands")
+		return helpStyle.Render(tr.pressEnterShell)
 	default:
-		return helpStyle.Render("available while connected")
+		return helpStyle.Render(tr.availableWhileConnected)
 	}
 }
 
 // modeLabel is the Settings Mode row: what the mode does and what it costs.
 // What TUN costs is platform-specific (sudo on Unix, unsupported on Windows),
-// so the wording comes from the same file as the check that enforces it.
-func modeLabel(mode connectcore.Mode) string {
+// so that wording comes from the same file as the check that enforces it —
+// and stays English in every language.
+func modeLabel(tr *translation, mode connectcore.Mode) string {
 	if mode == connectcore.ModeTUN {
-		return "TUN — whole device (" + tunModeSummary + ")"
+		return fmt.Sprintf(tr.modeTUN, tunModeSummary)
 	}
-	return "proxy — local mixed HTTP/SOCKS inbound (no privileges)"
+	return tr.modeProxy
 }
 
-// modeNote explains what a just-accepted mode changes, since the engine only
-// applies it on the next connect.
-func modeNote(mode connectcore.Mode) string {
-	if mode == connectcore.ModeTUN {
-		return "TUN mode: the next connect captures every application — " + tunModeAdvice
+// renderNote resolves a stored settings notice through the ACTIVE language:
+// the kind is stored, the words are chosen at draw time, so a note set while
+// the UI spoke Chinese follows a 5-key cycle into Russian.
+func renderNote(tr *translation, n settingsNote) string {
+	switch n.kind {
+	case noteText:
+		return n.text
+	case noteModeTUN:
+		// The engine only applies a mode on the next connect, hence advice
+		// rather than a state change; the TUN cost is the platform const.
+		return fmt.Sprintf(tr.modeNoteTUN, tunModeAdvice)
+	case noteModeProxy:
+		return tr.modeNoteProxy
+	case noteShellTUN:
+		return tr.noteShellTUN
+	case noteShellDisconnected:
+		return tr.noteShellDisconnected
+	case noteShellUnavailable:
+		return tr.shellUnavailable
 	}
-	return "proxy mode: the next connect serves a local mixed proxy and points the system proxy at it"
+	return ""
 }
 
 func toggleMode(mode connectcore.Mode) connectcore.Mode {
@@ -499,9 +679,9 @@ func toggleMode(mode connectcore.Mode) connectcore.Mode {
 	return connectcore.ModeTUN
 }
 
-func orUnset(value string) string {
+func orUnset(tr *translation, value string) string {
 	if strings.TrimSpace(value) == "" {
-		return helpStyle.Render("(unset)")
+		return helpStyle.Render(tr.unset)
 	}
 	return value
 }

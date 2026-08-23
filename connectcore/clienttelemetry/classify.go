@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"strings"
 	"syscall"
 	"unicode/utf8"
 
@@ -225,14 +226,28 @@ func wssFailureReason(reason string) string {
 	return "wss_transport_failed"
 }
 
+// telemetrySafer is implemented by errors that quote child-process output for
+// the user (client.crashError): TelemetrySafe returns the rendering with the
+// quote removed. Raw process output can carry local paths and usernames, so
+// it must reach user-facing surfaces only, never the broker.
+type telemetrySafer interface{ TelemetrySafe() string }
+
 // ErrorDetail returns err.Error() truncated to at most detailMaxBytes, on a
-// UTF-8 rune boundary so the broker never sees an invalid attribute value. "" for
-// a nil error.
+// UTF-8 rune boundary so the broker never sees an invalid attribute value. ""
+// for a nil error. Any error in the chain that offers a telemetry-safe
+// rendering has its full rendering replaced by it — the wrapping context
+// ("local VPN setup failed: ...") survives, the quoted child output does not.
 func ErrorDetail(err error) string {
 	if err == nil {
 		return ""
 	}
 	msg := err.Error()
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		if safe, ok := e.(telemetrySafer); ok {
+			msg = strings.Replace(msg, e.Error(), safe.TelemetrySafe(), 1)
+			break
+		}
+	}
 	if len(msg) <= detailMaxBytes {
 		return msg
 	}

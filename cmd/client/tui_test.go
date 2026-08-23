@@ -248,7 +248,7 @@ func TestModeFieldTogglesCaptureModeThroughTheEngine(t *testing.T) {
 	if m.settings.mode != connectcore.ModeTUN {
 		t.Fatalf("mode = %v after a clean SetMode; want TUN", m.settings.mode)
 	}
-	if m.settings.note == "" {
+	if m.settings.note.kind == noteNone {
 		t.Fatal("switching mode said nothing about what changes")
 	}
 
@@ -273,8 +273,8 @@ func TestModeToggleRefusalKeepsTheEngineMode(t *testing.T) {
 	if m.settings.mode != connectcore.ModeProxy {
 		t.Fatalf("mode = %v after a refused SetMode; want the engine's proxy mode", m.settings.mode)
 	}
-	if !strings.Contains(m.settings.note, "disconnect before") {
-		t.Fatalf("note = %q; want the engine's refusal", m.settings.note)
+	if !strings.Contains(m.settings.note.text, "disconnect before") {
+		t.Fatalf("note = %+v; want the engine's refusal", m.settings.note)
 	}
 }
 
@@ -494,8 +494,8 @@ func TestShellHelperActionRequiresConnection(t *testing.T) {
 	if msg != nil {
 		t.Fatalf("disconnected shell-helper action dispatched %T", msg)
 	}
-	if m.settings.note == "" || m.settings.shellOK {
-		t.Fatalf("disconnected action note=%q shellOK=%t", m.settings.note, m.settings.shellOK)
+	if m.settings.note.kind == noteNone || m.settings.shellOK {
+		t.Fatalf("disconnected action note=%+v shellOK=%t", m.settings.note, m.settings.shellOK)
 	}
 
 	// Connected: enter generates and renders both copyable commands.
@@ -541,7 +541,7 @@ func TestShellHelperErrorIsSurfaced(t *testing.T) {
 
 	m, msg := update(t, m, keyMsg("enter"))
 	m, _ = update(t, m, msg)
-	if m.settings.shellOK || m.settings.shellErr == "" {
+	if m.settings.shellOK || m.settings.shellErr.kind == noteNone {
 		t.Fatalf("shell error not surfaced: %+v", m.settings)
 	}
 	if !strings.Contains(m.View(), "proxy configuration directory is unavailable") {

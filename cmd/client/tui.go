@@ -130,10 +130,12 @@ type engineStateMsg connectcore.State
 type engineNoticeMsg connectcore.Notice
 
 // shellHelperMsg carries the generated shell-helper commands (or why they are
-// unavailable) back from the host closure.
+// unavailable) back from the host closure. unavailable means this build has
+// no shell integration — a fixed notice, translated at render time.
 type shellHelperMsg struct {
-	info proxyconfig.Info
-	err  string
+	info        proxyconfig.Info
+	err         string
+	unavailable bool
 }
 
 type tickMsg time.Time
@@ -190,6 +192,28 @@ const (
 	settingsFieldCount
 )
 
+// A settings notice is stored as a kind and rendered through the active
+// language at draw time: storing translated text would survive a 5-key
+// language cycle and leave mixed-language UI.
+type noteKind int
+
+const (
+	noteNone noteKind = iota
+	// noteText is engine- or helper-provided text, shown verbatim (the
+	// engine speaks English regardless of the UI language).
+	noteText
+	noteModeTUN
+	noteModeProxy
+	noteShellTUN
+	noteShellDisconnected
+	noteShellUnavailable
+)
+
+type settingsNote struct {
+	kind noteKind
+	text string // noteText only
+}
+
 type settingsState struct {
 	brokerURL string
 	target    connectcore.RelayTarget
@@ -201,13 +225,13 @@ type settingsState struct {
 	cursor  settingsFieldID
 	editing bool
 	input   textinput.Model
-	note    string
+	note    settingsNote
 
 	// Generated shell-helper commands (the desktop Settings "LOCAL PROXY"
 	// section); populated by the shell-helper action while connected.
 	shell    proxyconfig.Info
 	shellOK  bool
-	shellErr string
+	shellErr settingsNote
 }
 
 type tuiModel struct {
@@ -219,6 +243,7 @@ type tuiModel struct {
 	shellHelper func() (proxyconfig.Info, error)
 
 	view          viewID
+	lang          language
 	width, height int
 
 	state       connectcore.State
@@ -355,7 +380,7 @@ func (m tuiModel) shellHelperCmd() tea.Cmd {
 	helper := m.shellHelper
 	return func() tea.Msg {
 		if helper == nil {
-			return shellHelperMsg{err: "shell integration is unavailable in this build"}
+			return shellHelperMsg{unavailable: true}
 		}
 		info, err := helper()
 		if err != nil {
@@ -410,16 +435,29 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case shellHelperMsg:
-		m.settings.shell, m.settings.shellOK, m.settings.shellErr = msg.info, msg.err == "", msg.err
+		m.settings.shell = msg.info
+		m.settings.shellOK = !msg.unavailable && msg.err == ""
+		switch {
+		case msg.unavailable:
+			m.settings.shellErr = settingsNote{kind: noteShellUnavailable}
+		case msg.err != "":
+			m.settings.shellErr = settingsNote{kind: noteText, text: msg.err}
+		default:
+			m.settings.shellErr = settingsNote{}
+		}
 		return m, nil
 
 	case modeSetMsg:
 		if !msg.applied {
-			m.settings.note = msg.err
+			m.settings.note = settingsNote{kind: noteText, text: msg.err}
 			return m, nil
 		}
 		m.settings.mode = msg.mode
-		m.settings.note = modeNote(msg.mode)
+		if msg.mode == connectcore.ModeTUN {
+			m.settings.note = settingsNote{kind: noteModeTUN}
+		} else {
+			m.settings.note = settingsNote{kind: noteModeProxy}
+		}
 		// Switching into proxy mode needs the stable endpoint the launch-time
 		// resolution skipped.
 		if msg.mode == connectcore.ModeProxy && m.proxyEndpoint == "" && m.proxyErr == "" {
@@ -492,6 +530,11 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "4":
 		m.view = viewSettings
 		return m, nil
+	case "5":
+		// Cycle the UI language in place — no settings entry, so a user who
+		// cannot read the current language never has to navigate one.
+		m.lang = (m.lang + 1) % languageCount
+		return m, nil
 	case "tab":
 		m.view = (m.view + 1) % viewCount
 		return m, nil
@@ -561,25 +604,25 @@ func (m tuiModel) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// The mode is the engine's to accept: it refuses mid-session, and
 			// TUN mode is refused again at connect time without the privileges
 			// to create the tunnel device.
-			m.settings.note = ""
+			m.settings.note = settingsNote{}
 			return m, m.setModeCmd(toggleMode(m.settings.mode))
 		}
 		if m.settings.cursor == fieldShellHelper {
 			// Mirrors the desktop Settings gating: the enable command points a
 			// shell at the local endpoint, which only answers while connected.
 			if m.settings.mode == connectcore.ModeTUN {
-				m.settings.note = "TUN mode already routes every application; the shell proxy is a proxy-mode helper"
+				m.settings.note = settingsNote{kind: noteShellTUN}
 				return m, nil
 			}
 			if m.state.Status != connectcore.StatusConnected {
-				m.settings.note = "connect first — the shell proxy only works while connected"
+				m.settings.note = settingsNote{kind: noteShellDisconnected}
 				return m, nil
 			}
-			m.settings.note = ""
+			m.settings.note = settingsNote{}
 			return m, m.shellHelperCmd()
 		}
 		m.settings.editing = true
-		m.settings.note = ""
+		m.settings.note = settingsNote{}
 		m.settings.input.SetValue(m.settingsFieldValue(m.settings.cursor))
 		m.settings.input.CursorEnd()
 		return m, m.settings.input.Focus()
