@@ -203,17 +203,32 @@ func (m tuiModel) footerConnectionSummary(budget int) string {
 	if m.state.Status != connectcore.StatusConnected {
 		return ""
 	}
-	label := ""
-	if m.state.RelayLabel != nil {
+	// Label and flag come from the same descriptor: on a failover the state
+	// label updates before the next info poll lands, and a fresh label beside
+	// the old relay's flag would assert the wrong exit country. The state
+	// label is only the fallback for a descriptor with no name of its own.
+	label, flag := "", ""
+	if m.infoOK {
+		flag = countryFlag(m.info.Relay.CountryCode)
+		label = strings.TrimSpace(m.info.Relay.Label)
+		if label == "" {
+			city, country := strings.TrimSpace(m.info.Relay.City), strings.TrimSpace(m.info.Relay.Country)
+			switch {
+			case city != "" && country != "":
+				label = city + ", " + country
+			case country != "":
+				label = country
+			}
+		}
+	}
+	if label == "" && m.state.RelayLabel != nil {
 		label = strings.TrimSpace(*m.state.RelayLabel)
 	}
-	if m.infoOK {
-		if flag := countryFlag(m.info.Relay.CountryCode); flag != "" {
-			if label != "" {
-				label += " "
-			}
-			label += flag
+	if flag != "" {
+		if label != "" {
+			label += " "
 		}
+		label += flag
 	}
 	duration := ""
 	if !m.connectedAt.IsZero() {
@@ -609,8 +624,8 @@ func (m tuiModel) settingsView() string {
 			"  "+helpStyle.Render(tr.restoreAdvice),
 		)
 	}
-	if m.settings.note != "" {
-		rows = append(rows, "", noteStyle.Render(m.settings.note))
+	if m.settings.note.kind != noteNone {
+		rows = append(rows, "", noteStyle.Render(renderNote(tr, m.settings.note)))
 	}
 	return strings.Join(rows, "\n")
 }
@@ -621,8 +636,8 @@ func (m tuiModel) shellHelperValue() string {
 	switch {
 	case m.settings.mode == connectcore.ModeTUN:
 		return helpStyle.Render(tr.notNeededTUN)
-	case m.settings.shellErr != "":
-		return errorStyle.Render(m.settings.shellErr)
+	case m.settings.shellErr.kind != noteNone:
+		return errorStyle.Render(renderNote(tr, m.settings.shellErr))
 	case m.settings.shellOK:
 		return tr.commandsBelow
 	case m.state.Status == connectcore.StatusConnected:
@@ -643,13 +658,27 @@ func modeLabel(tr *translation, mode connectcore.Mode) string {
 	return tr.modeProxy
 }
 
-// modeNote explains what a just-accepted mode changes, since the engine only
-// applies it on the next connect.
-func modeNote(tr *translation, mode connectcore.Mode) string {
-	if mode == connectcore.ModeTUN {
+// renderNote resolves a stored settings notice through the ACTIVE language:
+// the kind is stored, the words are chosen at draw time, so a note set while
+// the UI spoke Chinese follows a 5-key cycle into Russian.
+func renderNote(tr *translation, n settingsNote) string {
+	switch n.kind {
+	case noteText:
+		return n.text
+	case noteModeTUN:
+		// The engine only applies a mode on the next connect, hence advice
+		// rather than a state change; the TUN cost is the platform const.
 		return fmt.Sprintf(tr.modeNoteTUN, tunModeAdvice)
+	case noteModeProxy:
+		return tr.modeNoteProxy
+	case noteShellTUN:
+		return tr.noteShellTUN
+	case noteShellDisconnected:
+		return tr.noteShellDisconnected
+	case noteShellUnavailable:
+		return tr.shellUnavailable
 	}
-	return tr.modeNoteProxy
+	return ""
 }
 
 func toggleMode(mode connectcore.Mode) connectcore.Mode {

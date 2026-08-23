@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // syncBuffer is a concurrency-safe writer: exec copies stdout and stderr on
@@ -117,6 +118,111 @@ func TestRunCrashErrorFallsBackToLastLine(t *testing.T) {
 	err := SingBoxRunner{Path: script}.Run(context.Background(), config)
 	if err == nil || !strings.Contains(err.Error(), "giving up on relay handshake") {
 		t.Fatalf("crash error did not quote the unterminated last line: %v", err)
+	}
+}
+
+// The quoted crash line is for user-facing surfaces only: the error must also
+// offer a telemetry-safe rendering that carries the exit fact without the
+// child's words, which can name local paths and usernames.
+func TestCrashErrorOffersTelemetrySafeRendering(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "stubbox")
+	stub := "#!/bin/sh\necho 'error: read config /Users/alice/secret.json: denied' >&2\nexit 1\n"
+	if err := os.WriteFile(script, []byte(stub), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	config := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(config, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	err := SingBoxRunner{Path: script}.Run(context.Background(), config)
+	if err == nil || !strings.Contains(err.Error(), "/Users/alice/secret.json") {
+		t.Fatalf("user-facing error lost the quote: %v", err)
+	}
+	safer, ok := err.(interface{ TelemetrySafe() string })
+	if !ok {
+		t.Fatalf("crash error %T offers no telemetry-safe rendering", err)
+	}
+	safe := safer.TelemetrySafe()
+	if strings.Contains(safe, "alice") || strings.Contains(safe, "secret") {
+		t.Fatalf("telemetry rendering leaks the quote: %q", safe)
+	}
+	if !strings.Contains(safe, "sing-box exited") || !strings.Contains(safe, "exit status 1") {
+		t.Fatalf("telemetry rendering lost the exit fact: %q", safe)
+	}
+}
+
+// A crash quote must come from the child's FINAL lines: an error-looking line
+// from long before the exit is more likely a recovered transient than the
+// cause, and quoting it misdirects diagnosis.
+func TestRunCrashQuoteIgnoresStaleErrorLines(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "stubbox")
+	stub := "#!/bin/sh\n" +
+		"echo 'ERROR transient handshake, retrying' >&2\n" +
+		"i=0; while [ $i -lt 20 ]; do echo \"steady line $i\" >&2; i=$((i+1)); done\n" +
+		"echo 'missing required field \"server\"' >&2\n" +
+		"exit 2\n"
+	if err := os.WriteFile(script, []byte(stub), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	config := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(config, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	err := SingBoxRunner{Path: script}.Run(context.Background(), config)
+	if err == nil || !strings.Contains(err.Error(), "missing required field") {
+		t.Fatalf("crash error did not quote the final message: %v", err)
+	}
+	if strings.Contains(err.Error(), "transient handshake") {
+		t.Fatalf("crash error quoted a stale recovered error: %v", err)
+	}
+}
+
+// os/exec serializes Write calls only while cmd.Stdout == cmd.Stderr, so a
+// caller passing one plain unsynchronized writer for both streams must keep
+// that guarantee through the recorder wrapping. The race detector is the
+// assertion here.
+func TestRunSameWriterKeepsExecSerialization(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "stubbox")
+	stub := "#!/bin/sh\ni=0; while [ $i -lt 50 ]; do echo \"out $i\"; echo \"err $i\" >&2; i=$((i+1)); done\nexit 0\n"
+	if err := os.WriteFile(script, []byte(stub), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	config := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(config, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	var buf strings.Builder // deliberately unsynchronized
+	err := SingBoxRunner{Path: script, Stdout: &buf, Stderr: &buf}.Run(context.Background(), config)
+	if err == nil || err.Error() != "sing-box exited" {
+		t.Fatalf("clean exit reported %v", err)
+	}
+	if !strings.Contains(buf.String(), "out 49") || !strings.Contains(buf.String(), "err 49") {
+		t.Fatalf("shared writer missing output: %q", buf.String())
+	}
+}
+
+// A forced flush of an over-long line must not split a multi-byte rune: the
+// dangling bytes would put mojibake into the user-facing quote.
+func TestCrashLineRecorderKeepsRuneBoundaries(t *testing.T) {
+	r := &crashLineRecorder{}
+	long := strings.Repeat("界", 300) // 900 bytes; the 512-byte cap lands mid-rune
+	if _, err := r.Write([]byte("error: " + long + "\n")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	tail := r.tailLines()
+	if len(tail) == 0 {
+		t.Fatal("recorder recorded nothing")
+	}
+	for _, line := range tail {
+		if !utf8.ValidString(line.text) {
+			t.Fatalf("recorded line is not valid UTF-8: %q", line.text)
+		}
 	}
 }
 

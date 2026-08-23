@@ -36,6 +36,42 @@ func TestLanguageKeyCyclesWithoutEnteringSettings(t *testing.T) {
 	}
 }
 
+// Settings notices are stored as kinds and worded at draw time, so a note
+// set under one language follows a 5-key cycle into the next — stored
+// rendered text would leave mixed-language UI for exactly the reader the
+// trilingual escape hatch serves.
+func TestSettingsNotesFollowLanguageCycles(t *testing.T) {
+	m := newTestModel(&fakeDriver{})
+	m.view = viewSettings
+	m.lang = langChinese
+
+	m, _ = update(t, m, modeSetMsg{mode: connectcore.ModeTUN, applied: true})
+	if view := m.View(); !strings.Contains(view, "TUN 模式：下次连接将接管所有应用") {
+		t.Fatalf("Chinese mode note missing:\n%s", view)
+	}
+
+	m, _ = update(t, m, keyMsg("5")) // 中文 → русский
+	view := m.View()
+	if !strings.Contains(view, "режим TUN: следующее подключение захватит все приложения") {
+		t.Fatalf("note did not follow the language cycle:\n%s", view)
+	}
+	if strings.Contains(view, "TUN 模式") {
+		t.Fatalf("stale Chinese note survived the cycle:\n%s", view)
+	}
+
+	// The shell-unavailable notice takes the same path. Back to proxy mode
+	// first: the TUN mode set above masks the Shell proxy row's value.
+	m, _ = update(t, m, modeSetMsg{mode: connectcore.ModeProxy, applied: true})
+	m, _ = update(t, m, shellHelperMsg{unavailable: true})
+	if !strings.Contains(m.View(), "интеграция с shell недоступна") {
+		t.Fatalf("Russian shell-unavailable notice missing:\n%s", m.View())
+	}
+	m, _ = update(t, m, keyMsg("5")) // русский → English
+	if !strings.Contains(m.View(), "shell integration is unavailable in this build") {
+		t.Fatalf("shell notice did not follow the cycle:\n%s", m.View())
+	}
+}
+
 // The language slot must be readable in every language, so it is the same
 // trilingual label in all of them.
 func TestHeaderAlwaysShowsTheTrilingualLanguageLabel(t *testing.T) {

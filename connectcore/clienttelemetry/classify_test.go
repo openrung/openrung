@@ -192,6 +192,28 @@ func TestClassifyShadowedTimeoutErrnos(t *testing.T) {
 	}
 }
 
+// quotingError mimics client.crashError: Error() quotes child output (which
+// can name local paths and usernames), TelemetrySafe() carries only the fact.
+type quotingError struct{}
+
+func (quotingError) Error() string {
+	return "sing-box exited: read /Users/alice/secret.json (exit status 1)"
+}
+func (quotingError) TelemetrySafe() string { return "sing-box exited: exit status 1" }
+
+// The broker must receive the telemetry-safe rendering, with any wrapping
+// context preserved around it — however deep the quoting error sits.
+func TestErrorDetailScrubsQuotedChildOutput(t *testing.T) {
+	err := fmt.Errorf("local VPN setup failed: %w", quotingError{})
+	got := ErrorDetail(err)
+	if strings.Contains(got, "alice") || strings.Contains(got, "secret") {
+		t.Fatalf("detail leaks quoted child output: %q", got)
+	}
+	if got != "local VPN setup failed: sing-box exited: exit status 1" {
+		t.Fatalf("detail = %q; want the wrap preserved around the safe rendering", got)
+	}
+}
+
 func TestErrorDetail(t *testing.T) {
 	if got := ErrorDetail(nil); got != "" {
 		t.Fatalf("nil detail = %q, want empty", got)
