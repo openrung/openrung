@@ -3,7 +3,8 @@ name: client-release
 # Cross-compiles the OpenRung client CLI (cmd/client) and publishes a GitHub
 # Release on client-vX.Y.Z tags. Run manually (Actions → client-release → Run)
 # for artifact-only test builds. Unlike the two Wails desktop apps this is
-# pure Go, so a single Linux runner cross-compiles every target.
+# pure Go, so a single Linux runner cross-compiles every target; a macOS
+# runner then signs and notarizes the darwin binaries.
 
 on:
   workflow_dispatch:
@@ -143,17 +144,95 @@ jobs:
           python3 -c 'import sys; a=open(sys.argv[1],"rb").read(4096); e=open(sys.argv[2],"rb").read(); sys.exit("windows binary embeds WinDivert64.sys: the with_external_windivert build tag was lost (see THIRD_PARTY_NOTICES.md section 8)" if a in e else 0)' "$asset" "$exe"
           echo "no WinDivert driver bytes in the windows binary"
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openrung-client-dist
+          path: |
+            dist/openrung-client-*.tar.gz
+            dist/openrung-client-*.zip
+          if-no-files-found: error
+
+  # Sign and notarize the two darwin binaries so Gatekeeper accepts direct
+  # downloads (unsigned builds show users a "could not verify free of
+  # malware" block). Checksums are generated here, after the archives reach
+  # their final bytes. The signing identity names only the organization —
+  # release binaries must never carry a personal identity.
+  sign-macos:
+    needs: build
+    runs-on: macos-14
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: openrung-client-dist
+          path: dist
+
+      - name: Sign and notarize darwin binaries
+        shell: bash
+        env:
+          MACOS_SIGNING_P12: ${{ secrets.MACOS_SIGNING_P12 }}
+          MACOS_SIGNING_P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          SIGNING_IDENTITY: "Developer ID Application: OpenRung Foundation (9VLV9A7KS9)"
+        run: |
+          set -euo pipefail
+          cd dist
+
+          # Throwaway keychain: the runner is ephemeral, but scoping the key
+          # to a dedicated keychain keeps it out of any login-keychain state
+          # other steps might capture.
+          keychain="$RUNNER_TEMP/build.keychain-db"
+          keychain_password="$(uuidgen)"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          printf '%s' "$MACOS_SIGNING_P12" | base64 -d > signing.p12
+          security import signing.p12 -k "$keychain" -f pkcs12 -P "$MACOS_SIGNING_P12_PASSWORD" -T /usr/bin/codesign
+          rm signing.p12
+          security set-key-partition-list -S "apple-tool:,apple:" -s -k "$keychain_password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain"
+
+          printf '%s' "$NOTARY_KEY_P8" > notary.p8
+
+          for arch in amd64 arm64; do
+            dir="openrung-client-darwin-$arch"
+            echo "==> $dir"
+            tar xzf "$dir.tar.gz"
+            codesign --sign "$SIGNING_IDENTITY" --options runtime --timestamp --force "$dir/openrung-client"
+
+            # notarytool's exit code does not reliably reflect a rejected
+            # submission; gate on the reported status explicitly.
+            ditto -c -k "$dir/openrung-client" "notarize-$arch.zip"
+            xcrun notarytool submit "notarize-$arch.zip" \
+              --key notary.p8 --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" \
+              --wait --output-format json | tee "notary-$arch.json"
+            python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); sys.exit(0 if r.get("status")=="Accepted" else f"notarization not accepted: {r}")' "notary-$arch.json"
+
+            # End-to-end gate: Gatekeeper itself must accept the binary
+            # (valid Developer ID signature + notarization ticket online).
+            spctl -a -vv -t install "$dir/openrung-client"
+
+            rm "$dir.tar.gz" "notarize-$arch.zip" "notary-$arch.json"
+            tar -czf "$dir.tar.gz" "$dir"
+            rm -r "$dir"
+          done
+
+          rm notary.p8
+          security delete-keychain "$keychain"
+
       - name: Checksums
         shell: bash
         run: |
           set -euo pipefail
           cd dist
-          sha256sum openrung-client-*.tar.gz openrung-client-*.zip > SHA256SUMS
+          shasum -a 256 openrung-client-*.tar.gz openrung-client-*.zip > SHA256SUMS
           cat SHA256SUMS
 
       - uses: actions/upload-artifact@v4
         with:
-          name: openrung-client-dist
+          name: openrung-client-dist-signed
           path: |
             dist/openrung-client-*.tar.gz
             dist/openrung-client-*.zip
@@ -164,15 +243,16 @@ jobs:
   # for client-vX.Y.Z tag pushes (not manual dispatch, which stays
   # artifact-only for testing).
   release:
-    needs: build
+    needs: [build, sign-macos]
     if: startsWith(github.ref, 'refs/tags/client-v')
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the tag's GitHub Release + upload assets
     steps:
-      - name: Download build artifacts
+      - name: Download signed build artifacts
         uses: actions/download-artifact@v4
         with:
+          name: openrung-client-dist-signed
           path: artifacts
 
       - name: Create GitHub Release
