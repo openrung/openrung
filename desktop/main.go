@@ -50,14 +50,29 @@ func main() {
 	svc := vpnservice.New()
 	// The engine's sing-box child process is this executable (singbox.go), so
 	// there is no external binary to hunt for on a PATH a Finder-launched .app
-	// never had.
-	exe, err := singboxruntime.SelfPath()
-	if err != nil {
-		log.Fatal(err)
+	// never had. OPENRUNG_SING_BOX overrides that with an external binary —
+	// the desktop counterpart of the client's -sing-box flag, and the escape
+	// hatch for builds whose linked engine is unusable (see below).
+	if external := os.Getenv("OPENRUNG_SING_BOX"); external != "" {
+		svc.SingBoxPath = external
+	} else {
+		exe, err := singboxruntime.SelfPath()
+		if err != nil {
+			log.Fatal(err)
+		}
+		svc.SingBoxPath = exe
+		if !singboxruntime.UTLSEnabled {
+			// Only packaged builds (scripts/versioned-wails-build.mjs) carry
+			// the engine's build tags; a plain `wails dev` or `go build`
+			// binary links an engine that cannot dial any relay, so every
+			// connect would fail with upstream's rebuild hint buried in the
+			// engine state. Those builds start from a terminal — say so there,
+			// with the recovery knobs.
+			log.Printf("warning: %s — every connect will fail; rebuild with `wails dev -tags with_utls` or point OPENRUNG_SING_BOX at an external sing-box binary", singboxruntime.VersionLine())
+		}
 	}
-	svc.SingBoxPath = exe
 
-	err = wails.Run(&options.App{
+	err := wails.Run(&options.App{
 		Title:            "OpenRung",
 		Width:            1120,
 		Height:           720,
