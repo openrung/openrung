@@ -90,7 +90,7 @@ func stampLog(at time.Time, line string) string {
 func runTUI(cfg connectConfig) error {
 	ring := newLogRing(logRingCapacity)
 	sink := &tuiSink{ring: ring}
-	host := newEngineHost(sink, cfg.SingBoxPath)
+	host := newEngineHost(sink, cfg.SingBoxPath, cfg.SingBoxExternal)
 	engine := host.engine
 	engine.PunchEnabled = cfg.PunchEnabled
 	engine.PunchURL = cfg.PunchURL

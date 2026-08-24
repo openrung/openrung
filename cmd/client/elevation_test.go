@@ -47,6 +47,30 @@ func TestElevationRefusalCarriesActionableGuidance(t *testing.T) {
 	}
 }
 
+// The Windows TUN gate admits only the bundled runtime: the stdin-close stop
+// protocol is the only graceful-stop channel there, and an external -sing-box
+// binary does not speak it. The goos parameter keeps every branch — including
+// the refusal wording — testable from any platform.
+func TestTUNRequiresBundledRuntimeOnWindowsOnly(t *testing.T) {
+	if err := tunRequiresBundledRuntime("windows", false); err != nil {
+		t.Fatalf("bundled runtime on Windows refused: %v", err)
+	}
+	for _, goos := range []string{"linux", "darwin"} {
+		if err := tunRequiresBundledRuntime(goos, true); err != nil {
+			t.Fatalf("external binary on %s refused: %v", goos, err)
+		}
+	}
+	err := tunRequiresBundledRuntime("windows", true)
+	if err == nil {
+		t.Fatal("external binary on Windows admitted; its tunnel could never be stopped gracefully")
+	}
+	for _, want := range []string{"-sing-box", "proxy mode", "bundled"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("refusal %q missing %q; it must name the cause and both ways out", err, want)
+		}
+	}
+}
+
 // The Settings row, the mode note, and the flag help all render these, so an
 // empty one would show as a bare "TUN — whole device ()".
 func TestTUNModeCopyIsPopulated(t *testing.T) {

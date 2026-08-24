@@ -21,11 +21,18 @@ type engineHost struct {
 	store  *clientstate.Store // nil when the config directory is unavailable
 }
 
-func newEngineHost(sink connectcore.EventSink, singBoxPath string) *engineHost {
+// newEngineHost wires the engine. externalSingBox says singBoxPath is an
+// explicit -sing-box binary rather than this executable's bundled runtime: the
+// bundled runtime speaks the stdin-close stop protocol (the graceful-stop
+// channel that works on Windows and survives a crashed host), an external
+// binary does not — and on Windows an external binary means TUN mode is
+// refused (see elevation).
+func newEngineHost(sink connectcore.EventSink, singBoxPath string, externalSingBox bool) *engineHost {
 	host := &engineHost{engine: connectcore.New()}
 	engine := host.engine
 	engine.Sink = sink
 	engine.SingBoxPath = singBoxPath
+	engine.SingBoxStopsOnStdinClose = !externalSingBox
 	// The CLI identifies itself distinctly from the desktop GUI: telemetry
 	// events carry platform="cli" so dashboards can tell the two apart on the
 	// same OS (the broker stores unknown platform strings as ordinary
@@ -36,7 +43,7 @@ func newEngineHost(sink connectcore.EventSink, singBoxPath string) *engineHost {
 	engine.PunchEstablisher = enginepunch.Establish
 	engine.OSProxy = osProxyAdapter{ctrl: proxymode.New()}
 	// TUN mode is gated on this hook; proxy mode never invokes it.
-	engine.Elevation = elevation{}
+	engine.Elevation = elevation{externalSingBox: externalSingBox}
 	if store, err := clientstate.New(); err == nil {
 		host.store = store
 		engine.Persistence = storeAdapter{store: store}

@@ -94,6 +94,12 @@ type Service struct {
 	// forwarded to the engine in Startup, before any bound method can connect.
 	SingBoxPath string
 
+	// SingBoxStopsOnStdinClose mirrors the engine field of the same name:
+	// package main sets it alongside SingBoxPath when that path is the app's
+	// own executable, whose run shim speaks the stdin-close stop protocol. It
+	// stays false for an OPENRUNG_SING_BOX external binary, which does not.
+	SingBoxStopsOnStdinClose bool
+
 	engine *connectcore.Engine
 	store  *clientstate.Store
 
@@ -132,6 +138,7 @@ func New() *Service {
 // frontend as callable bindings; they are lifecycle hooks for package main.
 func (s *Service) Startup(ctx context.Context) {
 	s.engine.SingBoxPath = s.SingBoxPath
+	s.engine.SingBoxStopsOnStdinClose = s.SingBoxStopsOnStdinClose
 	if store, err := clientstate.New(); err == nil {
 		s.store = store
 		s.engine.Persistence = storeAdapter{store: store}

@@ -117,7 +117,7 @@ func runHeadlessConnect(cfg connectConfig) error {
 	}
 
 	sink := newConsoleSink(os.Stdout)
-	host := newEngineHost(sink, cfg.SingBoxPath)
+	host := newEngineHost(sink, cfg.SingBoxPath, cfg.SingBoxExternal)
 	engine := host.engine
 	engine.PunchEnabled = cfg.PunchEnabled
 	engine.PunchURL = cfg.PunchURL
