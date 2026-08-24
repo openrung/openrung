@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -14,15 +15,41 @@ import (
 
 const singBoxHardKillWait = 2 * time.Second
 
+// StopOnStdinCloseFlag names the run-subcommand flag (minus the leading dash)
+// of the graceful-stop protocol between this runner and the bundled sing-box
+// runtime: a child started with the flag treats its stdin reaching EOF as a
+// stop request and unwinds exactly like an interrupt — the TUN device, routes,
+// and DNS settings come back down before it exits. The runner passes the flag
+// and holds the pipe's write end for the child's lifetime whenever
+// StopOnStdinClose is set.
+//
+// The pipe is a stop channel that needs no signal delivery, which makes it the
+// one that works on Windows (os.Interrupt cannot be sent there, and no console
+// control event reaches a CREATE_NO_WINDOW child). It also closes a gap
+// signals never covered on any platform: the OS closes the write end when this
+// process dies for ANY reason, so a tunnel child orphaned by a crashed or
+// force-killed host still unwinds its routes and DNS instead of leaving the
+// device captured by a tunnel nobody supervises.
+const StopOnStdinCloseFlag = "stop-on-stdin-close"
+
 type SingBoxRunner struct {
 	Path   string
 	Stdout io.Writer
 	Stderr io.Writer
-	// KillGrace bounds the wait between the interrupt sent on context cancel
-	// and the hard kill. Zero keeps the 5s default. The desktop connect ladder
-	// shortens it: os.Interrupt is unsupported on Windows, so without a short
-	// grace every failed candidate's teardown would cost the full default.
+	// KillGrace bounds the wait between the stop request sent on context
+	// cancel (stdin close and/or interrupt) and the hard kill. Zero keeps the
+	// 5s default. The desktop connect ladder shortens it: an external binary
+	// on Windows receives no stop request at all (os.Interrupt is unsupported
+	// there), so without a short grace every failed candidate's teardown would
+	// cost the full default.
 	KillGrace time.Duration
+	// StopOnStdinClose declares that the binary at Path speaks the stdin-close
+	// stop protocol (see StopOnStdinCloseFlag). The bundled runtime does; an
+	// external sing-box does not and would refuse the unknown flag, so this
+	// must stay false for one. When set, Run passes the flag, keeps a stdin
+	// pipe open for the child's lifetime, and closes it on cancellation before
+	// the interrupt-then-kill ladder runs.
+	StopOnStdinClose bool
 }
 
 func (r SingBoxRunner) Run(ctx context.Context, configPath string) error {
@@ -39,8 +66,29 @@ func (r SingBoxRunner) Run(ctx context.Context, configPath string) error {
 		return fmt.Errorf("find sing-box %q: %w", binary, err)
 	}
 
-	cmd := exec.Command(resolved, "run", "-c", configPath)
+	args := []string{"run", "-c", configPath}
+	if r.StopOnStdinClose {
+		args = append(args, "-"+StopOnStdinCloseFlag)
+	}
+	cmd := exec.Command(resolved, args...)
 	configureSingBoxProcess(cmd)
+
+	// The stop pipe (see StopOnStdinCloseFlag). Both ends stay open until Run
+	// returns: the write end held open is what makes the child's stdin read
+	// block, and closing it is the stop request. The deferred closes also
+	// cover the hard-kill-timeout path, where Run returns while the child may
+	// still be alive — the EOF then still reaches it.
+	var stopPipe *os.File
+	if r.StopOnStdinClose {
+		stdinRead, stdinWrite, pipeErr := os.Pipe()
+		if pipeErr != nil {
+			return fmt.Errorf("create sing-box stop pipe: %w", pipeErr)
+		}
+		defer stdinRead.Close()
+		defer stdinWrite.Close()
+		cmd.Stdin = stdinRead
+		stopPipe = stdinWrite
+	}
 	// Each stream gets its own recorder — a shared one would splice a partial
 	// stderr line together with stdout chatter into a misleading quote — and
 	// the recorders remember sing-box's own words so an abnormal exit reports
@@ -85,6 +133,12 @@ func (r SingBoxRunner) Run(ctx context.Context, configPath string) error {
 		grace := r.KillGrace
 		if grace <= 0 {
 			grace = 5 * time.Second
+		}
+		// Both stop channels fire: the pipe close is the one a bundled child
+		// acts on everywhere including Windows, the interrupt is what an
+		// external binary understands (and is harmlessly refused on Windows).
+		if stopPipe != nil {
+			_ = stopPipe.Close()
 		}
 		_ = interruptSingBoxProcess(cmd)
 		select {

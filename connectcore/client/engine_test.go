@@ -66,6 +66,79 @@ func TestRunKillGraceBoundsCancelTeardown(t *testing.T) {
 	}
 }
 
+// TestRunStopOnStdinCloseStopsTheChild proves the stdin-close stop protocol at
+// the runner: a StopOnStdinClose child receives the flag, sees EOF on its
+// stdin when the context is cancelled, and gets to exit on its own. The stub
+// ignores SIGINT and the grace is a deliberately long 5s, so a clean return
+// well inside that window can only mean the EOF arrived and the child chose to
+// exit — not the interrupt, and not the post-grace hard kill.
+func TestRunStopOnStdinCloseStopsTheChild(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "stubbox")
+	stub := "#!/bin/sh\n" +
+		"case \"$*\" in *-" + StopOnStdinCloseFlag + "*) ;; *) echo 'error: stop flag missing from argv' >&2; exit 9;; esac\n" +
+		"trap '' INT\n" +
+		"cat >/dev/null\n" + // blocks until stdin EOF
+		"exit 0\n"
+	if err := os.WriteFile(script, []byte(stub), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	config := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(config, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	runner := SingBoxRunner{Path: script, StopOnStdinClose: true, KillGrace: 5 * time.Second}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- runner.Run(ctx, config) }()
+
+	time.Sleep(100 * time.Millisecond) // let the child start and block on stdin
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("stdin-close stop should return nil, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("child did not exit on stdin EOF; the stop pipe never closed or never reached it")
+	}
+}
+
+// An external binary must never see the protocol flag it does not know:
+// upstream sing-box refuses to start on an unknown flag, which would fail
+// every tunnel launch.
+func TestRunWithoutStopOnStdinCloseOmitsTheFlag(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args.txt")
+	script := filepath.Join(dir, "stubbox")
+	stub := "#!/bin/sh\nprintf '%s' \"$*\" > " + argsFile + "\nexit 0\n"
+	if err := os.WriteFile(script, []byte(stub), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	config := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(config, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	err := SingBoxRunner{Path: script}.Run(context.Background(), config)
+	if err == nil || err.Error() != "sing-box exited" {
+		t.Fatalf("clean exit reported %v", err)
+	}
+	argv, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("stub recorded no argv: %v", err)
+	}
+	if !strings.HasPrefix(string(argv), "run -c ") {
+		t.Fatalf("argv = %q, want the historical \"run -c <config>\" surface", argv)
+	}
+	if strings.Contains(string(argv), StopOnStdinCloseFlag) {
+		t.Fatalf("default runner leaked the stop flag to an external binary: %q", argv)
+	}
+}
+
 // TestRunCrashErrorQuotesTheChildsOwnWords proves an abnormal exit carries the
 // child's error line, not just "exit status 1": that line is what reaches the
 // user-facing Error row, and a bare exit status once hid a missing with_utls

@@ -69,22 +69,26 @@ const (
 	InternetProbeRetryDelay     = 500 * time.Millisecond
 
 	// LadderKillGrace bounds how long a failed connect-ladder candidate's
-	// sing-box gets between interrupt and hard kill. os.Interrupt is
-	// unsupported on Windows, so without this every failed candidate's
-	// teardown would cost the engine's full 5s default. Proxy mode holds no TUN
-	// device, so a hard kill is safe.
+	// sing-box gets between the stop request and the hard kill. An external
+	// binary on Windows receives no stop request at all (os.Interrupt is
+	// unsupported there), so without this every failed candidate's teardown
+	// would cost the engine's full 5s default. Proxy mode holds no TUN device,
+	// so a hard kill is safe.
 	LadderKillGrace = 500 * time.Millisecond
 
 	// TUNKillGrace replaces LadderKillGrace in TUN mode. A TUN candidate holds
 	// a tunnel device plus the routes and DNS settings sing-box installed for
-	// it, and only sing-box's own interrupt handling puts those back. A hard
-	// kill after half a second would leave the host routing traffic at an
-	// interface that no longer exists, so the interrupt gets the room it needs.
+	// it, and only sing-box's own stop handling puts those back. A hard kill
+	// after half a second would leave the host routing traffic at an interface
+	// that no longer exists, so the stop request gets the room it needs.
 	//
-	// This grace is only worth anything where the interrupt is delivered at
-	// all. A host on a platform where it cannot stop the tunnel process
-	// gracefully must refuse TUN mode in its Elevation hook rather than rely on
-	// this window — see the terminal client's Windows implementation.
+	// This grace is only worth anything where a stop request is delivered at
+	// all. There are two channels: the interrupt (Unix), and the bundled
+	// runtime's stdin-close protocol (every platform including Windows — see
+	// Engine.SingBoxStopsOnStdinClose). A host whose tunnel binary is
+	// reachable by NEITHER — an external sing-box on Windows — must refuse TUN
+	// mode in its Elevation hook rather than rely on this window, see the
+	// terminal client's tunRequiresBundledRuntime.
 	TUNKillGrace = 5 * time.Second
 
 	// TunnelReadyTimeout bounds how long a candidate's sing-box has to bind its

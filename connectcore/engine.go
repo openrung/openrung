@@ -256,6 +256,16 @@ type Engine struct {
 	// resolved via PATH). Packaging points this at the bundled binary.
 	SingBoxPath string
 
+	// SingBoxStopsOnStdinClose declares that the binary at SingBoxPath speaks
+	// the bundled runtime's stdin-close stop protocol
+	// (client.StopOnStdinCloseFlag): hosts that self-exec the bundled runtime
+	// set it. It is the graceful-stop channel that works on Windows, where no
+	// interrupt can reach the child, and on every platform it lets a tunnel
+	// child orphaned by a crashed host unwind its own routes and DNS. Leave
+	// false for an external sing-box binary — it does not know the flag and
+	// would refuse to start.
+	SingBoxStopsOnStdinClose bool
+
 	// Platform identifies this host on every broker request the engine makes
 	// (relay-list fetches, WSS session tickets, telemetry). Empty means
 	// PlatformDesktop: the desktop app predates the field and its wire
@@ -357,10 +367,11 @@ func (s *Engine) tunnelRunner() func(context.Context, string) error {
 	}
 	return func(ctx context.Context, configPath string) error {
 		runner := client.SingBoxRunner{
-			Path:      s.SingBoxPath,
-			Stdout:    s.logWriter(),
-			Stderr:    s.logWriter(),
-			KillGrace: killGrace,
+			Path:             s.SingBoxPath,
+			Stdout:           s.logWriter(),
+			Stderr:           s.logWriter(),
+			KillGrace:        killGrace,
+			StopOnStdinClose: s.SingBoxStopsOnStdinClose,
 		}
 		return runner.Run(ctx, configPath)
 	}
