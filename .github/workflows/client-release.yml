@@ -212,6 +212,11 @@ jobs:
 
             # End-to-end gate: Gatekeeper itself must accept the binary
             # (valid Developer ID signature + notarization ticket online).
+            # -t install is deliberate: the execute policy only assesses app
+            # bundles and rejects ANY bare CLI binary ("does not seem to be
+            # an app"), notarized or not; install validates the same
+            # signature+ticket chain and is the one that reports
+            # "Notarized Developer ID" for a standalone executable.
             spctl -a -vv -t install "$dir/openrung-client"
 
             rm "$dir.tar.gz" "notarize-$arch.zip" "notary-$arch.json"
