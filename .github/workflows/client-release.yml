@@ -189,7 +189,12 @@ jobs:
           security set-keychain-settings -lut 21600 "$keychain"
           security unlock-keychain -p "$keychain_password" "$keychain"
           printf '%s' "$MACOS_SIGNING_P12" | base64 -d > signing.p12
-          security import signing.p12 -k "$keychain" -f pkcs12 -P "$MACOS_SIGNING_P12_PASSWORD" -T /usr/bin/codesign
+          # A secret uploaded from a file (gh secret set < file) keeps the
+          # file's trailing newline, and the p12 MAC check fails on it as a
+          # wrong password; strip line endings rather than trusting how the
+          # secret was uploaded.
+          p12_password="$(printf '%s' "$MACOS_SIGNING_P12_PASSWORD" | tr -d '\r\n')"
+          security import signing.p12 -k "$keychain" -f pkcs12 -P "$p12_password" -T /usr/bin/codesign
           rm signing.p12
           security set-key-partition-list -S "apple-tool:,apple:" -s -k "$keychain_password" "$keychain" > /dev/null
           security list-keychains -d user -s "$keychain"
