@@ -639,9 +639,9 @@ func (m tuiModel) shellHelperValue() string {
 }
 
 // modeLabel is the Settings Mode row: what the mode does and what it costs.
-// What TUN costs is platform-specific (sudo on Unix, unsupported on Windows),
-// so that wording comes from the same file as the check that enforces it —
-// and stays English in every language.
+// What TUN costs is platform-specific (sudo on Unix, an elevated terminal on
+// Windows), so that wording comes from the same file as the check that
+// enforces it — and stays English in every language.
 func modeLabel(tr *translation, mode connectcore.Mode) string {
 	if mode == connectcore.ModeTUN {
 		return fmt.Sprintf(tr.modeTUN, tunModeSummary)

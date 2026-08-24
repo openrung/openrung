@@ -14,13 +14,19 @@ import (
 func TestElevationRefusalCarriesActionableGuidance(t *testing.T) {
 	err := elevation{}.Elevate(t.Context())
 
-	// os.Geteuid reports -1 on Windows, so this only takes the root path where
-	// root is a real thing.
+	// A privileged test run IS the mode's precondition (root on Unix, an
+	// elevated token on Windows), so a nil error is the correct answer there.
+	// os.Geteuid reports -1 on Windows, so the Unix root check cannot admit a
+	// Windows run by accident; on Windows the elevation state is whatever the
+	// runner has, and both outcomes must be coherent.
 	if runtime.GOOS != "windows" && os.Geteuid() == 0 {
 		if err != nil {
 			t.Fatalf("Elevate as root: %v", err)
 		}
 		return
+	}
+	if runtime.GOOS == "windows" && err == nil {
+		return // an elevated runner: TUN mode is available
 	}
 
 	if err == nil {
@@ -32,10 +38,8 @@ func TestElevationRefusalCarriesActionableGuidance(t *testing.T) {
 	}
 	switch runtime.GOOS {
 	case "windows":
-		// Windows is refused on teardown grounds, not privilege: telling the
-		// user to elevate would send them in circles.
-		if !strings.Contains(message, "not supported on Windows") {
-			t.Fatalf("Windows refusal = %q; want the unsupported-platform reason", message)
+		if !strings.Contains(message, "Administrator") {
+			t.Fatalf("Windows refusal = %q; want the elevated-terminal rerun guidance", message)
 		}
 		if strings.Contains(strings.ToLower(message), "sudo") {
 			t.Fatalf("Windows refusal mentions sudo: %q", message)
