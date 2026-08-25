@@ -1,0 +1,7 @@
+# The sing-box golden configs are compared BYTE-EXACTLY against generated
+# output (connectcore/client/singbox_config_golden_test.go, bytes.Equal on
+# os.ReadFile). A checkout with core.autocrlf=true — the default on GitHub's
+# Windows runners and common on Windows dev machines — rewrites them to CRLF
+# on disk and fails every golden subtest with a diff that PRINTS as identical
+# (the difference is the invisible line endings). Pin them to LF everywhere.
+connectcore/client/testdata/singbox/*.golden.json text eol=lf
