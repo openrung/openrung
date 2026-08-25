@@ -217,6 +217,91 @@ func TestRelayRowsAlignWithCJKLabels(t *testing.T) {
 	}
 }
 
+// The brand mark sits whole in the bottom-right corner of every view, its
+// last row on the last body line — directly above the status bar — and never
+// pushes a line past the terminal width.
+func TestBrandMarkOnEveryView(t *testing.T) {
+	m := newTestModel(&fakeDriver{})
+	m.width, m.height = 100, 30
+	for v := viewID(0); v < viewCount; v++ {
+		m.view = v
+		view := m.View()
+		for _, artLine := range openrungArt {
+			if !strings.Contains(view, artLine) {
+				t.Fatalf("view %d missing brand-mark row %q:\n%s", v, artLine, view)
+			}
+		}
+		lines := strings.Split(view, "\n")
+		for i, line := range lines {
+			if w := lipgloss.Width(line); w > m.width {
+				t.Errorf("view %d line %d is %d cells wide, max %d", v, i, w, m.width)
+			}
+		}
+		last := lines[len(lines)-1-footerHeight] // the last body line
+		if !strings.HasSuffix(last, openrungArt[len(openrungArt)-1]) {
+			t.Fatalf("view %d: brand mark not on the last body line:\n%q", v, last)
+		}
+		if w := lipgloss.Width(last); w != m.width-brandMargin {
+			t.Errorf("view %d: brand mark ends at cell %d, want %d (right-aligned)", v, w, m.width-brandMargin)
+		}
+	}
+}
+
+// A terminal too narrow or too short for the mark drops it entirely — a torn
+// or crowding mark is worse than none.
+func TestBrandMarkHiddenOnSmallTerminals(t *testing.T) {
+	m := newTestModel(&fakeDriver{})
+	m.width = lipgloss.Width(openrungArt[0]) + 3 // below the mark plus its clearance
+	if view := m.View(); strings.Contains(view, openrungArt[0]) {
+		t.Fatalf("narrow terminal still draws the brand mark:\n%s", view)
+	}
+	m.width, m.height = 100, len(openrungArt)+headerHeight+footerHeight+1 // one body row above the mark
+	if view := m.View(); strings.Contains(view, openrungArt[0]) {
+		t.Fatalf("short terminal still draws the brand mark:\n%s", view)
+	}
+}
+
+// The mark wins the corner over body content (it must sit on every view, the
+// logs included), and the cut under it is ANSI-aware so styled body lines are
+// never severed mid-escape-sequence.
+func TestBrandMarkWinsTheCornerOverContent(t *testing.T) {
+	m := newTestModel(&fakeDriver{})
+	m.width, m.height = 60, 24
+	wide := errorStyle.Render(strings.Repeat("x", m.width)) // full-width AND styled
+	body := m.overlayBrandMark(fitLines(strings.Repeat(wide+"\n", 19)+wide, m.bodyHeight()))
+	lines := strings.Split(body, "\n")
+	for _, line := range lines[len(lines)-len(openrungArt):] {
+		if w := lipgloss.Width(line); w > m.width {
+			t.Errorf("overlaid line is %d cells wide, max %d: %q", w, m.width, line)
+		}
+	}
+	if !strings.Contains(body, openrungArt[0]) {
+		t.Fatalf("full-width content displaced the brand mark:\n%s", body)
+	}
+}
+
+// paintFrame lays the green-on-black base under every cell: lines pad to the
+// terminal width so the background reaches the right edge, and an inner
+// style's reset hands control back to the base, not the terminal defaults.
+func TestPaintFrameRepaintsDefaults(t *testing.T) {
+	frame := "plain\n\x1b[1mbold\x1b[0m tail"
+	lines := strings.Split(paintFrame(frame, 12), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("paintFrame changed the line count: %q", lines)
+	}
+	for i, line := range lines {
+		if !strings.HasPrefix(line, themeSeq) || !strings.HasSuffix(line, resetSeq) {
+			t.Errorf("line %d not wrapped in the theme base: %q", i, line)
+		}
+		if w := lipgloss.Width(line); w != 12 {
+			t.Errorf("line %d painted to %d cells, want the full 12", i, w)
+		}
+	}
+	if !strings.Contains(lines[1], resetSeq+themeSeq) {
+		t.Error("inner reset not re-opened with the theme base")
+	}
+}
+
 func TestFooterStyleCoversEveryStatus(t *testing.T) {
 	for status := range statusStyles {
 		if _, ok := footerStyles[status]; !ok {

@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 
 	"github.com/openrung/openrung/brokerapi"
 	"github.com/openrung/openrung/connectcore"
@@ -23,6 +25,7 @@ var (
 	errorStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
 	noteStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 	cursorStyle    = lipgloss.NewStyle().Bold(true)
+	brandStyle     = lipgloss.NewStyle().Bold(true)
 
 	foundationBadgeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
 	volunteerBadgeStyle  = lipgloss.NewStyle().Faint(true)
@@ -73,8 +76,75 @@ func (m tuiModel) View() string {
 	case viewSettings:
 		body = m.settingsView()
 	}
-	body = fitLines(body, m.bodyHeight())
-	return m.headerView() + "\n\n" + body + "\n\n" + m.footerView()
+	body = m.overlayBrandMark(fitLines(body, m.bodyHeight()))
+	frame := m.headerView() + "\n\n" + body + "\n\n" + m.footerView()
+	// Ascii means no color at all (a dumb terminal, NO_COLOR, or a test),
+	// where the theme's escape sequences would render as garbage.
+	if lipgloss.ColorProfile() != termenv.Ascii {
+		frame = paintFrame(frame, m.width)
+	}
+	return frame
+}
+
+// openrungArt is the corner brand mark, drawn at the bottom right of every
+// view just above the status bar. Every row is the same display width.
+var openrungArt = []string{
+	"  ___  ___  ___ _  _ ___  _   _ _  _  ___ ",
+	" / _ \\| _ \\| __| \\| | _ \\| | | | \\| |/ __|",
+	"| (_) |  _/| _|| .` |   /| |_| | .` | (_ |",
+	" \\___/|_|  |___|_|\\_|_|_\\ \\___/|_|\\_|\\___|",
+}
+
+// brandMargin keeps the mark off the terminal's right edge.
+const brandMargin = 1
+
+// overlayBrandMark draws openrungArt over the body's bottom-right corner —
+// the same corner on every view. The mark wins over whatever the corner held:
+// a per-line collision check would tear the mark apart (logs) or blink it in
+// and out as lists grow (relays), and the corner rows are the least
+// load-bearing cells on screen. It renders whole or not at all — only when
+// the terminal is wide enough for the mark plus a gap to content, and tall
+// enough that a couple of content rows stay clear above it.
+func (m tuiModel) overlayBrandMark(body string) string {
+	artW := lipgloss.Width(openrungArt[0])
+	if m.width < artW+2+2*brandMargin || m.bodyHeight() < len(openrungArt)+2 {
+		return body
+	}
+	lines := strings.Split(body, "\n")
+	start := len(lines) - len(openrungArt)
+	col := m.width - artW - brandMargin
+	for i, artLine := range openrungArt {
+		// ANSI-aware cut: body lines carry styled segments whose escape
+		// sequences a byte or rune slice would sever mid-sequence.
+		line := ansi.Truncate(lines[start+i], col-1, "")
+		pad := col - lipgloss.Width(line)
+		lines[start+i] = line + strings.Repeat(" ", max(0, pad)) + brandStyle.Render(artLine)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// The old-terminal theme: green text on a black background.
+const (
+	themeSeq = "\x1b[32;40m" // green foreground, black background
+	resetSeq = "\x1b[0m"
+)
+
+// paintFrame lays the theme base under the composed frame. Padding every line
+// to the full terminal width carries the black background to the right edge,
+// and every reset an inner style emits is immediately re-opened with the base
+// sequence, so text after a styled segment falls back to green-on-black
+// instead of the terminal's own defaults. Styles that pick their colors — the
+// status bar, errors, notes, badges — are untouched: only default-colored
+// text turns green.
+func paintFrame(frame string, width int) string {
+	lines := strings.Split(frame, "\n")
+	for i, line := range lines {
+		if pad := width - lipgloss.Width(line); pad > 0 {
+			line += strings.Repeat(" ", pad)
+		}
+		lines[i] = themeSeq + strings.ReplaceAll(line, resetSeq, resetSeq+themeSeq) + resetSeq
+	}
+	return strings.Join(lines, "\n")
 }
 
 // fitLines pads or truncates body to exactly n lines so header and footer stay
