@@ -236,6 +236,11 @@ func TestMobileSplitRuleOrderWithBothCountriesAndLAN(t *testing.T) {
 		rules[2]["outbound"] != "proxy" || rules[3]["ip_is_private"] != true {
 		t.Fatalf("canonical rule order broken: %+v", rules)
 	}
+	// The probe pin is TCP-scoped so QUIC to a probe domain falls through to
+	// the udp-443 reject instead of dying silently on the TCP-only proxy.
+	if rules[2]["network"] != "tcp" {
+		t.Fatalf("probe pin must be scoped to tcp: %+v", rules[2])
+	}
 	for i, want := range map[int]string{4: "geosite-ir", 5: "geosite-cn"} {
 		ruleSet := rules[i]["rule_set"].([]any)
 		if ruleSet[0] != want || rules[i]["outbound"] != "direct" {

@@ -272,6 +272,11 @@ func TestBuildSingBoxConfigRejectsUDP443Last(t *testing.T) {
 			if last["network"] != "udp" || last["port"].(float64) != 443 || last["action"] != "reject" {
 				t.Fatalf("last route rule must reject UDP 443, got %+v", last)
 			}
+			// Without no_drop, sing-box downgrades reject to a silent drop
+			// after 50 triggers in 30s — reinstating the QUIC blackhole.
+			if last["no_drop"] != true {
+				t.Fatalf("udp-443 reject must set no_drop: %+v", last)
+			}
 			for _, rule := range rules[:len(rules)-1] {
 				if rule["action"] == "reject" {
 					t.Fatalf("reject rule must appear exactly once, as the last rule: %+v", rules)

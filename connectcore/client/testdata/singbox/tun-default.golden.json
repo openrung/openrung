@@ -81,6 +81,7 @@
       {
         "action": "reject",
         "network": "udp",
+        "no_drop": true,
         "port": 443
       }
     ]
