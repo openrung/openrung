@@ -192,6 +192,11 @@
           "geosite-ir",
           "geoip-ir"
         ]
+      },
+      {
+        "action": "reject",
+        "network": "udp",
+        "port": 443
       }
     ]
   }

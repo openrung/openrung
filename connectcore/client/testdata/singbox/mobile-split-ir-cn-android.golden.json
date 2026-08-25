@@ -240,6 +240,11 @@
           "geosite-cn",
           "geoip-cn"
         ]
+      },
+      {
+        "action": "reject",
+        "network": "udp",
+        "port": 443
       }
     ]
   }

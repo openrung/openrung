@@ -569,6 +569,16 @@ func buildRouteConfig(input SingBoxConfigInput, probeSuffixes []string) map[stri
 			"outbound": "direct",
 		})
 	}
+	// The proxy outbound is network: tcp, so QUIC datagrams already die — but
+	// silently, leaving browsers to blackhole-and-retry before falling back to
+	// TCP. Rejecting UDP 443 explicitly makes that fallback immediate. Must
+	// stay after every rule above: split-tunneled UDP 443 still goes direct,
+	// and hijacked DNS is never at risk.
+	rules = append(rules, map[string]any{
+		"network": "udp",
+		"port":    443,
+		"action":  "reject",
+	})
 
 	route := map[string]any{
 		"auto_detect_interface":   true,
