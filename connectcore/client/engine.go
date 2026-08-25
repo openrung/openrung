@@ -114,11 +114,19 @@ func (r SingBoxRunner) Run(ctx context.Context, configPath string) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start sing-box: %w", err)
 	}
-	// Windows: a kill-on-close job object so no child outlives a runner that
-	// died without teardown (the Unix builds get this from the process group +
-	// the stop pipe). Best-effort; see the Windows implementation.
-	releaseSupervision := superviseSingBoxProcess(cmd)
-	defer releaseSupervision()
+	// Windows: a kill-on-close job object so an external binary — which speaks
+	// no stop protocol — cannot outlive a runner that died without teardown
+	// (the Unix builds get this from the process group). It must NEVER hold a
+	// stop-protocol child: on this process's death the kernel closes the job
+	// handle and the stop pipe in no defined order, and closing the job's last
+	// handle terminates the child IMMEDIATELY — it would lose the race to
+	// observe EOF and unwind its routes and DNS, defeating the pipe's graceful
+	// orphan teardown, which is that child's parent-death cleanup.
+	// Best-effort; see the Windows implementation.
+	if !r.StopOnStdinClose {
+		releaseSupervision := superviseSingBoxProcess(cmd)
+		defer releaseSupervision()
+	}
 
 	waitCh := make(chan error, 1)
 	go func() {

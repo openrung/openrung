@@ -52,12 +52,15 @@ channel there is its stdin: the runner holds a pipe to the child's stdin open
 and closes it to request a stop, and the child unwinds like it was
 interrupted. The pipe also closes if the app dies without running teardown —
 crash, `Stop-Process`, Task Manager — so an orphaned tunnel child stops itself
-instead of running unsupervised; a kill-on-close job object backstops even
-that. An external `OPENRUNG_SING_BOX` binary does not speak the stdin
-protocol: on Windows its teardown is a hard kill after the grace period, which
-costs nothing in proxy mode — the only mode the desktop app offers — because
-no device or routes are held (see [Windows](#windows) below for what it means
-for the terminal client's TUN mode).
+instead of running unsupervised. An external `OPENRUNG_SING_BOX` binary does
+not speak the stdin protocol: on Windows its teardown is a hard kill after the
+grace period and a kill-on-close job object reaps it if the app dies first —
+both cost nothing in proxy mode, the only mode the desktop app offers, because
+no device or routes are held. (The job object is deliberately NOT applied to
+the bundled child: closing a kill-on-close job's last handle terminates the
+child instantly, which would race and defeat the pipe's graceful teardown. See
+[Windows](#windows) below for what all this means for the terminal client's
+TUN mode.)
 
 ## Desktop App: Local Proxy
 

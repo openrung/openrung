@@ -23,10 +23,18 @@ func configureSingBoxProcess(cmd *exec.Cmd) {
 // object whose only handle lives in this process: if this process dies without
 // running its teardown — a crash, Stop-Process, Task Manager — the kernel
 // closes the handle and ends the child, the Windows counterpart of the Unix
-// process group's "no orphan outlives the runner". It is the LAST line: the
-// job kill is a TerminateProcess with no cleanup, so the stdin-close stop
-// channel (which lets an orphaned TUN child unwind its routes and DNS first)
-// and the runner's kill ladder remain the teardown paths that matter.
+// process group's "no orphan outlives the runner".
+//
+// It is reserved for a child that speaks NO stop protocol (an external
+// sing-box; proxy-only on Windows, where a hard kill holds nothing back). The
+// runner must never place a stdin-close-protocol child in the job: closing the
+// job's last handle terminates the child IMMEDIATELY (TerminateProcess
+// semantics, no grace), and on parent death the kernel closes this process's
+// handles in no defined order — the child would be killed before it could
+// observe the pipe's EOF and unwind its routes and DNS, turning the protocol's
+// graceful orphan teardown back into the very hard kill it exists to avoid.
+// For that child the pipe alone is the parent-death cleanup.
+//
 // Best-effort by design — a hardened environment can refuse job APIs, and a
 // missing backstop must not fail the tunnel.
 //
