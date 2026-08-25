@@ -19,6 +19,33 @@ permissions:
   contents: read
 
 jobs:
+  # The engine's Windows-only process lifecycle — the stdin-close stop
+  # protocol's parent-death teardown, the kill-on-close job object for
+  # stopless children, CREATE_NO_WINDOW — is guarded by tests that only
+  # compile and run on Windows (connectcore/client/engine_windows_test.go);
+  # the Ubuntu suite excludes them and the cross-build steps compile no test
+  # files, so without this job those assertions would never execute in CI.
+  # Targeted at connectcore/client rather than a full windows sweep: this is
+  # where the Windows-only behavior lives.
+  go-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+
+      # bash, not the default pwsh: pwsh run blocks surface only the LAST
+      # command's exit code, so a vet failure followed by a passing test
+      # would slip through.
+      - name: connectcore client on Windows (vet + test)
+        working-directory: connectcore
+        shell: bash
+        run: |
+          go vet ./client/
+          go test -v ./client/
+
   relay-deploy-script:
     runs-on: ubuntu-latest
     steps:
