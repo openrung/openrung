@@ -17,8 +17,16 @@ func TestCountryFlag(t *testing.T) {
 		"": "", "j": "", "jpn": "", "1a": "",
 	}
 	for cc, want := range cases {
-		if got := countryFlag(cc); got != want {
-			t.Errorf("countryFlag(%q) = %q, want %q", cc, got, want)
+		if got := countryFlagFor("darwin", cc); got != want {
+			t.Errorf("countryFlagFor(darwin, %q) = %q, want %q", cc, got, want)
+		}
+	}
+	// Windows terminals render the pair as two separate emoji-width glyphs —
+	// wider than the counted width — which overflowed the padded footer bar
+	// and scrolled the frame on every repaint. No flag may ever render there.
+	for _, cc := range []string{"jp", "US", "kr"} {
+		if got := countryFlagFor("windows", cc); got != "" {
+			t.Errorf("countryFlagFor(windows, %q) = %q, want the empty string", cc, got)
 		}
 	}
 }
