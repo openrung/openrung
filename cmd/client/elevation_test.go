@@ -14,13 +14,19 @@ import (
 func TestElevationRefusalCarriesActionableGuidance(t *testing.T) {
 	err := elevation{}.Elevate(t.Context())
 
-	// os.Geteuid reports -1 on Windows, so this only takes the root path where
-	// root is a real thing.
+	// A privileged test run IS the mode's precondition (root on Unix, an
+	// elevated token on Windows), so a nil error is the correct answer there.
+	// os.Geteuid reports -1 on Windows, so the Unix root check cannot admit a
+	// Windows run by accident; on Windows the elevation state is whatever the
+	// runner has, and both outcomes must be coherent.
 	if runtime.GOOS != "windows" && os.Geteuid() == 0 {
 		if err != nil {
 			t.Fatalf("Elevate as root: %v", err)
 		}
 		return
+	}
+	if runtime.GOOS == "windows" && err == nil {
+		return // an elevated runner: TUN mode is available
 	}
 
 	if err == nil {
@@ -32,10 +38,8 @@ func TestElevationRefusalCarriesActionableGuidance(t *testing.T) {
 	}
 	switch runtime.GOOS {
 	case "windows":
-		// Windows is refused on teardown grounds, not privilege: telling the
-		// user to elevate would send them in circles.
-		if !strings.Contains(message, "not supported on Windows") {
-			t.Fatalf("Windows refusal = %q; want the unsupported-platform reason", message)
+		if !strings.Contains(message, "Administrator") {
+			t.Fatalf("Windows refusal = %q; want the elevated-terminal rerun guidance", message)
 		}
 		if strings.Contains(strings.ToLower(message), "sudo") {
 			t.Fatalf("Windows refusal mentions sudo: %q", message)
@@ -43,6 +47,30 @@ func TestElevationRefusalCarriesActionableGuidance(t *testing.T) {
 	default:
 		if !strings.Contains(message, "sudo") {
 			t.Fatalf("unix refusal = %q; want the sudo rerun command", message)
+		}
+	}
+}
+
+// The Windows TUN gate admits only the bundled runtime: the stdin-close stop
+// protocol is the only graceful-stop channel there, and an external -sing-box
+// binary does not speak it. The goos parameter keeps every branch — including
+// the refusal wording — testable from any platform.
+func TestTUNRequiresBundledRuntimeOnWindowsOnly(t *testing.T) {
+	if err := tunRequiresBundledRuntime("windows", false); err != nil {
+		t.Fatalf("bundled runtime on Windows refused: %v", err)
+	}
+	for _, goos := range []string{"linux", "darwin"} {
+		if err := tunRequiresBundledRuntime(goos, true); err != nil {
+			t.Fatalf("external binary on %s refused: %v", goos, err)
+		}
+	}
+	err := tunRequiresBundledRuntime("windows", true)
+	if err == nil {
+		t.Fatal("external binary on Windows admitted; its tunnel could never be stopped gracefully")
+	}
+	for _, want := range []string{"-sing-box", "proxy mode", "bundled"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("refusal %q missing %q; it must name the cause and both ways out", err, want)
 		}
 	}
 }

@@ -2,10 +2,14 @@ package singboxruntime
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/openrung/openrung/connectcore/client"
 )
 
 // TestRunSubcommandArgvContract pins the argv surface connectcore's
@@ -27,6 +31,60 @@ func TestRunSubcommandArgvContract(t *testing.T) {
 	err = RunSubcommand([]string{"-c", filepath.Join(t.TempDir(), "absent.json")})
 	if !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("run with a missing config: got %v, want a not-exist error", err)
+	}
+}
+
+// The stop flag the runner passes is connectcore's client.StopOnStdinCloseFlag
+// — this shim parses the imported constant itself, so the two sides cannot
+// drift. With the flag present, a missing config must still surface as the
+// read error: proof the flag was accepted rather than tripping a usage error.
+func TestRunSubcommandAcceptsStopOnStdinCloseFlag(t *testing.T) {
+	err := RunSubcommand([]string{
+		"-" + client.StopOnStdinCloseFlag,
+		"-c", filepath.Join(t.TempDir(), "absent.json"),
+	})
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("run with the stop flag and a missing config: got %v, want a not-exist error", err)
+	}
+}
+
+// watchStdinClose must stop on EOF and ONLY on EOF: stopping while the pipe is
+// merely quiet would tear down every healthy tunnel, and not stopping on EOF
+// would strand the Windows teardown (no signal can substitute there).
+func TestWatchStdinCloseStopsOnEOFOnly(t *testing.T) {
+	pipeRead, pipeWrite := io.Pipe()
+	stopped := make(chan struct{})
+	go watchStdinClose(pipeRead, func() { close(stopped) })
+
+	if _, err := pipeWrite.Write([]byte("not a stop request")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	select {
+	case <-stopped:
+		t.Fatal("stopped on mere stdin traffic, before any close")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	_ = pipeWrite.Close()
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stdin EOF did not stop the watcher")
+	}
+}
+
+// A read ERROR must stop too: on Windows the runner's death surfaces as a
+// broken pipe, not a clean EOF, and both mean the supervisor is gone.
+func TestWatchStdinCloseStopsOnReadError(t *testing.T) {
+	pipeRead, pipeWrite := io.Pipe()
+	stopped := make(chan struct{})
+	go watchStdinClose(pipeRead, func() { close(stopped) })
+
+	pipeWrite.CloseWithError(errors.New("broken pipe"))
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a stdin read error did not stop the watcher")
 	}
 }
 

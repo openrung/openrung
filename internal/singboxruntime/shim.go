@@ -5,10 +5,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
+
+	"github.com/openrung/openrung/connectcore/client"
 )
 
 // Subcommand is the argv verb connectcore's SingBoxRunner invokes on the
@@ -24,15 +27,25 @@ const Subcommand = "run"
 // external sing-box binary, so a nonzero exit on failure is part of the
 // contract (cmd/client's TestRunSubcommandExitsNonzeroOnStartFailure).
 //
-// SIGINT (the runner's cancellation interrupt, sent to the process group) and
-// SIGTERM cancel the context; the runtime then closes the instance so a TUN
-// tunnel unwinds its routes and DNS before exit, like upstream sing-box run.
-// On Windows the runner cannot deliver an interrupt and hard-kills after the
-// grace period, which is why TUN mode stays refused there
-// (cmd/client/elevation_windows.go) and the desktop app is proxy-mode only.
+// Two stop channels cancel the context, and the runtime then closes the
+// instance so a TUN tunnel unwinds its routes and DNS before exit, like
+// upstream sing-box run:
+//
+//   - SIGINT (the runner's cancellation interrupt, sent to the process group)
+//     and SIGTERM. Signals are Unix-only in practice — neither can be
+//     delivered on Windows.
+//   - stdin reaching EOF, when the runner opted in with the
+//     -stop-on-stdin-close flag (client.StopOnStdinCloseFlag names it, so the
+//     two sides cannot drift). The runner holds our stdin pipe open for our
+//     lifetime and closes it to stop us; the OS also closes it if the runner
+//     dies without ever running teardown. This is the stop channel that works
+//     on Windows, and the flag opt-in keeps a standalone
+//     `<binary> run -c <config> </dev/null` from exiting at launch.
 func RunSubcommand(args []string) error {
 	fs := flag.NewFlagSet(Subcommand, flag.ContinueOnError)
 	configPath := fs.String("c", "", "path to the sing-box config file")
+	stopOnStdinClose := fs.Bool(client.StopOnStdinCloseFlag, false,
+		"treat stdin reaching EOF as a stop request (the connect engine's stop channel)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -41,7 +54,19 @@ func RunSubcommand(args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if *stopOnStdinClose {
+		go watchStdinClose(os.Stdin, stop)
+	}
 	return Run(ctx, *configPath)
+}
+
+// watchStdinClose blocks until r is exhausted or fails, then calls stop. Any
+// return means the other end is gone or done with us — a deliberate close
+// (EOF), or a broken pipe from the runner's death — and both mean the same
+// thing: stop the tunnel while it can still unwind its routes and DNS.
+func watchStdinClose(r io.Reader, stop func()) {
+	_, _ = io.Copy(io.Discard, r)
+	stop()
 }
 
 // SelfPath resolves the running executable, which doubles as the sing-box

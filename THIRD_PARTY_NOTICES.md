@@ -445,10 +445,11 @@ extracted/loaded at runtime by sing-box's own code.
   Wintun project; the names are used only descriptively.
 - **Upstream:** https://www.wintun.net (source of the driver itself, GPL-2.0,
   at https://git.zx2c4.com/wintun/)
-- Note: the terminal client refuses TUN mode on Windows and the desktop app
-  is proxy-mode only, so this driver is never extracted or loaded by either
-  executable; the bytes nevertheless ship inside the Windows binaries and
-  these notices apply.
+- Note: the terminal client loads the driver (from memory, via sing-tun's
+  embedded copy — no file is extracted or installed) only for TUN mode on
+  Windows; proxy mode never loads it, and the desktop app is proxy-mode only
+  and never loads it. The bytes ship inside every Windows binary either way,
+  and these notices apply.
 
 ### WinDivert — excluded from every OpenRung channel
 

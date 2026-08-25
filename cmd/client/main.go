@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/openrung/openrung/connectcore"
 	"github.com/openrung/openrung/connectcore/proxyconfig"
@@ -70,13 +71,19 @@ func versionInfo() string {
 // breaking; see legacyFlagWarnings.
 type connectConfig struct {
 	commonConfig
-	SingBoxPath   string
-	ConfigOut     string
-	PunchEnabled  bool
-	PunchURL      string
-	PunchInsecure bool
-	Headless      bool
-	TUN           bool
+	SingBoxPath string
+	// SingBoxExternal records that SingBoxPath came from an explicit -sing-box
+	// rather than defaulting to this binary's bundled runtime. An external
+	// binary does not speak the bundled runtime's stdin-close stop protocol,
+	// which on Windows is the only graceful-stop channel — so TUN mode there
+	// requires the bundled runtime (tunRequiresBundledRuntime).
+	SingBoxExternal bool
+	ConfigOut       string
+	PunchEnabled    bool
+	PunchURL        string
+	PunchInsecure   bool
+	Headless        bool
+	TUN             bool
 }
 
 // mode is the capture mode the flags select. Proxy mode is the default, as on
@@ -107,12 +114,22 @@ func runConnect(args []string) error {
 	// The empty default selects the bundled sing-box: the engine's runner
 	// re-execs this binary into the internal run subcommand. An explicit
 	// -sing-box keeps its historical external-binary meaning.
+	cfg.SingBoxExternal = cfg.SingBoxPath != ""
 	if cfg.SingBoxPath == "" {
 		exe, err := singboxruntime.SelfPath()
 		if err != nil {
 			return fmt.Errorf("%w (pass -sing-box to use an external binary)", err)
 		}
 		cfg.SingBoxPath = exe
+	}
+
+	// The connect-time Elevation hook enforces this too (a Settings toggle
+	// into TUN mode reaches it), but a contradiction already visible in the
+	// flags should not wait for a connect to be refused.
+	if cfg.TUN {
+		if err := tunRequiresBundledRuntime(runtime.GOOS, cfg.SingBoxExternal); err != nil {
+			return err
+		}
 	}
 
 	if cfg.Headless {

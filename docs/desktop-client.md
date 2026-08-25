@@ -47,11 +47,20 @@ relay endpoint needs) and `with_external_windivert`
 `go build` still compiles, but the resulting app cannot dial any relay and says
 so in that version output.
 
-On Windows the engine cannot deliver an interrupt to the child, so teardown is
-a hard kill after the grace period. That costs nothing in proxy mode — the only
-mode the desktop app offers — because no device or routes are held; it is also
-why the terminal client refuses TUN mode there (see
-[Windows](#windows) below).
+Windows can deliver no interrupt to the child, so the bundled engine's stop
+channel there is its stdin: the runner holds a pipe to the child's stdin open
+and closes it to request a stop, and the child unwinds like it was
+interrupted. The pipe also closes if the app dies without running teardown —
+crash, `Stop-Process`, Task Manager — so an orphaned tunnel child stops itself
+instead of running unsupervised. An external `OPENRUNG_SING_BOX` binary does
+not speak the stdin protocol: on Windows its teardown is a hard kill after the
+grace period and a kill-on-close job object reaps it if the app dies first —
+both cost nothing in proxy mode, the only mode the desktop app offers, because
+no device or routes are held. (The job object is deliberately NOT applied to
+the bundled child: closing a kill-on-close job's last handle terminates the
+child instantly, which would race and defeat the pipe's graceful teardown. See
+[Windows](#windows) below for what all this means for the terminal client's
+TUN mode.)
 
 ## Desktop App: Local Proxy
 
@@ -114,8 +123,9 @@ copied command.
 
 ## Terminal Client
 
-`cmd/client` is an interactive terminal client for Linux, macOS, and Windows
-(proxy mode everywhere; TUN mode on macOS and Linux).
+`cmd/client` is an interactive terminal client for Linux, macOS, and Windows,
+with proxy and TUN capture modes on all three (TUN on Windows requires the
+bundled engine and an elevated terminal; see [Windows](#windows)).
 It is a view over the same `connectcore` module engine the desktop app
 drives, so relay ranking, the connect ladder, direct-first WSS fallback, NAT
 punching, telemetry, and mid-session failover behave identically in both — with
@@ -135,8 +145,8 @@ view layer holds no connection logic.
   external sing-box binary
   (1.14 or newer, so the generated TUN config can install native DNS settings
   for the tunnel).
-- Nothing else for proxy mode. TUN mode additionally needs root, and is macOS
-  and Linux only — see [Capture modes](#capture-modes).
+- Nothing else for proxy mode. TUN mode additionally needs root (an elevated
+  terminal on Windows) — see [Capture modes](#capture-modes).
 - Against the public fleet, no broker URL is needed: the client races the
   built-in HTTPS broker fronts. Working against a local deployment needs a
   running broker with at least one registered relay, selected with `-broker`.
@@ -185,9 +195,10 @@ override described under [Desktop App: Local Proxy](#desktop-app-local-proxy),
 and the shell helper under [POSIX shell applications](#posix-shell-applications).
 Only proxy-aware applications are carried.
 
-**TUN mode** captures the whole device instead. It is available on macOS and
-Linux; see [Windows](#windows) below. Pass `--tun`, or toggle the Settings Mode
-field while disconnected:
+**TUN mode** captures the whole device instead. It is available on macOS,
+Linux, and Windows (with two Windows-specific requirements; see
+[Windows](#windows) below). Pass `--tun`, or toggle the Settings Mode field
+while disconnected:
 
 ```sh
 sudo go run ./cmd/client connect --tun
@@ -216,6 +227,8 @@ TUN mode needs root privileges to create the tunnel device: rerun as
 needed)
 ```
 
+(On Windows the refusal names an elevated terminal instead of sudo.)
+
 The capture mode is fixed for the length of a session: changing it while
 connected is refused, so disconnect first.
 
@@ -228,17 +241,24 @@ ordinary network and report an untunneled session as connected.
 
 #### Windows
 
-TUN mode is refused on Windows, whatever the process token. Elevation is not
-the blocker; graceful teardown is. Removing the routes and DNS settings
-sing-box installed requires asking it to stop, and this client has no way to do
-that on Windows: `os.Interrupt` is unsupported there, and the console control
-events that would substitute cannot reach a child started with
-`CREATE_NO_WINDOW`, which has no console. Every disconnect would end in a
-force-kill, leaving the host routing traffic at an interface that is gone.
+TUN mode on Windows needs two things the other platforms express as just
+"root":
 
-Proxy mode is unaffected — it holds no device and no routes, so a forced stop
-costs nothing — and remains the full-featured mode on Windows. The refusal will
-be lifted once the client can stop sing-box gracefully there.
+- **An elevated terminal.** Creating the wintun adapter requires
+  Administrator, so run the client from a terminal started with "Run as
+  administrator". A non-elevated `--tun` is refused before anything is dialed,
+  with that rerun guidance. No driver install is needed: the engine embeds
+  `wintun.dll` and loads it from memory.
+- **The bundled engine.** Removing the routes and DNS settings sing-box
+  installed requires asking it to stop, and Windows offers no signal for that
+  (`os.Interrupt` is unsupported; no console control event reaches a
+  `CREATE_NO_WINDOW` child). The bundled runtime is stopped through its stdin
+  instead — the engine closes the pipe it holds to the child's stdin, and the
+  child unwinds its routes and DNS before exiting, including when the client
+  itself died without running teardown. An external `-sing-box` binary does
+  not speak that protocol, would end every stop in a force-kill that leaves
+  the host routing traffic at an interface that is gone, and is therefore
+  refused in combination with `--tun` on Windows.
 
 #### Divergences from proxy mode
 

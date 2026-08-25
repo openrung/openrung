@@ -61,6 +61,10 @@ func main() {
 			log.Fatal(err)
 		}
 		svc.SingBoxPath = exe
+		// The bundled run shim speaks the stdin-close stop protocol, giving
+		// the engine a graceful stop that works on Windows and a tunnel child
+		// that unwinds itself if this process dies without running teardown.
+		svc.SingBoxStopsOnStdinClose = true
 		if !singboxruntime.UTLSEnabled {
 			// Only packaged builds (scripts/versioned-wails-build.mjs) carry
 			// the engine's build tags; a plain `wails dev` or `go build`

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 	"time"
 
@@ -248,8 +249,26 @@ func (m tuiModel) footerConnectionSummary(budget int) string {
 }
 
 // countryFlag maps a 2-letter ISO country code to its regional-indicator
-// emoji ("jp" → 🇯🇵), or "" for anything else.
+// emoji ("jp" → 🇯🇵), or "" for anything else — and "" for everything on
+// Windows. Windows terminals do not combine the two regional indicators into
+// one flag glyph: they draw two separate emoji-width characters, typically
+// four cells where the width libraries count two. Any line padded against the
+// counted width — the footer status bar — then physically overflows the
+// terminal and wraps, scrolling the alt screen one row on every repaint and
+// leaving a stack of stale bars (the Windows smoke-test finding; it appeared
+// only while connected because that is the only footer that carries a flag).
+// The glyphs would not have read as a flag there anyway, and every site that
+// renders one pairs it with the country code, which remains.
 func countryFlag(cc string) string {
+	return countryFlagFor(runtime.GOOS, cc)
+}
+
+// countryFlagFor is countryFlag with the platform explicit, so both branches
+// are testable from any platform.
+func countryFlagFor(goos, cc string) string {
+	if goos == "windows" {
+		return ""
+	}
 	cc = strings.ToUpper(strings.TrimSpace(cc))
 	if len(cc) != 2 || cc[0] < 'A' || cc[0] > 'Z' || cc[1] < 'A' || cc[1] > 'Z' {
 		return ""
@@ -639,9 +658,9 @@ func (m tuiModel) shellHelperValue() string {
 }
 
 // modeLabel is the Settings Mode row: what the mode does and what it costs.
-// What TUN costs is platform-specific (sudo on Unix, unsupported on Windows),
-// so that wording comes from the same file as the check that enforces it —
-// and stays English in every language.
+// What TUN costs is platform-specific (sudo on Unix, an elevated terminal on
+// Windows), so that wording comes from the same file as the check that
+// enforces it — and stays English in every language.
 func modeLabel(tr *translation, mode connectcore.Mode) string {
 	if mode == connectcore.ModeTUN {
 		return fmt.Sprintf(tr.modeTUN, tunModeSummary)
