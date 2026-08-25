@@ -246,3 +246,42 @@ func TestBuildSingBoxConfigDoesNotExcludeHostnameRelay(t *testing.T) {
 		t.Fatalf("hostname relay should not get a literal route exclusion: %+v", tun)
 	}
 }
+
+// The proxy outbound is TCP-only, so UDP 443 dies regardless — but an explicit
+// reject turns the browsers' silent QUIC blackhole into an instant TCP
+// fallback. The rule must be the final route rule in every mode so it never
+// outranks the DNS hijack, the probe pin, or a split-tunnel bypass.
+func TestBuildSingBoxConfigRejectsUDP443Last(t *testing.T) {
+	now := time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC)
+	split := mobileInput(mobileRelay(t))
+	split.SplitTunnel = &SplitTunnelRules{
+		BypassLAN:        true,
+		BypassCountries:  []string{SplitTunnelCountryIR, SplitTunnelCountryCN},
+		RuleSetDirectory: "/data/user/0/rulesets",
+	}
+	inputs := map[string]SingBoxConfigInput{
+		"tun":          {Relay: validRelay(now)},
+		"proxy":        {Relay: validRelay(now), Mode: ModeProxy, ProxyListenPort: 7890},
+		"split-tunnel": split,
+	}
+
+	for name, input := range inputs {
+		t.Run(name, func(t *testing.T) {
+			rules := routeRulesOf(buildDecoded(t, input))
+			last := rules[len(rules)-1]
+			if last["network"] != "udp" || last["port"].(float64) != 443 || last["action"] != "reject" {
+				t.Fatalf("last route rule must reject UDP 443, got %+v", last)
+			}
+			// Without no_drop, sing-box downgrades reject to a silent drop
+			// after 50 triggers in 30s — reinstating the QUIC blackhole.
+			if last["no_drop"] != true {
+				t.Fatalf("udp-443 reject must set no_drop: %+v", last)
+			}
+			for _, rule := range rules[:len(rules)-1] {
+				if rule["action"] == "reject" {
+					t.Fatalf("reject rule must appear exactly once, as the last rule: %+v", rules)
+				}
+			}
+		})
+	}
+}

@@ -229,18 +229,28 @@ func TestMobileSplitRuleOrderWithBothCountriesAndLAN(t *testing.T) {
 	decoded := buildDecoded(t, input)
 
 	rules := routeRulesOf(decoded)
-	if len(rules) != 6 {
-		t.Fatalf("expected the 6-rule canonical order, got %d: %+v", len(rules), rules)
+	if len(rules) != 7 {
+		t.Fatalf("expected the 7-rule canonical order, got %d: %+v", len(rules), rules)
 	}
 	if rules[0]["action"] != "hijack-dns" || rules[1]["action"] != "sniff" ||
 		rules[2]["outbound"] != "proxy" || rules[3]["ip_is_private"] != true {
 		t.Fatalf("canonical rule order broken: %+v", rules)
+	}
+	// The probe pin is TCP-scoped so QUIC to a probe domain falls through to
+	// the udp-443 reject instead of dying silently on the TCP-only proxy.
+	if rules[2]["network"] != "tcp" {
+		t.Fatalf("probe pin must be scoped to tcp: %+v", rules[2])
 	}
 	for i, want := range map[int]string{4: "geosite-ir", 5: "geosite-cn"} {
 		ruleSet := rules[i]["rule_set"].([]any)
 		if ruleSet[0] != want || rules[i]["outbound"] != "direct" {
 			t.Fatalf("country rule %d unexpected: %+v", i, rules[i])
 		}
+	}
+	// The QUIC reject must trail every bypass rule so split-tunneled UDP 443
+	// still goes direct.
+	if rules[6]["action"] != "reject" {
+		t.Fatalf("udp-443 reject must be the final rule: %+v", rules[6])
 	}
 
 	ruleSets := decoded["route"].(map[string]any)["rule_set"].([]any)
@@ -344,10 +354,11 @@ func TestMobileIranContributesNoDNSServerOrRules(t *testing.T) {
 		t.Fatal("an IR bypass must leave the dns block untouched")
 	}
 	rules := routeRulesOf(iranDecoded)
-	last := rules[len(rules)-1]
-	ruleSet := last["rule_set"].([]any)
-	if ruleSet[0] != "geosite-ir" || last["outbound"] != "direct" {
-		t.Fatalf("IR route bypass missing: %+v", last)
+	// The trailing udp-443 reject rule follows every bypass rule.
+	bypass := rules[len(rules)-2]
+	ruleSet := bypass["rule_set"].([]any)
+	if ruleSet[0] != "geosite-ir" || bypass["outbound"] != "direct" {
+		t.Fatalf("IR route bypass missing: %+v", bypass)
 	}
 }
 

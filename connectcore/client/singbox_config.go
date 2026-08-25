@@ -552,7 +552,10 @@ func buildRouteConfig(input SingBoxConfigInput, probeSuffixes []string) map[stri
 		// Probe traffic must reach the proxy even when a bypass rule would
 		// send it direct; a probe that escapes onto the direct path can report
 		// CONNECTED over a dead tunnel. Must precede every bypass rule.
+		// Scoped to TCP — probes are HTTP over TCP, and an unscoped pin would
+		// swallow QUIC to these domains here, ahead of the udp-443 reject.
 		rules = append(rules, map[string]any{
+			"network":       "tcp",
 			"domain_suffix": probeSuffixes,
 			"outbound":      "proxy",
 		})
@@ -569,6 +572,19 @@ func buildRouteConfig(input SingBoxConfigInput, probeSuffixes []string) map[stri
 			"outbound": "direct",
 		})
 	}
+	// The proxy outbound is network: tcp, so QUIC datagrams already die — but
+	// silently, leaving browsers to blackhole-and-retry before falling back to
+	// TCP. Rejecting UDP 443 explicitly makes that fallback immediate. Must
+	// stay after every rule above: split-tunneled UDP 443 still goes direct,
+	// and hijacked DNS is never at risk. no_drop, because without it sing-box
+	// downgrades reject to a silent drop after 50 triggers in 30s — exactly
+	// the blackhole this rule exists to remove.
+	rules = append(rules, map[string]any{
+		"network": "udp",
+		"port":    443,
+		"action":  "reject",
+		"no_drop": true,
+	})
 
 	route := map[string]any{
 		"auto_detect_interface":   true,
