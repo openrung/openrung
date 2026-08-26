@@ -459,22 +459,6 @@ func TestEngineNoticesDriveActivityAndHealthRows(t *testing.T) {
 	}
 }
 
-func TestRecentsRenderInRelaysView(t *testing.T) {
-	driver := &fakeDriver{}
-	m := newTestModel(driver)
-	m.view = viewRelays
-	m.refreshing = false
-	m.state.Recents = []connectcore.RecentNode{
-		{CountryCode: "KR", Label: "Seoul, South Korea"},
-		{CountryCode: "JP", Label: "Tokyo, Japan"},
-	}
-
-	view := m.View()
-	if !strings.Contains(view, "Seoul, South Korea · Tokyo, Japan") {
-		t.Fatalf("relays view missing the recents row:\n%s", view)
-	}
-}
-
 func TestShellHelperActionRequiresConnection(t *testing.T) {
 	driver := &fakeDriver{}
 	m := newTestModel(driver)

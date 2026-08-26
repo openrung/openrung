@@ -182,12 +182,12 @@ const (
 
 type settingsFieldID int
 
+// The target relay is not a settings field: it is pinned from the Relays view
+// (enter targets the highlighted relay, x clears) or by CLI flags, and the
+// Status view's Target row shows what is pinned.
 const (
 	fieldBroker settingsFieldID = iota
 	fieldMode
-	fieldRelayID
-	fieldRelayLabel
-	fieldCountry
 	fieldShellHelper
 	settingsFieldCount
 )
@@ -654,29 +654,15 @@ func (m tuiModel) handleSettingsEditKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m tuiModel) settingsFieldValue(field settingsFieldID) string {
-	switch field {
-	case fieldBroker:
+	if field == fieldBroker {
 		return m.settings.brokerURL
-	case fieldRelayID:
-		return m.settings.target.RelayID
-	case fieldRelayLabel:
-		return m.settings.target.Label
-	case fieldCountry:
-		return m.settings.target.Country
 	}
 	return ""
 }
 
 func (m *tuiModel) applySettingsField(field settingsFieldID, value string) {
-	switch field {
-	case fieldBroker:
+	if field == fieldBroker {
 		m.settings.brokerURL = value
-	case fieldRelayID:
-		m.settings.target.RelayID = value
-	case fieldRelayLabel:
-		m.settings.target.Label = value
-	case fieldCountry:
-		m.settings.target.Country = value
 	}
 }
 

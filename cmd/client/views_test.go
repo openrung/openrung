@@ -299,6 +299,25 @@ func TestPaintFrameRepaintsDefaults(t *testing.T) {
 	}
 }
 
+// Settings holds exactly broker, mode, and the shell helper: the target relay
+// is pinned from the Relays view (or CLI flags), never typed into Settings —
+// and the tab bar keys, obvious enough to go unadvertised, stay out of the
+// footer help.
+func TestSettingsOffersNoTargetFields(t *testing.T) {
+	m := newTestModel(&fakeDriver{})
+	m.view = viewSettings
+	m.settings.target = connectcore.RelayTarget{RelayID: "r1", Label: "x", Country: "kr"}
+	view := m.settingsView()
+	for _, gone := range []string{"Target relay id", "Target label", "Target country"} {
+		if strings.Contains(view, gone) {
+			t.Fatalf("settings still offers %q:\n%s", gone, view)
+		}
+	}
+	if strings.Contains(m.footerView(), "1-4") {
+		t.Fatalf("footer still advertises the view keys: %q", m.footerView())
+	}
+}
+
 func TestFooterStyleCoversEveryStatus(t *testing.T) {
 	for status := range statusStyles {
 		if _, ok := footerStyles[status]; !ok {

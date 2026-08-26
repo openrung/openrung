@@ -28,9 +28,7 @@ const (
 
 // languageKeyHelp is identical in every language on purpose: the switch must
 // be recognizable before the current language is readable, so every footer
-// carries this same trilingual token — and it LEADS helpGlobal, because the
-// footer sheds help from the right and the escape hatch must be the last
-// thing to go.
+// carries this same trilingual token.
 const languageKeyHelp = "l lang/语言/язык"
 
 type translation struct {
@@ -82,7 +80,6 @@ type translation struct {
 	targetCountry   string // fmt: country
 	targetAutomatic string
 
-	recentsLabel        string
 	refreshingDirectory string
 	directoryErrPrefix  string
 	noRelaysYet         string
@@ -97,7 +94,6 @@ type translation struct {
 	noLogOutput string
 
 	fieldNames              [settingsFieldCount]string
-	unset                   string
 	enableInShell           string
 	restoreShell            string
 	restoreAdvice           string
@@ -119,7 +115,7 @@ var translations = [languageCount]*translation{
 	langEnglish: {
 		tabs: [viewCount]string{"1 Status", "2 Relays", "3 Logs", "4 Settings"},
 
-		helpGlobal:       languageKeyHelp + " · c connect · d disconnect · r refresh · 1-4/tab views · q quit",
+		helpGlobal:       "c connect · d disconnect · r refresh · " + languageKeyHelp + " · q quit",
 		helpRelays:       "↑/↓ select · enter connect to selection · x clear target · ",
 		helpLogs:         "↑/↓/pgup/pgdn scroll · ",
 		helpSettings:     "↑/↓ field · enter edit · ",
@@ -172,7 +168,6 @@ var translations = [languageCount]*translation{
 		targetCountry:   "country %s",
 		targetAutomatic: "automatic (ranked)",
 
-		recentsLabel:        "recents ",
 		refreshingDirectory: "refreshing relay directory…",
 		directoryErrPrefix:  "directory: ",
 		noRelaysYet:         "no relays yet — press r to refresh",
@@ -187,9 +182,8 @@ var translations = [languageCount]*translation{
 		noLogOutput: "no log output yet",
 
 		fieldNames: [settingsFieldCount]string{
-			"Broker URL", "Mode", "Target relay id", "Target label", "Target country", "Shell proxy",
+			"Broker URL", "Mode", "Shell proxy",
 		},
-		unset:                   "(unset)",
 		enableInShell:           "Enable in a shell",
 		restoreShell:            "Restore that shell",
 		restoreAdvice:           "run the restore command after disconnect, failure, quit, or crash",
@@ -210,7 +204,7 @@ var translations = [languageCount]*translation{
 	langChinese: {
 		tabs: [viewCount]string{"1 状态", "2 中继", "3 日志", "4 设置"},
 
-		helpGlobal:       languageKeyHelp + " · c 连接 · d 断开 · r 刷新 · 1-4/tab 视图 · q 退出",
+		helpGlobal:       "c 连接 · d 断开 · r 刷新 · " + languageKeyHelp + " · q 退出",
 		helpRelays:       "↑/↓ 选择 · enter 连接所选 · x 清除目标 · ",
 		helpLogs:         "↑/↓/pgup/pgdn 滚动 · ",
 		helpSettings:     "↑/↓ 字段 · enter 编辑 · ",
@@ -263,7 +257,6 @@ var translations = [languageCount]*translation{
 		targetCountry:   "国家 %s",
 		targetAutomatic: "自动（按排名）",
 
-		recentsLabel:        "最近 ",
 		refreshingDirectory: "正在刷新中继目录…",
 		directoryErrPrefix:  "目录：",
 		noRelaysYet:         "暂无中继 — 按 r 刷新",
@@ -278,9 +271,8 @@ var translations = [languageCount]*translation{
 		noLogOutput: "暂无日志输出",
 
 		fieldNames: [settingsFieldCount]string{
-			"Broker 地址", "模式", "目标中继 ID", "目标标签", "目标国家", "Shell 代理",
+			"Broker 地址", "模式", "Shell 代理",
 		},
-		unset:                   "（未设置）",
 		enableInShell:           "在 shell 中启用",
 		restoreShell:            "恢复该 shell",
 		restoreAdvice:           "断开、失败、退出或崩溃后，请运行恢复命令",
@@ -301,7 +293,7 @@ var translations = [languageCount]*translation{
 	langRussian: {
 		tabs: [viewCount]string{"1 Статус", "2 Узлы", "3 Журнал", "4 Настройки"},
 
-		helpGlobal:       languageKeyHelp + " · c подключить · d отключить · r обновить · 1-4/tab вкладки · q выход",
+		helpGlobal:       "c подключить · d отключить · r обновить · " + languageKeyHelp + " · q выход",
 		helpRelays:       "↑/↓ выбор · enter подключиться к выбранному · x сбросить цель · ",
 		helpLogs:         "↑/↓/pgup/pgdn прокрутка · ",
 		helpSettings:     "↑/↓ поле · enter изменить · ",
@@ -354,7 +346,6 @@ var translations = [languageCount]*translation{
 		targetCountry:   "страна %s",
 		targetAutomatic: "автоматически (по рейтингу)",
 
-		recentsLabel:        "недавние ",
 		refreshingDirectory: "обновление каталога узлов…",
 		directoryErrPrefix:  "каталог: ",
 		noRelaysYet:         "узлов пока нет — нажмите r для обновления",
@@ -369,9 +360,8 @@ var translations = [languageCount]*translation{
 		noLogOutput: "журнал пока пуст",
 
 		fieldNames: [settingsFieldCount]string{
-			"URL брокера", "Режим", "ID целевого узла", "Целевая метка", "Целевая страна", "Прокси для shell",
+			"URL брокера", "Режим", "Прокси для shell",
 		},
-		unset:                   "(не задано)",
 		enableInShell:           "Включить в shell",
 		restoreShell:            "Восстановить shell",
 		restoreAdvice:           "выполните команду восстановления после отключения, сбоя, выхода или падения",

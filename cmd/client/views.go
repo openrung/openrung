@@ -518,12 +518,6 @@ func formatDuration(d time.Duration) string {
 func (m tuiModel) relaysView() string {
 	tr := m.tr()
 	var rows []string
-	// The engine-persisted recents (internal/clientstate), newest first — the
-	// same row the desktop main screen shows.
-	if line := recentsLine(m.state.Recents); line != "" {
-		prefix := helpStyle.Render(tr.recentsLabel)
-		rows = append(rows, prefix+truncateWidth(line, max(1, m.width-lipgloss.Width(prefix))))
-	}
 	switch {
 	case m.refreshing:
 		rows = append(rows, helpStyle.Render(tr.refreshingDirectory))
@@ -577,23 +571,6 @@ func (m tuiModel) relaysView() string {
 		rows = append(rows, line)
 	}
 	return strings.Join(rows, "\n")
-}
-
-// recentsLine renders the recents newest-first on one line, or "" when none
-// are stored.
-func recentsLine(recents []connectcore.RecentNode) string {
-	if len(recents) == 0 {
-		return ""
-	}
-	parts := make([]string, 0, len(recents))
-	for _, r := range recents {
-		label := strings.TrimSpace(r.Label)
-		if label == "" {
-			label = r.CountryCode
-		}
-		parts = append(parts, label)
-	}
-	return strings.Join(parts, " · ")
 }
 
 // relayListName is the list name for a relay: its friendly label alone (the
@@ -666,9 +643,6 @@ func (m tuiModel) settingsView() string {
 	}{
 		{fieldBroker, tr.fieldNames[fieldBroker], displayBroker(tr, m.settings.brokerURL)},
 		{fieldMode, tr.fieldNames[fieldMode], modeLabel(tr, m.settings.mode)},
-		{fieldRelayID, tr.fieldNames[fieldRelayID], orUnset(tr, m.settings.target.RelayID)},
-		{fieldRelayLabel, tr.fieldNames[fieldRelayLabel], orUnset(tr, m.settings.target.Label)},
-		{fieldCountry, tr.fieldNames[fieldCountry], orUnset(tr, m.settings.target.Country)},
 		{fieldShellHelper, tr.fieldNames[fieldShellHelper], m.shellHelperValue()},
 	}
 
@@ -763,11 +737,4 @@ func toggleMode(mode connectcore.Mode) connectcore.Mode {
 		return connectcore.ModeProxy
 	}
 	return connectcore.ModeTUN
-}
-
-func orUnset(tr *translation, value string) string {
-	if strings.TrimSpace(value) == "" {
-		return helpStyle.Render(tr.unset)
-	}
-	return value
 }
