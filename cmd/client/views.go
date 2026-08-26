@@ -241,13 +241,28 @@ func (m tuiModel) footerView() string {
 	return " " + help
 }
 
+const (
+	// The scrolling detail keeps at least this much of a lane before the pin is
+	// allowed to shrink it further; enough to read a field and its value.
+	statusDetailLaneWidth = 32
+	// The pin never shrinks below its duration — that is the field it exists for.
+	statusPinMinWidth = len("00:00:00")
+	// Wider than the one-cell gap the old footer used, because the detail is cut
+	// mid-field wherever the marquee happens to be: with a single space, a lane
+	// ending in "Health" runs straight into the pin and reads as though the
+	// relay were the health value.
+	statusPinGap = 3
+	// Leading space, the gap, and the trailing space after the pin.
+	statusBarChrome = 1 + statusPinGap + 1
+)
+
 // statusFooterView is the permanent connection bar between the body and the
 // key help — every row the old Status view carried, on one line, so the state
 // is readable from whichever view the user is on. It keeps the old footer's
 // coloring: red while disconnected or failed, yellow through transitions,
-// green while connected. The detail scrolls when it overflows, but the session
-// duration stays pinned right, because "how long" is the one field a glance at
-// the corner should always answer.
+// green while connected. The detail scrolls when it overflows; the relay label
+// and session duration stay pinned right, because "to what" and "how long" are
+// what a glance at the corner should always answer.
 func (m tuiModel) statusFooterView() string {
 	style, ok := footerStyles[m.state.Status]
 	if !ok {
@@ -255,9 +270,19 @@ func (m tuiModel) statusFooterView() string {
 	}
 	detail := m.statusDetail()
 
-	right := ""
-	if m.state.Status == connectcore.StatusConnected && !m.connectedAt.IsZero() {
-		right = formatDuration(m.now.Sub(m.connectedAt))
+	pinBudget := 0 // ≤0 = unlimited
+	if m.width > 0 {
+		pinBudget = m.width - 2 // the bar's leading and trailing space
+	}
+	right := m.statusPin(pinBudget)
+	if right != "" && m.width > 0 {
+		// Re-fit the pin so the detail keeps a readable lane rather than being
+		// squeezed to nothing.
+		contentBudget := max(0, m.width-statusBarChrome)
+		if lipgloss.Width(detail)+lipgloss.Width(right) > contentBudget {
+			lane := min(statusDetailLaneWidth, max(0, contentBudget-statusPinMinWidth))
+			right = m.statusPin(max(0, contentBudget-lane))
+		}
 	}
 	if right != "" {
 		right += " "
@@ -265,7 +290,7 @@ func (m tuiModel) statusFooterView() string {
 	if m.width > 0 {
 		budget := m.width - lipgloss.Width(right) - 1 // leading space
 		if right != "" {
-			budget-- // one-cell gap between detail and duration
+			budget -= statusPinGap
 		}
 		if lipgloss.Width(detail) > budget {
 			detail = m.footerMarqueeWindow(detail, max(0, budget))
@@ -274,6 +299,57 @@ func (m tuiModel) statusFooterView() string {
 	left := " " + detail
 	pad := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	return style.Render(left + strings.Repeat(" ", max(0, pad)) + right)
+}
+
+// statusPin is the status bar's fixed right edge while connected: the relay
+// label, its country flag, and the running session duration, fitted to budget
+// cells (≤0 = unlimited). The duration anchors the edge, so when space runs out
+// the label gives way first — the corner should still answer "how long" on a
+// terminal too narrow for "to what".
+func (m tuiModel) statusPin(budget int) string {
+	if m.state.Status != connectcore.StatusConnected {
+		return ""
+	}
+	// Single-sourced for the same reason as statusDetail: with a descriptor the
+	// name AND flag are the descriptor's, because a failover updates the state
+	// label before the next info poll and mixing them would pair a fresh label
+	// with the previous relay's flag.
+	label := ""
+	if m.infoOK {
+		label = strings.TrimSpace(relayListName(m.info.Relay))
+		if flag := countryFlag(m.info.Relay.CountryCode); flag != "" {
+			if label != "" {
+				label += " "
+			}
+			label += flag
+		}
+	} else if m.state.RelayLabel != nil {
+		label = strings.TrimSpace(*m.state.RelayLabel)
+	}
+	duration := ""
+	if !m.connectedAt.IsZero() {
+		duration = formatDuration(m.now.Sub(m.connectedAt))
+	}
+
+	parts := make([]string, 0, 2)
+	if label != "" {
+		parts = append(parts, label)
+	}
+	if duration != "" {
+		parts = append(parts, duration)
+	}
+	pin := strings.Join(parts, " ")
+	if budget <= 0 || lipgloss.Width(pin) <= budget {
+		return pin
+	}
+	if duration == "" {
+		return truncateWidth(label, budget)
+	}
+	label = truncateWidth(label, max(0, budget-lipgloss.Width(duration)-1))
+	if label == "" {
+		return truncateWidth(duration, budget)
+	}
+	return label + " " + duration
 }
 
 // statusDetail is every Status field on one line. Deliberately unstyled: the

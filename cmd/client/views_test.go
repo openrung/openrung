@@ -188,6 +188,51 @@ func TestStatusIdentityIsSingleSourced(t *testing.T) {
 	}
 }
 
+// The pin holds both answers a glance needs — which relay, and for how long —
+// single-sourced from the descriptor when there is one. Under width pressure
+// the label yields and the duration stays, since "how long" is the field the
+// pin exists for.
+func TestStatusPinCarriesRelayLabelAndDuration(t *testing.T) {
+	m := newTestModel(&fakeDriver{})
+	m.width = 120
+	stale := "Singapore"
+	m.state = connectcore.State{Status: connectcore.StatusConnected, RelayLabel: &stale}
+	m.connectedAt = m.now.Add(-90 * time.Second)
+	m.infoOK = true
+	m.info = connectcore.ConnectionInfo{Relay: brokerapi.RelayDescriptor{
+		Label:            "merry-falcon",
+		RelayGeoLocation: brokerapi.RelayGeoLocation{CountryCode: "jp"},
+	}}
+
+	flag := countryFlagFor("darwin", "jp")
+	bar := m.statusFooterView()
+	for _, want := range []string{"merry-falcon", flag, "00:01:30"} {
+		if !strings.Contains(bar, want) {
+			t.Fatalf("status bar pin missing %q:\n%q", want, bar)
+		}
+	}
+	// The pin is the bar's right edge: nothing but its trailing space follows.
+	if !strings.HasSuffix(strings.TrimRight(bar, " "), "00:01:30") {
+		t.Fatalf("duration is not anchored to the right edge:\n%q", bar)
+	}
+	// Single-sourced: the descriptor won, so the stale state label is absent.
+	if strings.Contains(m.statusPin(0), stale) {
+		t.Fatalf("pin used the state label over the descriptor: %q", m.statusPin(0))
+	}
+
+	// Squeezed: the label gives way, the duration survives.
+	narrow := m.statusPin(statusPinMinWidth)
+	if narrow != "00:01:30" {
+		t.Fatalf("pin at its floor = %q, want the bare duration", narrow)
+	}
+
+	// Disconnected: no pin at all.
+	m.state.Status = connectcore.StatusDisconnected
+	if pin := m.statusPin(0); pin != "" {
+		t.Fatalf("disconnected pin = %q, want empty", pin)
+	}
+}
+
 // However narrow the terminal, and at every marquee phase, the status bar keeps
 // the session duration pinned to its right edge: the detail track is what
 // yields. That corner glance is the reason the bar exists.

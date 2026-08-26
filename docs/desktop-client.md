@@ -186,9 +186,11 @@ old Status view did — state, relay and its foundation/volunteer class,
 country, transport path (direct, punched, or WSS front), health-probe state,
 the latest failover or fallback activity, capture mode with its local proxy
 endpoint, broker, target, and the last error — on one line that scrolls
-horizontally when it overflows. The session duration is pinned to its right
-edge instead of scrolling, so a glance at the corner always answers "how
-long". The bar is the connection signal too: red while disconnected or
+horizontally when it overflows. While connected, the relay label with its
+country flag and the session duration are pinned to the bar's right edge
+instead of scrolling, so a glance at the corner always answers "to what" and
+"for how long"; on a terminal too narrow for both, the label yields and the
+duration stays. The bar is the connection signal too: red while disconnected or
 failed, yellow through every transition, green while connected. The key-help
 line below it never changes color, so the bar is the only thing on screen
 that does.
