@@ -76,7 +76,12 @@ func (m tuiModel) View() string {
 	case viewSettings:
 		body = m.settingsView()
 	}
-	body = m.overlayBrandMark(fitLines(body, m.bodyHeight()))
+	body = fitLines(body, m.bodyHeight())
+	// The Logs view keeps every display cell for diagnostics. In the other
+	// views the bottom-right cells hold low-priority or empty presentation.
+	if m.view != viewLogs {
+		body = m.overlayBrandMark(body)
+	}
 	frame := m.headerView() + "\n\n" + body + "\n\n" + m.footerView()
 	// Ascii means no color at all (a dumb terminal, NO_COLOR, or a test),
 	// where the theme's escape sequences would render as garbage.
@@ -87,7 +92,8 @@ func (m tuiModel) View() string {
 }
 
 // openrungArt is the corner brand mark, drawn at the bottom right of every
-// view just above the status bar. Every row is the same display width.
+// non-Logs view just above the status bar. Every row has the same display
+// width.
 var openrungArt = []string{
 	"  ___  ___  ___ _  _ ___  _   _ _  _  ___ ",
 	" / _ \\| _ \\| __| \\| | _ \\| | | | \\| |/ __|",
@@ -98,13 +104,13 @@ var openrungArt = []string{
 // brandMargin keeps the mark off the terminal's right edge.
 const brandMargin = 1
 
-// overlayBrandMark draws openrungArt over the body's bottom-right corner —
-// the same corner on every view. The mark wins over whatever the corner held:
-// a per-line collision check would tear the mark apart (logs) or blink it in
-// and out as lists grow (relays), and the corner rows are the least
-// load-bearing cells on screen. It renders whole or not at all — only when
-// the terminal is wide enough for the mark plus a gap to content, and tall
-// enough that a couple of content rows stay clear above it.
+// overlayBrandMark draws openrungArt over the body's bottom-right corner. The
+// caller deliberately excludes Logs, whose newest diagnostic lines occupy
+// this corner. Elsewhere the mark wins over whatever the corner held: a
+// per-line collision check would tear it apart or blink it in and out as
+// lists grow. It renders whole or not at all — only when the terminal is wide
+// enough for the mark plus a gap to content, and tall enough that a couple of
+// content rows stay clear above it.
 func (m tuiModel) overlayBrandMark(body string) string {
 	artW := lipgloss.Width(openrungArt[0])
 	if m.width < artW+2+2*brandMargin || m.bodyHeight() < len(openrungArt)+2 {
@@ -215,6 +221,17 @@ func (m tuiModel) headerView() string {
 	return strings.Join(parts, " ")
 }
 
+const (
+	// When help and the connected-session summary cannot both fit, give help a
+	// stable marquee lane. Thirty-two cells show the complete trilingual
+	// language token with useful neighboring context at ordinary widths.
+	footerHelpMarqueeWidth = 32
+	footerSummaryMinWidth  = len("00:00:00")
+	footerMarqueeGap       = "   "
+	footerMarqueeStep      = tuiTickInterval
+	footerMarqueePause     = 5 // one second at the beginning of each cycle
+)
+
 func (m tuiModel) footerView() string {
 	tr := m.tr()
 	help := tr.helpGlobal
@@ -237,14 +254,24 @@ func (m tuiModel) footerView() string {
 	}
 	// The bar is padded to the exact terminal width so the background paints
 	// edge to edge, with the connection summary right-aligned in the corner.
-	// The help always yields to the width — a wrapped footer breaks the
-	// fixed-height layout — and to the summary, since that corner glance is
-	// what the bar is for.
+	// When both sides do not fit, the summary keeps at least its duration while
+	// help gets a horizontally scrolling lane. That keeps every shortcut — in
+	// particular the language escape hatch — discoverable without wrapping the
+	// fixed-height footer.
 	summaryBudget := 0 // ≤0 = unlimited
 	if m.width > 0 {
 		summaryBudget = m.width - 2 // the bar's leading and trailing space
 	}
 	right := m.footerConnectionSummary(summaryBudget)
+	if right != "" && m.width > 0 {
+		// With a summary, the line spends three cells on leading space, the
+		// inter-column gap, and trailing space.
+		contentBudget := max(0, m.width-3)
+		if lipgloss.Width(help)+lipgloss.Width(right) > contentBudget {
+			helpLane := min(footerHelpMarqueeWidth, max(0, contentBudget-footerSummaryMinWidth))
+			right = m.footerConnectionSummary(max(0, contentBudget-helpLane))
+		}
+	}
 	if right != "" {
 		right += " "
 	}
@@ -254,12 +281,33 @@ func (m tuiModel) footerView() string {
 			budget-- // one-cell gap between help and summary
 		}
 		if lipgloss.Width(help) > budget {
-			help = truncateWidth(help, max(0, budget))
+			help = m.footerHelpWindow(help, max(0, budget))
 		}
 	}
 	left := " " + help
 	pad := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	return style.Render(left + strings.Repeat(" ", max(0, pad)) + right)
+}
+
+// footerHelpWindow returns one display-cell-aware window into overflowing
+// help. It starts with a short hold, advances one cell per TUI tick, and loops
+// through a small gap. The duplicated track makes the wrap seamless.
+func (m tuiModel) footerHelpWindow(help string, width int) string {
+	if width < 1 || lipgloss.Width(help) <= width {
+		return truncateWidth(help, width)
+	}
+	trackWidth := lipgloss.Width(help) + lipgloss.Width(footerMarqueeGap)
+	steps := footerMarqueePause + trackWidth
+	step := 0
+	if !m.startedAt.IsZero() && !m.now.Before(m.startedAt) {
+		step = int(m.now.Sub(m.startedAt) / footerMarqueeStep % time.Duration(steps))
+	}
+	offset := 0
+	if step >= footerMarqueePause {
+		offset = step - footerMarqueePause
+	}
+	track := help + footerMarqueeGap + help
+	return ansi.Cut(track, offset, offset+width)
 }
 
 // footerConnectionSummary is the bottom-right corner while connected: the

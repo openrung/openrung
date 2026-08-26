@@ -111,15 +111,16 @@ func TestSettingsNotesFollowLanguageCycles(t *testing.T) {
 	}
 }
 
-// The language switch must be findable in every language, so every footer
-// carries the same trilingual token — and the header, now views-only, no
-// longer holds a language slot.
-func TestFooterAlwaysShowsTheTrilingualLanguageHelp(t *testing.T) {
+// The language switch must be findable in every language, so every footer-help
+// track carries the same trilingual token — and the header, now views-only, no
+// longer holds a language slot. Overflow behavior is covered by the marquee
+// tests in views_test.go.
+func TestEveryLanguageIncludesTheTrilingualLanguageHelp(t *testing.T) {
 	m := newTestModel(&fakeDriver{})
 	for lang := language(0); lang < languageCount; lang++ {
 		m.lang = lang
-		if footer := m.footerView(); !strings.Contains(footer, languageKeyHelp) {
-			t.Fatalf("lang %d footer lost the language help: %q", lang, footer)
+		if help := m.tr().helpGlobal; !strings.Contains(help, languageKeyHelp) {
+			t.Fatalf("lang %d footer track lost the language help: %q", lang, help)
 		}
 		if header := m.headerView(); strings.Contains(header, "язык") {
 			t.Fatalf("lang %d header still carries a language slot: %q", lang, header)

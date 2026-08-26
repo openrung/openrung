@@ -165,7 +165,9 @@ go run ./cmd/client connect -broker http://localhost:8080
 ```
 
 Connecting is a keypress, not a flag: the client starts disconnected, and `c`
-connects with whatever the Settings view holds.
+connects with the current broker, capture mode, and relay target. Settings
+controls the broker and capture mode; the Relays view pins or clears a target,
+and `-relay-id` or `-relay-label` can seed one at launch.
 
 ### Views and keys
 
@@ -174,17 +176,20 @@ Four views, switched with `1`–`4`, `tab`, and `shift+tab`:
 | View | What it shows |
 | --- | --- |
 | **Status** | Connection state, relay label, country, foundation/volunteer class, transport path (direct, punched, or WSS front), session duration, health-probe state, the latest failover/fallback activity, and the capture mode with its local proxy endpoint |
-| **Relays** | The ranked relay directory — country, measured latency, node class — plus the persisted recents row. `↑`/`↓` moves, `enter` pins the highlighted relay and connects to it, `x` clears the pin |
+| **Relays** | The ranked relay directory — country, measured latency, and node class. `↑`/`↓` moves, `enter` pins the highlighted relay and connects to it, and `x` clears the pin |
 | **Logs** | Engine and sing-box output in a scrollable ring buffer |
-| **Settings** | Broker URL override, capture mode, relay targeting by id/label/country, and the shell proxy helper |
+| **Settings** | Broker URL override, capture mode, and the shell proxy helper |
 
 Global keys: `c` connect, `d` disconnect, `r` refresh the relay directory,
-`q` (or `ctrl+c`) quit. Quitting tears down the tunnel, restores the system
-proxy, and flushes telemetry before the process exits.
+`.` cycles English/中文/русский (`。` works from a full-width CJK IME), and `q`
+(or `ctrl+c`) quit. If the footer is too narrow for every key, its help text
+scrolls horizontally while the connected-session summary stays fixed.
+Quitting tears down the tunnel, restores the system proxy, and flushes
+telemetry before the process exits.
 
-In Settings, `↑`/`↓` moves between fields and `enter` acts on one: text fields
-open an inline editor (`enter` applies, `esc` cancels), the Mode field toggles
-the capture mode, and the Shell proxy field prints the copyable commands.
+In Settings, `↑`/`↓` moves between fields and `enter` acts on one: Broker URL
+opens an inline editor (`enter` applies, `esc` cancels), Mode toggles the
+capture mode, and Shell proxy prints the copyable commands.
 
 ### Capture modes
 

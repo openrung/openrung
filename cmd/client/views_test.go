@@ -134,19 +134,42 @@ func TestFooterIdentityIsSingleSourced(t *testing.T) {
 	}
 }
 
-// The summary must survive a terminal too narrow for both it and the help
-// line — the help is what yields.
-func TestFooterSummaryWinsOnNarrowTerminals(t *testing.T) {
+// A narrow connected footer shares the line between a scrolling help lane and
+// the fixed session duration. The relay label yields before either one.
+func TestFooterMarqueeSharesNarrowTerminalWithDuration(t *testing.T) {
 	m := newTestModel(&fakeDriver{})
 	m.width = 30
 	label := "merry-falcon"
 	m.state = connectcore.State{Status: connectcore.StatusConnected, RelayLabel: &label}
-	m.connectedAt = time.Now().Add(-time.Minute)
-	m.now = time.Now()
+	m.startedAt = time.Unix(0, 0)
+	m.connectedAt = m.startedAt.Add(-time.Minute)
+	m.now = m.startedAt
 
 	footer := m.footerView()
-	if !strings.Contains(footer, "merry-falcon") || !strings.Contains(footer, "00:01:00") {
-		t.Fatalf("narrow footer dropped the connection summary:\n%q", footer)
+	if !strings.Contains(footer, "00:01:00") {
+		t.Fatalf("narrow footer dropped the session duration:\n%q", footer)
+	}
+	if strings.Contains(footer, "merry-falcon") {
+		t.Fatalf("relay label should yield to help and duration:\n%q", footer)
+	}
+	if w := lipgloss.Width(footer); w > m.width {
+		t.Fatalf("narrow footer is %d cells wide, max %d: %q", w, m.width, footer)
+	}
+
+	seenLanguage := false
+	cycle := footerMarqueePause + lipgloss.Width(m.tr().helpGlobal) + lipgloss.Width(footerMarqueeGap)
+	for step := 0; step < cycle; step++ {
+		m.now = m.startedAt.Add(time.Duration(step) * footerMarqueeStep)
+		footer = m.footerView()
+		if duration := formatDuration(m.now.Sub(m.connectedAt)); !strings.Contains(footer, duration) {
+			t.Fatalf("marquee step %d dropped the duration: %q", step, footer)
+		}
+		if strings.Contains(footer, languageKeyHelp) {
+			seenLanguage = true
+		}
+	}
+	if !seenLanguage {
+		t.Fatal("one marquee cycle never revealed the complete language control")
 	}
 }
 
@@ -214,13 +237,16 @@ func TestRelayRowsAlignWithCJKLabels(t *testing.T) {
 	}
 }
 
-// The brand mark sits whole in the bottom-right corner of every view, its
-// last row on the last body line — directly above the status bar — and never
-// pushes a line past the terminal width.
-func TestBrandMarkOnEveryView(t *testing.T) {
+// The brand mark sits whole in the bottom-right corner of every non-Logs view,
+// its last row on the last body line — directly above the status bar — and
+// never pushes a line past the terminal width.
+func TestBrandMarkOnNonLogViews(t *testing.T) {
 	m := newTestModel(&fakeDriver{})
 	m.width, m.height = 100, 30
 	for v := viewID(0); v < viewCount; v++ {
+		if v == viewLogs {
+			continue
+		}
 		m.view = v
 		view := m.View()
 		for _, artLine := range openrungArt {
@@ -244,6 +270,30 @@ func TestBrandMarkOnEveryView(t *testing.T) {
 	}
 }
 
+// Logs keep the whole viewport for diagnostics: in particular, the newest
+// rows at the bottom must not lose their right-hand side under decoration.
+func TestBrandMarkIsDisabledInLogs(t *testing.T) {
+	m := newTestModel(&fakeDriver{})
+	m.width, m.height = 80, 24
+	m.view = viewLogs
+	m.resizeLogView()
+	marker := "newest-log-details-" + strings.Repeat("x", 50)
+	lines := make([]string, m.bodyHeight())
+	for i := range lines {
+		lines[i] = "older"
+	}
+	lines[len(lines)-1] = marker
+	m.setLogLines(lines)
+
+	view := m.View()
+	if strings.Contains(view, openrungArt[0]) {
+		t.Fatalf("Logs view still carries the brand mark:\n%s", view)
+	}
+	if !strings.Contains(view, marker) {
+		t.Fatalf("Logs view cut the newest row:\n%s", view)
+	}
+}
+
 // A terminal too narrow or too short for the mark drops it entirely — a torn
 // or crowding mark is worse than none.
 func TestBrandMarkHiddenOnSmallTerminals(t *testing.T) {
@@ -258,9 +308,8 @@ func TestBrandMarkHiddenOnSmallTerminals(t *testing.T) {
 	}
 }
 
-// The mark wins the corner over body content (it must sit on every view, the
-// logs included), and the cut under it is ANSI-aware so styled body lines are
-// never severed mid-escape-sequence.
+// Outside Logs, the mark wins the corner over body content, and the cut under
+// it is ANSI-aware so styled body lines are never severed mid-escape-sequence.
 func TestBrandMarkWinsTheCornerOverContent(t *testing.T) {
 	m := newTestModel(&fakeDriver{})
 	m.width, m.height = 60, 24

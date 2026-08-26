@@ -251,6 +251,7 @@ type tuiModel struct {
 	infoOK      bool
 	connectedAt time.Time
 	now         time.Time
+	startedAt   time.Time
 
 	// Latest typed engine notices: activity is the last connection event
 	// (failover, WSS fallback, punch, ticket retry), health the last
@@ -280,11 +281,13 @@ const tuiTickInterval = 200 * time.Millisecond
 func newTUIModel(driver engineDriver, ring *logRing, cfg connectConfig) tuiModel {
 	input := textinput.New()
 	input.CharLimit = 256
+	now := time.Now()
 	return tuiModel{
-		driver: driver,
-		ring:   ring,
-		now:    time.Now(),
-		state:  connectcore.State{Status: connectcore.StatusDisconnected},
+		driver:    driver,
+		ring:      ring,
+		now:       now,
+		startedAt: now,
+		state:     connectcore.State{Status: connectcore.StatusDisconnected},
 		// Init issues the first directory refresh, so mark it in flight: the
 		// Relays view says "refreshing" instead of inviting an r that would
 		// race it.
