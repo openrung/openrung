@@ -174,7 +174,7 @@ func (m tuiModel) headerView() string {
 		}
 		tabs = append(tabs, style.Render(name))
 	}
-	// The language switch lives on the l key and is advertised in the footer
+	// The language switch lives on the . key and is advertised in the footer
 	// (languageKeyHelp), not here — the tab bar holds only views.
 
 	// headerHeight budgets exactly one line, so a narrow terminal sheds whole
@@ -711,7 +711,7 @@ func modeLabel(tr *translation, mode connectcore.Mode) string {
 
 // renderNote resolves a stored settings notice through the ACTIVE language:
 // the kind is stored, the words are chosen at draw time, so a note set while
-// the UI spoke Chinese follows an l-key cycle into Russian.
+// the UI spoke Chinese follows a language cycle into Russian.
 func renderNote(tr *translation, n settingsNote) string {
 	switch n.kind {
 	case noteText:

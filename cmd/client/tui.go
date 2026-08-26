@@ -193,7 +193,7 @@ const (
 )
 
 // A settings notice is stored as a kind and rendered through the active
-// language at draw time: storing translated text would survive an l-key
+// language at draw time: storing translated text would survive a language
 // language cycle and leave mixed-language UI.
 type noteKind int
 
@@ -530,11 +530,20 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "4":
 		m.view = viewSettings
 		return m, nil
-	case "l":
+	case ".", "。":
 		// Cycle the UI language in place — no settings entry, so a user who
 		// cannot read the current language never has to navigate one. The
 		// footer advertises the key trilingually (languageKeyHelp) for the
 		// same reason.
+		//
+		// Punctuation, not a letter, because this key must be TYPEABLE in the
+		// same situation it must be readable. A Cyrillic (ЙЦУКЕН) or Greek
+		// layout carries no Latin letters at all, so a letter binding is
+		// unreachable without switching the OS layout first — for exactly the
+		// reader who cannot read the UI telling them which key to press. A
+		// period exists on essentially every layout (unshifted on ЙЦУКЕН and
+		// QWERTZ, shifted on AZERTY — all deliver "."). 。 is the same key
+		// under a CJK IME in full-width punctuation mode.
 		m.lang = (m.lang + 1) % languageCount
 		return m, nil
 	case "tab":

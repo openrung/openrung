@@ -9,7 +9,7 @@ import (
 )
 
 // The TUI ships English, Chinese, and Russian. There is no settings entry for
-// this: the l key cycles the language directly, and the footer help token that
+// this: the . key cycles the language directly, and the footer help token that
 // advertises it stays in all three languages at once (languageKeyHelp) so a
 // reader can always find their way back regardless of the current language.
 //
@@ -28,8 +28,9 @@ const (
 
 // languageKeyHelp is identical in every language on purpose: the switch must
 // be recognizable before the current language is readable, so every footer
-// carries this same trilingual token.
-const languageKeyHelp = "l lang/语言/язык"
+// carries this same trilingual token. The key is punctuation for the matching
+// reason — see the "." case in handleKey.
+const languageKeyHelp = ". lang/语言/язык"
 
 type translation struct {
 	tabs [viewCount]string
