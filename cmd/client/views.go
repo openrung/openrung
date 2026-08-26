@@ -180,7 +180,7 @@ func (m tuiModel) headerView() string {
 		}
 		tabs = append(tabs, style.Render(name))
 	}
-	// The language switch lives on the . key and is advertised in the footer
+	// The language switch lives on the 0 key and is advertised in the footer
 	// (languageKeyHelp), not here — the tab bar holds only views.
 
 	// headerHeight budgets exactly one line, so a narrow terminal sheds whole
@@ -238,8 +238,6 @@ func (m tuiModel) footerView() string {
 	switch m.view {
 	case viewRelays:
 		help = tr.helpRelays + help
-	case viewLogs:
-		help = tr.helpLogs + help
 	case viewSettings:
 		if m.settings.editing {
 			help = tr.helpSettingsEdit

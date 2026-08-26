@@ -181,8 +181,12 @@ Four views, switched with `1`–`4`, `tab`, and `shift+tab`:
 | **Settings** | Broker URL override, capture mode, and the shell proxy helper |
 
 Global keys: `c` connect, `d` disconnect, `r` refresh the relay directory,
-`.` cycles English/中文/русский (`。` works from a full-width CJK IME), and `q`
-(or `ctrl+c`) quit. If the footer is too narrow for every key, its help text
+`0` cycles English/中文/русский, and `q` (or `ctrl+c`) quit. The language key
+is a digit on purpose: a Cyrillic or Greek layout carries no Latin letters, so
+a letter would be untypeable for the reader who most needs to switch away from
+a language they cannot read. Scrolling the Logs pager, moving with `↑`/`↓`, and
+acting with `enter` are left out of the footer help as conventions the reader
+already has. If the footer is still too narrow for every key, its help text
 scrolls horizontally while the connected-session summary stays fixed.
 Quitting tears down the tunnel, restores the system proxy, and flushes
 telemetry before the process exits.

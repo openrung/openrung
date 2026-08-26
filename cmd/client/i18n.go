@@ -9,7 +9,7 @@ import (
 )
 
 // The TUI ships English, Chinese, and Russian. There is no settings entry for
-// this: the . key cycles the language directly, and the footer help token that
+// this: the 0 key cycles the language directly, and the footer help token that
 // advertises it stays in all three languages at once (languageKeyHelp) so a
 // reader can always find their way back regardless of the current language.
 //
@@ -28,18 +28,18 @@ const (
 
 // languageKeyHelp is identical in every language on purpose: the switch must
 // be recognizable before the current language is readable, so every footer
-// carries this same trilingual token. The key is punctuation for the matching
-// reason — see the "." case in handleKey.
-const languageKeyHelp = ". lang/语言/язык"
+// carries this same trilingual token. The key is a digit for the matching
+// reason — see the "0" case in handleKey.
+const languageKeyHelp = "0 lang/语言/язык"
 
 type translation struct {
 	tabs [viewCount]string
 
 	helpGlobal string
 	helpRelays string
-	helpLogs   string
-	// No helpSettings: moving with ↑/↓ and acting with enter is the same
-	// convention every view uses, so Settings adds nothing to the global help.
+	// No helpLogs or helpSettings: scrolling a pager, moving with ↑/↓, and
+	// acting with enter are conventions the reader already has, so neither view
+	// adds anything to the global help.
 	helpSettingsEdit string
 
 	labelStatus    string
@@ -119,7 +119,6 @@ var translations = [languageCount]*translation{
 
 		helpGlobal:       "c connect · d disconnect · r refresh · " + languageKeyHelp + " · q quit",
 		helpRelays:       "x clear target · ",
-		helpLogs:         "pgup/pgdn scroll · ",
 		helpSettingsEdit: "esc cancel",
 
 		labelStatus:    "Status",
@@ -207,7 +206,6 @@ var translations = [languageCount]*translation{
 
 		helpGlobal:       "c 连接 · d 断开 · r 刷新 · " + languageKeyHelp + " · q 退出",
 		helpRelays:       "x 清除目标 · ",
-		helpLogs:         "pgup/pgdn 滚动 · ",
 		helpSettingsEdit: "esc 取消",
 
 		labelStatus:    "状态",
@@ -295,7 +293,6 @@ var translations = [languageCount]*translation{
 
 		helpGlobal:       "c подключить · d отключить · r обновить · " + languageKeyHelp + " · q выход",
 		helpRelays:       "x сбросить цель · ",
-		helpLogs:         "pgup/pgdn прокрутка · ",
 		helpSettingsEdit: "esc отмена",
 
 		labelStatus:    "Статус",

@@ -15,7 +15,7 @@ func TestLanguageKeyCyclesWithoutEnteringSettings(t *testing.T) {
 		t.Fatal("default view is not English")
 	}
 
-	m, _ = update(t, m, keyMsg("."))
+	m, _ = update(t, m, keyMsg("0"))
 	if m.view != viewStatus {
 		t.Fatalf("language key changed the view to %d", m.view)
 	}
@@ -24,37 +24,31 @@ func TestLanguageKeyCyclesWithoutEnteringSettings(t *testing.T) {
 		t.Fatalf("first cycle is not Chinese:\n%s", view)
 	}
 
-	m, _ = update(t, m, keyMsg("."))
+	m, _ = update(t, m, keyMsg("0"))
 	view = m.View()
 	if !strings.Contains(view, "2 Узлы") || !strings.Contains(view, "Статус") {
 		t.Fatalf("second cycle is not Russian:\n%s", view)
 	}
 
-	m, _ = update(t, m, keyMsg("."))
+	m, _ = update(t, m, keyMsg("0"))
 	if view = m.View(); !strings.Contains(view, "2 Relays") {
 		t.Fatalf("third cycle did not wrap back to English:\n%s", view)
 	}
 
-	// The old 5 binding is gone: it must neither cycle the language nor
-	// change the view.
-	m, _ = update(t, m, keyMsg("5"))
-	if view = m.View(); !strings.Contains(view, "2 Relays") || m.view != viewStatus {
-		t.Fatalf("5 still does something:\n%s", view)
-	}
-
-	// A CJK IME in full-width punctuation mode delivers 。 for the same key,
-	// so it cycles too — the reader who needs the escape hatch most is the
-	// one typing through an IME.
-	m, _ = update(t, m, keyMsg("。"))
-	if view = m.View(); !strings.Contains(view, "2 中继") {
-		t.Fatalf("the full-width period did not cycle the language:\n%s", view)
+	// Keys this control used to live on must be inert, so a stale muscle
+	// memory or doc cannot silently half-work.
+	for _, stale := range []string{"5", ".", "l"} {
+		m, _ = update(t, m, keyMsg(stale))
+		if view = m.View(); !strings.Contains(view, "2 Relays") || m.view != viewStatus {
+			t.Fatalf("%q still cycles the language or moves the view:\n%s", stale, view)
+		}
 	}
 }
 
-// The language key is a period, and broker URLs are full of periods: an
+// The language key is a digit, and broker URLs carry digits (ports): an
 // editor with focus must swallow it as text rather than cycling the UI out
 // from under the value being typed.
-func TestPeriodIsTextWhileEditingSettings(t *testing.T) {
+func TestLanguageKeyIsTextWhileEditingSettings(t *testing.T) {
 	m := newTestModel(&fakeDriver{})
 	m.view = viewSettings // cursor starts on the broker field
 
@@ -63,15 +57,15 @@ func TestPeriodIsTextWhileEditingSettings(t *testing.T) {
 		t.Fatal("enter did not begin editing")
 	}
 	before, seeded := m.lang, m.settings.input.Value()
-	for _, r := range "a.b" {
+	for _, r := range ":8080" {
 		m, _ = update(t, m, keyMsg(string(r)))
 	}
 	if m.lang != before {
-		t.Fatalf("typing a period cycled the language to %d", m.lang)
+		t.Fatalf("typing a digit cycled the language to %d", m.lang)
 	}
 	// The editor opens pre-filled with the current value, so the keys append.
-	if got := m.settings.input.Value(); got != seeded+"a.b" {
-		t.Fatalf("editor value = %q, want %q with the typed periods retained", got, seeded+"a.b")
+	if got := m.settings.input.Value(); got != seeded+":8080" {
+		t.Fatalf("editor value = %q, want %q with the typed digits retained", got, seeded+":8080")
 	}
 }
 
@@ -89,7 +83,7 @@ func TestSettingsNotesFollowLanguageCycles(t *testing.T) {
 		t.Fatalf("Chinese mode note missing:\n%s", view)
 	}
 
-	m, _ = update(t, m, keyMsg(".")) // 中文 → русский
+	m, _ = update(t, m, keyMsg("0")) // 中文 → русский
 	view := m.View()
 	if !strings.Contains(view, "режим TUN: следующее подключение захватит все приложения") {
 		t.Fatalf("note did not follow the language cycle:\n%s", view)
@@ -105,7 +99,7 @@ func TestSettingsNotesFollowLanguageCycles(t *testing.T) {
 	if !strings.Contains(m.View(), "интеграция с shell недоступна") {
 		t.Fatalf("Russian shell-unavailable notice missing:\n%s", m.View())
 	}
-	m, _ = update(t, m, keyMsg(".")) // русский → English
+	m, _ = update(t, m, keyMsg("0")) // русский → English
 	if !strings.Contains(m.View(), "shell integration is unavailable in this build") {
 		t.Fatalf("shell notice did not follow the cycle:\n%s", m.View())
 	}
