@@ -413,10 +413,9 @@ func (m tuiModel) statusDetail() string {
 		}
 	}
 
-	parts = append(parts,
-		field(tr.labelBroker, displayBroker(tr, m.settings.brokerURL)),
-		field(tr.labelTarget, describeTarget(tr, m.settings.target)),
-	)
+	// No Target field: the TUI stores no target — the connected relay is the
+	// pin's to name, and what enter would connect to is the highlighted row.
+	parts = append(parts, field(tr.labelBroker, displayBroker(tr, m.settings.brokerURL)))
 	if m.state.LastError != nil {
 		parts = append(parts, field(tr.labelError, *m.state.LastError))
 	}
@@ -549,23 +548,6 @@ func noticeLine(tr *translation, n connectcore.Notice) string {
 	return n.Reason
 }
 
-func describeTarget(tr *translation, target connectcore.RelayTarget) string {
-	parts := make([]string, 0, 3)
-	if strings.TrimSpace(target.RelayID) != "" {
-		parts = append(parts, fmt.Sprintf(tr.targetRelay, target.RelayID))
-	}
-	if strings.TrimSpace(target.Label) != "" {
-		parts = append(parts, fmt.Sprintf(tr.targetLabel, target.Label))
-	}
-	if strings.TrimSpace(target.Country) != "" {
-		parts = append(parts, fmt.Sprintf(tr.targetCountry, strings.ToUpper(strings.TrimSpace(target.Country))))
-	}
-	if len(parts) == 0 {
-		return tr.targetAutomatic
-	}
-	return strings.Join(parts, ", ")
-}
-
 func formatDuration(d time.Duration) string {
 	if d < 0 {
 		d = 0
@@ -623,13 +605,7 @@ func (m tuiModel) relaysView() string {
 			cursor = cursorStyle.Render("▸ ")
 		}
 		if i == 0 {
-			line := cursor + " " + tr.autoSelect
-			// The marker follows the pin, and no pin means Auto select is what
-			// the next connect does.
-			if !m.settings.target.Targeted() {
-				line += " " + noteStyle.Render(tr.targetMarker)
-			}
-			rows = append(rows, line)
+			rows = append(rows, cursor+" "+tr.autoSelect)
 			continue
 		}
 		entry := m.relays[i-1]
@@ -647,12 +623,8 @@ func (m tuiModel) relaysView() string {
 		if m.state.Status == connectcore.StatusConnected && m.infoOK && entry.Relay.ID == m.info.Relay.ID {
 			name, geo, latency = connectedRowStyle.Render(name), connectedRowStyle.Render(geo), connectedRowStyle.Render(latency)
 		}
-		line := cursor + " " + name + " " + geo + " " + latency +
-			" " + nodeClassBadge(tr, entry.Relay.NodeClass)
-		if entry.Relay.ID == m.settings.target.RelayID && m.settings.target.RelayID != "" {
-			line += " " + noteStyle.Render(tr.targetMarker)
-		}
-		rows = append(rows, line)
+		rows = append(rows, cursor+" "+name+" "+geo+" "+latency+
+			" "+nodeClassBadge(tr, entry.Relay.NodeClass))
 	}
 	return strings.Join(rows, "\n")
 }

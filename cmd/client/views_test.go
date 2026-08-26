@@ -117,7 +117,7 @@ func TestStatusDetailCarriesEveryStatusField(t *testing.T) {
 	for _, want := range []string{
 		"[foundation]", tr.labelTransport, "front-a", tr.labelHealth,
 		tr.labelCapture, tr.labelProxy, "127.0.0.1:43210", tr.labelBroker,
-		tr.labelTarget, tr.labelError, failure,
+		tr.labelError, failure,
 	} {
 		if !strings.Contains(detail, want) {
 			t.Errorf("status detail missing %q:\n%s", want, detail)
@@ -428,9 +428,8 @@ func TestHeaderAndFooterNeverExceedNarrowWidths(t *testing.T) {
 }
 
 // The Relays list opens on an Auto select row: enter there connects ranked. It
-// carries the target marker whenever nothing is pinned, sits above every
-// relay, and survives an empty directory — the list is the only connect
-// control, so it must never be unreachable.
+// sits above every relay and survives an empty directory — the list is the
+// only connect control, so it must never be unreachable.
 func TestAutoSelectRowTopsTheRelayList(t *testing.T) {
 	m := newTestModel(&fakeDriver{})
 	m.view = viewRelays
@@ -444,29 +443,6 @@ func TestAutoSelectRowTopsTheRelayList(t *testing.T) {
 	autoAt, relayAt := strings.Index(view, tr.autoSelect), strings.Index(view, "merry-falcon")
 	if autoAt < 0 || relayAt < 0 || autoAt > relayAt {
 		t.Fatalf("Auto select row is not above the relays:\n%s", view)
-	}
-	rowOf := func(view, needle string) string {
-		for _, row := range strings.Split(view, "\n") {
-			if strings.Contains(row, needle) {
-				return row
-			}
-		}
-		t.Fatalf("no row contains %q:\n%s", needle, view)
-		return ""
-	}
-	// Untargeted: the marker sits on Auto select, since that is what the next
-	// connect does.
-	if !strings.Contains(rowOf(view, tr.autoSelect), tr.targetMarker) {
-		t.Fatalf("untargeted list does not mark Auto select:\n%s", view)
-	}
-	// Pinned: the marker moves to the pinned relay.
-	m.settings.target = connectcore.RelayTarget{RelayID: "r1"}
-	view = m.relaysView()
-	if strings.Contains(rowOf(view, tr.autoSelect), tr.targetMarker) {
-		t.Fatalf("pinned list still marks Auto select:\n%s", view)
-	}
-	if !strings.Contains(rowOf(view, "merry-falcon"), tr.targetMarker) {
-		t.Fatalf("pinned relay lost the target marker:\n%s", view)
 	}
 
 	m.relays = nil
@@ -661,14 +637,13 @@ func TestPaintFrameRepaintsDefaults(t *testing.T) {
 	}
 }
 
-// Settings holds exactly broker, mode, and the shell helper: the target relay
-// is pinned from the Relays view (or CLI flags), never typed into Settings —
-// and the tab bar keys, obvious enough to go unadvertised, stay out of the
-// footer help.
+// Settings holds exactly broker, mode, and the shell helper: the TUI stores no
+// relay target, so there is nothing target-shaped to type into Settings — and
+// the tab bar keys, obvious enough to go unadvertised, stay out of the footer
+// help.
 func TestSettingsOffersNoTargetFields(t *testing.T) {
 	m := newTestModel(&fakeDriver{})
 	m.view = viewSettings
-	m.settings.target = connectcore.RelayTarget{RelayID: "r1", Label: "x", Country: "kr"}
 	view := m.settingsView()
 	for _, gone := range []string{"Target relay id", "Target label", "Target country"} {
 		if strings.Contains(view, gone) {

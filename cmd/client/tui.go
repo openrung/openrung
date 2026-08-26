@@ -105,6 +105,12 @@ func runTUI(cfg connectConfig) error {
 	for _, warning := range legacyFlagWarnings(cfg) {
 		ring.push(stampLog(time.Now(), "warning: "+warning))
 	}
+	// Headless connect, check, and config still honor these flags; the
+	// interactive client holds no target state at all, so a passed one would
+	// otherwise go silently dead.
+	if cfg.target().Targeted() {
+		ring.push(stampLog(time.Now(), "warning: -relay-id/-relay-label are ignored by the interactive client — pick a relay in the Relays list (they still work with -headless, check, and config)"))
+	}
 
 	// Crash recovery and persisted recents; runs before the event loop exists,
 	// so its log lines are already in the ring for the first flush.
@@ -184,10 +190,10 @@ const (
 
 type settingsFieldID int
 
-// The target relay is not a settings field: it is pinned from the Relays view
-// (enter connects to the highlighted relay; the Auto select row clears the
-// pin) or by CLI flags, and the status bar's Target field shows what is
-// pinned.
+// There is no target field anywhere: the TUI holds no relay-target state at
+// all. Enter on the Relays list passes the highlighted row to the engine and
+// that is the whole story (the -relay-id/-relay-label flags stay headless- and
+// check/config-only).
 const (
 	fieldBroker settingsFieldID = iota
 	fieldMode
@@ -219,7 +225,6 @@ type settingsNote struct {
 
 type settingsState struct {
 	brokerURL string
-	target    connectcore.RelayTarget
 	// mode mirrors the engine's capture mode. The engine owns it (a live
 	// session keeps the mode it started with), so the view only ever shows
 	// what a SetMode call confirmed.
@@ -297,7 +302,6 @@ func newTUIModel(driver engineDriver, ring *logRing, cfg connectConfig) tuiModel
 		refreshing: true,
 		settings: settingsState{
 			brokerURL: cfg.BrokerURL,
-			target:    cfg.target(),
 			mode:      cfg.mode(),
 			input:     input,
 		},
@@ -354,8 +358,12 @@ func (m tuiModel) resolveProxyCmd() tea.Cmd {
 	}
 }
 
-func (m tuiModel) connectCmd() tea.Cmd {
-	driver, broker, target := m.driver, m.settings.brokerURL, m.settings.target
+// connectCmd issues one connect to the given target — the highlighted relay,
+// or the zero target for Auto select's ranked pick. The target lives only in
+// this call: the TUI stores none, so there is nothing to pin, clear, or drift
+// stale.
+func (m tuiModel) connectCmd(target connectcore.RelayTarget) tea.Cmd {
+	driver, broker := m.driver, m.settings.brokerURL
 	return func() tea.Msg {
 		return connectIssuedMsg{err: driver.ConnectTarget(broker, target)}
 	}
@@ -592,18 +600,15 @@ func (m tuiModel) handleRelaysKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter":
 		// The list is the connect control — there is no separate connect key.
-		// Row 0 is Auto select: it clears any pinned or CLI-seeded target and
-		// lets the broker's ranking pick, which is also the only way to unpin.
-		// Every row below pins the highlighted relay and connects to it, like
-		// the desktop map's targeting.
+		// Row 0 is Auto select: the zero target, the broker's ranking picks.
+		// Every row below connects to exactly that relay. The target is built
+		// here and handed straight to the engine; nothing is stored.
 		if m.relayCursor == 0 {
-			m.settings.target = connectcore.RelayTarget{}
-		} else if m.relayCursor <= len(m.relays) {
-			m.settings.target = connectcore.RelayTarget{RelayID: m.relays[m.relayCursor-1].Relay.ID}
-		} else {
-			return m, nil
+			return m, m.connectCmd(connectcore.RelayTarget{})
 		}
-		return m, m.connectCmd()
+		if m.relayCursor <= len(m.relays) {
+			return m, m.connectCmd(connectcore.RelayTarget{RelayID: m.relays[m.relayCursor-1].Relay.ID})
+		}
 	}
 	return m, nil
 }

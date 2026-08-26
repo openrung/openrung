@@ -203,8 +203,10 @@ Common flags:
   -broker         Broker base URL override (e.g. http://localhost:8080 for a
                   local broker). Empty (the default) races the built-in HTTPS
                   broker fronts and uses the first that answers.
-  -relay-id       Pin the connect target to this exact broker relay id.
-  -relay-label    Pin the connect target to relay(s) with this label.
+  -relay-id       Connect only to this exact broker relay id (-headless,
+                  check, and config; the interactive client selects from
+                  the Relays list instead).
+  -relay-label    Connect only to relay(s) with this label (same commands).
   -mtu            Override the TUN MTU (connect --tun, and the config
                   subcommand).
   -relay-family   Select relay family for check/config: auto, ipv4, or ipv6.

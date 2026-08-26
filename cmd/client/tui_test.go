@@ -119,22 +119,22 @@ func update(t *testing.T, m tuiModel, msg tea.Msg) (tuiModel, tea.Msg) {
 }
 
 // The c and x keys are retired: enter on the Relays list is the only connect
-// control, and its Auto select row is what clears a pin. Both keys must be
-// inert so stale muscle memory or a stale doc cannot silently half-work.
+// control, and there is no pin left for x to clear. Both keys must be inert so
+// stale muscle memory or a stale doc cannot silently half-work.
 func TestRetiredConnectAndClearKeysAreInert(t *testing.T) {
 	driver := &fakeDriver{}
 	m := newTestModel(driver)
 	m.view = viewRelays
-	m.settings.target = connectcore.RelayTarget{Country: "kr"}
 	m.relays = []connectcore.DirectoryRelay{{Relay: brokerapi.RelayDescriptor{ID: "relay_a"}}}
 
-	m, _ = update(t, m, keyMsg("c"))
-	if len(driver.connects) != 0 {
-		t.Fatalf("c still connects: %+v", driver.connects)
-	}
-	m, _ = update(t, m, keyMsg("x"))
-	if m.settings.target.Country != "kr" {
-		t.Fatalf("x still clears the target: %+v", m.settings.target)
+	for _, stale := range []string{"c", "x"} {
+		m, _ = update(t, m, keyMsg(stale))
+		if len(driver.connects) != 0 {
+			t.Fatalf("%q still connects: %+v", stale, driver.connects)
+		}
+		if m.view != viewRelays {
+			t.Fatalf("%q moved the view to %d", stale, m.view)
+		}
 	}
 }
 
@@ -149,7 +149,7 @@ func TestDisconnectKeyIssuesEngineDisconnect(t *testing.T) {
 	}
 }
 
-func TestRelaysEnterPinsSelectionAndConnects(t *testing.T) {
+func TestRelaysEnterConnectsToTheHighlightedRelay(t *testing.T) {
 	driver := &fakeDriver{}
 	m := newTestModel(driver)
 	m.view = viewRelays
@@ -165,31 +165,32 @@ func TestRelaysEnterPinsSelectionAndConnects(t *testing.T) {
 
 	_, target := driver.lastConnect(t)
 	if target.RelayID != "relay_b" {
-		t.Fatalf("target = %+v, want the highlighted relay pinned", target)
+		t.Fatalf("target = %+v, want the highlighted relay", target)
 	}
-	if m.settings.target.RelayID != "relay_b" {
-		t.Fatalf("settings target = %+v, want the pinned relay retained", m.settings.target)
+
+	// The target lived only in that call: back on Auto select, the next connect
+	// is ranked again — no pin lingers from the relay connect before it.
+	m, _ = update(t, m, keyMsg("up"))
+	m, _ = update(t, m, keyMsg("up"))
+	m, _ = update(t, m, keyMsg("enter"))
+	if _, target := driver.lastConnect(t); target.Targeted() {
+		t.Fatalf("Auto select connect still carries a target: %+v", target)
 	}
 }
 
 // Auto select — the list's first row, where the cursor starts — connects with
-// no target at all: it clears a pinned or CLI-seeded target and asks for the
-// broker's ranked pick, absorbing both of the retired c and x keys. It works
-// before the directory has ever loaded, since a ranked connect needs no list.
-func TestRelaysAutoSelectConnectsRankedAndClearsTheTarget(t *testing.T) {
+// no target at all: the broker's ranked pick. It works before the directory
+// has ever loaded, since a ranked connect needs no list.
+func TestRelaysAutoSelectConnectsRanked(t *testing.T) {
 	driver := &fakeDriver{}
 	m := newTestModel(driver)
 	m.view = viewRelays
-	m.settings.target = connectcore.RelayTarget{Country: "kr"} // CLI-seeded
 
-	m, _ = update(t, m, keyMsg("enter"))
+	_, _ = update(t, m, keyMsg("enter"))
 
 	broker, target := driver.lastConnect(t)
 	if broker != "http://broker.test" || target.Targeted() {
 		t.Fatalf("ConnectTarget(%q, %+v), want the settings broker and no target", broker, target)
-	}
-	if m.settings.target.Targeted() {
-		t.Fatalf("settings target = %+v, want cleared by Auto select", m.settings.target)
 	}
 }
 

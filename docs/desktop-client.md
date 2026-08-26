@@ -166,9 +166,10 @@ go run ./cmd/client connect -broker http://localhost:8080
 
 Connecting is a keypress, not a flag: the client starts disconnected, and
 `enter` on the Relays list connects — to the highlighted relay, or ranked
-automatically via the **Auto select** row at the top of the list, which also
-clears any pinned target. Settings controls the broker and capture mode;
-`-relay-id` or `-relay-label` can seed a target at launch.
+automatically via the **Auto select** row at the top of the list. There is no
+stored relay target in the interactive client at all: what you highlight is
+what you get, every time. Settings controls the broker and capture mode;
+`-relay-id`/`-relay-label` apply to `-headless`, `check`, and `config` only.
 
 ### Views and keys
 
@@ -176,7 +177,7 @@ Three views, switched with `1`–`3`, `tab`, and `shift+tab`:
 
 | View | What it shows |
 | --- | --- |
-| **Relays** | The ranked relay directory — country, measured latency, and node class — under an **Auto select** row. `↑`/`↓` moves; `enter` connects to the highlighted row: a relay pins it, Auto select clears the pin and takes the ranked pick. The connected relay's row renders bold |
+| **Relays** | The ranked relay directory — country, measured latency, and node class — under an **Auto select** row. `↑`/`↓` moves; `enter` connects to the highlighted row: a relay connects to exactly that relay, Auto select takes the ranked pick. The connected relay's row renders bold |
 | **Logs** | Engine and sing-box output in a scrollable ring buffer |
 | **Settings** | Broker URL override, capture mode, and the shell proxy helper |
 
@@ -186,7 +187,7 @@ are on rather than only the one you navigated to. It carries everything the
 old Status view did — state, relay and its foundation/volunteer class,
 country, transport path (direct, punched, or WSS front), health-probe state,
 the latest failover or fallback activity, capture mode with its local proxy
-endpoint, broker, target, and the last error — on one line that scrolls
+endpoint, broker, and the last error — on one line that scrolls
 horizontally when it overflows. While connected, the relay label with its
 country flag and the session duration are pinned to the bar's right edge
 instead of scrolling, so a glance at the corner always answers "to what" and
@@ -326,7 +327,9 @@ the system proxy. `check` and `config` are fetch-and-print only: they open no
 telemetry session and start no tunnel.
 
 Common flags: `-broker` (empty races the built-in HTTPS fronts), `-relay-id`
-and `-relay-label` to pin a target, `-relay-family` for `check`/`config`,
+and `-relay-label` to pin a relay (`-headless`, `check`, and `config`; the
+interactive client selects from the Relays list and warns if they are
+passed), `-relay-family` for `check`/`config`,
 `-mtu` for the TUN device, and `-sing-box` to substitute an external sing-box
 binary for the bundled engine. Run `go run ./cmd/client help` for the full
 list.

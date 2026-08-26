@@ -49,7 +49,6 @@ type translation struct {
 	labelCapture   string
 	labelProxy     string
 	labelBroker    string
-	labelTarget    string
 	labelError     string
 
 	captureTUN     string
@@ -72,11 +71,6 @@ type translation struct {
 	noticeTicketRetry       string // fmt: front id, wait
 	noticePunch             string // fmt: relay id, reason
 
-	targetRelay     string // fmt: relay id
-	targetLabel     string // fmt: label
-	targetCountry   string // fmt: country
-	targetAutomatic string
-
 	// autoSelect is the Relays list's first row: enter there connects with no
 	// target pinned, letting the broker's ranking pick.
 	autoSelect          string
@@ -87,7 +81,6 @@ type translation struct {
 	colCountry          string
 	colLatency          string
 	colClass            string
-	targetMarker        string
 	badgeFoundation     string
 	badgeVolunteer      string
 
@@ -124,7 +117,6 @@ var translations = [languageCount]*translation{
 		labelCapture:   "Capture",
 		labelProxy:     "Proxy",
 		labelBroker:    "Broker",
-		labelTarget:    "Target",
 		labelError:     "Error",
 
 		captureTUN:     "TUN — whole device",
@@ -147,11 +139,6 @@ var translations = [languageCount]*translation{
 		noticeTicketRetry:       "WSS tickets rate-limited; retrying front %s in %s",
 		noticePunch:             "punch %s: %s",
 
-		targetRelay:     "relay %s",
-		targetLabel:     "label %s",
-		targetCountry:   "country %s",
-		targetAutomatic: "automatic (ranked)",
-
 		autoSelect:          "Auto select (ranked)",
 		refreshingDirectory: "refreshing relay directory…",
 		directoryErrPrefix:  "directory: ",
@@ -160,7 +147,6 @@ var translations = [languageCount]*translation{
 		colCountry:          "COUNTRY",
 		colLatency:          "LATENCY",
 		colClass:            "CLASS",
-		targetMarker:        "← target",
 		badgeFoundation:     "[foundation]",
 		badgeVolunteer:      "[volunteer]",
 
@@ -198,7 +184,6 @@ var translations = [languageCount]*translation{
 		labelCapture:   "捕获",
 		labelProxy:     "代理",
 		labelBroker:    "调度服务器",
-		labelTarget:    "目标",
 		labelError:     "错误",
 
 		captureTUN:     "TUN — 全设备接管",
@@ -221,11 +206,6 @@ var translations = [languageCount]*translation{
 		noticeTicketRetry:       "WSS 票据被限流；将在 %[2]s 后重试前置 %[1]s",
 		noticePunch:             "打洞 %s：%s",
 
-		targetRelay:     "中继 %s",
-		targetLabel:     "标签 %s",
-		targetCountry:   "国家 %s",
-		targetAutomatic: "自动（按排名）",
-
 		autoSelect:          "自动选择（按排名）",
 		refreshingDirectory: "正在刷新中继目录…",
 		directoryErrPrefix:  "目录：",
@@ -234,7 +214,6 @@ var translations = [languageCount]*translation{
 		colCountry:          "国家",
 		colLatency:          "延迟",
 		colClass:            "类型",
-		targetMarker:        "← 目标",
 		badgeFoundation:     "[官方]",
 		badgeVolunteer:      "[志愿]",
 
@@ -272,7 +251,6 @@ var translations = [languageCount]*translation{
 		labelCapture:   "Захват",
 		labelProxy:     "Прокси",
 		labelBroker:    "Брокер",
-		labelTarget:    "Цель",
 		labelError:     "Ошибка",
 
 		captureTUN:     "TUN — всё устройство",
@@ -295,11 +273,6 @@ var translations = [languageCount]*translation{
 		noticeTicketRetry:       "билеты WSS ограничены; повтор фронта %s через %s",
 		noticePunch:             "пробивка %s: %s",
 
-		targetRelay:     "узел %s",
-		targetLabel:     "метка %s",
-		targetCountry:   "страна %s",
-		targetAutomatic: "автоматически (по рейтингу)",
-
 		autoSelect:          "Автовыбор (по рейтингу)",
 		refreshingDirectory: "обновление каталога узлов…",
 		directoryErrPrefix:  "каталог: ",
@@ -308,7 +281,6 @@ var translations = [languageCount]*translation{
 		colCountry:          "СТРАНА",
 		colLatency:          "ЗАДЕРЖКА",
 		colClass:            "КЛАСС",
-		targetMarker:        "← цель",
 		badgeFoundation:     "[фонд]",
 		badgeVolunteer:      "[волонтёр]",
 
