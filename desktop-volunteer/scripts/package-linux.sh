@@ -22,8 +22,10 @@ if [[ -z "${XRAYBIN}" || ! -x "${XRAYBIN}" ]]; then
 fi
 
 export PATH="${PATH}:$(go env GOPATH)/bin"
-echo "==> wails build ${*:-}"
-wails build "$@"
+# -trimpath keeps the builder's GOMODCACHE paths (and with them the local
+# username, /Users/<name>/go/pkg/mod/...) out of the shipped binary.
+echo "==> wails build -trimpath ${*:-}"
+wails build -trimpath "$@"
 
 BIN="build/bin/OpenRungVolunteer"
 [[ -x "${BIN}" ]] || { echo "error: ${BIN} not found after build" >&2; exit 1; }

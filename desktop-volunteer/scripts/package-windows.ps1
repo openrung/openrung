@@ -17,8 +17,10 @@ if (-not $xray -or -not (Test-Path $xray)) {
 }
 
 $env:PATH = "$env:PATH;$(go env GOPATH)\bin"
-Write-Host "==> wails build $args"
-wails build @args
+# -trimpath keeps the builder's GOMODCACHE paths (and with them the local
+# username) out of the shipped binary.
+Write-Host "==> wails build -trimpath $args"
+wails build -trimpath @args
 
 $exe = 'build\bin\OpenRungVolunteer.exe'
 if (-not (Test-Path $exe)) { Write-Error "$exe not found after build"; exit 1 }
