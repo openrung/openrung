@@ -8,6 +8,8 @@ import (
 	"os"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/openrung/openrung/connectcore/sudouser"
 )
 
 func withFileLock(path string, fn func() error) error {
@@ -17,6 +19,11 @@ func withFileLock(path string, fn func() error) error {
 	}
 	defer file.Close()
 	if err := os.Chmod(path, 0o600); err != nil {
+		return err
+	}
+	// A lock file created during a sudo'd run must stay usable by the
+	// invoking user's plain runs.
+	if err := sudouser.Chown(path); err != nil {
 		return err
 	}
 	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX); err != nil {

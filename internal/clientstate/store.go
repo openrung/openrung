@@ -13,6 +13,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/openrung/openrung/connectcore/sudouser"
+
 	"openrung/internal/proxymode"
 )
 
@@ -52,8 +54,19 @@ func New() (*Store, error) {
 		return nil, err
 	}
 	dir := filepath.Join(base, dirName)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := sudouser.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
+	}
+	if sudouser.Active() {
+		// An earlier sudo'd run (TUN mode) may have left the directory or the
+		// files in it root-owned, which makes every later plain run silently
+		// fail to read or write them; hand them back to the invoking user.
+		_ = sudouser.Chown(dir)
+		if entries, err := os.ReadDir(dir); err == nil {
+			for _, entry := range entries {
+				_ = sudouser.Chown(filepath.Join(dir, entry.Name()))
+			}
+		}
 	}
 	return &Store{dir: dir}, nil
 }
@@ -199,6 +212,9 @@ func (s *Store) writeFile(name string, data []byte) error {
 		return err
 	}
 	if err := file.Close(); err != nil {
+		return err
+	}
+	if err := sudouser.Chown(tmp); err != nil {
 		return err
 	}
 	return os.Rename(tmp, filepath.Join(s.dir, name))

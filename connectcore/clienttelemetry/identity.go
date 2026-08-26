@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/openrung/openrung/connectcore/sudouser"
 )
 
 const (
@@ -40,6 +42,9 @@ func ClientID() (string, error) {
 
 	if data, err := os.ReadFile(path); err == nil {
 		if id := strings.TrimSpace(string(data)); id != "" {
+			// A file left root-owned by an earlier sudo'd run would be
+			// unreadable on the next plain run; repair it while we can.
+			_ = sudouser.Chown(path)
 			return id, nil
 		}
 	}
@@ -48,11 +53,12 @@ func ClientID() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := sudouser.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return id, nil
 	}
 	if err := os.WriteFile(path, []byte(id+"\n"), 0o600); err != nil {
 		return id, nil
 	}
+	_ = sudouser.Chown(path)
 	return id, nil
 }
