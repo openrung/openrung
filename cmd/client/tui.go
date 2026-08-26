@@ -172,9 +172,11 @@ type modeSetMsg struct {
 
 type viewID int
 
+// There is no Status view: its rows are the statusFooter, a permanent bar
+// above the key help, so connection state is visible from every view instead
+// of only the one the user happened to be on.
 const (
-	viewStatus viewID = iota
-	viewRelays
+	viewRelays viewID = iota
 	viewLogs
 	viewSettings
 	viewCount
@@ -522,15 +524,12 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// flushes telemetry before the process ends.
 		return m, tea.Quit
 	case "1":
-		m.view = viewStatus
-		return m, nil
-	case "2":
 		m.view = viewRelays
 		return m, nil
-	case "3":
+	case "2":
 		m.view = viewLogs
 		return m, nil
-	case "4":
+	case "3":
 		m.view = viewSettings
 		return m, nil
 	case "0":

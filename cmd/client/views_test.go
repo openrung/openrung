@@ -6,10 +6,18 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/openrung/openrung/brokerapi"
 	"github.com/openrung/openrung/connectcore"
 )
+
+// allStatuses is every connection state the bars must handle.
+var allStatuses = []connectcore.Status{
+	connectcore.StatusDisconnected, connectcore.StatusPreparing,
+	connectcore.StatusConnecting, connectcore.StatusConnected,
+	connectcore.StatusDisconnecting, connectcore.StatusFailed,
+}
 
 func TestCountryFlag(t *testing.T) {
 	cases := map[string]string{
@@ -31,14 +39,14 @@ func TestCountryFlag(t *testing.T) {
 	}
 }
 
-func TestStatusViewShowsCountryFlag(t *testing.T) {
+func TestStatusDetailShowsCountryFlag(t *testing.T) {
 	m := newTestModel(&fakeDriver{})
 	m.infoOK = true
 	m.info = connectcore.ConnectionInfo{Relay: brokerapi.RelayDescriptor{
 		RelayGeoLocation: brokerapi.RelayGeoLocation{CountryCode: "jp"},
 	}}
-	if view := m.statusView(); !strings.Contains(view, "JP🇯🇵") {
-		t.Fatalf("status view missing the country flag:\n%s", view)
+	if view := m.statusDetail(); !strings.Contains(view, "JP🇯🇵") {
+		t.Fatalf("status detail missing the country flag:\n%s", view)
 	}
 }
 
@@ -73,44 +81,85 @@ func TestRelaysViewShowsLabelOnlyWithFlag(t *testing.T) {
 	}
 }
 
-func TestFooterShowsConnectionSummaryWhenConnected(t *testing.T) {
+// Every row the old Status view carried has to survive somewhere: the bar's
+// detail track holds them all, and the session duration is additionally pinned
+// to the rendered bar's right edge.
+func TestStatusDetailCarriesEveryStatusField(t *testing.T) {
 	m := newTestModel(&fakeDriver{})
-	m.width = 120 // wide enough for the full help and the summary together
+	m.width = 400 // wide enough that nothing is windowed away
 	label := "merry-falcon"
 	m.state = connectcore.State{Status: connectcore.StatusConnected, RelayLabel: &label}
 	m.infoOK = true
-	m.info = connectcore.ConnectionInfo{Relay: brokerapi.RelayDescriptor{
-		Label:            "merry-falcon",
-		RelayGeoLocation: brokerapi.RelayGeoLocation{CountryCode: "jp"},
-	}}
-	m.connectedAt = time.Now().Add(-90 * time.Second)
-	m.now = time.Now()
+	m.info = connectcore.ConnectionInfo{
+		Transport: "wss", FrontID: "front-a",
+		Relay: brokerapi.RelayDescriptor{
+			Label: "merry-falcon", NodeClass: brokerapi.NodeClassFoundation,
+			RelayGeoLocation: brokerapi.RelayGeoLocation{CountryCode: "jp"},
+		},
+	}
+	m.connectedAt = m.now.Add(-90 * time.Second)
+	m.proxyEndpoint = "127.0.0.1:43210"
+	m.health = connectcore.Notice{Kind: connectcore.NoticeHealthProbe}
+	failure := "tunnel process exited"
+	m.state.LastError = &failure
 
-	footer := m.footerView()
-	for _, want := range []string{"merry-falcon 🇯🇵", "00:01:30", "q"} {
-		if !strings.Contains(footer, want) {
-			t.Fatalf("connected footer missing %q:\n%q", want, footer)
+	tr := m.tr()
+	detail := m.statusDetail()
+	for _, want := range []string{
+		tr.labelStatus, "connected", tr.labelRelay, "merry-falcon", "[foundation]",
+		tr.labelCountry, tr.labelTransport, "front-a", tr.labelHealth,
+		tr.labelCapture, tr.labelProxy, "127.0.0.1:43210", tr.labelBroker,
+		tr.labelTarget, tr.labelError, failure,
+	} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("status detail missing %q:\n%s", want, detail)
 		}
 	}
+	if bar := m.statusFooterView(); !strings.Contains(bar, "00:01:30") {
+		t.Errorf("status bar did not pin the session duration:\n%q", bar)
+	}
 
+	// Disconnected: no duration is pinned, and the key help never carries one.
 	m.state.Status = connectcore.StatusDisconnected
-	if footer := m.footerView(); strings.Contains(footer, "merry-falcon") || strings.Contains(footer, "00:01:30") {
-		t.Fatalf("disconnected footer still shows the session summary:\n%q", footer)
+	m.connectedAt = time.Time{}
+	if bar := m.statusFooterView(); strings.Contains(bar, "00:01:30") {
+		t.Errorf("disconnected status bar still pins a duration:\n%q", bar)
+	}
+	if footer := m.footerView(); strings.Contains(footer, "00:01:30") ||
+		strings.Contains(footer, "merry-falcon") {
+		t.Errorf("key help carries connection state that belongs on the bar:\n%q", footer)
 	}
 }
 
-// The footer's relay identity comes from ONE source: with a descriptor,
-// every field — name (down to the "relay <id>" fallback) and flag — is the
-// descriptor's; the state label appears only with no descriptor at all. A
-// failover updates the state label before the next info poll, so any mixing
-// pairs the new relay's name with the old relay's flag.
-func TestFooterIdentityIsSingleSourced(t *testing.T) {
+// The connection signal moved to the status bar, so the key help must render
+// with no background of its own — the theme paints it like any other line.
+func TestKeyHelpFooterIsNotColored(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
 	m := newTestModel(&fakeDriver{})
-	m.width = 120
+	m.width = 100
+	for _, status := range allStatuses {
+		m.state = connectcore.State{Status: status}
+		if footer := m.footerView(); strings.Contains(footer, "\x1b[") {
+			t.Errorf("status %s: key help carries styling: %q", status, footer)
+		}
+		if bar := m.statusFooterView(); !strings.Contains(bar, "\x1b[") {
+			t.Errorf("status %s: status bar lost its connection color: %q", status, bar)
+		}
+	}
+}
+
+// Relay identity comes from ONE source: with a descriptor, both the name (down
+// to the "relay <id>" fallback) and the country are the descriptor's; the state
+// label appears only when there is no descriptor at all, and then without a
+// country. A failover updates the state label before the next info poll, so any
+// mixing would pair the new relay's name with the old relay's country.
+func TestStatusIdentityIsSingleSourced(t *testing.T) {
+	m := newTestModel(&fakeDriver{})
+	m.width = 400
 	newLabel := "Singapore"
 	m.state = connectcore.State{Status: connectcore.StatusConnected, RelayLabel: &newLabel}
-	m.connectedAt = time.Now().Add(-time.Minute)
-	m.now = time.Now()
+	m.connectedAt = m.now.Add(-time.Minute)
 
 	// Stale descriptor: nameless, but still carrying the OLD country.
 	m.infoOK = true
@@ -118,58 +167,51 @@ func TestFooterIdentityIsSingleSourced(t *testing.T) {
 		ID:               "r9",
 		RelayGeoLocation: brokerapi.RelayGeoLocation{CountryCode: "jp"},
 	}}
-	footer := m.footerView()
-	if strings.Contains(footer, "Singapore") {
-		t.Fatalf("footer paired the state label with the descriptor's flag: %q", footer)
+	detail := m.statusDetail()
+	if strings.Contains(detail, "Singapore") {
+		t.Fatalf("status paired the state label with the descriptor's country: %q", detail)
 	}
-	if !strings.Contains(footer, "relay r9 🇯🇵") {
-		t.Fatalf("footer did not fall back to the descriptor's own identity: %q", footer)
+	for _, want := range []string{"relay r9", "JP"} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("status did not use the descriptor's own identity (%q): %q", want, detail)
+		}
 	}
 
-	// No descriptor: the state label stands alone, flagless.
+	// No descriptor: the state label stands alone, with no country asserted.
 	m.infoOK = false
-	footer = m.footerView()
-	if !strings.Contains(footer, "Singapore") || strings.Contains(footer, "🇯🇵") {
-		t.Fatalf("descriptor-less footer should be the bare state label: %q", footer)
+	detail = m.statusDetail()
+	if !strings.Contains(detail, "Singapore") {
+		t.Fatalf("descriptor-less status lost the state label: %q", detail)
+	}
+	if strings.Contains(detail, countryFlagFor("darwin", "jp")) {
+		t.Fatalf("descriptor-less status still asserts a country: %q", detail)
 	}
 }
 
-// A narrow connected footer shares the line between a scrolling help lane and
-// the fixed session duration. The relay label yields before either one.
-func TestFooterMarqueeSharesNarrowTerminalWithDuration(t *testing.T) {
-	m := newTestModel(&fakeDriver{})
-	m.width = 30
-	label := "merry-falcon"
-	m.state = connectcore.State{Status: connectcore.StatusConnected, RelayLabel: &label}
-	m.startedAt = time.Unix(0, 0)
-	m.connectedAt = m.startedAt.Add(-time.Minute)
-	m.now = m.startedAt
+// However narrow the terminal, and at every marquee phase, the status bar keeps
+// the session duration pinned to its right edge: the detail track is what
+// yields. That corner glance is the reason the bar exists.
+func TestStatusBarKeepsDurationPinnedWhileScrolling(t *testing.T) {
+	for _, width := range []int{20, 30, 60, 80} {
+		m := newTestModel(&fakeDriver{})
+		m.width = width
+		label := "merry-falcon"
+		m.state = connectcore.State{Status: connectcore.StatusConnected, RelayLabel: &label}
+		m.startedAt = time.Unix(0, 0)
+		m.connectedAt = m.startedAt.Add(-time.Minute)
 
-	footer := m.footerView()
-	if !strings.Contains(footer, "00:01:00") {
-		t.Fatalf("narrow footer dropped the session duration:\n%q", footer)
-	}
-	if strings.Contains(footer, "merry-falcon") {
-		t.Fatalf("relay label should yield to help and duration:\n%q", footer)
-	}
-	if w := lipgloss.Width(footer); w > m.width {
-		t.Fatalf("narrow footer is %d cells wide, max %d: %q", w, m.width, footer)
-	}
-
-	seenLanguage := false
-	cycle := footerMarqueePause + lipgloss.Width(m.tr().helpGlobal) + lipgloss.Width(footerMarqueeGap)
-	for step := 0; step < cycle; step++ {
-		m.now = m.startedAt.Add(time.Duration(step) * footerMarqueeStep)
-		footer = m.footerView()
-		if duration := formatDuration(m.now.Sub(m.connectedAt)); !strings.Contains(footer, duration) {
-			t.Fatalf("marquee step %d dropped the duration: %q", step, footer)
+		steps := footerMarqueePause + lipgloss.Width(m.statusDetail()) +
+			lipgloss.Width(footerMarqueeGap) + 2
+		for step := 0; step < steps; step++ {
+			m.now = m.startedAt.Add(time.Duration(step) * footerMarqueeStep)
+			bar := m.statusFooterView()
+			if want := formatDuration(m.now.Sub(m.connectedAt)); !strings.Contains(bar, want) {
+				t.Fatalf("w=%d step=%d: status bar dropped %q: %q", width, step, want, bar)
+			}
+			if w := lipgloss.Width(bar); w > width {
+				t.Fatalf("w=%d step=%d: status bar is %d cells: %q", width, step, w, bar)
+			}
 		}
-		if strings.Contains(footer, languageKeyHelp) {
-			seenLanguage = true
-		}
-	}
-	if !seenLanguage {
-		t.Fatal("one marquee cycle never revealed the complete language control")
 	}
 }
 
@@ -197,9 +239,14 @@ func TestFooterMarqueeHoldsItsWidthAtEveryPhase(t *testing.T) {
 						lipgloss.Width(m.tr().helpRelays) + lipgloss.Width(footerMarqueeGap) + 2
 					for step := 0; step < steps; step++ {
 						m.now = m.startedAt.Add(time.Duration(step) * footerMarqueeStep)
-						if w := lipgloss.Width(m.footerView()); w > width {
-							t.Fatalf("w=%d %s lang=%d conn=%t step=%d: footer is %d cells",
-								width, names[v], lang, connected, step, w)
+						for bar, got := range map[string]string{
+							"help":   m.footerView(),
+							"status": m.statusFooterView(),
+						} {
+							if w := lipgloss.Width(got); w > width {
+								t.Fatalf("w=%d %s lang=%d conn=%t step=%d: %s bar is %d cells",
+									width, names[v], lang, connected, step, bar, w)
+							}
 						}
 					}
 				}
@@ -271,8 +318,12 @@ func TestHeaderAndFooterNeverExceedNarrowWidths(t *testing.T) {
 				if w := lipgloss.Width(footer); w > width {
 					t.Errorf("width %d lang %d status %s: footer is %d cells wide", width, lang, status, w)
 				}
-				if status == connectcore.StatusConnected && !strings.Contains(footer, "00:01:00") {
-					t.Errorf("width %d lang %d: footer lost the session duration: %q", width, lang, footer)
+				bar := m.statusFooterView()
+				if w := lipgloss.Width(bar); w > width {
+					t.Errorf("width %d lang %d status %s: status bar is %d cells wide", width, lang, status, w)
+				}
+				if status == connectcore.StatusConnected && !strings.Contains(bar, "00:01:00") {
+					t.Errorf("width %d lang %d: status bar lost the session duration: %q", width, lang, bar)
 				}
 			}
 		}
@@ -437,7 +488,7 @@ func TestSettingsOffersNoTargetFields(t *testing.T) {
 }
 
 func TestFooterStyleCoversEveryStatus(t *testing.T) {
-	for status := range statusStyles {
+	for _, status := range allStatuses {
 		if _, ok := footerStyles[status]; !ok {
 			t.Errorf("footerStyles missing %q", status)
 		}

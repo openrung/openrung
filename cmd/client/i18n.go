@@ -115,7 +115,7 @@ type translation struct {
 
 var translations = [languageCount]*translation{
 	langEnglish: {
-		tabs: [viewCount]string{"1 Status", "2 Relays", "3 Logs", "4 Settings"},
+		tabs: [viewCount]string{"1 Relays", "2 Logs", "3 Settings"},
 
 		helpGlobal:       "c connect · d disconnect · r refresh · " + languageKeyHelp + " · q quit",
 		helpRelays:       "x clear target · ",
@@ -202,7 +202,7 @@ var translations = [languageCount]*translation{
 	},
 
 	langChinese: {
-		tabs: [viewCount]string{"1 状态", "2 中继", "3 日志", "4 设置"},
+		tabs: [viewCount]string{"1 中继", "2 日志", "3 设置"},
 
 		helpGlobal:       "c 连接 · d 断开 · r 刷新 · " + languageKeyHelp + " · q 退出",
 		helpRelays:       "x 清除目标 · ",
@@ -289,7 +289,7 @@ var translations = [languageCount]*translation{
 	},
 
 	langRussian: {
-		tabs: [viewCount]string{"1 Статус", "2 Узлы", "3 Журнал", "4 Настройки"},
+		tabs: [viewCount]string{"1 Узлы", "2 Журнал", "3 Настройки"},
 
 		helpGlobal:       "c подключить · d отключить · r обновить · " + languageKeyHelp + " · q выход",
 		helpRelays:       "x сбросить цель · ",

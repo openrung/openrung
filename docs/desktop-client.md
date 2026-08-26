@@ -171,14 +171,27 @@ and `-relay-id` or `-relay-label` can seed one at launch.
 
 ### Views and keys
 
-Four views, switched with `1`–`4`, `tab`, and `shift+tab`:
+Three views, switched with `1`–`3`, `tab`, and `shift+tab`:
 
 | View | What it shows |
 | --- | --- |
-| **Status** | Connection state, relay label, country, foundation/volunteer class, transport path (direct, punched, or WSS front), session duration, health-probe state, the latest failover/fallback activity, and the capture mode with its local proxy endpoint |
 | **Relays** | The ranked relay directory — country, measured latency, and node class. `↑`/`↓` moves, `enter` pins the highlighted relay and connects to it, and `x` clears the pin |
 | **Logs** | Engine and sing-box output in a scrollable ring buffer |
 | **Settings** | Broker URL override, capture mode, and the shell proxy helper |
+
+There is no Status view. Connection state lives in the **status bar**, the
+line directly above the key help, so it is readable from whichever view you
+are on rather than only the one you navigated to. It carries everything the
+old Status view did — state, relay and its foundation/volunteer class,
+country, transport path (direct, punched, or WSS front), health-probe state,
+the latest failover or fallback activity, capture mode with its local proxy
+endpoint, broker, target, and the last error — on one line that scrolls
+horizontally when it overflows. The session duration is pinned to its right
+edge instead of scrolling, so a glance at the corner always answers "how
+long". The bar is the connection signal too: red while disconnected or
+failed, yellow through every transition, green while connected. The key-help
+line below it never changes color, so the bar is the only thing on screen
+that does.
 
 Global keys: `c` connect, `d` disconnect, `r` refresh the relay directory,
 `0` cycles English/中文/русский, and `q` (or `ctrl+c`) quit. The language key
@@ -186,10 +199,9 @@ is a digit on purpose: a Cyrillic or Greek layout carries no Latin letters, so
 a letter would be untypeable for the reader who most needs to switch away from
 a language they cannot read. Scrolling the Logs pager, moving with `↑`/`↓`, and
 acting with `enter` are left out of the footer help as conventions the reader
-already has. If the footer is still too narrow for every key, its help text
-scrolls horizontally while the connected-session summary stays fixed.
-Quitting tears down the tunnel, restores the system proxy, and flushes
-telemetry before the process exits.
+already has. If the help is still too narrow to fit, it scrolls the same way
+the status bar does. Quitting tears down the tunnel, restores the system proxy,
+and flushes telemetry before the process exits.
 
 In Settings, `↑`/`↓` moves between fields and `enter` acts on one: Broker URL
 opens an inline editor (`enter` applies, `esc` cancels), Mode toggles the

@@ -11,27 +11,27 @@ import (
 func TestLanguageKeyCyclesWithoutEnteringSettings(t *testing.T) {
 	m := newTestModel(&fakeDriver{})
 
-	if !strings.Contains(m.View(), "2 Relays") {
+	if !strings.Contains(m.View(), "1 Relays") {
 		t.Fatal("default view is not English")
 	}
 
 	m, _ = update(t, m, keyMsg("0"))
-	if m.view != viewStatus {
+	if m.view != viewRelays {
 		t.Fatalf("language key changed the view to %d", m.view)
 	}
 	view := m.View()
-	if !strings.Contains(view, "2 中继") || !strings.Contains(view, "状态") {
+	if !strings.Contains(view, "1 中继") || !strings.Contains(view, "状态") {
 		t.Fatalf("first cycle is not Chinese:\n%s", view)
 	}
 
 	m, _ = update(t, m, keyMsg("0"))
 	view = m.View()
-	if !strings.Contains(view, "2 Узлы") || !strings.Contains(view, "Статус") {
+	if !strings.Contains(view, "1 Узлы") || !strings.Contains(view, "Статус") {
 		t.Fatalf("second cycle is not Russian:\n%s", view)
 	}
 
 	m, _ = update(t, m, keyMsg("0"))
-	if view = m.View(); !strings.Contains(view, "2 Relays") {
+	if view = m.View(); !strings.Contains(view, "1 Relays") {
 		t.Fatalf("third cycle did not wrap back to English:\n%s", view)
 	}
 
@@ -39,7 +39,7 @@ func TestLanguageKeyCyclesWithoutEnteringSettings(t *testing.T) {
 	// memory or doc cannot silently half-work.
 	for _, stale := range []string{"5", ".", "l"} {
 		m, _ = update(t, m, keyMsg(stale))
-		if view = m.View(); !strings.Contains(view, "2 Relays") || m.view != viewStatus {
+		if view = m.View(); !strings.Contains(view, "1 Relays") || m.view != viewRelays {
 			t.Fatalf("%q still cycles the language or moves the view:\n%s", stale, view)
 		}
 	}

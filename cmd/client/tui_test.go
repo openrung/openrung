@@ -172,7 +172,11 @@ func TestRelaysEnterPinsSelectionAndConnects(t *testing.T) {
 func TestConnectedStateStampsSessionStartAndRendersStatus(t *testing.T) {
 	driver := &fakeDriver{}
 	driver.info = connectcore.ConnectionInfo{
-		Relay:     brokerapi.RelayDescriptor{ID: "relay_a", NodeClass: brokerapi.NodeClassFoundation, RelayGeoLocation: brokerapi.RelayGeoLocation{CountryCode: "kr"}},
+		// Geo-bearing, like a real directory descriptor: the status bar single-
+		// sources relay identity from the descriptor, so a bare one would read
+		// "relay relay_a" and prove nothing about the label a user actually sees.
+		Relay: brokerapi.RelayDescriptor{ID: "relay_a", NodeClass: brokerapi.NodeClassFoundation,
+			RelayGeoLocation: brokerapi.RelayGeoLocation{City: "Seoul", Country: "South Korea", CountryCode: "kr"}},
 		Transport: brokerapi.TransportDirect,
 		ProxyPort: 43210,
 	}
@@ -193,11 +197,17 @@ func TestConnectedStateStampsSessionStartAndRendersStatus(t *testing.T) {
 	m, _ = update(t, m, m.resolveProxyCmd()())
 	m.now = m.connectedAt.Add(90 * time.Second)
 
-	view := m.View()
-	for _, want := range []string{"connected", label, "direct", "KR", "00:01:30", "127.0.0.1:43210"} {
+	// The status bar's detail track, not the rendered frame: at test width the
+	// bar shows only a scrolling window into it. The duration is the one field
+	// pinned to the rendered bar, checked separately below.
+	view := m.statusDetail()
+	for _, want := range []string{"connected", label, "direct", "KR", "127.0.0.1:43210"} {
 		if !strings.Contains(view, want) {
-			t.Fatalf("status view missing %q:\n%s", want, view)
+			t.Fatalf("status detail missing %q:\n%s", want, view)
 		}
+	}
+	if bar := m.statusFooterView(); !strings.Contains(bar, "00:01:30") {
+		t.Fatalf("status bar did not pin the session duration:\n%q", bar)
 	}
 }
 
@@ -287,11 +297,12 @@ func TestTUNModeSkipsProxyPortResolution(t *testing.T) {
 		t.Fatalf("mode = %v; want TUN from --tun", m.settings.mode)
 	}
 	m.width, m.height = 80, 24
-	m.view = viewStatus
-	if body := m.View(); !strings.Contains(body, "TUN — whole device") {
-		t.Fatalf("status view did not report TUN capture:\n%s", body)
+	// Read the status bar's detail track rather than the frame: at 80 cells the
+	// bar shows a window into it, so the capture field may be scrolled out.
+	if detail := m.statusDetail(); !strings.Contains(detail, "TUN — whole device") {
+		t.Fatalf("status bar did not report TUN capture:\n%s", detail)
 	}
-	if strings.Contains(m.View(), "resolving…") {
+	if strings.Contains(m.statusDetail(), "resolving…") {
 		t.Fatal("TUN mode still advertises a local proxy endpoint")
 	}
 }
@@ -422,10 +433,11 @@ func TestEngineNoticesDriveActivityAndHealthRows(t *testing.T) {
 		Threshold: 3,
 	}))
 
-	view := m.View()
+	// The bar's detail track: at test width the rendered bar is a window into it.
+	view := m.statusDetail()
 	for _, want := range []string{"failover: relay relay_a lost", "tunnel process exited unexpectedly", "2/3 probes failed"} {
 		if !strings.Contains(view, want) {
-			t.Fatalf("status view missing %q:\n%s", want, view)
+			t.Fatalf("status detail missing %q:\n%s", want, view)
 		}
 	}
 
@@ -436,9 +448,9 @@ func TestEngineNoticesDriveActivityAndHealthRows(t *testing.T) {
 		FrontID: "front-a",
 		Reason:  "direct TCP blocked",
 	}))
-	view = m.View()
+	view = m.statusDetail()
 	if !strings.Contains(view, "WSS fallback: relay relay_a via front front-a") {
-		t.Fatalf("status view missing the WSS fallback activity:\n%s", view)
+		t.Fatalf("status detail missing the WSS fallback activity:\n%s", view)
 	}
 
 	// Disconnecting ends the session: health state goes with it, the last

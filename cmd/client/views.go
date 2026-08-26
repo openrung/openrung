@@ -30,18 +30,11 @@ var (
 	foundationBadgeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
 	volunteerBadgeStyle  = lipgloss.NewStyle().Faint(true)
 
-	statusStyles = map[connectcore.Status]lipgloss.Style{
-		connectcore.StatusDisconnected:  lipgloss.NewStyle().Faint(true),
-		connectcore.StatusPreparing:     lipgloss.NewStyle().Foreground(lipgloss.Color("3")),
-		connectcore.StatusConnecting:    lipgloss.NewStyle().Foreground(lipgloss.Color("3")),
-		connectcore.StatusConnected:     lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Bold(true),
-		connectcore.StatusDisconnecting: lipgloss.NewStyle().Foreground(lipgloss.Color("3")),
-		connectcore.StatusFailed:        lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true),
-	}
-
-	// The footer is a solid tmux-style status bar spanning the full terminal
-	// width — the always-visible connection signal: red while disconnected or
-	// failed, yellow through every transition, green while connected.
+	// statusFooter is a solid tmux-style bar spanning the full terminal width —
+	// the always-visible connection signal, on every view now that Status is
+	// not one: red while disconnected or failed, yellow through every
+	// transition, green while connected. The key-help line below it stays
+	// unstyled so this bar is the only thing on screen changing color.
 	footerStyles = map[connectcore.Status]lipgloss.Style{
 		connectcore.StatusDisconnected:  lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("1")),
 		connectcore.StatusFailed:        lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("1")),
@@ -54,7 +47,7 @@ var (
 
 const (
 	headerHeight = 2 // tab bar + separator blank line
-	footerHeight = 2 // separator blank line + key help
+	footerHeight = 3 // separator blank line + status bar + key help
 )
 
 func (m tuiModel) bodyHeight() int {
@@ -67,8 +60,6 @@ func (m tuiModel) View() string {
 	}
 	var body string
 	switch m.view {
-	case viewStatus:
-		body = m.statusView()
 	case viewRelays:
 		body = m.relaysView()
 	case viewLogs:
@@ -82,7 +73,7 @@ func (m tuiModel) View() string {
 	if m.view != viewLogs {
 		body = m.overlayBrandMark(body)
 	}
-	frame := m.headerView() + "\n\n" + body + "\n\n" + m.footerView()
+	frame := m.headerView() + "\n\n" + body + "\n\n" + m.statusFooterView() + "\n" + m.footerView()
 	// Ascii means no color at all (a dumb terminal, NO_COLOR, or a test),
 	// where the theme's escape sequences would render as garbage.
 	if lipgloss.ColorProfile() != termenv.Ascii {
@@ -222,14 +213,9 @@ func (m tuiModel) headerView() string {
 }
 
 const (
-	// When help and the connected-session summary cannot both fit, give help a
-	// stable marquee lane. Thirty-two cells show the complete trilingual
-	// language token with useful neighboring context at ordinary widths.
-	footerHelpMarqueeWidth = 32
-	footerSummaryMinWidth  = len("00:00:00")
-	footerMarqueeGap       = "   "
-	footerMarqueeStep      = tuiTickInterval
-	footerMarqueePause     = 5 // one second at the beginning of each cycle
+	footerMarqueeGap   = "   "
+	footerMarqueeStep  = tuiTickInterval
+	footerMarqueePause = 5 // one second at the beginning of each cycle
 )
 
 func (m tuiModel) footerView() string {
@@ -244,29 +230,34 @@ func (m tuiModel) footerView() string {
 		}
 	}
 
+	// No connection styling here: the signal lives one line up, on the status
+	// bar, so this line stays the theme's own green-on-black and paintFrame
+	// carries the background to the right edge.
+	if m.width > 0 {
+		if budget := m.width - 1; lipgloss.Width(help) > budget { // leading space
+			help = m.footerMarqueeWindow(help, max(0, budget))
+		}
+	}
+	return " " + help
+}
+
+// statusFooterView is the permanent connection bar between the body and the
+// key help — every row the old Status view carried, on one line, so the state
+// is readable from whichever view the user is on. It keeps the old footer's
+// coloring: red while disconnected or failed, yellow through transitions,
+// green while connected. The detail scrolls when it overflows, but the session
+// duration stays pinned right, because "how long" is the one field a glance at
+// the corner should always answer.
+func (m tuiModel) statusFooterView() string {
 	style, ok := footerStyles[m.state.Status]
 	if !ok {
 		style = helpStyle
 	}
-	// The bar is padded to the exact terminal width so the background paints
-	// edge to edge, with the connection summary right-aligned in the corner.
-	// When both sides do not fit, the summary keeps at least its duration while
-	// help gets a horizontally scrolling lane. That keeps every shortcut — in
-	// particular the language escape hatch — discoverable without wrapping the
-	// fixed-height footer.
-	summaryBudget := 0 // ≤0 = unlimited
-	if m.width > 0 {
-		summaryBudget = m.width - 2 // the bar's leading and trailing space
-	}
-	right := m.footerConnectionSummary(summaryBudget)
-	if right != "" && m.width > 0 {
-		// With a summary, the line spends three cells on leading space, the
-		// inter-column gap, and trailing space.
-		contentBudget := max(0, m.width-3)
-		if lipgloss.Width(help)+lipgloss.Width(right) > contentBudget {
-			helpLane := min(footerHelpMarqueeWidth, max(0, contentBudget-footerSummaryMinWidth))
-			right = m.footerConnectionSummary(max(0, contentBudget-helpLane))
-		}
+	detail := m.statusDetail()
+
+	right := ""
+	if m.state.Status == connectcore.StatusConnected && !m.connectedAt.IsZero() {
+		right = formatDuration(m.now.Sub(m.connectedAt))
 	}
 	if right != "" {
 		right += " "
@@ -274,21 +265,93 @@ func (m tuiModel) footerView() string {
 	if m.width > 0 {
 		budget := m.width - lipgloss.Width(right) - 1 // leading space
 		if right != "" {
-			budget-- // one-cell gap between help and summary
+			budget-- // one-cell gap between detail and duration
 		}
-		if lipgloss.Width(help) > budget {
-			help = m.footerHelpWindow(help, max(0, budget))
+		if lipgloss.Width(detail) > budget {
+			detail = m.footerMarqueeWindow(detail, max(0, budget))
 		}
 	}
-	left := " " + help
+	left := " " + detail
 	pad := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	return style.Render(left + strings.Repeat(" ", max(0, pad)) + right)
 }
 
-// footerHelpWindow returns one display-cell-aware window into overflowing
-// help. It starts with a short hold, advances one cell per TUI tick, and loops
-// through a small gap. The duplicated track makes the wrap seamless.
-func (m tuiModel) footerHelpWindow(help string, width int) string {
+// statusDetail is every Status field on one line. Deliberately unstyled: the
+// bar already carries a background, and an inner foreground (a red error, a
+// cyan badge) on top of it reads as a defect rather than an accent.
+func (m tuiModel) statusDetail() string {
+	tr := m.tr()
+	status := m.state.Status
+	field := func(label, value string) string { return label + " " + value }
+	parts := []string{field(tr.labelStatus, tr.statusName(status))}
+
+	// Relay identity comes from ONE source. With a descriptor that is the
+	// descriptor — name AND flag — because a failover updates the state label
+	// before the next info poll lands, and mixing the two would pair a fresh
+	// label with the old relay's country, asserting the wrong exit. Without a
+	// descriptor there is no flag, only the state label.
+	relay, country := "—", "—"
+	if m.infoOK {
+		relay = relayListName(m.info.Relay)
+		if brokerapi.EffectiveNodeClass(m.info.Relay.NodeClass) == brokerapi.NodeClassFoundation {
+			relay += " " + tr.badgeFoundation
+		} else {
+			relay += " " + tr.badgeVolunteer
+		}
+		if cc := strings.TrimSpace(m.info.Relay.CountryCode); cc != "" {
+			country = strings.ToUpper(cc) + countryFlag(cc)
+		}
+	} else if m.state.RelayLabel != nil {
+		relay = strings.TrimSpace(*m.state.RelayLabel)
+	}
+	parts = append(parts, field(tr.labelRelay, relay), field(tr.labelCountry, country))
+
+	transport := "—"
+	if m.infoOK {
+		transport = transportLabel(tr, m.info)
+	}
+	parts = append(parts, field(tr.labelTransport, transport))
+
+	if status == connectcore.StatusConnected {
+		parts = append(parts, field(tr.labelHealth, healthText(tr, m.health)))
+	}
+	if m.activity.Kind != "" {
+		parts = append(parts, field(tr.labelActivity,
+			"["+m.activityAt.Format("15:04:05")+"] "+noticeLine(tr, m.activity)))
+	}
+
+	if m.settings.mode == connectcore.ModeTUN {
+		// No local endpoint exists in TUN mode; the tunnel device carries every
+		// application, so there is nothing for the user to configure.
+		parts = append(parts, field(tr.labelCapture, tr.captureTUN))
+	} else {
+		proxy := m.proxyEndpoint
+		switch {
+		case m.proxyErr != "":
+			proxy = m.proxyErr
+		case proxy == "":
+			proxy = tr.proxyResolving
+		}
+		parts = append(parts, field(tr.labelCapture, tr.captureProxy), field(tr.labelProxy, proxy))
+		if m.proxyWarn != "" {
+			parts = append(parts, m.proxyWarn)
+		}
+	}
+
+	parts = append(parts,
+		field(tr.labelBroker, displayBroker(tr, m.settings.brokerURL)),
+		field(tr.labelTarget, describeTarget(tr, m.settings.target)),
+	)
+	if m.state.LastError != nil {
+		parts = append(parts, field(tr.labelError, *m.state.LastError))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// footerMarqueeWindow returns one display-cell-aware window into overflowing
+// bar text. It starts with a short hold, advances one cell per TUI tick, and
+// loops through a small gap. The duplicated track makes the wrap seamless.
+func (m tuiModel) footerMarqueeWindow(help string, width int) string {
 	if width < 1 || lipgloss.Width(help) <= width {
 		return truncateWidth(help, width)
 	}
@@ -312,59 +375,6 @@ func (m tuiModel) footerHelpWindow(help string, width int) string {
 	// short of the edge; under-width would jitter the gap to the summary as
 	// the text scrolls.
 	return padCell(ansi.Truncate(ansi.Cut(track, offset, offset+width), width, ""), width)
-}
-
-// footerConnectionSummary is the bottom-right corner while connected: the
-// relay label, its country flag, and the running session duration, fitted to
-// budget cells (≤0 = unlimited). The duration anchors the right edge, so when
-// space runs out the label gives way first — a glance at the corner should
-// always answer "how long", even on a terminal too narrow for "to what".
-func (m tuiModel) footerConnectionSummary(budget int) string {
-	if m.state.Status != connectcore.StatusConnected {
-		return ""
-	}
-	// Every identity field comes from ONE source. With a descriptor, that is
-	// the descriptor — name (down to its "relay <id>" fallback) AND flag: on
-	// a failover the state label updates before the next info poll lands, and
-	// mixing the two would pair a fresh label with the old relay's flag,
-	// asserting the wrong exit country. Without a descriptor there is no
-	// flag, only the state label.
-	label := ""
-	if m.infoOK {
-		label = strings.TrimSpace(relayListName(m.info.Relay))
-		if flag := countryFlag(m.info.Relay.CountryCode); flag != "" {
-			if label != "" {
-				label += " "
-			}
-			label += flag
-		}
-	} else if m.state.RelayLabel != nil {
-		label = strings.TrimSpace(*m.state.RelayLabel)
-	}
-	duration := ""
-	if !m.connectedAt.IsZero() {
-		duration = formatDuration(m.now.Sub(m.connectedAt))
-	}
-
-	parts := make([]string, 0, 2)
-	if label != "" {
-		parts = append(parts, label)
-	}
-	if duration != "" {
-		parts = append(parts, duration)
-	}
-	summary := strings.Join(parts, " ")
-	if budget <= 0 || lipgloss.Width(summary) <= budget {
-		return summary
-	}
-	if duration == "" {
-		return truncateWidth(label, budget)
-	}
-	label = truncateWidth(label, max(0, budget-lipgloss.Width(duration)-1))
-	if label == "" {
-		return truncateWidth(duration, budget)
-	}
-	return label + " " + duration
 }
 
 // countryFlag maps a 2-letter ISO country code to its regional-indicator
@@ -393,80 +403,6 @@ func countryFlagFor(goos, cc string) string {
 		return ""
 	}
 	return string(0x1F1E6+rune(cc[0])-'A') + string(0x1F1E6+rune(cc[1])-'A')
-}
-
-// ---- Status ----
-
-func (m tuiModel) statusView() string {
-	tr := m.tr()
-	status := m.state.Status
-	rows := []string{
-		row(tr.labelStatus, statusStyles[status].Render(tr.statusName(status))),
-	}
-
-	relayLine := "—"
-	if m.state.RelayLabel != nil {
-		relayLine = *m.state.RelayLabel
-	}
-	if m.infoOK {
-		relayLine += "  " + nodeClassBadge(tr, m.info.Relay.NodeClass)
-	}
-	rows = append(rows, row(tr.labelRelay, relayLine))
-
-	country, transport := "—", "—"
-	if m.infoOK {
-		if cc := strings.TrimSpace(m.info.Relay.CountryCode); cc != "" {
-			country = strings.ToUpper(cc) + countryFlag(cc)
-		}
-		transport = transportLabel(tr, m.info)
-	}
-	rows = append(rows, row(tr.labelCountry, country), row(tr.labelTransport, transport))
-
-	session := "—"
-	if status == connectcore.StatusConnected && !m.connectedAt.IsZero() {
-		session = formatDuration(m.now.Sub(m.connectedAt))
-	}
-	rows = append(rows, row(tr.labelSession, session))
-
-	if status == connectcore.StatusConnected {
-		rows = append(rows, row(tr.labelHealth, healthLabel(tr, m.health)))
-	}
-	if m.activity.Kind != "" {
-		stamp := m.activityAt.Format("15:04:05")
-		rows = append(rows, row(tr.labelActivity, noteStyle.Render("["+stamp+"] "+noticeLine(tr, m.activity))))
-	}
-
-	if m.settings.mode == connectcore.ModeTUN {
-		// No local endpoint exists in TUN mode; the tunnel device carries every
-		// application, so there is nothing for the user to configure.
-		rows = append(rows, row(tr.labelCapture, tr.captureTUN))
-	} else {
-		proxy := m.proxyEndpoint
-		switch {
-		case m.proxyErr != "":
-			proxy = errorStyle.Render(m.proxyErr)
-		case proxy == "":
-			proxy = tr.proxyResolving
-		}
-		rows = append(rows, row(tr.labelCapture, tr.captureProxy), row(tr.labelProxy, proxy))
-		if m.proxyWarn != "" {
-			rows = append(rows, row("", noteStyle.Render(m.proxyWarn)))
-		}
-	}
-
-	rows = append(rows,
-		row(tr.labelBroker, displayBroker(tr, m.settings.brokerURL)),
-		row(tr.labelTarget, describeTarget(tr, m.settings.target)),
-	)
-
-	if m.state.LastError != nil {
-		rows = append(rows, "", row(tr.labelError, errorStyle.Render(*m.state.LastError)))
-	}
-	return strings.Join(rows, "\n")
-}
-
-func row(label, value string) string {
-	return labelStyle.Render(label) + " " + value
 }
 
 func displayBroker(tr *translation, brokerURL string) string {
@@ -498,12 +434,13 @@ func nodeClassBadge(tr *translation, nodeClass string) string {
 	return volunteerBadgeStyle.Render(tr.badgeVolunteer)
 }
 
-// healthLabel renders the latest mid-session probe sweep. The engine only
+// healthText renders the latest mid-session probe sweep. The engine only
 // probes while a candidate is promoted, so before the first sweep of a session
-// there is nothing to report yet.
-func healthLabel(tr *translation, health connectcore.Notice) string {
+// there is nothing to report yet. Unstyled: it lands on the status bar, which
+// carries its own background.
+func healthText(tr *translation, health connectcore.Notice) string {
 	if health.Kind == "" {
-		return helpStyle.Render(tr.healthProbing)
+		return tr.healthProbing
 	}
 	if health.Failures == 0 {
 		return tr.healthOK
@@ -512,7 +449,7 @@ func healthLabel(tr *translation, health connectcore.Notice) string {
 	if health.Reason != "" {
 		label += " — " + health.Reason
 	}
-	return errorStyle.Render(label)
+	return label
 }
 
 // noticeLine formats a typed engine notice for the Activity row. The reasons
