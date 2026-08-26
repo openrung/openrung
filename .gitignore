@@ -45,6 +45,16 @@ openrung-telemetry.jsonl
 # Claude Code local worktrees (may contain absolute paths / local branch content)
 .claude/agents/
 .claude/worktrees/
-/relay
+
+# `go build ./cmd/<name>` drops the binary in the repo root under the package
+# name. Ignore every cmd/ package's binary: a Go binary embeds the builder's
+# GOMODCACHE paths (/Users/<name>/go/pkg/mod/...), so committing one leaks the
+# local username into public history.
 /broker
+/client
+/frontcheck
+/relay
+/relayhub
+/wssmatrix
+/wsssidecar
 /openrung-*
