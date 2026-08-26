@@ -34,10 +34,10 @@ type translation struct {
 	tabs [viewCount]string
 
 	helpGlobal string
-	helpRelays string
-	// No helpLogs or helpSettings: scrolling a pager, moving with ↑/↓, and
-	// acting with enter are conventions the reader already has, so neither view
-	// adds anything to the global help.
+	// No per-view help: scrolling a pager, moving with ↑/↓, and connecting with
+	// enter on the highlighted row are conventions the list itself teaches, so
+	// every view shows the global help alone. Only the settings editor keeps
+	// its own line, for the esc that leaves it.
 	helpSettingsEdit string
 
 	// The status bar's scrolling detail carries only fields the bar does not
@@ -77,6 +77,9 @@ type translation struct {
 	targetCountry   string // fmt: country
 	targetAutomatic string
 
+	// autoSelect is the Relays list's first row: enter there connects with no
+	// target pinned, letting the broker's ranking pick.
+	autoSelect          string
 	refreshingDirectory string
 	directoryErrPrefix  string
 	noRelaysYet         string
@@ -112,8 +115,7 @@ var translations = [languageCount]*translation{
 	langEnglish: {
 		tabs: [viewCount]string{"1 Relays", "2 Logs", "3 Settings"},
 
-		helpGlobal:       "c connect · d disconnect · r refresh · " + languageKeyHelp + " · q quit",
-		helpRelays:       "x clear target · ",
+		helpGlobal:       "d disconnect · r refresh · " + languageKeyHelp + " · q quit",
 		helpSettingsEdit: "esc cancel",
 
 		labelTransport: "Transport",
@@ -150,6 +152,7 @@ var translations = [languageCount]*translation{
 		targetCountry:   "country %s",
 		targetAutomatic: "automatic (ranked)",
 
+		autoSelect:          "Auto select (ranked)",
 		refreshingDirectory: "refreshing relay directory…",
 		directoryErrPrefix:  "directory: ",
 		noRelaysYet:         "no relays yet — press r to refresh",
@@ -186,8 +189,7 @@ var translations = [languageCount]*translation{
 	langChinese: {
 		tabs: [viewCount]string{"1 中继", "2 日志", "3 设置"},
 
-		helpGlobal:       "c 连接 · d 断开 · r 刷新 · " + languageKeyHelp + " · q 退出",
-		helpRelays:       "x 清除目标 · ",
+		helpGlobal:       "d 断开 · r 刷新 · " + languageKeyHelp + " · q 退出",
 		helpSettingsEdit: "esc 取消",
 
 		labelTransport: "传输",
@@ -224,6 +226,7 @@ var translations = [languageCount]*translation{
 		targetCountry:   "国家 %s",
 		targetAutomatic: "自动（按排名）",
 
+		autoSelect:          "自动选择（按排名）",
 		refreshingDirectory: "正在刷新中继目录…",
 		directoryErrPrefix:  "目录：",
 		noRelaysYet:         "暂无中继 — 按 r 刷新",
@@ -260,8 +263,7 @@ var translations = [languageCount]*translation{
 	langRussian: {
 		tabs: [viewCount]string{"1 Узлы", "2 Журнал", "3 Настройки"},
 
-		helpGlobal:       "c подключить · d отключить · r обновить · " + languageKeyHelp + " · q выход",
-		helpRelays:       "x сбросить цель · ",
+		helpGlobal:       "d отключить · r обновить · " + languageKeyHelp + " · q выход",
 		helpSettingsEdit: "esc отмена",
 
 		labelTransport: "Транспорт",
@@ -298,6 +300,7 @@ var translations = [languageCount]*translation{
 		targetCountry:   "страна %s",
 		targetAutomatic: "автоматически (по рейтингу)",
 
+		autoSelect:          "Автовыбор (по рейтингу)",
 		refreshingDirectory: "обновление каталога узлов…",
 		directoryErrPrefix:  "каталог: ",
 		noRelaysYet:         "узлов пока нет — нажмите r для обновления",

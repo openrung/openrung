@@ -164,10 +164,11 @@ settings. To work against a local broker:
 go run ./cmd/client connect -broker http://localhost:8080
 ```
 
-Connecting is a keypress, not a flag: the client starts disconnected, and `c`
-connects with the current broker, capture mode, and relay target. Settings
-controls the broker and capture mode; the Relays view pins or clears a target,
-and `-relay-id` or `-relay-label` can seed one at launch.
+Connecting is a keypress, not a flag: the client starts disconnected, and
+`enter` on the Relays list connects — to the highlighted relay, or ranked
+automatically via the **Auto select** row at the top of the list, which also
+clears any pinned target. Settings controls the broker and capture mode;
+`-relay-id` or `-relay-label` can seed a target at launch.
 
 ### Views and keys
 
@@ -175,7 +176,7 @@ Three views, switched with `1`–`3`, `tab`, and `shift+tab`:
 
 | View | What it shows |
 | --- | --- |
-| **Relays** | The ranked relay directory — country, measured latency, and node class. `↑`/`↓` moves, `enter` pins the highlighted relay and connects to it, and `x` clears the pin |
+| **Relays** | The ranked relay directory — country, measured latency, and node class — under an **Auto select** row. `↑`/`↓` moves; `enter` connects to the highlighted row: a relay pins it, Auto select clears the pin and takes the ranked pick. The connected relay's row renders bold |
 | **Logs** | Engine and sing-box output in a scrollable ring buffer |
 | **Settings** | Broker URL override, capture mode, and the shell proxy helper |
 
@@ -195,7 +196,7 @@ failed, yellow through every transition, green while connected. The key-help
 line below it never changes color, so the bar is the only thing on screen
 that does.
 
-Global keys: `c` connect, `d` disconnect, `r` refresh the relay directory,
+Global keys: `d` disconnect, `r` refresh the relay directory,
 `0` cycles English/中文/русский, and `q` (or `ctrl+c`) quit. The language key
 is a digit on purpose: a Cyrillic or Greek layout carries no Latin letters, so
 a letter would be untypeable for the reader who most needs to switch away from

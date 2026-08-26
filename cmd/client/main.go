@@ -186,7 +186,8 @@ Commands:
   version  Print the client and bundled sing-box versions and exit (-v).
 
 Keys (interactive):
-  c connect  d disconnect  r refresh relays  1-3/tab switch view
+  enter connect to the highlighted relay (Auto select = ranked)  d disconnect
+  r refresh relays  1-3/tab switch view
   0 language (English/中文/русский)  q quit
 
 Connect flags:

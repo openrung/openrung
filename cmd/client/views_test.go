@@ -333,7 +333,7 @@ func TestFooterMarqueeHoldsItsWidthAtEveryPhase(t *testing.T) {
 					}
 					// One full cycle: the pause, the whole track, and the gap.
 					steps := footerMarqueePause + lipgloss.Width(m.tr().helpGlobal) +
-						lipgloss.Width(m.tr().helpRelays) + lipgloss.Width(footerMarqueeGap) + 2
+						lipgloss.Width(footerMarqueeGap) + 2
 					for step := 0; step < steps; step++ {
 						m.now = m.startedAt.Add(time.Duration(step) * footerMarqueeStep)
 						for bar, got := range map[string]string{
@@ -370,7 +370,7 @@ func TestFooterMarqueeRevealsLanguageToken(t *testing.T) {
 						m.connectedAt = m.startedAt.Add(-time.Minute)
 					}
 					steps := footerMarqueePause + lipgloss.Width(m.tr().helpGlobal) +
-						lipgloss.Width(m.tr().helpRelays) + lipgloss.Width(footerMarqueeGap) + 2
+						lipgloss.Width(footerMarqueeGap) + 2
 					seen := false
 					for step := 0; step < steps && !seen; step++ {
 						m.now = m.startedAt.Add(time.Duration(step) * footerMarqueeStep)
@@ -423,6 +423,102 @@ func TestHeaderAndFooterNeverExceedNarrowWidths(t *testing.T) {
 					t.Errorf("width %d lang %d: status bar lost the session duration: %q", width, lang, bar)
 				}
 			}
+		}
+	}
+}
+
+// The Relays list opens on an Auto select row: enter there connects ranked. It
+// carries the target marker whenever nothing is pinned, sits above every
+// relay, and survives an empty directory — the list is the only connect
+// control, so it must never be unreachable.
+func TestAutoSelectRowTopsTheRelayList(t *testing.T) {
+	m := newTestModel(&fakeDriver{})
+	m.view = viewRelays
+	m.refreshing = false
+	m.relays = []connectcore.DirectoryRelay{
+		{Relay: brokerapi.RelayDescriptor{ID: "r1", Label: "merry-falcon"}},
+	}
+	tr := m.tr()
+
+	view := m.relaysView()
+	autoAt, relayAt := strings.Index(view, tr.autoSelect), strings.Index(view, "merry-falcon")
+	if autoAt < 0 || relayAt < 0 || autoAt > relayAt {
+		t.Fatalf("Auto select row is not above the relays:\n%s", view)
+	}
+	rowOf := func(view, needle string) string {
+		for _, row := range strings.Split(view, "\n") {
+			if strings.Contains(row, needle) {
+				return row
+			}
+		}
+		t.Fatalf("no row contains %q:\n%s", needle, view)
+		return ""
+	}
+	// Untargeted: the marker sits on Auto select, since that is what the next
+	// connect does.
+	if !strings.Contains(rowOf(view, tr.autoSelect), tr.targetMarker) {
+		t.Fatalf("untargeted list does not mark Auto select:\n%s", view)
+	}
+	// Pinned: the marker moves to the pinned relay.
+	m.settings.target = connectcore.RelayTarget{RelayID: "r1"}
+	view = m.relaysView()
+	if strings.Contains(rowOf(view, tr.autoSelect), tr.targetMarker) {
+		t.Fatalf("pinned list still marks Auto select:\n%s", view)
+	}
+	if !strings.Contains(rowOf(view, "merry-falcon"), tr.targetMarker) {
+		t.Fatalf("pinned relay lost the target marker:\n%s", view)
+	}
+
+	m.relays = nil
+	if view := m.relaysView(); !strings.Contains(view, tr.autoSelect) {
+		t.Fatalf("empty directory dropped the Auto select row:\n%s", view)
+	}
+}
+
+// Once connected, the list itself marks the live relay: its row renders bold,
+// matched by the descriptor's ID, so "which one am I on" is answerable without
+// the status bar.
+func TestConnectedRelayRowRendersBold(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+	m := newTestModel(&fakeDriver{})
+	m.view = viewRelays
+	m.refreshing = false
+	m.relays = []connectcore.DirectoryRelay{
+		{Relay: brokerapi.RelayDescriptor{ID: "r1", Label: "merry-falcon"}},
+		{Relay: brokerapi.RelayDescriptor{ID: "r2", Label: "quiet-meadow"}},
+	}
+	m.state = connectcore.State{Status: connectcore.StatusConnected}
+	m.infoOK = true
+	m.info = connectcore.ConnectionInfo{Relay: brokerapi.RelayDescriptor{ID: "r2", Label: "quiet-meadow"}}
+	// The cursor stays on Auto select: its bold "▸" must not blur the check on
+	// the relay rows below.
+
+	const bold = "\x1b[1m"
+	var connectedRow, otherRow string
+	for _, row := range strings.Split(m.relaysView(), "\n") {
+		switch {
+		case strings.Contains(row, "quiet-meadow"):
+			connectedRow = row
+		case strings.Contains(row, "merry-falcon"):
+			otherRow = row
+		}
+	}
+	if connectedRow == "" || otherRow == "" {
+		t.Fatalf("relay rows missing:\n%s", m.relaysView())
+	}
+	if !strings.Contains(connectedRow, bold) {
+		t.Fatalf("connected relay's row is not bold: %q", connectedRow)
+	}
+	if strings.Contains(otherRow, bold) {
+		t.Fatalf("unconnected relay's row is bold: %q", otherRow)
+	}
+
+	// Bold means CONNECTED, not selected or targeted: it goes with the session.
+	m.state.Status = connectcore.StatusDisconnected
+	for _, row := range strings.Split(m.relaysView(), "\n") {
+		if strings.Contains(row, "quiet-meadow") && strings.Contains(row, bold) {
+			t.Fatalf("disconnected list still bolds the old relay: %q", row)
 		}
 	}
 }

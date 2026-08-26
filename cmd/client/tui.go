@@ -185,8 +185,9 @@ const (
 type settingsFieldID int
 
 // The target relay is not a settings field: it is pinned from the Relays view
-// (enter targets the highlighted relay, x clears) or by CLI flags, and the
-// Status view's Target row shows what is pinned.
+// (enter connects to the highlighted relay; the Auto select row clears the
+// pin) or by CLI flags, and the status bar's Target field shows what is
+// pinned.
 const (
 	fieldBroker settingsFieldID = iota
 	fieldMode
@@ -489,8 +490,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.relayErr = ""
 		m.relays = msg.relays
-		if m.relayCursor >= len(m.relays) {
-			m.relayCursor = max(0, len(m.relays)-1)
+		// Index 0 is the Auto select row, so the list is one longer than the
+		// directory and the cursor is valid at len(relays) — and on the Auto
+		// row even when the directory is empty.
+		if m.relayCursor > len(m.relays) {
+			m.relayCursor = len(m.relays)
 		}
 		return m, nil
 
@@ -553,8 +557,6 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "shift+tab":
 		m.view = (m.view + viewCount - 1) % viewCount
 		return m, nil
-	case "c":
-		return m, m.connectCmd()
 	case "d":
 		return m, m.disconnectCmd()
 	case "r":
@@ -585,18 +587,23 @@ func (m tuiModel) handleRelaysKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.relayCursor--
 		}
 	case "down", "j":
-		if m.relayCursor < len(m.relays)-1 {
+		if m.relayCursor < len(m.relays) {
 			m.relayCursor++
 		}
 	case "enter":
-		// Manual relay selection, like the desktop map's targeting: pin the
-		// highlighted relay and connect to it.
-		if m.relayCursor < len(m.relays) {
-			m.settings.target = connectcore.RelayTarget{RelayID: m.relays[m.relayCursor].Relay.ID}
-			return m, m.connectCmd()
+		// The list is the connect control — there is no separate connect key.
+		// Row 0 is Auto select: it clears any pinned or CLI-seeded target and
+		// lets the broker's ranking pick, which is also the only way to unpin.
+		// Every row below pins the highlighted relay and connects to it, like
+		// the desktop map's targeting.
+		if m.relayCursor == 0 {
+			m.settings.target = connectcore.RelayTarget{}
+		} else if m.relayCursor <= len(m.relays) {
+			m.settings.target = connectcore.RelayTarget{RelayID: m.relays[m.relayCursor-1].Relay.ID}
+		} else {
+			return m, nil
 		}
-	case "x":
-		m.settings.target = connectcore.RelayTarget{}
+		return m, m.connectCmd()
 	}
 	return m, nil
 }

@@ -118,16 +118,23 @@ func update(t *testing.T, m tuiModel, msg tea.Msg) (tuiModel, tea.Msg) {
 	return model, cmd()
 }
 
-func TestConnectKeyIssuesEngineConnectWithSettingsTarget(t *testing.T) {
+// The c and x keys are retired: enter on the Relays list is the only connect
+// control, and its Auto select row is what clears a pin. Both keys must be
+// inert so stale muscle memory or a stale doc cannot silently half-work.
+func TestRetiredConnectAndClearKeysAreInert(t *testing.T) {
 	driver := &fakeDriver{}
 	m := newTestModel(driver)
+	m.view = viewRelays
 	m.settings.target = connectcore.RelayTarget{Country: "kr"}
+	m.relays = []connectcore.DirectoryRelay{{Relay: brokerapi.RelayDescriptor{ID: "relay_a"}}}
 
-	_, _ = update(t, m, keyMsg("c"))
-
-	broker, target := driver.lastConnect(t)
-	if broker != "http://broker.test" || target.Country != "kr" {
-		t.Fatalf("ConnectTarget(%q, %+v), want the settings broker and target", broker, target)
+	m, _ = update(t, m, keyMsg("c"))
+	if len(driver.connects) != 0 {
+		t.Fatalf("c still connects: %+v", driver.connects)
+	}
+	m, _ = update(t, m, keyMsg("x"))
+	if m.settings.target.Country != "kr" {
+		t.Fatalf("x still clears the target: %+v", m.settings.target)
 	}
 }
 
@@ -151,6 +158,8 @@ func TestRelaysEnterPinsSelectionAndConnects(t *testing.T) {
 		{Relay: brokerapi.RelayDescriptor{ID: "relay_b"}},
 	}
 
+	// The cursor starts on Auto select, so the second relay is two steps down.
+	m, _ = update(t, m, keyMsg("down"))
 	m, _ = update(t, m, keyMsg("down"))
 	m, _ = update(t, m, keyMsg("enter"))
 
@@ -161,11 +170,26 @@ func TestRelaysEnterPinsSelectionAndConnects(t *testing.T) {
 	if m.settings.target.RelayID != "relay_b" {
 		t.Fatalf("settings target = %+v, want the pinned relay retained", m.settings.target)
 	}
+}
 
-	// x clears the pin so the next connect is automatic again.
-	m, _ = update(t, m, keyMsg("x"))
+// Auto select — the list's first row, where the cursor starts — connects with
+// no target at all: it clears a pinned or CLI-seeded target and asks for the
+// broker's ranked pick, absorbing both of the retired c and x keys. It works
+// before the directory has ever loaded, since a ranked connect needs no list.
+func TestRelaysAutoSelectConnectsRankedAndClearsTheTarget(t *testing.T) {
+	driver := &fakeDriver{}
+	m := newTestModel(driver)
+	m.view = viewRelays
+	m.settings.target = connectcore.RelayTarget{Country: "kr"} // CLI-seeded
+
+	m, _ = update(t, m, keyMsg("enter"))
+
+	broker, target := driver.lastConnect(t)
+	if broker != "http://broker.test" || target.Targeted() {
+		t.Fatalf("ConnectTarget(%q, %+v), want the settings broker and no target", broker, target)
+	}
 	if m.settings.target.Targeted() {
-		t.Fatalf("settings target = %+v, want cleared", m.settings.target)
+		t.Fatalf("settings target = %+v, want cleared by Auto select", m.settings.target)
 	}
 }
 
@@ -397,25 +421,26 @@ func TestRelaysWindowFollowsCursor(t *testing.T) {
 	driver := &fakeDriver{}
 	m := newTestModel(driver)
 	m.view = viewRelays
-	m.height = 12 // body of 8 rows: notice-free header + 7 relay rows visible
+	m.height = 12 // body of 8 rows: notice-free header + 7 list rows visible
 	for i := 0; i < 30; i++ {
 		m.relays = append(m.relays, connectcore.DirectoryRelay{
 			Relay: brokerapi.RelayDescriptor{ID: fmt.Sprintf("relay_%02d", i), Label: fmt.Sprintf("node-%02d", i)},
 		})
 	}
 
-	m.relayCursor = len(m.relays) - 1
+	// The last relay sits at cursor len(relays): index 0 is the Auto row.
+	m.relayCursor = len(m.relays)
 	view := m.View()
 	if !strings.Contains(view, "node-29") {
 		t.Fatalf("last relay not visible with the cursor on it:\n%s", view)
 	}
-	if strings.Contains(view, "node-00") {
+	if strings.Contains(view, "node-00") || strings.Contains(view, m.tr().autoSelect) {
 		t.Fatalf("head of the list still rendered while the cursor sits at the tail:\n%s", view)
 	}
 
 	m.relayCursor = 0
 	view = m.View()
-	if !strings.Contains(view, "node-00") || strings.Contains(view, "node-29") {
+	if !strings.Contains(view, m.tr().autoSelect) || !strings.Contains(view, "node-00") || strings.Contains(view, "node-29") {
 		t.Fatalf("window did not follow the cursor back to the head:\n%s", view)
 	}
 }

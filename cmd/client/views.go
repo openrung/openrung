@@ -26,6 +26,9 @@ var (
 	noteStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 	cursorStyle    = lipgloss.NewStyle().Bold(true)
 	brandStyle     = lipgloss.NewStyle().Bold(true)
+	// The connected relay's row in the Relays list: bold, so the list itself
+	// answers "which one am I on" without a glance at the status bar.
+	connectedRowStyle = lipgloss.NewStyle().Bold(true)
 
 	foundationBadgeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
 	volunteerBadgeStyle  = lipgloss.NewStyle().Faint(true)
@@ -221,13 +224,8 @@ const (
 func (m tuiModel) footerView() string {
 	tr := m.tr()
 	help := tr.helpGlobal
-	switch m.view {
-	case viewRelays:
-		help = tr.helpRelays + help
-	case viewSettings:
-		if m.settings.editing {
-			help = tr.helpSettingsEdit
-		}
+	if m.view == viewSettings && m.settings.editing {
+		help = tr.helpSettingsEdit
 	}
 
 	// No connection styling here: the signal lives one line up, on the status
@@ -592,44 +590,64 @@ func (m tuiModel) relaysView() string {
 	case len(m.relays) == 0:
 		rows = append(rows, helpStyle.Render(tr.noRelaysYet))
 	}
-	if len(m.relays) == 0 {
-		return strings.Join(rows, "\n")
+	if len(m.relays) > 0 {
+		// padCell, not %-8s: the localized headers must pad by display width to
+		// stay aligned with the ASCII-formatted rows below.
+		rows = append(rows, helpStyle.Render("   "+padCell(tr.colRelay, 28)+" "+padCell(tr.colCountry, 8)+" "+padCell(tr.colLatency, 9)+" "+tr.colClass))
 	}
 
-	// padCell, not %-8s: the localized headers must pad by display width to
-	// stay aligned with the ASCII-formatted rows below.
-	rows = append(rows, helpStyle.Render("   "+padCell(tr.colRelay, 28)+" "+padCell(tr.colCountry, 8)+" "+padCell(tr.colLatency, 9)+" "+tr.colClass))
-
+	// The selectable list: row 0 is Auto select — enter there connects ranked —
+	// and every row after it is a directory relay enter connects to directly.
+	// The Auto row renders even while the directory is empty or refreshing: the
+	// list is the only connect control, so it must never be unreachable.
+	//
 	// Window the list to the rows the body has left after any notice lines and
 	// the column header, following the cursor: fitLines hard-truncates the body,
-	// so without this the selection could sit on a relay the screen never shows.
+	// so without this the selection could sit on a row the screen never shows.
 	visible := m.bodyHeight() - len(rows)
 	if visible < 1 {
 		visible = 1
 	}
+	total := len(m.relays) + 1
 	start := 0
 	if m.relayCursor >= visible {
 		start = m.relayCursor - visible + 1
 	}
 	end := start + visible
-	if end > len(m.relays) {
-		end = len(m.relays)
+	if end > total {
+		end = total
 	}
 	for i := start; i < end; i++ {
-		entry := m.relays[i]
 		cursor := "  "
 		if i == m.relayCursor {
 			cursor = cursorStyle.Render("▸ ")
 		}
+		if i == 0 {
+			line := cursor + " " + tr.autoSelect
+			// The marker follows the pin, and no pin means Auto select is what
+			// the next connect does.
+			if !m.settings.target.Targeted() {
+				line += " " + noteStyle.Render(tr.targetMarker)
+			}
+			rows = append(rows, line)
+			continue
+		}
+		entry := m.relays[i-1]
 		cc := strings.ToUpper(strings.TrimSpace(entry.Relay.CountryCode))
 		if cc != "" {
 			cc += countryFlag(cc)
 		}
 		// padCell and truncateWidth throughout: the flag emoji (and any CJK in
-		// a label) would break byte- or rune-count alignment.
-		line := cursor + " " + padCell(truncateWidth(relayListName(entry.Relay), 28), 28) +
-			" " + padCell(cc, 8) +
-			" " + padCell(latencyLabel(entry.ProbeMS), 9) +
+		// a label) would break byte- or rune-count alignment. Pad before
+		// styling so the bold applied below cannot change the counted width.
+		name := padCell(truncateWidth(relayListName(entry.Relay), 28), 28)
+		geo := padCell(cc, 8)
+		latency := padCell(latencyLabel(entry.ProbeMS), 9)
+		// The badge keeps its own class color, so it stays outside the bold.
+		if m.state.Status == connectcore.StatusConnected && m.infoOK && entry.Relay.ID == m.info.Relay.ID {
+			name, geo, latency = connectedRowStyle.Render(name), connectedRowStyle.Render(geo), connectedRowStyle.Render(latency)
+		}
+		line := cursor + " " + name + " " + geo + " " + latency +
 			" " + nodeClassBadge(tr, entry.Relay.NodeClass)
 		if entry.Relay.ID == m.settings.target.RelayID && m.settings.target.RelayID != "" {
 			line += " " + noteStyle.Render(tr.targetMarker)
