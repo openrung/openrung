@@ -126,7 +126,7 @@ func TestStatusDetailCarriesEveryStatusField(t *testing.T) {
 	// Nothing the bar states another way belongs in the scrolling track: the
 	// state is the bar's color, and the relay and its country are pinned. Any
 	// of them repeated here reads as a second, different relay.
-	for _, gone := range []string{tr.labelStatus, tr.labelCountry, "merry-falcon", "JP"} {
+	for _, gone := range []string{"Status", "Country", "merry-falcon", "JP"} {
 		if strings.Contains(detail, gone) {
 			t.Errorf("%q is duplicated into the scrolling detail:\n%s", gone, detail)
 		}

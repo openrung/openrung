@@ -137,11 +137,6 @@ func TestRenderedFooterShowsTheTrilingualLanguageHelp(t *testing.T) {
 // render a bare "%!s(MISSING)" only for those users.
 func TestTranslationTablesAreCompleteAndFormatCompatible(t *testing.T) {
 	english := reflect.ValueOf(*translations[langEnglish])
-	statuses := []connectcore.Status{
-		connectcore.StatusDisconnected, connectcore.StatusPreparing,
-		connectcore.StatusConnecting, connectcore.StatusConnected,
-		connectcore.StatusDisconnecting, connectcore.StatusFailed,
-	}
 
 	for lang := language(0); lang < languageCount; lang++ {
 		tr := translations[lang]
@@ -166,12 +161,8 @@ func TestTranslationTablesAreCompleteAndFormatCompatible(t *testing.T) {
 						t.Errorf("lang %d: %s[%d] is empty", lang, name, j)
 					}
 				}
-			case reflect.Map:
-				for _, status := range statuses {
-					if strings.TrimSpace(tr.statusName(status)) == "" || tr.statusName(status) == string(status) && lang != langEnglish {
-						t.Errorf("lang %d: status %q is untranslated", lang, status)
-					}
-				}
+			default:
+				t.Errorf("lang %d: %s is a %s the completeness sweep does not check", lang, name, field.Kind())
 			}
 		}
 	}

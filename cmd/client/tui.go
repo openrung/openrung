@@ -196,7 +196,7 @@ const (
 
 // A settings notice is stored as a kind and rendered through the active
 // language at draw time: storing translated text would survive a language
-// language cycle and leave mixed-language UI.
+// cycle and leave mixed-language UI.
 type noteKind int
 
 const (

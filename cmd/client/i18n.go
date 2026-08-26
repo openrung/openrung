@@ -4,8 +4,6 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-
-	"github.com/openrung/openrung/connectcore"
 )
 
 // The TUI ships English, Chinese, and Russian. There is no settings entry for
@@ -42,11 +40,10 @@ type translation struct {
 	// adds anything to the global help.
 	helpSettingsEdit string
 
-	labelStatus    string
-	labelRelay     string
-	labelCountry   string
+	// The status bar's scrolling detail carries only fields the bar does not
+	// state another way — no Status (the bar's color), no Relay/Country/Session
+	// (the pinned right edge).
 	labelTransport string
-	labelSession   string
 	labelHealth    string
 	labelActivity  string
 	labelCapture   string
@@ -54,8 +51,6 @@ type translation struct {
 	labelBroker    string
 	labelTarget    string
 	labelError     string
-
-	statusNames map[connectcore.Status]string
 
 	captureTUN     string
 	captureProxy   string
@@ -121,11 +116,7 @@ var translations = [languageCount]*translation{
 		helpRelays:       "x clear target · ",
 		helpSettingsEdit: "esc cancel",
 
-		labelStatus:    "Status",
-		labelRelay:     "Relay",
-		labelCountry:   "Country",
 		labelTransport: "Transport",
-		labelSession:   "Session",
 		labelHealth:    "Health",
 		labelActivity:  "Activity",
 		labelCapture:   "Capture",
@@ -133,15 +124,6 @@ var translations = [languageCount]*translation{
 		labelBroker:    "Broker",
 		labelTarget:    "Target",
 		labelError:     "Error",
-
-		statusNames: map[connectcore.Status]string{
-			connectcore.StatusDisconnected:  "disconnected",
-			connectcore.StatusPreparing:     "preparing",
-			connectcore.StatusConnecting:    "connecting",
-			connectcore.StatusConnected:     "connected",
-			connectcore.StatusDisconnecting: "disconnecting",
-			connectcore.StatusFailed:        "failed",
-		},
 
 		captureTUN:     "TUN — whole device",
 		captureProxy:   "proxy — applications configured for the endpoint below",
@@ -208,11 +190,7 @@ var translations = [languageCount]*translation{
 		helpRelays:       "x 清除目标 · ",
 		helpSettingsEdit: "esc 取消",
 
-		labelStatus:    "状态",
-		labelRelay:     "中继",
-		labelCountry:   "国家",
 		labelTransport: "传输",
-		labelSession:   "会话",
 		labelHealth:    "健康",
 		labelActivity:  "活动",
 		labelCapture:   "捕获",
@@ -220,15 +198,6 @@ var translations = [languageCount]*translation{
 		labelBroker:    "调度服务器",
 		labelTarget:    "目标",
 		labelError:     "错误",
-
-		statusNames: map[connectcore.Status]string{
-			connectcore.StatusDisconnected:  "未连接",
-			connectcore.StatusPreparing:     "准备中",
-			connectcore.StatusConnecting:    "连接中",
-			connectcore.StatusConnected:     "已连接",
-			connectcore.StatusDisconnecting: "断开中",
-			connectcore.StatusFailed:        "失败",
-		},
 
 		captureTUN:     "TUN — 全设备接管",
 		captureProxy:   "代理 — 应用需配置为下方端点",
@@ -295,11 +264,7 @@ var translations = [languageCount]*translation{
 		helpRelays:       "x сбросить цель · ",
 		helpSettingsEdit: "esc отмена",
 
-		labelStatus:    "Статус",
-		labelRelay:     "Узел",
-		labelCountry:   "Страна",
 		labelTransport: "Транспорт",
-		labelSession:   "Сессия",
 		labelHealth:    "Проверка",
 		labelActivity:  "События",
 		labelCapture:   "Захват",
@@ -307,15 +272,6 @@ var translations = [languageCount]*translation{
 		labelBroker:    "Брокер",
 		labelTarget:    "Цель",
 		labelError:     "Ошибка",
-
-		statusNames: map[connectcore.Status]string{
-			connectcore.StatusDisconnected:  "не подключено",
-			connectcore.StatusPreparing:     "подготовка",
-			connectcore.StatusConnecting:    "подключение",
-			connectcore.StatusConnected:     "подключено",
-			connectcore.StatusDisconnecting: "отключение",
-			connectcore.StatusFailed:        "сбой",
-		},
 
 		captureTUN:     "TUN — всё устройство",
 		captureProxy:   "прокси — приложения настраиваются на адрес ниже",
@@ -383,13 +339,6 @@ func (m tuiModel) tr() *translation {
 		return translations[langEnglish]
 	}
 	return translations[m.lang]
-}
-
-func (tr *translation) statusName(status connectcore.Status) string {
-	if name, ok := tr.statusNames[status]; ok {
-		return name
-	}
-	return string(status)
 }
 
 // padCell pads to display width, not byte count: fmt's %-8s would leave CJK
