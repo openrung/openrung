@@ -11,15 +11,16 @@ package sudouser
 
 import (
 	"os"
-	"path/filepath"
 	"strconv"
 )
 
 // The euid check and the chown syscall are package vars so tests can exercise
 // the elevated path without running as root.
 var (
-	geteuid = os.Geteuid
-	chown   = os.Chown
+	geteuid   = os.Geteuid
+	fileChown = func(file *os.File, uid, gid int) error {
+		return file.Chown(uid, gid)
+	}
 )
 
 // ids returns the invoking user's uid/gid when the process is root under
@@ -47,40 +48,14 @@ func Active() bool {
 	return ok
 }
 
-// Chown hands path to the invoking user when Active, and is a no-op
-// otherwise.
-func Chown(path string) error {
+// ChownFile hands an already-open file or directory to the invoking user when
+// Active, and is a no-op otherwise. Using the descriptor rather than reopening
+// a pathname prevents a user-controlled symlink swap from redirecting chown to
+// a privileged target.
+func ChownFile(file *os.File) error {
 	uid, gid, ok := ids()
 	if !ok {
 		return nil
 	}
-	return chown(path, uid, gid)
-}
-
-// MkdirAll is os.MkdirAll, except every directory it actually creates is
-// handed to the invoking user when Active — a sudo'd first run must not leave
-// root-owned directories inside the user's home.
-func MkdirAll(dir string, perm os.FileMode) error {
-	var created []string
-	for cur := dir; ; {
-		if _, err := os.Stat(cur); err == nil || !os.IsNotExist(err) {
-			break
-		}
-		created = append(created, cur)
-		parent := filepath.Dir(cur)
-		if parent == cur {
-			break
-		}
-		cur = parent
-	}
-	if err := os.MkdirAll(dir, perm); err != nil {
-		return err
-	}
-	// Deepest-last so parents are chowned before their children.
-	for i := len(created) - 1; i >= 0; i-- {
-		if err := Chown(created[i]); err != nil {
-			return err
-		}
-	}
-	return nil
+	return fileChown(file, uid, gid)
 }

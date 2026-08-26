@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/openrung/openrung/connectcore/sudouser"
 
@@ -60,12 +62,31 @@ func New() (*Store, error) {
 	if sudouser.Active() {
 		// An earlier sudo'd run (TUN mode) may have left the directory or the
 		// files in it root-owned, which makes every later plain run silently
-		// fail to read or write them; hand them back to the invoking user.
-		_ = sudouser.Chown(dir)
-		if entries, err := os.ReadDir(dir); err == nil {
-			for _, entry := range entries {
-				_ = sudouser.Chown(filepath.Join(dir, entry.Name()))
+		// fail to read or write them. Open the directory without following
+		// symlinks, then repair only OpenRung's known regular state files.
+		dirFile, err := sudouser.OpenDir(dir)
+		if err != nil {
+			return nil, err
+		}
+		if err := sudouser.ChownFile(dirFile); err != nil {
+			dirFile.Close()
+			return nil, err
+		}
+		entries, err := dirFile.ReadDir(-1)
+		if err != nil {
+			dirFile.Close()
+			return nil, err
+		}
+		for _, entry := range entries {
+			if repairableStateFile(entry.Name()) {
+				if err := sudouser.ChownRegularFileAt(dirFile, entry.Name()); err != nil {
+					dirFile.Close()
+					return nil, err
+				}
 			}
+		}
+		if err := dirFile.Close(); err != nil {
+			return nil, err
 		}
 	}
 	return &Store{dir: dir}, nil
@@ -211,13 +232,27 @@ func (s *Store) writeFile(name string, data []byte) error {
 		_ = file.Close()
 		return err
 	}
+	if err := sudouser.ChownFile(file); err != nil {
+		_ = file.Close()
+		return err
+	}
 	if err := file.Close(); err != nil {
 		return err
 	}
-	if err := sudouser.Chown(tmp); err != nil {
-		return err
-	}
 	return os.Rename(tmp, filepath.Join(s.dir, name))
+}
+
+func repairableStateFile(name string) bool {
+	switch name {
+	case recentsFile, proxyPortFile, proxyPortLockFile, proxySnapshotHdr, "client-id":
+		return true
+	}
+	if !strings.HasPrefix(name, "proxy-env-") || !strings.HasSuffix(name, ".sh") {
+		return false
+	}
+	portText := strings.TrimSuffix(strings.TrimPrefix(name, "proxy-env-"), ".sh")
+	port, err := strconv.Atoi(portText)
+	return err == nil && validPort(port) && strconv.Itoa(port) == portText
 }
 
 func validPort(port int) bool {

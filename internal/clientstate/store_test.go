@@ -216,3 +216,30 @@ func TestProxySnapshotLifecycle(t *testing.T) {
 		t.Fatalf("ClearProxySnapshot on missing: %v", err)
 	}
 }
+
+func TestRepairableStateFileAllowlist(t *testing.T) {
+	for _, name := range []string{
+		recentsFile,
+		proxyPortFile,
+		proxyPortLockFile,
+		proxySnapshotHdr,
+		"client-id",
+		"proxy-env-46685.sh",
+	} {
+		if !repairableStateFile(name) {
+			t.Errorf("repairableStateFile(%q) = false", name)
+		}
+	}
+	for _, name := range []string{
+		"unrelated",
+		"proxy-env-0.sh",
+		"proxy-env-65536.sh",
+		"proxy-env-046685.sh",
+		"proxy-env-46685.sh/../../target",
+		".proxy-port.json.tmp-123",
+	} {
+		if repairableStateFile(name) {
+			t.Errorf("repairableStateFile(%q) = true", name)
+		}
+	}
+}
