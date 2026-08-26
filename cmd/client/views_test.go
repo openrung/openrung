@@ -173,6 +173,75 @@ func TestFooterMarqueeSharesNarrowTerminalWithDuration(t *testing.T) {
 	}
 }
 
+// footerHelpWindow must return exactly the width it was asked for at EVERY
+// marquee phase. ansi.Cut counts cells but cannot split one, so a boundary
+// landing on the double-width CJK in languageKeyHelp used to return a cell
+// too many — and disconnected, where no summary absorbs it, the bar shipped
+// one cell past the terminal (width 80, Relays, English, step 111).
+func TestFooterMarqueeHoldsItsWidthAtEveryPhase(t *testing.T) {
+	names := []string{"status", "relays", "logs", "settings"}
+	label := "merry-falcon"
+	for _, width := range []int{20, 30, 40, 60, 80, 100, 120} {
+		for _, connected := range []bool{false, true} {
+			for lang := language(0); lang < languageCount; lang++ {
+				for v := viewID(0); v < viewCount; v++ {
+					m := newTestModel(&fakeDriver{})
+					m.width, m.lang, m.view = width, lang, v
+					m.startedAt = time.Unix(0, 0)
+					if connected {
+						m.state = connectcore.State{Status: connectcore.StatusConnected, RelayLabel: &label}
+						m.connectedAt = m.startedAt.Add(-time.Minute)
+					}
+					// One full cycle: the pause, the whole track, and the gap.
+					steps := footerMarqueePause + lipgloss.Width(m.tr().helpGlobal) +
+						lipgloss.Width(m.tr().helpRelays) + lipgloss.Width(footerMarqueeGap) + 2
+					for step := 0; step < steps; step++ {
+						m.now = m.startedAt.Add(time.Duration(step) * footerMarqueeStep)
+						if w := lipgloss.Width(m.footerView()); w > width {
+							t.Fatalf("w=%d %s lang=%d conn=%t step=%d: footer is %d cells",
+								width, names[v], lang, connected, step, w)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// Narrow terminals scroll the help, so the complete language token has to come
+// into view within one cycle — it is the one control a reader stuck in an
+// unreadable language depends on. Below ~30 cells the lane cannot hold the
+// token's 16 cells alongside the session duration, which is a known gap.
+func TestFooterMarqueeRevealsLanguageToken(t *testing.T) {
+	label := "merry-falcon"
+	for _, width := range []int{30, 40, 60, 80} {
+		for _, connected := range []bool{false, true} {
+			for lang := language(0); lang < languageCount; lang++ {
+				for v := viewID(0); v < viewCount; v++ {
+					m := newTestModel(&fakeDriver{})
+					m.width, m.lang, m.view = width, lang, v
+					m.startedAt = time.Unix(0, 0)
+					if connected {
+						m.state = connectcore.State{Status: connectcore.StatusConnected, RelayLabel: &label}
+						m.connectedAt = m.startedAt.Add(-time.Minute)
+					}
+					steps := footerMarqueePause + lipgloss.Width(m.tr().helpGlobal) +
+						lipgloss.Width(m.tr().helpRelays) + lipgloss.Width(footerMarqueeGap) + 2
+					seen := false
+					for step := 0; step < steps && !seen; step++ {
+						m.now = m.startedAt.Add(time.Duration(step) * footerMarqueeStep)
+						seen = strings.Contains(m.footerView(), languageKeyHelp)
+					}
+					if !seen {
+						t.Errorf("w=%d view %d lang %d conn=%t: a full cycle never showed %q",
+							width, v, lang, connected, languageKeyHelp)
+					}
+				}
+			}
+		}
+	}
+}
+
 // Header and footer each budget exactly one line, so on a narrow terminal
 // they must shed content instead of wrapping — in every language and every
 // connection state, summary or not. What they shed follows priority: the

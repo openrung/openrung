@@ -243,8 +243,6 @@ func (m tuiModel) footerView() string {
 	case viewSettings:
 		if m.settings.editing {
 			help = tr.helpSettingsEdit
-		} else {
-			help = tr.helpSettings + help
 		}
 	}
 
@@ -307,7 +305,15 @@ func (m tuiModel) footerHelpWindow(help string, width int) string {
 		offset = step - footerMarqueePause
 	}
 	track := help + footerMarqueeGap + help
-	return ansi.Cut(track, offset, offset+width)
+	// ansi.Cut counts cells but cannot split one: a window boundary landing on
+	// a double-width rune (the CJK in languageKeyHelp is the only such text
+	// here, so this happens exactly while the language control is on screen)
+	// yields a window one cell wider or narrower than asked. Clamp both ways —
+	// over-width would push the bar past the terminal, where bubbletea's
+	// renderer silently truncates it and the theme's background stops a cell
+	// short of the edge; under-width would jitter the gap to the summary as
+	// the text scrolls.
+	return padCell(ansi.Truncate(ansi.Cut(track, offset, offset+width), width, ""), width)
 }
 
 // footerConnectionSummary is the bottom-right corner while connected: the

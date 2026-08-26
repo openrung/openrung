@@ -111,16 +111,23 @@ func TestSettingsNotesFollowLanguageCycles(t *testing.T) {
 	}
 }
 
-// The language switch must be findable in every language, so every footer-help
-// track carries the same trilingual token — and the header, now views-only, no
-// longer holds a language slot. Overflow behavior is covered by the marquee
-// tests in views_test.go.
-func TestEveryLanguageIncludesTheTrilingualLanguageHelp(t *testing.T) {
+// The language switch must be findable in every language, so the RENDERED
+// footer carries the trilingual token whenever it fits — and the header, now
+// views-only, no longer holds a language slot. Asserting on tr().helpGlobal
+// instead would be a tautology: helpGlobal is built by concatenating
+// languageKeyHelp at init, so such a check passes however the footer renders.
+// Narrow terminals, where the token has to scroll into view, are covered by
+// TestFooterMarqueeRevealsLanguageToken.
+func TestRenderedFooterShowsTheTrilingualLanguageHelp(t *testing.T) {
 	m := newTestModel(&fakeDriver{})
+	m.width = 120 // wide enough that no view's help needs the marquee
 	for lang := language(0); lang < languageCount; lang++ {
 		m.lang = lang
-		if help := m.tr().helpGlobal; !strings.Contains(help, languageKeyHelp) {
-			t.Fatalf("lang %d footer track lost the language help: %q", lang, help)
+		for v := viewID(0); v < viewCount; v++ {
+			m.view = v
+			if footer := m.footerView(); !strings.Contains(footer, languageKeyHelp) {
+				t.Errorf("lang %d view %d footer lost the language help: %q", lang, v, footer)
+			}
 		}
 		if header := m.headerView(); strings.Contains(header, "язык") {
 			t.Fatalf("lang %d header still carries a language slot: %q", lang, header)

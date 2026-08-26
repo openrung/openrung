@@ -35,10 +35,11 @@ const languageKeyHelp = ". lang/语言/язык"
 type translation struct {
 	tabs [viewCount]string
 
-	helpGlobal       string
-	helpRelays       string
-	helpLogs         string
-	helpSettings     string
+	helpGlobal string
+	helpRelays string
+	helpLogs   string
+	// No helpSettings: moving with ↑/↓ and acting with enter is the same
+	// convention every view uses, so Settings adds nothing to the global help.
 	helpSettingsEdit string
 
 	labelStatus    string
@@ -117,10 +118,9 @@ var translations = [languageCount]*translation{
 		tabs: [viewCount]string{"1 Status", "2 Relays", "3 Logs", "4 Settings"},
 
 		helpGlobal:       "c connect · d disconnect · r refresh · " + languageKeyHelp + " · q quit",
-		helpRelays:       "↑/↓ select · enter connect to selection · x clear target · ",
-		helpLogs:         "↑/↓/pgup/pgdn scroll · ",
-		helpSettings:     "↑/↓ field · enter edit · ",
-		helpSettingsEdit: "enter apply · esc cancel",
+		helpRelays:       "x clear target · ",
+		helpLogs:         "pgup/pgdn scroll · ",
+		helpSettingsEdit: "esc cancel",
 
 		labelStatus:    "Status",
 		labelRelay:     "Relay",
@@ -206,10 +206,9 @@ var translations = [languageCount]*translation{
 		tabs: [viewCount]string{"1 状态", "2 中继", "3 日志", "4 设置"},
 
 		helpGlobal:       "c 连接 · d 断开 · r 刷新 · " + languageKeyHelp + " · q 退出",
-		helpRelays:       "↑/↓ 选择 · enter 连接所选 · x 清除目标 · ",
-		helpLogs:         "↑/↓/pgup/pgdn 滚动 · ",
-		helpSettings:     "↑/↓ 字段 · enter 编辑 · ",
-		helpSettingsEdit: "enter 应用 · esc 取消",
+		helpRelays:       "x 清除目标 · ",
+		helpLogs:         "pgup/pgdn 滚动 · ",
+		helpSettingsEdit: "esc 取消",
 
 		labelStatus:    "状态",
 		labelRelay:     "中继",
@@ -295,10 +294,9 @@ var translations = [languageCount]*translation{
 		tabs: [viewCount]string{"1 Статус", "2 Узлы", "3 Журнал", "4 Настройки"},
 
 		helpGlobal:       "c подключить · d отключить · r обновить · " + languageKeyHelp + " · q выход",
-		helpRelays:       "↑/↓ выбор · enter подключиться к выбранному · x сбросить цель · ",
-		helpLogs:         "↑/↓/pgup/pgdn прокрутка · ",
-		helpSettings:     "↑/↓ поле · enter изменить · ",
-		helpSettingsEdit: "enter применить · esc отмена",
+		helpRelays:       "x сбросить цель · ",
+		helpLogs:         "pgup/pgdn прокрутка · ",
+		helpSettingsEdit: "esc отмена",
 
 		labelStatus:    "Статус",
 		labelRelay:     "Узел",
