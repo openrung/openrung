@@ -307,7 +307,12 @@ func (m tuiModel) statusFooterView() string {
 // the label gives way first — the corner should still answer "how long" on a
 // terminal too narrow for "to what".
 func (m tuiModel) statusPin(budget int) string {
-	if m.state.Status != connectcore.StatusConnected {
+	// The relay name is ONLY here, never in the scrolling detail, so the pin has
+	// to hold it through the transitions too — otherwise "connecting" would name
+	// no destination. Disconnected and failed assert no relay at all, so a stale
+	// label must not linger there.
+	switch m.state.Status {
+	case connectcore.StatusDisconnected, connectcore.StatusFailed:
 		return ""
 	}
 	// Single-sourced for the same reason as statusDetail: with a descriptor the
@@ -327,7 +332,7 @@ func (m tuiModel) statusPin(budget int) string {
 		label = strings.TrimSpace(*m.state.RelayLabel)
 	}
 	duration := ""
-	if !m.connectedAt.IsZero() {
+	if m.state.Status == connectcore.StatusConnected && !m.connectedAt.IsZero() {
 		duration = formatDuration(m.now.Sub(m.connectedAt))
 	}
 
@@ -361,26 +366,23 @@ func (m tuiModel) statusDetail() string {
 	field := func(label, value string) string { return label + " " + value }
 	parts := []string{field(tr.labelStatus, tr.statusName(status))}
 
-	// Relay identity comes from ONE source. With a descriptor that is the
-	// descriptor — name AND flag — because a failover updates the state label
-	// before the next info poll lands, and mixing the two would pair a fresh
-	// label with the old relay's country, asserting the wrong exit. Without a
-	// descriptor there is no flag, only the state label.
-	relay, country := "—", "—"
+	// No relay name here: it is pinned to the bar's right edge (statusPin), and
+	// repeating it in a track that scrolls past the pin reads as two relays. The
+	// class badge is not duplicated, so it stays — bracketed, it labels itself.
+	// The country comes from the descriptor or not at all, never from the state
+	// label's era, so a failover cannot pair a fresh relay with a stale country.
+	country := "—"
 	if m.infoOK {
-		relay = relayListName(m.info.Relay)
 		if brokerapi.EffectiveNodeClass(m.info.Relay.NodeClass) == brokerapi.NodeClassFoundation {
-			relay += " " + tr.badgeFoundation
+			parts = append(parts, tr.badgeFoundation)
 		} else {
-			relay += " " + tr.badgeVolunteer
+			parts = append(parts, tr.badgeVolunteer)
 		}
 		if cc := strings.TrimSpace(m.info.Relay.CountryCode); cc != "" {
 			country = strings.ToUpper(cc) + countryFlag(cc)
 		}
-	} else if m.state.RelayLabel != nil {
-		relay = strings.TrimSpace(*m.state.RelayLabel)
 	}
-	parts = append(parts, field(tr.labelRelay, relay), field(tr.labelCountry, country))
+	parts = append(parts, field(tr.labelCountry, country))
 
 	transport := "—"
 	if m.infoOK {

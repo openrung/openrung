@@ -106,7 +106,7 @@ func TestStatusDetailCarriesEveryStatusField(t *testing.T) {
 	tr := m.tr()
 	detail := m.statusDetail()
 	for _, want := range []string{
-		tr.labelStatus, "connected", tr.labelRelay, "merry-falcon", "[foundation]",
+		tr.labelStatus, "connected", "[foundation]",
 		tr.labelCountry, tr.labelTransport, "front-a", tr.labelHealth,
 		tr.labelCapture, tr.labelProxy, "127.0.0.1:43210", tr.labelBroker,
 		tr.labelTarget, tr.labelError, failure,
@@ -115,8 +115,14 @@ func TestStatusDetailCarriesEveryStatusField(t *testing.T) {
 			t.Errorf("status detail missing %q:\n%s", want, detail)
 		}
 	}
-	if bar := m.statusFooterView(); !strings.Contains(bar, "00:01:30") {
-		t.Errorf("status bar did not pin the session duration:\n%q", bar)
+	// The relay name lives only on the pin: repeated in a track that scrolls
+	// past the pin, it reads as two different relays.
+	if strings.Contains(detail, "merry-falcon") {
+		t.Errorf("relay name duplicated into the scrolling detail:\n%s", detail)
+	}
+	if bar := m.statusFooterView(); !strings.Contains(bar, "00:01:30") ||
+		!strings.Contains(bar, "merry-falcon") {
+		t.Errorf("status bar did not pin the relay and duration:\n%q", bar)
 	}
 
 	// Disconnected: no duration is pinned, and the key help never carries one.
@@ -167,24 +173,61 @@ func TestStatusIdentityIsSingleSourced(t *testing.T) {
 		ID:               "r9",
 		RelayGeoLocation: brokerapi.RelayGeoLocation{CountryCode: "jp"},
 	}}
-	detail := m.statusDetail()
-	if strings.Contains(detail, "Singapore") {
-		t.Fatalf("status paired the state label with the descriptor's country: %q", detail)
+	detail, pin := m.statusDetail(), m.statusPin(0)
+	if strings.Contains(pin, "Singapore") {
+		t.Fatalf("pin paired the state label with the descriptor's flag: %q", pin)
 	}
-	for _, want := range []string{"relay r9", "JP"} {
-		if !strings.Contains(detail, want) {
-			t.Fatalf("status did not use the descriptor's own identity (%q): %q", want, detail)
-		}
+	if !strings.Contains(pin, "relay r9") {
+		t.Fatalf("pin did not fall back to the descriptor's own name: %q", pin)
+	}
+	if !strings.Contains(detail, "JP") {
+		t.Fatalf("detail lost the descriptor's country: %q", detail)
 	}
 
-	// No descriptor: the state label stands alone, with no country asserted.
+	// No descriptor: the state label stands alone, and no country is asserted.
 	m.infoOK = false
-	detail = m.statusDetail()
-	if !strings.Contains(detail, "Singapore") {
-		t.Fatalf("descriptor-less status lost the state label: %q", detail)
+	detail, pin = m.statusDetail(), m.statusPin(0)
+	if !strings.Contains(pin, "Singapore") {
+		t.Fatalf("descriptor-less pin lost the state label: %q", pin)
 	}
-	if strings.Contains(detail, countryFlagFor("darwin", "jp")) {
-		t.Fatalf("descriptor-less status still asserts a country: %q", detail)
+	if strings.Contains(pin, countryFlagFor("darwin", "jp")) {
+		t.Fatalf("descriptor-less pin still asserts a country: %q", pin)
+	}
+	if strings.Contains(detail, "JP") {
+		t.Fatalf("descriptor-less detail still asserts a country: %q", detail)
+	}
+}
+
+// The relay name lives only on the pin, so the pin has to survive the
+// transitions: "connecting" must still name its destination, while a
+// disconnected or failed bar asserts no relay at all.
+func TestStatusPinNamesTheRelayThroughTransitions(t *testing.T) {
+	m := newTestModel(&fakeDriver{})
+	m.width = 120
+	label := "merry-falcon"
+
+	for _, status := range []connectcore.Status{
+		connectcore.StatusPreparing, connectcore.StatusConnecting,
+		connectcore.StatusConnected, connectcore.StatusDisconnecting,
+	} {
+		m.state = connectcore.State{Status: status, RelayLabel: &label}
+		if pin := m.statusPin(0); !strings.Contains(pin, label) {
+			t.Errorf("status %s: pin does not name the relay: %q", status, pin)
+		}
+	}
+	// No duration outside a live session, even with a stamp left over.
+	m.connectedAt = m.now.Add(-time.Minute)
+	m.state = connectcore.State{Status: connectcore.StatusConnecting, RelayLabel: &label}
+	if pin := m.statusPin(0); strings.Contains(pin, "00:01:00") {
+		t.Errorf("connecting pin shows a session duration: %q", pin)
+	}
+	for _, status := range []connectcore.Status{
+		connectcore.StatusDisconnected, connectcore.StatusFailed,
+	} {
+		m.state = connectcore.State{Status: status, RelayLabel: &label}
+		if pin := m.statusPin(0); pin != "" {
+			t.Errorf("status %s: stale relay lingers on the pin: %q", status, pin)
+		}
 	}
 }
 

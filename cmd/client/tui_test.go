@@ -201,13 +201,17 @@ func TestConnectedStateStampsSessionStartAndRendersStatus(t *testing.T) {
 	// bar shows only a scrolling window into it. The duration is the one field
 	// pinned to the rendered bar, checked separately below.
 	view := m.statusDetail()
-	for _, want := range []string{"connected", label, "direct", "KR", "127.0.0.1:43210"} {
+	for _, want := range []string{"connected", "direct", "KR", "127.0.0.1:43210"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("status detail missing %q:\n%s", want, view)
 		}
 	}
-	if bar := m.statusFooterView(); !strings.Contains(bar, "00:01:30") {
-		t.Fatalf("status bar did not pin the session duration:\n%q", bar)
+	// The relay name and the duration are the pin's, not the detail's.
+	pin := m.statusPin(0)
+	for _, want := range []string{label, "00:01:30"} {
+		if !strings.Contains(pin, want) {
+			t.Fatalf("status pin missing %q:\n%q", want, pin)
+		}
 	}
 }
 
