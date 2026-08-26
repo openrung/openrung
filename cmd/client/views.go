@@ -165,7 +165,7 @@ func fitLines(body string, n int) string {
 
 func (m tuiModel) headerView() string {
 	tr := m.tr()
-	tabs := make([]string, 0, len(tr.tabs)+2)
+	tabs := make([]string, 0, len(tr.tabs)+1)
 	tabs = append(tabs, titleStyle.Render(" OpenRung v"+strings.TrimSpace(baseVersion)+" "))
 	for i, name := range tr.tabs {
 		style := tabStyle
@@ -174,15 +174,13 @@ func (m tuiModel) headerView() string {
 		}
 		tabs = append(tabs, style.Render(name))
 	}
-	// Not a view: 5 cycles the language in place, and the label stays
-	// trilingual so it is readable whatever language is active.
-	tabs = append(tabs, tabStyle.Render(languageTabLabel))
+	// The language switch lives on the l key and is advertised in the footer
+	// (languageKeyHelp), not here — the tab bar holds only views.
 
 	// headerHeight budgets exactly one line, so a narrow terminal sheds whole
 	// tabs (the keys still work). Shedding goes by importance, not position:
-	// the active tab and the language control — the one thing a reader stuck
-	// in the wrong language must still find — outrank the title, which
-	// outranks inactive view tabs. Whatever fits renders in bar order.
+	// the active tab outranks the title, which outranks inactive view tabs.
+	// Whatever fits renders in bar order.
 	type slot struct {
 		order int
 		label string
@@ -190,7 +188,6 @@ func (m tuiModel) headerView() string {
 	priority := make([]slot, 0, len(tabs))
 	priority = append(priority,
 		slot{1 + int(m.view), tabs[1+int(m.view)]},
-		slot{len(tabs) - 1, tabs[len(tabs)-1]},
 		slot{0, tabs[0]},
 	)
 	for i := viewID(0); i < viewCount; i++ {
@@ -740,7 +737,7 @@ func modeLabel(tr *translation, mode connectcore.Mode) string {
 
 // renderNote resolves a stored settings notice through the ACTIVE language:
 // the kind is stored, the words are chosen at draw time, so a note set while
-// the UI spoke Chinese follows a 5-key cycle into Russian.
+// the UI spoke Chinese follows an l-key cycle into Russian.
 func renderNote(tr *translation, n settingsNote) string {
 	switch n.kind {
 	case noteText:

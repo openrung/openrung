@@ -15,7 +15,7 @@ func TestLanguageKeyCyclesWithoutEnteringSettings(t *testing.T) {
 		t.Fatal("default view is not English")
 	}
 
-	m, _ = update(t, m, keyMsg("5"))
+	m, _ = update(t, m, keyMsg("l"))
 	if m.view != viewStatus {
 		t.Fatalf("language key changed the view to %d", m.view)
 	}
@@ -24,20 +24,27 @@ func TestLanguageKeyCyclesWithoutEnteringSettings(t *testing.T) {
 		t.Fatalf("first cycle is not Chinese:\n%s", view)
 	}
 
-	m, _ = update(t, m, keyMsg("5"))
+	m, _ = update(t, m, keyMsg("l"))
 	view = m.View()
 	if !strings.Contains(view, "2 Узлы") || !strings.Contains(view, "Статус") {
 		t.Fatalf("second cycle is not Russian:\n%s", view)
 	}
 
-	m, _ = update(t, m, keyMsg("5"))
+	m, _ = update(t, m, keyMsg("l"))
 	if view = m.View(); !strings.Contains(view, "2 Relays") {
 		t.Fatalf("third cycle did not wrap back to English:\n%s", view)
+	}
+
+	// The old 5 binding is gone: it must neither cycle the language nor
+	// change the view.
+	m, _ = update(t, m, keyMsg("5"))
+	if view = m.View(); !strings.Contains(view, "2 Relays") || m.view != viewStatus {
+		t.Fatalf("5 still does something:\n%s", view)
 	}
 }
 
 // Settings notices are stored as kinds and worded at draw time, so a note
-// set under one language follows a 5-key cycle into the next — stored
+// set under one language follows an l-key cycle into the next — stored
 // rendered text would leave mixed-language UI for exactly the reader the
 // trilingual escape hatch serves.
 func TestSettingsNotesFollowLanguageCycles(t *testing.T) {
@@ -50,7 +57,7 @@ func TestSettingsNotesFollowLanguageCycles(t *testing.T) {
 		t.Fatalf("Chinese mode note missing:\n%s", view)
 	}
 
-	m, _ = update(t, m, keyMsg("5")) // 中文 → русский
+	m, _ = update(t, m, keyMsg("l")) // 中文 → русский
 	view := m.View()
 	if !strings.Contains(view, "режим TUN: следующее подключение захватит все приложения") {
 		t.Fatalf("note did not follow the language cycle:\n%s", view)
@@ -66,20 +73,24 @@ func TestSettingsNotesFollowLanguageCycles(t *testing.T) {
 	if !strings.Contains(m.View(), "интеграция с shell недоступна") {
 		t.Fatalf("Russian shell-unavailable notice missing:\n%s", m.View())
 	}
-	m, _ = update(t, m, keyMsg("5")) // русский → English
+	m, _ = update(t, m, keyMsg("l")) // русский → English
 	if !strings.Contains(m.View(), "shell integration is unavailable in this build") {
 		t.Fatalf("shell notice did not follow the cycle:\n%s", m.View())
 	}
 }
 
-// The language slot must be readable in every language, so it is the same
-// trilingual label in all of them.
-func TestHeaderAlwaysShowsTheTrilingualLanguageLabel(t *testing.T) {
+// The language switch must be findable in every language, so every footer
+// carries the same trilingual token — and the header, now views-only, no
+// longer holds a language slot.
+func TestFooterAlwaysShowsTheTrilingualLanguageHelp(t *testing.T) {
 	m := newTestModel(&fakeDriver{})
 	for lang := language(0); lang < languageCount; lang++ {
 		m.lang = lang
-		if header := m.headerView(); !strings.Contains(header, languageTabLabel) {
-			t.Fatalf("lang %d header lost the language label: %q", lang, header)
+		if footer := m.footerView(); !strings.Contains(footer, languageKeyHelp) {
+			t.Fatalf("lang %d footer lost the language help: %q", lang, footer)
+		}
+		if header := m.headerView(); strings.Contains(header, "язык") {
+			t.Fatalf("lang %d header still carries a language slot: %q", lang, header)
 		}
 	}
 }

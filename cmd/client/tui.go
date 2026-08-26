@@ -193,7 +193,7 @@ const (
 )
 
 // A settings notice is stored as a kind and rendered through the active
-// language at draw time: storing translated text would survive a 5-key
+// language at draw time: storing translated text would survive an l-key
 // language cycle and leave mixed-language UI.
 type noteKind int
 
@@ -530,9 +530,11 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "4":
 		m.view = viewSettings
 		return m, nil
-	case "5":
+	case "l":
 		// Cycle the UI language in place — no settings entry, so a user who
-		// cannot read the current language never has to navigate one.
+		// cannot read the current language never has to navigate one. The
+		// footer advertises the key trilingually (languageKeyHelp) for the
+		// same reason.
 		m.lang = (m.lang + 1) % languageCount
 		return m, nil
 	case "tab":

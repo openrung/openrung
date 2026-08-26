@@ -9,8 +9,8 @@ import (
 )
 
 // The TUI ships English, Chinese, and Russian. There is no settings entry for
-// this: the 5 key cycles the language directly, and the header slot that
-// advertises it stays in all three languages at once (languageTabLabel) so a
+// this: the l key cycles the language directly, and the footer help token that
+// advertises it stays in all three languages at once (languageKeyHelp) so a
 // reader can always find their way back regardless of the current language.
 //
 // The platform TUN copy (tunModeSummary/tunModeAdvice) and everything the
@@ -26,9 +26,12 @@ const (
 	languageCount
 )
 
-// languageTabLabel is identical in every language on purpose: the switch must
-// be recognizable before the current language is readable.
-const languageTabLabel = "5 languages/中文/языки"
+// languageKeyHelp is identical in every language on purpose: the switch must
+// be recognizable before the current language is readable, so every footer
+// carries this same trilingual token — and it LEADS helpGlobal, because the
+// footer sheds help from the right and the escape hatch must be the last
+// thing to go.
+const languageKeyHelp = "l lang/语言/язык"
 
 type translation struct {
 	tabs [viewCount]string
@@ -116,7 +119,7 @@ var translations = [languageCount]*translation{
 	langEnglish: {
 		tabs: [viewCount]string{"1 Status", "2 Relays", "3 Logs", "4 Settings"},
 
-		helpGlobal:       "c connect · d disconnect · r refresh · 1-4/tab views · 5 language · q quit",
+		helpGlobal:       languageKeyHelp + " · c connect · d disconnect · r refresh · 1-4/tab views · q quit",
 		helpRelays:       "↑/↓ select · enter connect to selection · x clear target · ",
 		helpLogs:         "↑/↓/pgup/pgdn scroll · ",
 		helpSettings:     "↑/↓ field · enter edit · ",
@@ -207,7 +210,7 @@ var translations = [languageCount]*translation{
 	langChinese: {
 		tabs: [viewCount]string{"1 状态", "2 中继", "3 日志", "4 设置"},
 
-		helpGlobal:       "c 连接 · d 断开 · r 刷新 · 1-4/tab 视图 · 5 语言 · q 退出",
+		helpGlobal:       languageKeyHelp + " · c 连接 · d 断开 · r 刷新 · 1-4/tab 视图 · q 退出",
 		helpRelays:       "↑/↓ 选择 · enter 连接所选 · x 清除目标 · ",
 		helpLogs:         "↑/↓/pgup/pgdn 滚动 · ",
 		helpSettings:     "↑/↓ 字段 · enter 编辑 · ",
@@ -298,7 +301,7 @@ var translations = [languageCount]*translation{
 	langRussian: {
 		tabs: [viewCount]string{"1 Статус", "2 Узлы", "3 Журнал", "4 Настройки"},
 
-		helpGlobal:       "c подключить · d отключить · r обновить · 1-4/tab вкладки · 5 язык · q выход",
+		helpGlobal:       languageKeyHelp + " · c подключить · d отключить · r обновить · 1-4/tab вкладки · q выход",
 		helpRelays:       "↑/↓ выбор · enter подключиться к выбранному · x сбросить цель · ",
 		helpLogs:         "↑/↓/pgup/pgdn прокрутка · ",
 		helpSettings:     "↑/↓ поле · enter изменить · ",
