@@ -19,14 +19,17 @@ func TestLanguageKeyCyclesWithoutEnteringSettings(t *testing.T) {
 	if m.view != viewRelays {
 		t.Fatalf("language key changed the view to %d", m.view)
 	}
+	// Evidence from both a tab and the key help, so this covers more than the
+	// header: the status bar's own labels scroll, so they are not dependable
+	// here (TestSettingsNotesFollowLanguageCycles covers body text).
 	view := m.View()
-	if !strings.Contains(view, "1 中继") || !strings.Contains(view, "状态") {
+	if !strings.Contains(view, "1 中继") || !strings.Contains(view, "c 连接") {
 		t.Fatalf("first cycle is not Chinese:\n%s", view)
 	}
 
 	m, _ = update(t, m, keyMsg("0"))
 	view = m.View()
-	if !strings.Contains(view, "1 Узлы") || !strings.Contains(view, "Статус") {
+	if !strings.Contains(view, "1 Узлы") || !strings.Contains(view, "c подключить") {
 		t.Fatalf("second cycle is not Russian:\n%s", view)
 	}
 

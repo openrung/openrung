@@ -39,14 +39,23 @@ func TestCountryFlag(t *testing.T) {
 	}
 }
 
-func TestStatusDetailShowsCountryFlag(t *testing.T) {
+// The country rides on the pin, as a code AND a flag — never the flag alone,
+// since countryFlag renders nothing on Windows and the pin is now the only
+// place a country appears.
+func TestStatusPinPairsCountryCodeWithFlag(t *testing.T) {
 	m := newTestModel(&fakeDriver{})
+	m.state = connectcore.State{Status: connectcore.StatusConnected}
 	m.infoOK = true
 	m.info = connectcore.ConnectionInfo{Relay: brokerapi.RelayDescriptor{
 		RelayGeoLocation: brokerapi.RelayGeoLocation{CountryCode: "jp"},
 	}}
-	if view := m.statusDetail(); !strings.Contains(view, "JP🇯🇵") {
-		t.Fatalf("status detail missing the country flag:\n%s", view)
+	pin := m.statusPin(0)
+	if !strings.Contains(pin, "JP"+countryFlagFor("darwin", "jp")) {
+		t.Fatalf("pin did not pair the country code with its flag:\n%q", pin)
+	}
+	// The code is what survives where the flag cannot render.
+	if !strings.Contains(pin, "JP") {
+		t.Fatalf("pin lost the country code:\n%q", pin)
 	}
 }
 
@@ -106,8 +115,7 @@ func TestStatusDetailCarriesEveryStatusField(t *testing.T) {
 	tr := m.tr()
 	detail := m.statusDetail()
 	for _, want := range []string{
-		tr.labelStatus, "connected", "[foundation]",
-		tr.labelCountry, tr.labelTransport, "front-a", tr.labelHealth,
+		"[foundation]", tr.labelTransport, "front-a", tr.labelHealth,
 		tr.labelCapture, tr.labelProxy, "127.0.0.1:43210", tr.labelBroker,
 		tr.labelTarget, tr.labelError, failure,
 	} {
@@ -115,14 +123,18 @@ func TestStatusDetailCarriesEveryStatusField(t *testing.T) {
 			t.Errorf("status detail missing %q:\n%s", want, detail)
 		}
 	}
-	// The relay name lives only on the pin: repeated in a track that scrolls
-	// past the pin, it reads as two different relays.
-	if strings.Contains(detail, "merry-falcon") {
-		t.Errorf("relay name duplicated into the scrolling detail:\n%s", detail)
+	// Nothing the bar states another way belongs in the scrolling track: the
+	// state is the bar's color, and the relay and its country are pinned. Any
+	// of them repeated here reads as a second, different relay.
+	for _, gone := range []string{tr.labelStatus, tr.labelCountry, "merry-falcon", "JP"} {
+		if strings.Contains(detail, gone) {
+			t.Errorf("%q is duplicated into the scrolling detail:\n%s", gone, detail)
+		}
 	}
-	if bar := m.statusFooterView(); !strings.Contains(bar, "00:01:30") ||
-		!strings.Contains(bar, "merry-falcon") {
-		t.Errorf("status bar did not pin the relay and duration:\n%q", bar)
+	for _, want := range []string{"merry-falcon", "JP", "00:01:30"} {
+		if bar := m.statusFooterView(); !strings.Contains(bar, want) {
+			t.Errorf("status bar pin missing %q:\n%q", want, bar)
+		}
 	}
 
 	// Disconnected: no duration is pinned, and the key help never carries one.
@@ -173,28 +185,25 @@ func TestStatusIdentityIsSingleSourced(t *testing.T) {
 		ID:               "r9",
 		RelayGeoLocation: brokerapi.RelayGeoLocation{CountryCode: "jp"},
 	}}
-	detail, pin := m.statusDetail(), m.statusPin(0)
+	pin := m.statusPin(0)
 	if strings.Contains(pin, "Singapore") {
 		t.Fatalf("pin paired the state label with the descriptor's flag: %q", pin)
 	}
 	if !strings.Contains(pin, "relay r9") {
 		t.Fatalf("pin did not fall back to the descriptor's own name: %q", pin)
 	}
-	if !strings.Contains(detail, "JP") {
-		t.Fatalf("detail lost the descriptor's country: %q", detail)
+	if !strings.Contains(pin, "JP") {
+		t.Fatalf("pin lost the descriptor's country: %q", pin)
 	}
 
 	// No descriptor: the state label stands alone, and no country is asserted.
 	m.infoOK = false
-	detail, pin = m.statusDetail(), m.statusPin(0)
+	pin = m.statusPin(0)
 	if !strings.Contains(pin, "Singapore") {
 		t.Fatalf("descriptor-less pin lost the state label: %q", pin)
 	}
-	if strings.Contains(pin, countryFlagFor("darwin", "jp")) {
+	if strings.Contains(pin, "JP") || strings.Contains(pin, countryFlagFor("darwin", "jp")) {
 		t.Fatalf("descriptor-less pin still asserts a country: %q", pin)
-	}
-	if strings.Contains(detail, "JP") {
-		t.Fatalf("descriptor-less detail still asserts a country: %q", detail)
 	}
 }
 

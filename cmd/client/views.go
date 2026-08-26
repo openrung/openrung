@@ -322,11 +322,15 @@ func (m tuiModel) statusPin(budget int) string {
 	label := ""
 	if m.infoOK {
 		label = strings.TrimSpace(relayListName(m.info.Relay))
-		if flag := countryFlag(m.info.Relay.CountryCode); flag != "" {
+		// Code AND flag, never the flag alone: countryFlag renders nothing on
+		// Windows, and with the Country field gone from the detail this is the
+		// only place a country appears at all.
+		if cc := strings.TrimSpace(m.info.Relay.CountryCode); cc != "" {
+			geo := strings.ToUpper(cc) + countryFlag(cc)
 			if label != "" {
 				label += " "
 			}
-			label += flag
+			label += geo
 		}
 	} else if m.state.RelayLabel != nil {
 		label = strings.TrimSpace(*m.state.RelayLabel)
@@ -364,25 +368,20 @@ func (m tuiModel) statusDetail() string {
 	tr := m.tr()
 	status := m.state.Status
 	field := func(label, value string) string { return label + " " + value }
-	parts := []string{field(tr.labelStatus, tr.statusName(status))}
 
-	// No relay name here: it is pinned to the bar's right edge (statusPin), and
-	// repeating it in a track that scrolls past the pin reads as two relays. The
-	// class badge is not duplicated, so it stays — bracketed, it labels itself.
-	// The country comes from the descriptor or not at all, never from the state
-	// label's era, so a failover cannot pair a fresh relay with a stale country.
-	country := "—"
+	// Nothing here that the bar already says another way: the state is the bar's
+	// own color, and the relay name and its country are pinned to the right edge
+	// (statusPin). Repeating either in a track that scrolls past the pin reads as
+	// a second, different relay. The class badge is not duplicated anywhere, so
+	// it stays — bracketed, it labels itself.
+	parts := make([]string, 0, 10)
 	if m.infoOK {
 		if brokerapi.EffectiveNodeClass(m.info.Relay.NodeClass) == brokerapi.NodeClassFoundation {
 			parts = append(parts, tr.badgeFoundation)
 		} else {
 			parts = append(parts, tr.badgeVolunteer)
 		}
-		if cc := strings.TrimSpace(m.info.Relay.CountryCode); cc != "" {
-			country = strings.ToUpper(cc) + countryFlag(cc)
-		}
 	}
-	parts = append(parts, field(tr.labelCountry, country))
 
 	transport := "—"
 	if m.infoOK {
