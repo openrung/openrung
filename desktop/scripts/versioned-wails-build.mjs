@@ -114,6 +114,12 @@ export function versionedWailsBuildArgs(args, version) {
       continue;
     }
 
+    // -trimpath is injected below; swallow a caller's copy so the flag is
+    // not passed twice.
+    if (argument === '-trimpath' || argument === '--trimpath') {
+      continue;
+    }
+
     passthrough.push(argument);
   }
 
@@ -121,7 +127,11 @@ export function versionedWailsBuildArgs(args, version) {
   // caller cannot accidentally replace the version from desktop/VERSION.
   const versionLdflag = `-X ${appVersionVariable}=${version}`;
   const ldflags = [...callerLdflags.filter((value) => value.trim() !== ''), versionLdflag].join(' ');
-  return [...passthrough, '-tags', mergedBuildTags(callerTags), '-ldflags', ldflags];
+  // -trimpath on every build (Wails forwards it to go build): a default build
+  // embeds the builder's GOMODCACHE paths (/Users/<name>/go/pkg/mod/...) in
+  // the binary's debug data, leaking the local username into anything
+  // distributed. Injected here, like the tags, so no build path can lose it.
+  return [...passthrough, '-trimpath', '-tags', mergedBuildTags(callerTags), '-ldflags', ldflags];
 }
 
 function displayArgument(argument) {

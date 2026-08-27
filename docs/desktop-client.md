@@ -164,27 +164,52 @@ settings. To work against a local broker:
 go run ./cmd/client connect -broker http://localhost:8080
 ```
 
-Connecting is a keypress, not a flag: the client starts disconnected, and `c`
-connects with whatever the Settings view holds.
+Connecting is a keypress, not a flag: the client starts disconnected, and
+`enter` on the Relays list connects — to the highlighted relay, or ranked
+automatically via the **Auto select** row at the top of the list. There is no
+stored relay target in the interactive client at all: what you highlight is
+what you get, every time. Settings controls the broker and capture mode;
+`-relay-id`/`-relay-label` apply to `-headless`, `check`, and `config` only.
 
 ### Views and keys
 
-Four views, switched with `1`–`4`, `tab`, and `shift+tab`:
+Three views, switched with `1`–`3`, `tab`, and `shift+tab`:
 
 | View | What it shows |
 | --- | --- |
-| **Status** | Connection state, relay label, country, foundation/volunteer class, transport path (direct, punched, or WSS front), session duration, health-probe state, the latest failover/fallback activity, and the capture mode with its local proxy endpoint |
-| **Relays** | The ranked relay directory — country, measured latency, node class — plus the persisted recents row. `↑`/`↓` moves, `enter` pins the highlighted relay and connects to it, `x` clears the pin |
+| **Relays** | The ranked relay directory — country, measured latency, and node class — under an **Auto select** row. `↑`/`↓` moves; `enter` connects to the highlighted row: a relay connects to exactly that relay, Auto select takes the ranked pick. The connected relay's row renders bold |
 | **Logs** | Engine and sing-box output in a scrollable ring buffer |
-| **Settings** | Broker URL override, capture mode, relay targeting by id/label/country, and the shell proxy helper |
+| **Settings** | Broker URL override, capture mode, and the shell proxy helper |
 
-Global keys: `c` connect, `d` disconnect, `r` refresh the relay directory,
-`q` (or `ctrl+c`) quit. Quitting tears down the tunnel, restores the system
-proxy, and flushes telemetry before the process exits.
+There is no Status view. Connection state lives in the **status bar**, the
+line directly above the key help, so it is readable from whichever view you
+are on rather than only the one you navigated to. It carries everything the
+old Status view did — state, relay and its foundation/volunteer class,
+country, transport path (direct, punched, or WSS front), health-probe state,
+the latest failover or fallback activity, capture mode with its local proxy
+endpoint, broker, and the last error — on one line that scrolls
+horizontally when it overflows. While connected, the relay label with its
+country flag and the session duration are pinned to the bar's right edge
+instead of scrolling, so a glance at the corner always answers "to what" and
+"for how long"; on a terminal too narrow for both, the label yields and the
+duration stays. The bar is the connection signal too: red while disconnected or
+failed, yellow through every transition, green while connected. The key-help
+line below it never changes color, so the bar is the only thing on screen
+that does.
 
-In Settings, `↑`/`↓` moves between fields and `enter` acts on one: text fields
-open an inline editor (`enter` applies, `esc` cancels), the Mode field toggles
-the capture mode, and the Shell proxy field prints the copyable commands.
+Global keys: `d` disconnect, `r` refresh the relay directory,
+`0` cycles English/中文/русский, and `q` (or `ctrl+c`) quit. The language key
+is a digit on purpose: a Cyrillic or Greek layout carries no Latin letters, so
+a letter would be untypeable for the reader who most needs to switch away from
+a language they cannot read. Scrolling the Logs pager, moving with `↑`/`↓`, and
+acting with `enter` are left out of the footer help as conventions the reader
+already has. If the help is still too narrow to fit, it scrolls the same way
+the status bar does. Quitting tears down the tunnel, restores the system proxy,
+and flushes telemetry before the process exits.
+
+In Settings, `↑`/`↓` moves between fields and `enter` acts on one: Broker URL
+opens an inline editor (`enter` applies, `esc` cancels), Mode toggles the
+capture mode, and Shell proxy prints the copyable commands.
 
 ### Capture modes
 
@@ -301,8 +326,12 @@ non-zero on a terminal failure, and an interrupt disconnects cleanly, restoring
 the system proxy. `check` and `config` are fetch-and-print only: they open no
 telemetry session and start no tunnel.
 
-Common flags: `-broker` (empty races the built-in HTTPS fronts), `-relay-id`
-and `-relay-label` to pin a target, `-relay-family` for `check`/`config`,
+Common flags: `-broker` (empty races the built-in HTTPS fronts), `-relay-id`,
+`-relay-label`, and `-relay-country` to pin a relay or scope the connect to a
+country — a country target keeps mid-session failover within that country
+(`-headless`, `check`, and `config`; the interactive client selects from the
+Relays list and warns if they are passed), `-relay-family` for
+`check`/`config`,
 `-mtu` for the TUN device, and `-sing-box` to substitute an external sing-box
 binary for the bundled engine. Run `go run ./cmd/client help` for the full
 list.

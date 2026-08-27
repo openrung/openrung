@@ -118,16 +118,23 @@ func update(t *testing.T, m tuiModel, msg tea.Msg) (tuiModel, tea.Msg) {
 	return model, cmd()
 }
 
-func TestConnectKeyIssuesEngineConnectWithSettingsTarget(t *testing.T) {
+// The c and x keys are retired: enter on the Relays list is the only connect
+// control, and there is no pin left for x to clear. Both keys must be inert so
+// stale muscle memory or a stale doc cannot silently half-work.
+func TestRetiredConnectAndClearKeysAreInert(t *testing.T) {
 	driver := &fakeDriver{}
 	m := newTestModel(driver)
-	m.settings.target = connectcore.RelayTarget{Country: "kr"}
+	m.view = viewRelays
+	m.relays = []connectcore.DirectoryRelay{{Relay: brokerapi.RelayDescriptor{ID: "relay_a"}}}
 
-	_, _ = update(t, m, keyMsg("c"))
-
-	broker, target := driver.lastConnect(t)
-	if broker != "http://broker.test" || target.Country != "kr" {
-		t.Fatalf("ConnectTarget(%q, %+v), want the settings broker and target", broker, target)
+	for _, stale := range []string{"c", "x"} {
+		m, _ = update(t, m, keyMsg(stale))
+		if len(driver.connects) != 0 {
+			t.Fatalf("%q still connects: %+v", stale, driver.connects)
+		}
+		if m.view != viewRelays {
+			t.Fatalf("%q moved the view to %d", stale, m.view)
+		}
 	}
 }
 
@@ -142,7 +149,7 @@ func TestDisconnectKeyIssuesEngineDisconnect(t *testing.T) {
 	}
 }
 
-func TestRelaysEnterPinsSelectionAndConnects(t *testing.T) {
+func TestRelaysEnterConnectsToTheHighlightedRelay(t *testing.T) {
 	driver := &fakeDriver{}
 	m := newTestModel(driver)
 	m.view = viewRelays
@@ -151,28 +158,165 @@ func TestRelaysEnterPinsSelectionAndConnects(t *testing.T) {
 		{Relay: brokerapi.RelayDescriptor{ID: "relay_b"}},
 	}
 
+	// The cursor starts on Auto select, so the second relay is two steps down.
+	m, _ = update(t, m, keyMsg("down"))
 	m, _ = update(t, m, keyMsg("down"))
 	m, _ = update(t, m, keyMsg("enter"))
 
 	_, target := driver.lastConnect(t)
 	if target.RelayID != "relay_b" {
-		t.Fatalf("target = %+v, want the highlighted relay pinned", target)
-	}
-	if m.settings.target.RelayID != "relay_b" {
-		t.Fatalf("settings target = %+v, want the pinned relay retained", m.settings.target)
+		t.Fatalf("target = %+v, want the highlighted relay", target)
 	}
 
-	// x clears the pin so the next connect is automatic again.
-	m, _ = update(t, m, keyMsg("x"))
-	if m.settings.target.Targeted() {
-		t.Fatalf("settings target = %+v, want cleared", m.settings.target)
+	// The target lived only in that call: back on Auto select, the next connect
+	// is ranked again — no pin lingers from the relay connect before it. (The
+	// requested connect reports in, ends, and time passes first, or the
+	// connect-spam guards would swallow the press.)
+	m, _ = update(t, m, engineStateMsg(connectcore.State{Status: connectcore.StatusPreparing}))
+	m, _ = update(t, m, engineStateMsg(connectcore.State{Status: connectcore.StatusDisconnected}))
+	m.now = m.now.Add(2 * time.Second)
+	m, _ = update(t, m, keyMsg("up"))
+	m, _ = update(t, m, keyMsg("up"))
+	m, _ = update(t, m, keyMsg("enter"))
+	if _, target := driver.lastConnect(t); target.Targeted() {
+		t.Fatalf("Auto select connect still carries a target: %+v", target)
+	}
+}
+
+// The status guard reads only the last PUBLISHED engine state, which arrives
+// asynchronously: presses queued before that first state event must not each
+// restart the ladder, and key repeats are capped at one connect per second.
+func TestEnterSpamDispatchesOneConnect(t *testing.T) {
+	driver := &fakeDriver{}
+	m := newTestModel(driver)
+	m.view = viewRelays
+
+	for i := 0; i < 5; i++ {
+		m, _ = update(t, m, keyMsg("enter"))
+	}
+	if len(driver.connects) != 1 {
+		t.Fatalf("queued enters dispatched %d connects, want 1", len(driver.connects))
+	}
+
+	// A reconnect's teardown publishes the OLD session's Disconnected first,
+	// and the new ladder may not report in for seconds. That event must not
+	// unlatch enter — the reproduction was: connected → enter → old session's
+	// Disconnected → wait past the throttle → enter → two ConnectTargets.
+	m, _ = update(t, m, engineStateMsg(connectcore.State{Status: connectcore.StatusDisconnected}))
+	m.now = m.now.Add(2 * time.Second)
+	m, _ = update(t, m, keyMsg("enter"))
+	if len(driver.connects) != 1 {
+		t.Fatalf("old session's Disconnected unlatched enter: %d connects, want 1", len(driver.connects))
+	}
+
+	// Only the requested connect's own Preparing hands control back to the
+	// status guard; once that attempt ends and a second passes, a fresh press
+	// is a deliberate retry.
+	m, _ = update(t, m, engineStateMsg(connectcore.State{Status: connectcore.StatusPreparing}))
+	m, _ = update(t, m, keyMsg("enter")) // in flight: the status guard holds
+	if len(driver.connects) != 1 {
+		t.Fatalf("enter during preparing dispatched %d connects, want 1", len(driver.connects))
+	}
+	m, _ = update(t, m, engineStateMsg(connectcore.State{Status: connectcore.StatusDisconnected}))
+	m.now = m.now.Add(2 * time.Second)
+	m, _ = update(t, m, keyMsg("enter"))
+	if len(driver.connects) != 2 {
+		t.Fatalf("deliberate retry dispatched %d connects, want 2", len(driver.connects))
+	}
+}
+
+// A connect torn down before it ever publishes preparing must not leave the
+// pending latch stuck: an explicit d hands the latch back.
+func TestDisconnectUnlatchesAPendingConnect(t *testing.T) {
+	driver := &fakeDriver{}
+	m := newTestModel(driver)
+	m.view = viewRelays
+
+	m, _ = update(t, m, keyMsg("enter"))
+	if len(driver.connects) != 1 {
+		t.Fatalf("connects = %d, want 1", len(driver.connects))
+	}
+	m, _ = update(t, m, keyMsg("d"))
+	m.now = m.now.Add(2 * time.Second)
+	m, _ = update(t, m, keyMsg("enter"))
+	if len(driver.connects) != 2 {
+		t.Fatalf("enter after an explicit disconnect stayed latched: %d connects", len(driver.connects))
+	}
+}
+
+// Enter must not restart a connect that is already in flight (every
+// ConnectTarget tears down and rebuilds the ladder, so mashing enter would
+// keep it from converging), and enter on the relay the session is already on
+// must not drop the live session — while Auto select stays live as an
+// explicit "re-pick" even when connected.
+func TestEnterGuardsInFlightAndCurrentRelay(t *testing.T) {
+	driver := &fakeDriver{}
+	m := newTestModel(driver)
+	m.view = viewRelays
+	m.relays = []connectcore.DirectoryRelay{{Relay: brokerapi.RelayDescriptor{ID: "relay_a"}}}
+
+	for _, status := range []connectcore.Status{
+		connectcore.StatusPreparing, connectcore.StatusConnecting, connectcore.StatusDisconnecting,
+	} {
+		m.state = connectcore.State{Status: status}
+		m, _ = update(t, m, keyMsg("enter"))
+		if len(driver.connects) != 0 {
+			t.Fatalf("enter during %s issued a connect", status)
+		}
+	}
+
+	m.state = connectcore.State{Status: connectcore.StatusConnected}
+	m.infoOK = true
+	m.info = connectcore.ConnectionInfo{Relay: brokerapi.RelayDescriptor{ID: "relay_a"}}
+	m, _ = update(t, m, keyMsg("down")) // onto the connected relay's own row
+	m, _ = update(t, m, keyMsg("enter"))
+	if len(driver.connects) != 0 {
+		t.Fatal("enter on the connected relay dropped and rebuilt the session")
+	}
+	m, _ = update(t, m, keyMsg("up")) // back to Auto select
+	m, _ = update(t, m, keyMsg("enter"))
+	if len(driver.connects) != 1 {
+		t.Fatalf("Auto select while connected did not reconnect: %d connects", len(driver.connects))
+	}
+}
+
+// -relay-country keeps the engine's country-scoped connect (and its
+// intra-country failover) reachable from the binary now that the TUI holds no
+// target state.
+func TestRelayCountryFlagSeedsTheTarget(t *testing.T) {
+	cfg, err := parseCommonFlags("check", []string{"-relay-country", "kr"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target := cfg.target(); target.Country != "kr" || !target.Targeted() {
+		t.Fatalf("target = %+v, want country kr", target)
+	}
+}
+
+// Auto select — the list's first row, where the cursor starts — connects with
+// no target at all: the broker's ranked pick. It works before the directory
+// has ever loaded, since a ranked connect needs no list.
+func TestRelaysAutoSelectConnectsRanked(t *testing.T) {
+	driver := &fakeDriver{}
+	m := newTestModel(driver)
+	m.view = viewRelays
+
+	_, _ = update(t, m, keyMsg("enter"))
+
+	broker, target := driver.lastConnect(t)
+	if broker != "http://broker.test" || target.Targeted() {
+		t.Fatalf("ConnectTarget(%q, %+v), want the settings broker and no target", broker, target)
 	}
 }
 
 func TestConnectedStateStampsSessionStartAndRendersStatus(t *testing.T) {
 	driver := &fakeDriver{}
 	driver.info = connectcore.ConnectionInfo{
-		Relay:     brokerapi.RelayDescriptor{ID: "relay_a", NodeClass: brokerapi.NodeClassFoundation, RelayGeoLocation: brokerapi.RelayGeoLocation{CountryCode: "kr"}},
+		// Geo-bearing, like a real directory descriptor: the status bar single-
+		// sources relay identity from the descriptor, so a bare one would read
+		// "relay relay_a" and prove nothing about the label a user actually sees.
+		Relay: brokerapi.RelayDescriptor{ID: "relay_a", NodeClass: brokerapi.NodeClassFoundation,
+			RelayGeoLocation: brokerapi.RelayGeoLocation{City: "Seoul", Country: "South Korea", CountryCode: "kr"}},
 		Transport: brokerapi.TransportDirect,
 		ProxyPort: 43210,
 	}
@@ -193,10 +337,21 @@ func TestConnectedStateStampsSessionStartAndRendersStatus(t *testing.T) {
 	m, _ = update(t, m, m.resolveProxyCmd()())
 	m.now = m.connectedAt.Add(90 * time.Second)
 
-	view := m.View()
-	for _, want := range []string{"connected", label, "direct", "KR", "00:01:30", "127.0.0.1:43210"} {
+	// The status bar's detail track, not the rendered frame: at test width the
+	// bar shows only a scrolling window into it. The duration is the one field
+	// pinned to the rendered bar, checked separately below.
+	view := m.statusDetail()
+	for _, want := range []string{"direct", "127.0.0.1:43210"} {
 		if !strings.Contains(view, want) {
-			t.Fatalf("status view missing %q:\n%s", want, view)
+			t.Fatalf("status detail missing %q:\n%s", want, view)
+		}
+	}
+	// The relay, its country, and the duration are the pin's, not the detail's;
+	// the connection state itself is the bar's color.
+	pin := m.statusPin(0)
+	for _, want := range []string{label, "KR", "00:01:30"} {
+		if !strings.Contains(pin, want) {
+			t.Fatalf("status pin missing %q:\n%q", want, pin)
 		}
 	}
 }
@@ -287,11 +442,12 @@ func TestTUNModeSkipsProxyPortResolution(t *testing.T) {
 		t.Fatalf("mode = %v; want TUN from --tun", m.settings.mode)
 	}
 	m.width, m.height = 80, 24
-	m.view = viewStatus
-	if body := m.View(); !strings.Contains(body, "TUN — whole device") {
-		t.Fatalf("status view did not report TUN capture:\n%s", body)
+	// Read the status bar's detail track rather than the frame: at 80 cells the
+	// bar shows a window into it, so the capture field may be scrolled out.
+	if detail := m.statusDetail(); !strings.Contains(detail, "TUN — whole device") {
+		t.Fatalf("status bar did not report TUN capture:\n%s", detail)
 	}
-	if strings.Contains(m.View(), "resolving…") {
+	if strings.Contains(m.statusDetail(), "resolving…") {
 		t.Fatal("TUN mode still advertises a local proxy endpoint")
 	}
 }
@@ -381,25 +537,27 @@ func TestRelaysWindowFollowsCursor(t *testing.T) {
 	driver := &fakeDriver{}
 	m := newTestModel(driver)
 	m.view = viewRelays
-	m.height = 12 // body of 8 rows: notice-free header + 7 relay rows visible
+	m.refreshing = false
+	m.height = 12 // body of 7 rows; the brand mark reserves 4, header 1 → 2 list rows
 	for i := 0; i < 30; i++ {
 		m.relays = append(m.relays, connectcore.DirectoryRelay{
 			Relay: brokerapi.RelayDescriptor{ID: fmt.Sprintf("relay_%02d", i), Label: fmt.Sprintf("node-%02d", i)},
 		})
 	}
 
-	m.relayCursor = len(m.relays) - 1
+	// The last relay sits at cursor len(relays): index 0 is the Auto row.
+	m.relayCursor = len(m.relays)
 	view := m.View()
 	if !strings.Contains(view, "node-29") {
 		t.Fatalf("last relay not visible with the cursor on it:\n%s", view)
 	}
-	if strings.Contains(view, "node-00") {
+	if strings.Contains(view, "node-00") || strings.Contains(view, m.tr().autoSelect) {
 		t.Fatalf("head of the list still rendered while the cursor sits at the tail:\n%s", view)
 	}
 
 	m.relayCursor = 0
 	view = m.View()
-	if !strings.Contains(view, "node-00") || strings.Contains(view, "node-29") {
+	if !strings.Contains(view, m.tr().autoSelect) || !strings.Contains(view, "node-00") || strings.Contains(view, "node-29") {
 		t.Fatalf("window did not follow the cursor back to the head:\n%s", view)
 	}
 }
@@ -422,10 +580,11 @@ func TestEngineNoticesDriveActivityAndHealthRows(t *testing.T) {
 		Threshold: 3,
 	}))
 
-	view := m.View()
+	// The bar's detail track: at test width the rendered bar is a window into it.
+	view := m.statusDetail()
 	for _, want := range []string{"failover: relay relay_a lost", "tunnel process exited unexpectedly", "2/3 probes failed"} {
 		if !strings.Contains(view, want) {
-			t.Fatalf("status view missing %q:\n%s", want, view)
+			t.Fatalf("status detail missing %q:\n%s", want, view)
 		}
 	}
 
@@ -436,9 +595,9 @@ func TestEngineNoticesDriveActivityAndHealthRows(t *testing.T) {
 		FrontID: "front-a",
 		Reason:  "direct TCP blocked",
 	}))
-	view = m.View()
+	view = m.statusDetail()
 	if !strings.Contains(view, "WSS fallback: relay relay_a via front front-a") {
-		t.Fatalf("status view missing the WSS fallback activity:\n%s", view)
+		t.Fatalf("status detail missing the WSS fallback activity:\n%s", view)
 	}
 
 	// Disconnecting ends the session: health state goes with it, the last
@@ -456,22 +615,6 @@ func TestEngineNoticesDriveActivityAndHealthRows(t *testing.T) {
 	m, _ = update(t, m, engineStateMsg(connectcore.State{Status: connectcore.StatusPreparing}))
 	if m.activity.Kind != "" {
 		t.Fatalf("old session's activity leaked into the new connection: %+v", m.activity)
-	}
-}
-
-func TestRecentsRenderInRelaysView(t *testing.T) {
-	driver := &fakeDriver{}
-	m := newTestModel(driver)
-	m.view = viewRelays
-	m.refreshing = false
-	m.state.Recents = []connectcore.RecentNode{
-		{CountryCode: "KR", Label: "Seoul, South Korea"},
-		{CountryCode: "JP", Label: "Tokyo, Japan"},
-	}
-
-	view := m.View()
-	if !strings.Contains(view, "Seoul, South Korea · Tokyo, Japan") {
-		t.Fatalf("relays view missing the recents row:\n%s", view)
 	}
 }
 

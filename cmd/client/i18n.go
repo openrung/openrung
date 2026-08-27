@@ -9,8 +9,8 @@ import (
 )
 
 // The TUI ships English, Chinese, and Russian. There is no settings entry for
-// this: the 5 key cycles the language directly, and the header slot that
-// advertises it stays in all three languages at once (languageTabLabel) so a
+// this: the 0 key cycles the language directly, and the footer help token that
+// advertises it stays in all three languages at once (languageKeyHelp) so a
 // reader can always find their way back regardless of the current language.
 //
 // The platform TUN copy (tunModeSummary/tunModeAdvice) and everything the
@@ -26,32 +26,36 @@ const (
 	languageCount
 )
 
-// languageTabLabel is identical in every language on purpose: the switch must
-// be recognizable before the current language is readable.
-const languageTabLabel = "5 languages/中文/языки"
+// languageKeyHelp is identical in every language on purpose: the switch must
+// be recognizable before the current language is readable, so every footer
+// carries this same trilingual token. The key is a digit for the matching
+// reason — see the "0" case in handleKey.
+const languageKeyHelp = "0 lang/语言/язык"
 
 type translation struct {
 	tabs [viewCount]string
 
-	helpGlobal       string
-	helpRelays       string
-	helpLogs         string
-	helpSettings     string
+	helpGlobal string
+	// No per-view help: scrolling a pager, moving with ↑/↓, and connecting with
+	// enter on the highlighted row are conventions the list itself teaches, so
+	// every view shows the global help alone. Only the settings editor keeps
+	// its own line, for the esc that leaves it.
 	helpSettingsEdit string
 
-	labelStatus    string
-	labelRelay     string
-	labelCountry   string
+	// The status bar's scrolling detail carries only fields the bar does not
+	// state another way — no Status (the bar's color), no Relay/Country/Session
+	// (the pinned right edge).
 	labelTransport string
-	labelSession   string
 	labelHealth    string
 	labelActivity  string
 	labelCapture   string
 	labelProxy     string
 	labelBroker    string
-	labelTarget    string
 	labelError     string
 
+	// statusNames word the connection state for terminals with no color: the
+	// state is normally the status bar's background alone, which the Ascii
+	// profile (NO_COLOR, dumb terminals) cannot render.
 	statusNames map[connectcore.Status]string
 
 	captureTUN     string
@@ -74,12 +78,9 @@ type translation struct {
 	noticeTicketRetry       string // fmt: front id, wait
 	noticePunch             string // fmt: relay id, reason
 
-	targetRelay     string // fmt: relay id
-	targetLabel     string // fmt: label
-	targetCountry   string // fmt: country
-	targetAutomatic string
-
-	recentsLabel        string
+	// autoSelect is the Relays list's first row: enter there connects with no
+	// target pinned, letting the broker's ranking pick.
+	autoSelect          string
 	refreshingDirectory string
 	directoryErrPrefix  string
 	noRelaysYet         string
@@ -87,14 +88,12 @@ type translation struct {
 	colCountry          string
 	colLatency          string
 	colClass            string
-	targetMarker        string
 	badgeFoundation     string
 	badgeVolunteer      string
 
 	noLogOutput string
 
 	fieldNames              [settingsFieldCount]string
-	unset                   string
 	enableInShell           string
 	restoreShell            string
 	restoreAdvice           string
@@ -114,25 +113,17 @@ type translation struct {
 
 var translations = [languageCount]*translation{
 	langEnglish: {
-		tabs: [viewCount]string{"1 Status", "2 Relays", "3 Logs", "4 Settings"},
+		tabs: [viewCount]string{"1 Relays", "2 Logs", "3 Settings"},
 
-		helpGlobal:       "c connect · d disconnect · r refresh · 1-4/tab views · 5 language · q quit",
-		helpRelays:       "↑/↓ select · enter connect to selection · x clear target · ",
-		helpLogs:         "↑/↓/pgup/pgdn scroll · ",
-		helpSettings:     "↑/↓ field · enter edit · ",
-		helpSettingsEdit: "enter apply · esc cancel",
+		helpGlobal:       "d disconnect · r refresh · " + languageKeyHelp + " · q quit",
+		helpSettingsEdit: "esc cancel",
 
-		labelStatus:    "Status",
-		labelRelay:     "Relay",
-		labelCountry:   "Country",
 		labelTransport: "Transport",
-		labelSession:   "Session",
 		labelHealth:    "Health",
 		labelActivity:  "Activity",
 		labelCapture:   "Capture",
 		labelProxy:     "Proxy",
 		labelBroker:    "Broker",
-		labelTarget:    "Target",
 		labelError:     "Error",
 
 		statusNames: map[connectcore.Status]string{
@@ -164,12 +155,7 @@ var translations = [languageCount]*translation{
 		noticeTicketRetry:       "WSS tickets rate-limited; retrying front %s in %s",
 		noticePunch:             "punch %s: %s",
 
-		targetRelay:     "relay %s",
-		targetLabel:     "label %s",
-		targetCountry:   "country %s",
-		targetAutomatic: "automatic (ranked)",
-
-		recentsLabel:        "recents ",
+		autoSelect:          "Auto select (ranked)",
 		refreshingDirectory: "refreshing relay directory…",
 		directoryErrPrefix:  "directory: ",
 		noRelaysYet:         "no relays yet — press r to refresh",
@@ -177,16 +163,14 @@ var translations = [languageCount]*translation{
 		colCountry:          "COUNTRY",
 		colLatency:          "LATENCY",
 		colClass:            "CLASS",
-		targetMarker:        "← target",
 		badgeFoundation:     "[foundation]",
 		badgeVolunteer:      "[volunteer]",
 
 		noLogOutput: "no log output yet",
 
 		fieldNames: [settingsFieldCount]string{
-			"Broker URL", "Mode", "Target relay id", "Target label", "Target country", "Shell proxy",
+			"Broker URL", "Mode", "Shell proxy",
 		},
-		unset:                   "(unset)",
 		enableInShell:           "Enable in a shell",
 		restoreShell:            "Restore that shell",
 		restoreAdvice:           "run the restore command after disconnect, failure, quit, or crash",
@@ -205,25 +189,17 @@ var translations = [languageCount]*translation{
 	},
 
 	langChinese: {
-		tabs: [viewCount]string{"1 状态", "2 中继", "3 日志", "4 设置"},
+		tabs: [viewCount]string{"1 中继", "2 日志", "3 设置"},
 
-		helpGlobal:       "c 连接 · d 断开 · r 刷新 · 1-4/tab 视图 · 5 语言 · q 退出",
-		helpRelays:       "↑/↓ 选择 · enter 连接所选 · x 清除目标 · ",
-		helpLogs:         "↑/↓/pgup/pgdn 滚动 · ",
-		helpSettings:     "↑/↓ 字段 · enter 编辑 · ",
-		helpSettingsEdit: "enter 应用 · esc 取消",
+		helpGlobal:       "d 断开 · r 刷新 · " + languageKeyHelp + " · q 退出",
+		helpSettingsEdit: "esc 取消",
 
-		labelStatus:    "状态",
-		labelRelay:     "中继",
-		labelCountry:   "国家",
 		labelTransport: "传输",
-		labelSession:   "会话",
 		labelHealth:    "健康",
 		labelActivity:  "活动",
 		labelCapture:   "捕获",
 		labelProxy:     "代理",
 		labelBroker:    "调度服务器",
-		labelTarget:    "目标",
 		labelError:     "错误",
 
 		statusNames: map[connectcore.Status]string{
@@ -255,12 +231,7 @@ var translations = [languageCount]*translation{
 		noticeTicketRetry:       "WSS 票据被限流；将在 %[2]s 后重试前置 %[1]s",
 		noticePunch:             "打洞 %s：%s",
 
-		targetRelay:     "中继 %s",
-		targetLabel:     "标签 %s",
-		targetCountry:   "国家 %s",
-		targetAutomatic: "自动（按排名）",
-
-		recentsLabel:        "最近 ",
+		autoSelect:          "自动选择（按排名）",
 		refreshingDirectory: "正在刷新中继目录…",
 		directoryErrPrefix:  "目录：",
 		noRelaysYet:         "暂无中继 — 按 r 刷新",
@@ -268,16 +239,14 @@ var translations = [languageCount]*translation{
 		colCountry:          "国家",
 		colLatency:          "延迟",
 		colClass:            "类型",
-		targetMarker:        "← 目标",
 		badgeFoundation:     "[官方]",
 		badgeVolunteer:      "[志愿]",
 
 		noLogOutput: "暂无日志输出",
 
 		fieldNames: [settingsFieldCount]string{
-			"Broker 地址", "模式", "目标中继 ID", "目标标签", "目标国家", "Shell 代理",
+			"Broker 地址", "模式", "Shell 代理",
 		},
-		unset:                   "（未设置）",
 		enableInShell:           "在 shell 中启用",
 		restoreShell:            "恢复该 shell",
 		restoreAdvice:           "断开、失败、退出或崩溃后，请运行恢复命令",
@@ -296,25 +265,17 @@ var translations = [languageCount]*translation{
 	},
 
 	langRussian: {
-		tabs: [viewCount]string{"1 Статус", "2 Узлы", "3 Журнал", "4 Настройки"},
+		tabs: [viewCount]string{"1 Узлы", "2 Журнал", "3 Настройки"},
 
-		helpGlobal:       "c подключить · d отключить · r обновить · 1-4/tab вкладки · 5 язык · q выход",
-		helpRelays:       "↑/↓ выбор · enter подключиться к выбранному · x сбросить цель · ",
-		helpLogs:         "↑/↓/pgup/pgdn прокрутка · ",
-		helpSettings:     "↑/↓ поле · enter изменить · ",
-		helpSettingsEdit: "enter применить · esc отмена",
+		helpGlobal:       "d отключить · r обновить · " + languageKeyHelp + " · q выход",
+		helpSettingsEdit: "esc отмена",
 
-		labelStatus:    "Статус",
-		labelRelay:     "Узел",
-		labelCountry:   "Страна",
 		labelTransport: "Транспорт",
-		labelSession:   "Сессия",
 		labelHealth:    "Проверка",
 		labelActivity:  "События",
 		labelCapture:   "Захват",
 		labelProxy:     "Прокси",
 		labelBroker:    "Брокер",
-		labelTarget:    "Цель",
 		labelError:     "Ошибка",
 
 		statusNames: map[connectcore.Status]string{
@@ -346,12 +307,7 @@ var translations = [languageCount]*translation{
 		noticeTicketRetry:       "билеты WSS ограничены; повтор фронта %s через %s",
 		noticePunch:             "пробивка %s: %s",
 
-		targetRelay:     "узел %s",
-		targetLabel:     "метка %s",
-		targetCountry:   "страна %s",
-		targetAutomatic: "автоматически (по рейтингу)",
-
-		recentsLabel:        "недавние ",
+		autoSelect:          "Автовыбор (по рейтингу)",
 		refreshingDirectory: "обновление каталога узлов…",
 		directoryErrPrefix:  "каталог: ",
 		noRelaysYet:         "узлов пока нет — нажмите r для обновления",
@@ -359,16 +315,14 @@ var translations = [languageCount]*translation{
 		colCountry:          "СТРАНА",
 		colLatency:          "ЗАДЕРЖКА",
 		colClass:            "КЛАСС",
-		targetMarker:        "← цель",
 		badgeFoundation:     "[фонд]",
 		badgeVolunteer:      "[волонтёр]",
 
 		noLogOutput: "журнал пока пуст",
 
 		fieldNames: [settingsFieldCount]string{
-			"URL брокера", "Режим", "ID целевого узла", "Целевая метка", "Целевая страна", "Прокси для shell",
+			"URL брокера", "Режим", "Прокси для shell",
 		},
-		unset:                   "(не задано)",
 		enableInShell:           "Включить в shell",
 		restoreShell:            "Восстановить shell",
 		restoreAdvice:           "выполните команду восстановления после отключения, сбоя, выхода или падения",

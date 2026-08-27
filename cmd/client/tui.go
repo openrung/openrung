@@ -105,6 +105,12 @@ func runTUI(cfg connectConfig) error {
 	for _, warning := range legacyFlagWarnings(cfg) {
 		ring.push(stampLog(time.Now(), "warning: "+warning))
 	}
+	// Headless connect, check, and config still honor these flags; the
+	// interactive client holds no target state at all, so a passed one would
+	// otherwise go silently dead.
+	if cfg.target().Targeted() {
+		ring.push(stampLog(time.Now(), "warning: -relay-id/-relay-label/-relay-country are ignored by the interactive client — pick a relay in the Relays list (they still work with -headless, check, and config)"))
+	}
 
 	// Crash recovery and persisted recents; runs before the event loop exists,
 	// so its log lines are already in the ring for the first flush.
@@ -172,9 +178,11 @@ type modeSetMsg struct {
 
 type viewID int
 
+// There is no Status view: its rows are the statusFooter, a permanent bar
+// above the key help, so connection state is visible from every view instead
+// of only the one the user happened to be on.
 const (
-	viewStatus viewID = iota
-	viewRelays
+	viewRelays viewID = iota
 	viewLogs
 	viewSettings
 	viewCount
@@ -182,19 +190,20 @@ const (
 
 type settingsFieldID int
 
+// There is no target field anywhere: the TUI holds no relay-target state at
+// all. Enter on the Relays list passes the highlighted row to the engine and
+// that is the whole story (the -relay-id/-relay-label flags stay headless- and
+// check/config-only).
 const (
 	fieldBroker settingsFieldID = iota
 	fieldMode
-	fieldRelayID
-	fieldRelayLabel
-	fieldCountry
 	fieldShellHelper
 	settingsFieldCount
 )
 
 // A settings notice is stored as a kind and rendered through the active
-// language at draw time: storing translated text would survive a 5-key
-// language cycle and leave mixed-language UI.
+// language at draw time: storing translated text would survive a language
+// cycle and leave mixed-language UI.
 type noteKind int
 
 const (
@@ -216,7 +225,6 @@ type settingsNote struct {
 
 type settingsState struct {
 	brokerURL string
-	target    connectcore.RelayTarget
 	// mode mirrors the engine's capture mode. The engine owns it (a live
 	// session keeps the mode it started with), so the view only ever shows
 	// what a SetMode call confirmed.
@@ -251,6 +259,7 @@ type tuiModel struct {
 	infoOK      bool
 	connectedAt time.Time
 	now         time.Time
+	startedAt   time.Time
 
 	// Latest typed engine notices: activity is the last connection event
 	// (failover, WSS fallback, punch, ticket retry), health the last
@@ -272,6 +281,15 @@ type tuiModel struct {
 	relayCursor int
 	refreshing  bool
 
+	// connectPending covers the window between dispatching a connect and the
+	// engine's first state event for it: the enter guard reads only the last
+	// PUBLISHED state, so queued presses in that window would otherwise each
+	// tear down and restart the ladder. lastConnectAt backs it with a
+	// one-connect-per-second throttle (against m.now, the tick clock), since
+	// key repeats can outrun the pending flag's clearing.
+	connectPending bool
+	lastConnectAt  time.Time
+
 	settings settingsState
 }
 
@@ -280,18 +298,19 @@ const tuiTickInterval = 200 * time.Millisecond
 func newTUIModel(driver engineDriver, ring *logRing, cfg connectConfig) tuiModel {
 	input := textinput.New()
 	input.CharLimit = 256
+	now := time.Now()
 	return tuiModel{
-		driver: driver,
-		ring:   ring,
-		now:    time.Now(),
-		state:  connectcore.State{Status: connectcore.StatusDisconnected},
+		driver:    driver,
+		ring:      ring,
+		now:       now,
+		startedAt: now,
+		state:     connectcore.State{Status: connectcore.StatusDisconnected},
 		// Init issues the first directory refresh, so mark it in flight: the
 		// Relays view says "refreshing" instead of inviting an r that would
 		// race it.
 		refreshing: true,
 		settings: settingsState{
 			brokerURL: cfg.BrokerURL,
-			target:    cfg.target(),
 			mode:      cfg.mode(),
 			input:     input,
 		},
@@ -348,8 +367,12 @@ func (m tuiModel) resolveProxyCmd() tea.Cmd {
 	}
 }
 
-func (m tuiModel) connectCmd() tea.Cmd {
-	driver, broker, target := m.driver, m.settings.brokerURL, m.settings.target
+// connectCmd issues one connect to the given target — the highlighted relay,
+// or the zero target for Auto select's ranked pick. The target lives only in
+// this call: the TUI stores none, so there is nothing to pin, clear, or drift
+// stale.
+func (m tuiModel) connectCmd(target connectcore.RelayTarget) tea.Cmd {
+	driver, broker := m.driver, m.settings.brokerURL
 	return func() tea.Msg {
 		return connectIssuedMsg{err: driver.ConnectTarget(broker, target)}
 	}
@@ -403,6 +426,13 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state = connectcore.State(msg)
 		switch m.state.Status {
 		case connectcore.StatusPreparing:
+			// The requested connect is now the engine's published state, so the
+			// status guard takes over from the pending latch. Preparing is the
+			// ONLY event that clears it: a reconnect's teardown publishes the
+			// OLD session's Disconnected first (and can then flush telemetry
+			// for seconds), and unlatching there re-opened the enter window
+			// before the new ladder had reported in at all.
+			m.connectPending = false
 			// Only a fresh ConnectTarget passes through preparing (a failover
 			// recovery re-promotes via connecting), so this is where a genuinely
 			// new session starts: drop the previous session's activity notice.
@@ -484,8 +514,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.relayErr = ""
 		m.relays = msg.relays
-		if m.relayCursor >= len(m.relays) {
-			m.relayCursor = max(0, len(m.relays)-1)
+		// Index 0 is the Auto select row, so the list is one longer than the
+		// directory and the cursor is valid at len(relays) — and on the Auto
+		// row even when the directory is empty.
+		if m.relayCursor > len(m.relays) {
+			m.relayCursor = len(m.relays)
 		}
 		return m, nil
 
@@ -495,6 +528,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case connectIssuedMsg:
 		if msg.err != nil {
+			// The engine refused synchronously, so no state event will follow
+			// to clear the pending flag.
+			m.connectPending = false
 			m.ring.push(stampLog(time.Now(), "connect failed to start: "+msg.err.Error()))
 		}
 		return m, nil
@@ -519,20 +555,27 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// flushes telemetry before the process ends.
 		return m, tea.Quit
 	case "1":
-		m.view = viewStatus
-		return m, nil
-	case "2":
 		m.view = viewRelays
 		return m, nil
-	case "3":
+	case "2":
 		m.view = viewLogs
 		return m, nil
-	case "4":
+	case "3":
 		m.view = viewSettings
 		return m, nil
-	case "5":
+	case "0":
 		// Cycle the UI language in place — no settings entry, so a user who
-		// cannot read the current language never has to navigate one.
+		// cannot read the current language never has to navigate one. The
+		// footer advertises the key trilingually (languageKeyHelp) for the
+		// same reason.
+		//
+		// A digit, not a letter, because this key must be TYPEABLE in the same
+		// situation it must be readable. A Cyrillic (ЙЦУКЕН) or Greek layout
+		// carries no Latin letters at all, so a letter binding is unreachable
+		// without switching the OS layout first — for exactly the reader who
+		// cannot read the UI telling them which key to press. Digits sit on
+		// every layout, the same property that makes the 1-4 view keys work,
+		// and 0 reads as their neighbour.
 		m.lang = (m.lang + 1) % languageCount
 		return m, nil
 	case "tab":
@@ -541,9 +584,11 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "shift+tab":
 		m.view = (m.view + viewCount - 1) % viewCount
 		return m, nil
-	case "c":
-		return m, m.connectCmd()
 	case "d":
+		// An explicit disconnect supersedes any dispatched connect; without
+		// this, a connect torn down before it ever published preparing would
+		// leave the pending latch stuck and enter dead.
+		m.connectPending = false
 		return m, m.disconnectCmd()
 	case "r":
 		if m.refreshing {
@@ -573,18 +618,47 @@ func (m tuiModel) handleRelaysKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.relayCursor--
 		}
 	case "down", "j":
-		if m.relayCursor < len(m.relays)-1 {
+		if m.relayCursor < len(m.relays) {
 			m.relayCursor++
 		}
 	case "enter":
-		// Manual relay selection, like the desktop map's targeting: pin the
-		// highlighted relay and connect to it.
-		if m.relayCursor < len(m.relays) {
-			m.settings.target = connectcore.RelayTarget{RelayID: m.relays[m.relayCursor].Relay.ID}
-			return m, m.connectCmd()
+		// The list is the connect control — there is no separate connect key.
+		// Row 0 is Auto select: the zero target, the broker's ranking picks.
+		// Every row below connects to exactly that relay. The target is built
+		// here and handed straight to the engine; nothing is stored.
+		//
+		// Three guards, because every ConnectTarget tears the ladder down and
+		// restarts it: a dispatched connect the engine has not published state
+		// for yet (connectPending), a hard one-per-second throttle for key
+		// repeats, and the published in-flight states themselves.
+		if m.connectPending {
+			return m, nil
 		}
-	case "x":
-		m.settings.target = connectcore.RelayTarget{}
+		if !m.lastConnectAt.IsZero() && m.now.Sub(m.lastConnectAt) < time.Second {
+			return m, nil
+		}
+		switch m.state.Status {
+		case connectcore.StatusPreparing, connectcore.StatusConnecting, connectcore.StatusDisconnecting:
+			// A connect or teardown is already in flight; mashing enter on a
+			// slow connect must not keep it from ever converging.
+			return m, nil
+		}
+		var target connectcore.RelayTarget
+		if m.relayCursor > 0 {
+			if m.relayCursor > len(m.relays) {
+				return m, nil
+			}
+			// Enter on the relay the session is already on would drop the live
+			// session just to rebuild it; only a different row reconnects.
+			if m.state.Status == connectcore.StatusConnected && m.infoOK &&
+				m.relays[m.relayCursor-1].Relay.ID == m.info.Relay.ID {
+				return m, nil
+			}
+			target = connectcore.RelayTarget{RelayID: m.relays[m.relayCursor-1].Relay.ID}
+		}
+		m.connectPending = true
+		m.lastConnectAt = m.now
+		return m, m.connectCmd(target)
 	}
 	return m, nil
 }
@@ -652,29 +726,15 @@ func (m tuiModel) handleSettingsEditKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m tuiModel) settingsFieldValue(field settingsFieldID) string {
-	switch field {
-	case fieldBroker:
+	if field == fieldBroker {
 		return m.settings.brokerURL
-	case fieldRelayID:
-		return m.settings.target.RelayID
-	case fieldRelayLabel:
-		return m.settings.target.Label
-	case fieldCountry:
-		return m.settings.target.Country
 	}
 	return ""
 }
 
 func (m *tuiModel) applySettingsField(field settingsFieldID, value string) {
-	switch field {
-	case fieldBroker:
+	if field == fieldBroker {
 		m.settings.brokerURL = value
-	case fieldRelayID:
-		m.settings.target.RelayID = value
-	case fieldRelayLabel:
-		m.settings.target.Label = value
-	case fieldCountry:
-		m.settings.target.Country = value
 	}
 }
 

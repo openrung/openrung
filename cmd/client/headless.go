@@ -31,12 +31,13 @@ const (
 )
 
 type commonConfig struct {
-	BrokerURL  string
-	Limit      int
-	MTU        int
-	Family     string
-	RelayID    string
-	RelayLabel string
+	BrokerURL    string
+	Limit        int
+	MTU          int
+	Family       string
+	RelayID      string
+	RelayLabel   string
+	RelayCountry string
 }
 
 func parseCommonFlags(name string, args []string) (commonConfig, error) {
@@ -56,10 +57,14 @@ func addCommonFlags(fs *flag.FlagSet, cfg *commonConfig) {
 	fs.StringVar(&cfg.Family, "relay-family", defaultRelayFamily, "relay address family: auto, ipv4, or ipv6 (check/config)")
 	fs.StringVar(&cfg.RelayID, "relay-id", "", "connect only to the relay with this exact broker relay id (e.g. relay_abc...)")
 	fs.StringVar(&cfg.RelayLabel, "relay-label", "", "connect only to the relay(s) with this label")
+	// A country target keeps the engine's mid-session failover WITHIN the
+	// country (an exact relay id has nothing to fail over to) — for networks
+	// where only one country's relays are usable at all.
+	fs.StringVar(&cfg.RelayCountry, "relay-country", "", "connect only to relays in this 2-letter country code (e.g. kr); failover stays within it")
 }
 
 func (cfg commonConfig) target() connectcore.RelayTarget {
-	return connectcore.RelayTarget{RelayID: cfg.RelayID, Label: cfg.RelayLabel}
+	return connectcore.RelayTarget{RelayID: cfg.RelayID, Label: cfg.RelayLabel, Country: cfg.RelayCountry}
 }
 
 func runCheck(args []string) error {

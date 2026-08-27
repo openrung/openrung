@@ -175,7 +175,7 @@ func printUsage() {
   %[1]s config  -broker http://localhost:8080 -out openrung-sing-box.json
 
 Commands:
-  connect  Interactive TUI by default: Status, Relays, Logs, and Settings views
+  connect  Interactive TUI by default: Relays, Logs, and Settings views
            over the shared connection engine. With -headless, connect and
            stream logs until interrupted.
   check    Fetch relay candidates and print the selected usable relay.
@@ -186,7 +186,9 @@ Commands:
   version  Print the client and bundled sing-box versions and exit (-v).
 
 Keys (interactive):
-  c connect  d disconnect  r refresh relays  1-4/tab switch view  q quit
+  enter connect to the highlighted relay (Auto select = ranked)  d disconnect
+  r refresh relays  1-3/tab switch view
+  0 language (English/中文/русский)  q quit
 
 Connect flags:
   --tun           Capture the whole device through a TUN interface (%[2]s).
@@ -201,8 +203,13 @@ Common flags:
   -broker         Broker base URL override (e.g. http://localhost:8080 for a
                   local broker). Empty (the default) races the built-in HTTPS
                   broker fronts and uses the first that answers.
-  -relay-id       Pin the connect target to this exact broker relay id.
-  -relay-label    Pin the connect target to relay(s) with this label.
+  -relay-id       Connect only to this exact broker relay id (-headless,
+                  check, and config; the interactive client selects from
+                  the Relays list instead).
+  -relay-label    Connect only to relay(s) with this label (same commands).
+  -relay-country  Connect only to relays in this 2-letter country code
+                  (e.g. kr); mid-session failover stays within the country
+                  (same commands).
   -mtu            Override the TUN MTU (connect --tun, and the config
                   subcommand).
   -relay-family   Select relay family for check/config: auto, ipv4, or ipv6.
