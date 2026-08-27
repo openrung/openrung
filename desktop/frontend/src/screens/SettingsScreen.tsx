@@ -19,6 +19,8 @@ export function SettingsScreen({ consoleOpen, connectionStatus, onToggleConsole 
   const [proxyInfo, setProxyInfo] = useState<NativeProxyInfo | null>(null);
   const [proxyError, setProxyError] = useState<string | null>(null);
   const [copied, setCopied] = useState<'endpoint' | 'enable' | 'disable' | null>(null);
+  const [telemetryEnabled, setTelemetryEnabled] = useState(false);
+  const [telemetryError, setTelemetryError] = useState<string | null>(null);
   const connected = connectionStatus === 'connected';
 
   useEffect(() => {
@@ -34,6 +36,31 @@ export function SettingsScreen({ consoleOpen, connectionStatus, onToggleConsole 
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    void OpenRungVpn.getPrivacySettings()
+      .then(settings => {
+        if (active) setTelemetryEnabled(settings.telemetryEnabled);
+      })
+      .catch(error => {
+        if (active) setTelemetryError(String(error));
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const toggleTelemetry = async () => {
+    const next = !telemetryEnabled;
+    try {
+      await OpenRungVpn.setTelemetryEnabled(next);
+      setTelemetryEnabled(next);
+      setTelemetryError(null);
+    } catch (error) {
+      setTelemetryError(String(error));
+    }
+  };
 
   const copy = async (kind: 'endpoint' | 'enable' | 'disable', value: string) => {
     try {
@@ -115,6 +142,30 @@ export function SettingsScreen({ consoleOpen, connectionStatus, onToggleConsole 
           title="Endpoint"
           subtitle={proxyError ?? 'Preparing the stable local proxy endpoint…'}
         />
+      )}
+
+      <span className="or-section-header">PRIVACY</span>
+      <SettingRow
+        title="Diagnostic telemetry"
+        subtitle={
+          telemetryError ??
+          (telemetryEnabled
+            ? 'Enabled. Shares connection diagnostics, a persistent installation ID, and public-IP location/ISP metadata.'
+            : 'Off. No installation ID, public-IP lookup, or diagnostic heartbeat is sent.')
+        }
+        trailing={
+          <button
+            type="button"
+            className="or-setting-action"
+            disabled={connected}
+            onClick={() => void toggleTelemetry()}
+          >
+            {telemetryEnabled ? 'Disable' : 'Enable'}
+          </button>
+        }
+      />
+      {connected && (
+        <SettingRow title="Telemetry setting" subtitle="Disconnect before changing this setting." />
       )}
 
       <span className="or-section-header">DIAGNOSTICS</span>

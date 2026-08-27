@@ -53,7 +53,8 @@ umask 077
 
 REGION="${OPENRUNG_REGION:-ap-northeast-2}"          # Seoul
 ITYPE="${OPENRUNG_EC2_TYPE:-t4g.micro}"              # ARM Graviton (cheapest)
-IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-relayhub:main}"
+IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-relayhub:main@sha256:a2b0a868146bd9285a935aeb10e7a8f39e4e4033d735220b3fc83679844de387}"
+[[ "$IMAGE" =~ @sha256:[a-f0-9]{64}$ ]] || { echo "error: OPENRUNG_IMAGE must be pinned to an immutable sha256 digest" >&2; exit 2; }
 # The hub registers every tunnelled relay on its behalf, so this is the fleet's
 # highest-volume registration path. Point it at the broker's TLS origin — a
 # DNS-only (grey-cloud) record straight to the broker box, so a datacenter IP

@@ -110,8 +110,15 @@ The fastest way to help people reach the open internet is to turn a Linux VPS
 with a public IPv4 address into a volunteer relay. One command sets everything
 up (on Debian/Ubuntu it installs Docker for you):
 
+Clone a reviewed commit or signed release tag first; do not pipe a floating
+branch into `sudo`. The installer defaults to the immutable relay image digest
+recorded in the script.
+
 ```sh
-curl -fsSL https://raw.githubusercontent.com/openrung/openrung/main/deploy/relay/volunteer-up.sh | sudo sh
+git clone https://github.com/openrung/openrung.git
+cd openrung
+git checkout --detach <reviewed-commit-or-signed-tag>
+sudo ./deploy/relay/volunteer-up.sh
 ```
 
 The script pulls the official relay image, runs it with the same hardened
@@ -124,7 +131,7 @@ To choose the public relay name on the first run (letters, digits, `.`, `_`,
 and `-`; at most 63 characters), pass `OPENRUNG_LABEL` through `sudo`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/openrung/openrung/main/deploy/relay/volunteer-up.sh | sudo env OPENRUNG_LABEL=my-relay sh
+sudo env OPENRUNG_LABEL=my-relay ./deploy/relay/volunteer-up.sh
 ```
 
 Once `/etc/openrung/relay.env` exists, it is authoritative. Edit that file and

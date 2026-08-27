@@ -23,7 +23,8 @@ REGION="${OPENRUNG_REGION:-ap-northeast-1}"
 AZ="${OPENRUNG_AZ:-${REGION}a}"
 BUNDLE="${OPENRUNG_BUNDLE:-micro_3_0}"          # 1GB RAM / 2 vCPU / 40GB / 2TB
 BLUEPRINT="${OPENRUNG_BLUEPRINT:-ubuntu_24_04}"
-IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-relay:main}"
+IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-relay:main@sha256:9e58bdc0218d726d424a2c83e91ef91431767cd880c5683d45989ee9b8d41c66}"
+[[ "$IMAGE" =~ @sha256:[a-f0-9]{64}$ ]] || { echo "error: OPENRUNG_IMAGE must be pinned to an immutable sha256 digest" >&2; exit 2; }
 # Register against the broker ORIGIN, not a CDN front. The origin is a DNS-only
 # (grey-cloud) record straight to the broker box, so a datacenter IP reaches it
 # without the Cloudflare front's Managed Challenge, and it terminates TLS itself

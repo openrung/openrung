@@ -17,6 +17,9 @@ import (
 // apps). A nil result means telemetry is unavailable; every call site guards
 // for nil so connecting never fails on telemetry.
 func (s *Engine) newManager(brokerURL string) *clienttelemetry.Manager {
+	if !s.TelemetryEnabled() {
+		return nil
+	}
 	if brokerURL == "" {
 		brokerURL = TelemetryBrokerURL
 	}

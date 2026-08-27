@@ -607,6 +607,40 @@ func TestAttachGeoAttributesStampsSessionTelemetry(t *testing.T) {
 	}
 }
 
+func TestTelemetryDefaultsToOffWithoutCreatingIdentity(t *testing.T) {
+	s := New()
+	if s.TelemetryEnabled() {
+		t.Fatal("telemetry must default to off")
+	}
+
+	original := clientID
+	called := false
+	clientID = func() (string, error) {
+		called = true
+		return "client-test", nil
+	}
+	t.Cleanup(func() { clientID = original })
+
+	if mgr := s.newManager("https://broker.test"); mgr != nil {
+		t.Fatal("disabled telemetry created a manager")
+	}
+	opts := s.identityForDirectory()
+	if opts.ClientID != "" || opts.SessionID != "" || opts.Platform != brokerapi.PlatformNone {
+		t.Fatalf("disabled directory identity = %+v, want anonymous", opts)
+	}
+	if called {
+		t.Fatal("disabled telemetry created a persistent client identity")
+	}
+
+	if err := s.SetTelemetryEnabled(true); err != nil {
+		t.Fatalf("enable telemetry: %v", err)
+	}
+	opts = s.identityForDirectory()
+	if opts.ClientID != "client-test" || opts.Platform != brokerapi.PlatformDesktop {
+		t.Fatalf("enabled directory identity = %+v", opts)
+	}
+}
+
 func TestAttachGeoAttributesNilManagerSkipsLookup(t *testing.T) {
 	orig := lookupGeoAttributes
 	called := false

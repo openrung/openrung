@@ -27,6 +27,7 @@ const (
 	proxyPortLockFile = "proxy-port.lock"
 	proxyEnvFile      = "proxy-env-%d.sh"
 	proxySnapshotHdr  = "proxy-snapshot.json"
+	privacyFile       = "privacy.json"
 )
 
 // RecentNode mirrors the contract's RecentNode (openrung-mobile-app
@@ -40,6 +41,10 @@ type RecentNode struct {
 
 type proxyEndpoint struct {
 	Port int `json:"port"`
+}
+
+type privacySettings struct {
+	TelemetryEnabled bool `json:"telemetry_enabled"`
 }
 
 // Store reads and writes the on-disk state. dir is resolved once; it is a field
@@ -138,6 +143,26 @@ func (s *Store) SaveProxyPort(port int) error {
 		return fmt.Errorf("proxy port %d is outside 1..65535", port)
 	}
 	return s.writeJSON(proxyPortFile, proxyEndpoint{Port: port})
+}
+
+// LoadTelemetryEnabled returns the user's explicit diagnostic-telemetry
+// choice. Missing or malformed state is deliberately treated as false: new
+// installs and damaged state files must never opt a user in by accident.
+func (s *Store) LoadTelemetryEnabled() bool {
+	data, err := s.readFile(privacyFile)
+	if err != nil {
+		return false
+	}
+	var settings privacySettings
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return false
+	}
+	return settings.TelemetryEnabled
+}
+
+// SaveTelemetryEnabled persists an explicit diagnostic-telemetry choice.
+func (s *Store) SaveTelemetryEnabled(enabled bool) error {
+	return s.writeJSON(privacyFile, privacySettings{TelemetryEnabled: enabled})
 }
 
 // LoadOrSaveProxyPort serializes first-launch selection across client
@@ -266,7 +291,7 @@ func (s *Store) writeFile(name string, data []byte) error {
 
 func repairableStateFile(name string) bool {
 	switch name {
-	case recentsFile, proxyPortFile, proxyPortLockFile, proxySnapshotHdr, "client-id":
+	case recentsFile, proxyPortFile, proxyPortLockFile, proxySnapshotHdr, privacyFile, "client-id":
 		return true
 	}
 	if !strings.HasPrefix(name, "proxy-env-") || !strings.HasSuffix(name, ".sh") {

@@ -39,8 +39,8 @@ export function AboutScreen({ onOpenLicenses }: Props) {
         <p className="or-about-mission">
           OpenRung routes configured app traffic through relays around the world, keeping the open
           internet reachable when networks are filtered. No account is required and there are no
-          ads. During early testing, OpenRung collects diagnostic connection metadata to improve
-          reliability.
+          ads. Diagnostic connection telemetry is off by default and can be explicitly enabled in
+          Settings to help improve reliability.
         </p>
       </div>
 
