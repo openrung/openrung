@@ -10,6 +10,7 @@
 package sudouser
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 )
@@ -51,11 +52,15 @@ func Active() bool {
 // ChownFile hands an already-open file or directory to the invoking user when
 // Active, and is a no-op otherwise. Using the descriptor rather than reopening
 // a pathname prevents a user-controlled symlink swap from redirecting chown to
-// a privileged target.
+// a privileged target, and a multiply-linked regular file is refused because a
+// hard link reaches a target O_NOFOLLOW cannot rule out.
 func ChownFile(file *os.File) error {
 	uid, gid, ok := ids()
 	if !ok {
 		return nil
+	}
+	if hasExtraLinks(file) {
+		return fmt.Errorf("refusing to change ownership of %s: unexpected hard links", file.Name())
 	}
 	return fileChown(file, uid, gid)
 }

@@ -18,6 +18,16 @@ func OpenDir(path string) (*os.File, error) {
 	return os.Open(path)
 }
 
+func OpenStateDir(dir string) (*os.File, error) {
+	return OpenDir(dir)
+}
+
+// hasExtraLinks has no Windows equivalent to guard: ownership handoff never
+// runs there, because Active is always false.
+func hasExtraLinks(file *os.File) bool {
+	return false
+}
+
 func OpenRegularFile(path string, flag int, perm os.FileMode) (*os.File, error) {
 	file, err := os.OpenFile(path, flag, perm)
 	if err != nil {

@@ -13,7 +13,10 @@ import (
 )
 
 func withFileLock(path string, fn func() error) error {
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	// Never follow a symlink at the lock path: opening through one would point
+	// the descriptor at the target, and an elevated run then fchmods and
+	// fchowns whatever the invoking user aimed it at.
+	file, err := sudouser.OpenRegularFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return err
 	}

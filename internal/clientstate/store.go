@@ -62,31 +62,20 @@ func New() (*Store, error) {
 	if sudouser.Active() {
 		// An earlier sudo'd run (TUN mode) may have left the directory or the
 		// files in it root-owned, which makes every later plain run silently
-		// fail to read or write them. Open the directory without following
-		// symlinks, then repair only OpenRung's known regular state files.
-		dirFile, err := sudouser.OpenDir(dir)
-		if err != nil {
-			return nil, err
-		}
-		if err := sudouser.ChownFile(dirFile); err != nil {
-			dirFile.Close()
-			return nil, err
-		}
-		entries, err := dirFile.ReadDir(-1)
-		if err != nil {
-			dirFile.Close()
-			return nil, err
-		}
-		for _, entry := range entries {
-			if repairableStateFile(entry.Name()) {
-				if err := sudouser.ChownRegularFileAt(dirFile, entry.Name()); err != nil {
-					dirFile.Close()
-					return nil, err
+		// fail to read or write them. Repair only OpenRung's own regular state
+		// files, and keep every step best-effort: a repair that cannot run
+		// costs one root-owned file, while failing New costs the caller its
+		// whole store — recents, the stable proxy port, and the crash
+		// snapshot — which is the very outcome this repair exists to prevent.
+		if dirFile, err := sudouser.OpenStateDir(dir); err == nil {
+			if entries, err := dirFile.ReadDir(-1); err == nil {
+				for _, entry := range entries {
+					if repairableStateFile(entry.Name()) {
+						_ = sudouser.ChownRegularFileAt(dirFile, entry.Name())
+					}
 				}
 			}
-		}
-		if err := dirFile.Close(); err != nil {
-			return nil, err
+			_ = dirFile.Close()
 		}
 	}
 	return &Store{dir: dir}, nil

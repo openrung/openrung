@@ -5,7 +5,11 @@ package sudouser
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
+	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 type chownCall struct {
@@ -28,6 +32,18 @@ func stubElevation(t *testing.T, euid int) *[]chownCall {
 	return &calls
 }
 
+// stubInvoker fakes an elevated process whose invoking user is the uid that
+// actually owns the test's files, so the ownership gates behave as they would
+// under a real sudo run.
+func stubInvoker(t *testing.T) (*[]chownCall, int, int) {
+	t.Helper()
+	calls := stubElevation(t, 0)
+	uid, gid := os.Getuid(), os.Getgid()
+	t.Setenv("SUDO_UID", strconv.Itoa(uid))
+	t.Setenv("SUDO_GID", strconv.Itoa(gid))
+	return calls, uid, gid
+}
+
 func openTestFile(t *testing.T) *os.File {
 	t.Helper()
 	file, err := os.CreateTemp(t.TempDir(), "state-*")
@@ -48,9 +64,7 @@ func canonicalTempDir(t *testing.T) string {
 }
 
 func TestChownUnderSudoUsesInvokingUser(t *testing.T) {
-	calls := stubElevation(t, 0)
-	t.Setenv("SUDO_UID", "501")
-	t.Setenv("SUDO_GID", "20")
+	calls, uid, gid := stubInvoker(t)
 
 	if !Active() {
 		t.Fatal("Active() = false for root with SUDO_UID/SUDO_GID set")
@@ -59,7 +73,7 @@ func TestChownUnderSudoUsesInvokingUser(t *testing.T) {
 	if err := ChownFile(file); err != nil {
 		t.Fatalf("ChownFile: %v", err)
 	}
-	want := []chownCall{{path: file.Name(), uid: 501, gid: 20}}
+	want := []chownCall{{path: file.Name(), uid: uid, gid: gid}}
 	if len(*calls) != 1 || (*calls)[0] != want[0] {
 		t.Fatalf("chown calls = %v, want %v", *calls, want)
 	}
@@ -113,9 +127,7 @@ func TestChownIgnoresMalformedSudoIDs(t *testing.T) {
 }
 
 func TestMkdirAllChownsOnlyCreatedDirs(t *testing.T) {
-	calls := stubElevation(t, 0)
-	t.Setenv("SUDO_UID", "501")
-	t.Setenv("SUDO_GID", "20")
+	calls, uid, gid := stubInvoker(t)
 
 	base := canonicalTempDir(t) // pre-existing: must not be chowned
 	target := filepath.Join(base, "config", "openrung")
@@ -129,8 +141,8 @@ func TestMkdirAllChownsOnlyCreatedDirs(t *testing.T) {
 	}
 
 	want := []chownCall{
-		{path: filepath.Join(base, "config"), uid: 501, gid: 20},
-		{path: target, uid: 501, gid: 20},
+		{path: filepath.Join(base, "config"), uid: uid, gid: gid},
+		{path: target, uid: uid, gid: gid},
 	}
 	if len(*calls) != len(want) {
 		t.Fatalf("chown calls = %v, want %v", *calls, want)
@@ -143,9 +155,7 @@ func TestMkdirAllChownsOnlyCreatedDirs(t *testing.T) {
 }
 
 func TestMkdirAllExistingDirChownsNothing(t *testing.T) {
-	calls := stubElevation(t, 0)
-	t.Setenv("SUDO_UID", "501")
-	t.Setenv("SUDO_GID", "20")
+	calls, _, _ := stubInvoker(t)
 
 	dir := canonicalTempDir(t)
 	if err := MkdirAll(dir, 0o700); err != nil {
@@ -156,27 +166,146 @@ func TestMkdirAllExistingDirChownsNothing(t *testing.T) {
 	}
 }
 
-func TestMkdirAllRejectsSymlinkComponent(t *testing.T) {
+func TestMkdirAllTraversesSymlinkedAncestor(t *testing.T) {
+	// A home directory on another volume, or ~/.config pointing into a
+	// dotfiles checkout, must not break an elevated run.
+	calls, uid, gid := stubInvoker(t)
+
+	base := canonicalTempDir(t)
+	real := filepath.Join(base, "dotfiles")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "config")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	target := filepath.Join(link, "openrung")
+	if err := MkdirAll(target, 0o700); err != nil {
+		t.Fatalf("MkdirAll through a symlinked ancestor: %v", err)
+	}
+	if info, err := os.Stat(filepath.Join(real, "openrung")); err != nil || !info.IsDir() {
+		t.Fatalf("directory not created through the symlink: %v", err)
+	}
+	// Only the created directory changes hands; the symlinked ancestor and
+	// its target are left alone.
+	want := []chownCall{{path: target, uid: uid, gid: gid}}
+	if len(*calls) != 1 || (*calls)[0] != want[0] {
+		t.Fatalf("chown calls = %v, want %v", *calls, want)
+	}
+}
+
+func TestMkdirAllSkipsChownOutsideInvokersTree(t *testing.T) {
+	// Standing in for ~/.config symlinked at a root-owned tree such as /etc:
+	// the invoking user does not own the parent, so a directory created there
+	// is not handed to them.
 	calls := stubElevation(t, 0)
-	t.Setenv("SUDO_UID", "501")
-	t.Setenv("SUDO_GID", "20")
+	t.Setenv("SUDO_UID", strconv.Itoa(os.Getuid()+1))
+	t.Setenv("SUDO_GID", strconv.Itoa(os.Getgid()))
+
+	target := filepath.Join(canonicalTempDir(t), "openrung")
+	if err := MkdirAll(target, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if info, err := os.Stat(target); err != nil || !info.IsDir() {
+		t.Fatalf("directory not created: %v", err)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("chown calls = %v, want none for a parent the invoker does not own", *calls)
+	}
+}
+
+func TestOpenStateDirRejectsSymlinkedDir(t *testing.T) {
+	calls, _, _ := stubInvoker(t)
 
 	base := canonicalTempDir(t)
 	outside := canonicalTempDir(t)
-	link := filepath.Join(base, "config")
+	link := filepath.Join(base, "openrung")
 	if err := os.Symlink(outside, link); err != nil {
-		t.Fatal(err)
+		t.Skipf("symlink unavailable: %v", err)
 	}
 
-	err := MkdirAll(filepath.Join(link, "openrung"), 0o700)
-	if err == nil {
-		t.Fatal("MkdirAll followed a symlink component")
-	}
-	if _, err := os.Stat(filepath.Join(outside, "openrung")); !os.IsNotExist(err) {
-		t.Fatalf("outside directory was modified through symlink: %v", err)
+	if dir, err := OpenStateDir(link); err == nil {
+		dir.Close()
+		t.Fatal("OpenStateDir followed a symlinked state directory")
 	}
 	if len(*calls) != 0 {
 		t.Fatalf("chown calls = %v, want none", *calls)
+	}
+}
+
+func TestOpenStateDirChownsRealDir(t *testing.T) {
+	calls, uid, gid := stubInvoker(t)
+
+	dir := filepath.Join(canonicalTempDir(t), "openrung")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	file, err := OpenStateDir(dir)
+	if err != nil {
+		t.Fatalf("OpenStateDir: %v", err)
+	}
+	defer file.Close()
+
+	want := []chownCall{{path: dir, uid: uid, gid: gid}}
+	if len(*calls) != 1 || (*calls)[0] != want[0] {
+		t.Fatalf("chown calls = %v, want %v", *calls, want)
+	}
+}
+
+func TestChownFileRejectsHardLink(t *testing.T) {
+	// A hard link planted at a state path reaches a file the invoking user may
+	// not own, and O_NOFOLLOW cannot see it.
+	calls, _, _ := stubInvoker(t)
+
+	base := canonicalTempDir(t)
+	target := filepath.Join(base, "victim")
+	if err := os.WriteFile(target, []byte("privileged\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "client-id")
+	if err := os.Link(target, link); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+
+	dir, err := OpenDir(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dir.Close()
+	if err := ChownRegularFileAt(dir, "client-id"); err == nil {
+		t.Fatal("ChownRegularFileAt accepted a multiply-linked file")
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("chown calls = %v, want none", *calls)
+	}
+}
+
+func TestOpenRegularFileDoesNotBlockOnFifo(t *testing.T) {
+	// Without O_NONBLOCK, opening a FIFO for writing parks in open(2) until a
+	// reader arrives, hanging client startup instead of failing.
+	base := canonicalTempDir(t)
+	path := filepath.Join(base, "client-id")
+	if err := unix.Mkfifo(path, 0o600); err != nil {
+		t.Skipf("mkfifo unavailable: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		file, err := OpenRegularFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+		if err == nil {
+			file.Close()
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("OpenRegularFile accepted a FIFO")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("OpenRegularFile blocked on a FIFO")
 	}
 }
 
@@ -205,9 +334,7 @@ func TestOpenRegularFileRejectsSymlinks(t *testing.T) {
 }
 
 func TestChownRegularFileAtRejectsSymlink(t *testing.T) {
-	calls := stubElevation(t, 0)
-	t.Setenv("SUDO_UID", "501")
-	t.Setenv("SUDO_GID", "20")
+	calls, _, _ := stubInvoker(t)
 
 	base := canonicalTempDir(t)
 	target := filepath.Join(base, "target")
