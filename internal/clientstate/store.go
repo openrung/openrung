@@ -46,6 +46,10 @@ type proxyEndpoint struct {
 // so tests can point it at a temp directory.
 type Store struct {
 	dir string
+	// stateDir pins the directory by descriptor for the process lifetime, and
+	// is set only under sudo. Writes then go through *at syscalls, so the
+	// directory validated in New cannot be swapped for a symlink afterwards.
+	stateDir *sudouser.StateDir
 }
 
 // New resolves the per-install config directory (os.UserConfigDir()/openrung),
@@ -59,26 +63,33 @@ func New() (*Store, error) {
 	if err := sudouser.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
+	store := &Store{dir: dir}
 	if sudouser.Active() {
-		// An earlier sudo'd run (TUN mode) may have left the directory or the
-		// files in it root-owned, which makes every later plain run silently
-		// fail to read or write them. Repair only OpenRung's own regular state
-		// files, and keep every step best-effort: a repair that cannot run
-		// costs one root-owned file, while failing New costs the caller its
-		// whole store — recents, the stable proxy port, and the crash
-		// snapshot — which is the very outcome this repair exists to prevent.
-		if dirFile, err := sudouser.OpenStateDir(dir); err == nil {
-			if entries, err := dirFile.ReadDir(-1); err == nil {
-				for _, entry := range entries {
-					if repairableStateFile(entry.Name()) {
-						_ = sudouser.ChownRegularFileAt(dirFile, entry.Name())
-					}
+		// Refusing an unsafe state directory is fatal: a Store rooted at a
+		// symlinked path has root writing the user's files wherever the link
+		// points, which for a name like proxy-env-1080.sh and a target like
+		// /etc/profile.d means a user-writable script that root later sources.
+		stateDir, err := sudouser.OpenStateDir(dir)
+		if err != nil {
+			return nil, err
+		}
+		store.stateDir = stateDir
+		// The ownership repair is the opposite case. An earlier sudo'd run
+		// (TUN mode) may have left the directory or the files in it
+		// root-owned, which makes every later plain run silently fail to read
+		// or write them. A repair that cannot run costs one root-owned file,
+		// while failing New costs the caller its whole store — recents, the
+		// stable proxy port, the crash snapshot — so each step is best-effort.
+		_ = stateDir.RepairOwner()
+		if entries, err := stateDir.Entries(); err == nil {
+			for _, entry := range entries {
+				if repairableStateFile(entry.Name()) {
+					_ = stateDir.RepairEntry(entry.Name())
 				}
 			}
-			_ = dirFile.Close()
 		}
 	}
-	return &Store{dir: dir}, nil
+	return store, nil
 }
 
 // NewInDir builds a Store rooted at an explicit directory (tests).
@@ -204,6 +215,10 @@ func (s *Store) writeJSON(name string, value any) error {
 }
 
 func (s *Store) writeFile(name string, data []byte) error {
+	if s.stateDir != nil {
+		// Elevated runs write relative to the pinned directory descriptor.
+		return s.stateDir.WriteFile(name, data, 0o600)
+	}
 	// Write-then-rename for atomicity, so a crash never leaves a half file.
 	// A unique temporary name also lets concurrent callers safely refresh the
 	// same port-qualified helper.

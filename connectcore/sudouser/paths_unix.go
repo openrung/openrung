@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -93,6 +94,13 @@ func MkdirAll(dir string, perm os.FileMode) error {
 // OpenDir opens a directory. Ancestors may be symlinks; the final component
 // may not, so a caller holding the descriptor knows which directory it has.
 func OpenDir(path string) (*os.File, error) {
+	return openDirChain(path, true)
+}
+
+// openDirChain walks path component by component. nofollowFinal pins the last
+// component, which is the one an attacker names; ancestors are the user's own
+// layout and are always followed.
+func openDirChain(path string, nofollowFinal bool) (*os.File, error) {
 	current, components, err := traversalRoot(path)
 	if err != nil {
 		return nil, err
@@ -100,7 +108,7 @@ func OpenDir(path string) (*os.File, error) {
 	display := current.Name()
 	for i, component := range components {
 		nextDisplay := filepath.Join(display, component)
-		next, err := openDirAt(current, component, nextDisplay, i == len(components)-1)
+		next, err := openDirAt(current, component, nextDisplay, nofollowFinal && i == len(components)-1)
 		if err != nil {
 			current.Close()
 			return nil, err
@@ -115,42 +123,136 @@ func OpenDir(path string) (*os.File, error) {
 	return current, nil
 }
 
-// OpenStateDir opens the client state directory for repair and, when Active,
-// hands it back to the invoking user. The directory itself is never reached
-// through a symlink, and ownership only changes when the containing directory
-// already belongs to that user.
-func OpenStateDir(dir string) (*os.File, error) {
-	uid, gid, active := ids()
-	if !active {
-		return OpenDir(dir)
-	}
-	parent, err := OpenDir(filepath.Dir(dir))
+// StateDir is an open handle to the client state directory. The directory is
+// pinned by descriptor, so every repair and write below runs against the
+// directory validated at open time rather than whatever the pathname resolves
+// to later.
+type StateDir struct {
+	file *os.File
+	// parentOwned records, at open time, whether the containing directory
+	// already belonged to the invoking user. Handing them anything inside a
+	// tree they do not own would grant access they did not already have.
+	parentOwned bool
+}
+
+// OpenStateDir opens the client state directory, refusing to reach it through
+// a symlink in its final component. A failure here is fatal to the caller: a
+// state directory that resolves elsewhere would have root writing the invoking
+// user's files into a privileged tree. The parent path is followed, so a home
+// on another volume or a ~/.config pointing into a dotfiles checkout works.
+func OpenStateDir(path string) (*StateDir, error) {
+	parent, err := openDirChain(filepath.Dir(path), false)
 	if err != nil {
 		return nil, err
 	}
 	defer parent.Close()
-	file, err := openDirAt(parent, filepath.Base(dir), dir, true)
+	file, err := openDirAt(parent, filepath.Base(path), path, true)
 	if err != nil {
 		return nil, err
 	}
-	if ownedBy(parent, uid) {
-		if err := fileChown(file, uid, gid); err != nil {
-			file.Close()
-			return nil, err
-		}
+	dir := &StateDir{file: file}
+	if uid, _, active := ids(); active {
+		dir.parentOwned = ownedBy(parent, uid)
 	}
-	return file, nil
+	return dir, nil
+}
+
+// Close releases the pinned directory.
+func (d *StateDir) Close() error { return d.file.Close() }
+
+// Entries lists the directory contents.
+func (d *StateDir) Entries() ([]os.DirEntry, error) { return d.file.ReadDir(-1) }
+
+// RepairOwner hands the directory itself back to the invoking user. Callers
+// treat failure as best-effort: it costs one root-owned directory, where
+// refusing to continue would cost the caller its whole store.
+func (d *StateDir) RepairOwner() error {
+	if !d.parentOwned {
+		return nil
+	}
+	return ChownFile(d.file)
+}
+
+// RepairEntry hands one regular child back to the invoking user. The entry is
+// opened relative to the pinned directory and never through a symlink, and a
+// multiply-linked file is refused before any descriptor is returned.
+func (d *StateDir) RepairEntry(name string) error {
+	uid, _, active := ids()
+	if !active {
+		return nil
+	}
+	if !validStateName(name) {
+		return fmt.Errorf("invalid directory entry %q", name)
+	}
+	if !ownedBy(d.file, uid) {
+		return nil
+	}
+	file, err := openRegularFileAt(d.file, name, filepath.Join(d.file.Name(), name), os.O_RDONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	return ChownFile(file)
+}
+
+// WriteFile atomically replaces one state file, relative to the pinned
+// directory throughout: the temporary file is created, written and renamed
+// with *at syscalls, so swapping the directory's pathname for a symlink after
+// it was validated cannot redirect the write.
+func (d *StateDir) WriteFile(name string, data []byte, perm os.FileMode) error {
+	if !validStateName(name) {
+		return fmt.Errorf("invalid state file %q", name)
+	}
+	fd := int(d.file.Fd())
+	// Qualifying by pid keeps concurrent client processes from colliding, the
+	// same property os.CreateTemp provides on the unelevated path.
+	tmp := "." + name + ".tmp-" + strconv.Itoa(os.Getpid())
+	cleanup := func() { _ = unix.Unlinkat(fd, tmp, 0) }
+
+	file, err := openRegularFileAt(d.file, tmp, filepath.Join(d.file.Name(), tmp), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	if err := writeAndClose(file, data, perm); err != nil {
+		cleanup()
+		return err
+	}
+	if err := unix.Renameat(fd, tmp, fd, name); err != nil {
+		cleanup()
+		return &os.PathError{Op: "renameat", Path: filepath.Join(d.file.Name(), name), Err: err}
+	}
+	return nil
+}
+
+func writeAndClose(file *os.File, data []byte, perm os.FileMode) error {
+	if err := file.Chmod(perm); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := ChownFile(file); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
+}
+
+func validStateName(name string) bool {
+	return name != "" && name != "." && name != ".." && filepath.Base(name) == name
 }
 
 // OpenRegularFile opens a regular file without following a symlink in its
 // final component. Elevated callers also pin the containing directory.
 func OpenRegularFile(path string, flag int, perm os.FileMode) (*os.File, error) {
 	if !Active() {
-		fd, err := unix.Open(path, flag|fileOpenFlags, uint32(perm.Perm()))
+		fd, err := unix.Open(path, (flag&^os.O_TRUNC)|fileOpenFlags, uint32(perm.Perm()))
 		if err != nil {
 			return nil, &os.PathError{Op: "open", Path: path, Err: err}
 		}
-		return regularFileFromFD(fd, path)
+		return regularFileFromFD(fd, path, flag&os.O_TRUNC != 0)
 	}
 	parent, err := OpenDir(filepath.Dir(path))
 	if err != nil {
@@ -158,28 +260,6 @@ func OpenRegularFile(path string, flag int, perm os.FileMode) (*os.File, error) 
 	}
 	defer parent.Close()
 	return openRegularFileAt(parent, filepath.Base(path), path, flag, perm)
-}
-
-// ChownRegularFileAt hands a regular child of dir to the invoking user. dir is
-// an already-open directory, so renaming or replacing its pathname cannot
-// redirect the ownership change.
-func ChownRegularFileAt(dir *os.File, name string) error {
-	uid, _, active := ids()
-	if !active {
-		return nil
-	}
-	if name == "" || name == "." || name == ".." || filepath.Base(name) != name {
-		return fmt.Errorf("invalid directory entry %q", name)
-	}
-	if !ownedBy(dir, uid) {
-		return nil
-	}
-	file, err := openRegularFileAt(dir, name, filepath.Join(dir.Name(), name), os.O_RDONLY, 0)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	return ChownFile(file)
 }
 
 // ownedBy reports whether an open file or directory already belongs to uid.
@@ -192,10 +272,9 @@ func ownedBy(file *os.File, uid int) bool {
 	return ok && int(stat.Uid) == uid
 }
 
-// hasExtraLinks reports whether a regular file has more than one name. A hard
-// link planted at a state path resolves to a file the invoking user may not
-// own, and O_NOFOLLOW does not catch it; unreadable metadata fails closed.
-// Directories always carry several links, so they are exempt.
+// hasExtraLinks reports whether a regular file has more than one name.
+// Unreadable metadata fails closed. Directories always carry several links, so
+// they are exempt.
 func hasExtraLinks(file *os.File) bool {
 	info, err := file.Stat()
 	if err != nil {
@@ -204,8 +283,17 @@ func hasExtraLinks(file *os.File) bool {
 	if !info.Mode().IsRegular() {
 		return false
 	}
+	return linkCount(info) > 1
+}
+
+// linkCount returns how many names a file has, or 2 — an impossible value for
+// our state files — when the metadata cannot be read, so callers fail closed.
+func linkCount(info os.FileInfo) uint64 {
 	stat, ok := info.Sys().(*syscall.Stat_t)
-	return !ok || stat.Nlink > 1
+	if !ok {
+		return 2
+	}
+	return uint64(stat.Nlink)
 }
 
 func traversalRoot(path string) (*os.File, []string, error) {
@@ -247,14 +335,20 @@ func openDirAt(parent *os.File, name, display string, nofollow bool) (*os.File, 
 }
 
 func openRegularFileAt(parent *os.File, name, display string, flag int, perm os.FileMode) (*os.File, error) {
-	fd, err := unix.Openat(int(parent.Fd()), name, flag|fileOpenFlags, uint32(perm.Perm()))
+	// O_TRUNC is withheld from the open: truncation is destructive, and the
+	// file has not been proven to be a plain, singly-linked state file yet.
+	fd, err := unix.Openat(int(parent.Fd()), name, (flag&^os.O_TRUNC)|fileOpenFlags, uint32(perm.Perm()))
 	if err != nil {
 		return nil, &os.PathError{Op: "openat", Path: display, Err: err}
 	}
-	return regularFileFromFD(fd, display)
+	return regularFileFromFD(fd, display, flag&os.O_TRUNC != 0)
 }
 
-func regularFileFromFD(fd int, display string) (*os.File, error) {
+// regularFileFromFD validates a freshly opened descriptor before any caller
+// can mutate through it, then applies a withheld truncation. An elevated run
+// also refuses a multiply-linked file: a hard link planted at a state path
+// reaches a file the invoking user may not own, and O_NOFOLLOW cannot see it.
+func regularFileFromFD(fd int, display string, truncate bool) (*os.File, error) {
 	file := os.NewFile(uintptr(fd), display)
 	info, err := file.Stat()
 	if err != nil {
@@ -264,6 +358,16 @@ func regularFileFromFD(fd int, display string) (*os.File, error) {
 	if !info.Mode().IsRegular() {
 		file.Close()
 		return nil, &os.PathError{Op: "openat", Path: display, Err: fmt.Errorf("not a regular file")}
+	}
+	if Active() && linkCount(info) > 1 {
+		file.Close()
+		return nil, &os.PathError{Op: "openat", Path: display, Err: fmt.Errorf("unexpected hard links")}
+	}
+	if truncate {
+		if err := file.Truncate(0); err != nil {
+			file.Close()
+			return nil, err
+		}
 	}
 	return file, nil
 }

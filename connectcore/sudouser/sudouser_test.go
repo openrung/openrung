@@ -235,6 +235,56 @@ func TestOpenStateDirRejectsSymlinkedDir(t *testing.T) {
 	}
 }
 
+func TestOpenStateDirFollowsSymlinkedParent(t *testing.T) {
+	// ~/.config pointing into a dotfiles checkout must still be repairable;
+	// only the state directory itself may not be a symlink.
+	calls, uid, gid := stubInvoker(t)
+
+	base := canonicalTempDir(t)
+	real := filepath.Join(base, "dotfiles")
+	if err := os.MkdirAll(filepath.Join(real, "openrung"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, filepath.Join(base, "config")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	stateDir, err := OpenStateDir(filepath.Join(base, "config", "openrung"))
+	if err != nil {
+		t.Fatalf("OpenStateDir through a symlinked parent: %v", err)
+	}
+	defer stateDir.Close()
+	if err := stateDir.RepairOwner(); err != nil {
+		t.Fatalf("RepairOwner: %v", err)
+	}
+	if len(*calls) != 1 || (*calls)[0].uid != uid || (*calls)[0].gid != gid {
+		t.Fatalf("chown calls = %v, want the state directory handed to %d:%d", *calls, uid, gid)
+	}
+}
+
+func TestRepairOwnerSkipsTreeInvokerDoesNotOwn(t *testing.T) {
+	// Standing in for ~/.config symlinked at a root-owned tree such as /etc.
+	calls := stubElevation(t, 0)
+	t.Setenv("SUDO_UID", strconv.Itoa(os.Getuid()+1))
+	t.Setenv("SUDO_GID", strconv.Itoa(os.Getgid()))
+
+	dir := filepath.Join(canonicalTempDir(t), "openrung")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stateDir, err := OpenStateDir(dir)
+	if err != nil {
+		t.Fatalf("OpenStateDir: %v", err)
+	}
+	defer stateDir.Close()
+	if err := stateDir.RepairOwner(); err != nil {
+		t.Fatalf("RepairOwner: %v", err)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("chown calls = %v, want none for a parent the invoker does not own", *calls)
+	}
+}
+
 func TestOpenStateDirChownsRealDir(t *testing.T) {
 	calls, uid, gid := stubInvoker(t)
 
@@ -242,11 +292,14 @@ func TestOpenStateDirChownsRealDir(t *testing.T) {
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	file, err := OpenStateDir(dir)
+	stateDir, err := OpenStateDir(dir)
 	if err != nil {
 		t.Fatalf("OpenStateDir: %v", err)
 	}
-	defer file.Close()
+	defer stateDir.Close()
+	if err := stateDir.RepairOwner(); err != nil {
+		t.Fatalf("RepairOwner: %v", err)
+	}
 
 	want := []chownCall{{path: dir, uid: uid, gid: gid}}
 	if len(*calls) != 1 || (*calls)[0] != want[0] {
@@ -254,31 +307,153 @@ func TestOpenStateDirChownsRealDir(t *testing.T) {
 	}
 }
 
-func TestChownFileRejectsHardLink(t *testing.T) {
+func TestRepairEntryRejectsSymlink(t *testing.T) {
+	calls, _, _ := stubInvoker(t)
+
+	dir := filepath.Join(canonicalTempDir(t), "openrung")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "target")
+	if err := os.WriteFile(target, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, "client-id")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	stateDir, err := OpenStateDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stateDir.Close()
+
+	if err := stateDir.RepairEntry("client-id"); err == nil {
+		t.Fatal("RepairEntry followed a symlink")
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("chown calls = %v, want none", *calls)
+	}
+}
+
+func TestRepairEntryRejectsHardLink(t *testing.T) {
 	// A hard link planted at a state path reaches a file the invoking user may
 	// not own, and O_NOFOLLOW cannot see it.
 	calls, _, _ := stubInvoker(t)
 
-	base := canonicalTempDir(t)
-	target := filepath.Join(base, "victim")
+	dir := filepath.Join(canonicalTempDir(t), "openrung")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "victim")
 	if err := os.WriteFile(target, []byte("privileged\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	link := filepath.Join(base, "client-id")
-	if err := os.Link(target, link); err != nil {
+	if err := os.Link(target, filepath.Join(dir, "client-id")); err != nil {
 		t.Skipf("hard links unavailable: %v", err)
 	}
-
-	dir, err := OpenDir(base)
+	stateDir, err := OpenStateDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dir.Close()
-	if err := ChownRegularFileAt(dir, "client-id"); err == nil {
-		t.Fatal("ChownRegularFileAt accepted a multiply-linked file")
+	defer stateDir.Close()
+
+	if err := stateDir.RepairEntry("client-id"); err == nil {
+		t.Fatal("RepairEntry accepted a multiply-linked file")
 	}
 	if len(*calls) != 0 {
 		t.Fatalf("chown calls = %v, want none", *calls)
+	}
+}
+
+func TestOpenRegularFileValidatesBeforeTruncating(t *testing.T) {
+	// O_TRUNC must not reach a file that is about to be rejected: truncation
+	// is destructive, and rejecting afterwards is too late.
+	stubInvoker(t)
+
+	dir := canonicalTempDir(t)
+	target := filepath.Join(dir, "victim")
+	content := []byte("privileged content\n")
+	if err := os.WriteFile(target, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(target, filepath.Join(dir, "client-id")); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+
+	file, err := OpenRegularFile(filepath.Join(dir, "client-id"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err == nil {
+		file.Close()
+		t.Fatal("OpenRegularFile returned a descriptor to a multiply-linked file")
+	}
+	data, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(data) != string(content) {
+		t.Fatalf("target = %q, want unchanged %q", data, content)
+	}
+}
+
+func TestOpenRegularFileStillTruncates(t *testing.T) {
+	// The withheld O_TRUNC must still be applied once the file checks out.
+	path := filepath.Join(canonicalTempDir(t), "client-id")
+	if err := os.WriteFile(path, []byte("stale-id\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := OpenRegularFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatalf("OpenRegularFile: %v", err)
+	}
+	if _, err := file.Write([]byte("new\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "new\n" {
+		t.Fatalf("file = %q, want %q (truncation not applied)", data, "new\n")
+	}
+}
+
+func TestStateDirWriteFileStaysInPinnedDir(t *testing.T) {
+	// Swapping the directory's pathname for a symlink after it was validated
+	// must not redirect the write.
+	stubInvoker(t)
+
+	base := canonicalTempDir(t)
+	dir := filepath.Join(base, "openrung")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stateDir, err := OpenStateDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stateDir.Close()
+
+	privileged := filepath.Join(base, "profile.d")
+	if err := os.Mkdir(privileged, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(dir, filepath.Join(base, "openrung.real")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(privileged, dir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	if err := stateDir.WriteFile("proxy-env-1080.sh", []byte("# helper\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(privileged, "proxy-env-1080.sh")); err == nil {
+		t.Fatal("write followed the swapped-in symlink")
+	}
+	if _, err := os.Stat(filepath.Join(base, "openrung.real", "proxy-env-1080.sh")); err != nil {
+		t.Fatalf("write did not land in the pinned directory: %v", err)
 	}
 }
 
@@ -330,30 +505,5 @@ func TestOpenRegularFileRejectsSymlinks(t *testing.T) {
 	}
 	if string(data) != "keep" {
 		t.Fatalf("target = %q, want unchanged", data)
-	}
-}
-
-func TestChownRegularFileAtRejectsSymlink(t *testing.T) {
-	calls, _, _ := stubInvoker(t)
-
-	base := canonicalTempDir(t)
-	target := filepath.Join(base, "target")
-	if err := os.WriteFile(target, []byte("keep"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(target, filepath.Join(base, "client-id")); err != nil {
-		t.Fatal(err)
-	}
-	dir, err := OpenDir(base)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer dir.Close()
-
-	if err := ChownRegularFileAt(dir, "client-id"); err == nil {
-		t.Fatal("ChownRegularFileAt followed a symlink")
-	}
-	if len(*calls) != 0 {
-		t.Fatalf("chown calls = %v, want none", *calls)
 	}
 }
