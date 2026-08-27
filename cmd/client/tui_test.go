@@ -169,12 +169,47 @@ func TestRelaysEnterConnectsToTheHighlightedRelay(t *testing.T) {
 	}
 
 	// The target lived only in that call: back on Auto select, the next connect
-	// is ranked again — no pin lingers from the relay connect before it.
+	// is ranked again — no pin lingers from the relay connect before it. (The
+	// engine publishes state and time passes first, or the connect-spam guards
+	// would swallow the press.)
+	m, _ = update(t, m, engineStateMsg(connectcore.State{Status: connectcore.StatusDisconnected}))
+	m.now = m.now.Add(2 * time.Second)
 	m, _ = update(t, m, keyMsg("up"))
 	m, _ = update(t, m, keyMsg("up"))
 	m, _ = update(t, m, keyMsg("enter"))
 	if _, target := driver.lastConnect(t); target.Targeted() {
 		t.Fatalf("Auto select connect still carries a target: %+v", target)
+	}
+}
+
+// The status guard reads only the last PUBLISHED engine state, which arrives
+// asynchronously: presses queued before that first state event must not each
+// restart the ladder, and key repeats are capped at one connect per second.
+func TestEnterSpamDispatchesOneConnect(t *testing.T) {
+	driver := &fakeDriver{}
+	m := newTestModel(driver)
+	m.view = viewRelays
+
+	for i := 0; i < 5; i++ {
+		m, _ = update(t, m, keyMsg("enter"))
+	}
+	if len(driver.connects) != 1 {
+		t.Fatalf("queued enters dispatched %d connects, want 1", len(driver.connects))
+	}
+
+	// The engine answered and went back to disconnected, but within the same
+	// second: the throttle still holds.
+	m, _ = update(t, m, engineStateMsg(connectcore.State{Status: connectcore.StatusDisconnected}))
+	m, _ = update(t, m, keyMsg("enter"))
+	if len(driver.connects) != 1 {
+		t.Fatalf("sub-second re-press dispatched %d connects, want 1", len(driver.connects))
+	}
+
+	// A second later the press is a deliberate retry, not spam.
+	m.now = m.now.Add(2 * time.Second)
+	m, _ = update(t, m, keyMsg("enter"))
+	if len(driver.connects) != 2 {
+		t.Fatalf("deliberate retry dispatched %d connects, want 2", len(driver.connects))
 	}
 }
 

@@ -281,6 +281,15 @@ type tuiModel struct {
 	relayCursor int
 	refreshing  bool
 
+	// connectPending covers the window between dispatching a connect and the
+	// engine's first state event for it: the enter guard reads only the last
+	// PUBLISHED state, so queued presses in that window would otherwise each
+	// tear down and restart the ladder. lastConnectAt backs it with a
+	// one-connect-per-second throttle (against m.now, the tick clock), since
+	// key repeats can outrun the pending flag's clearing.
+	connectPending bool
+	lastConnectAt  time.Time
+
 	settings settingsState
 }
 
@@ -414,6 +423,10 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case engineStateMsg:
+		// The engine has published state for the dispatched connect (or for
+		// whatever else happened); from here the enter guard's status check is
+		// current again.
+		m.connectPending = false
 		m.state = connectcore.State(msg)
 		switch m.state.Status {
 		case connectcore.StatusPreparing:
@@ -512,6 +525,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case connectIssuedMsg:
 		if msg.err != nil {
+			// The engine refused synchronously, so no state event will follow
+			// to clear the pending flag.
+			m.connectPending = false
 			m.ring.push(stampLog(time.Now(), "connect failed to start: "+msg.err.Error()))
 		}
 		return m, nil
@@ -603,25 +619,39 @@ func (m tuiModel) handleRelaysKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Row 0 is Auto select: the zero target, the broker's ranking picks.
 		// Every row below connects to exactly that relay. The target is built
 		// here and handed straight to the engine; nothing is stored.
-		switch m.state.Status {
-		case connectcore.StatusPreparing, connectcore.StatusConnecting, connectcore.StatusDisconnecting:
-			// A connect or teardown is already in flight. Every ConnectTarget
-			// tears the ladder down and restarts it, so mashing enter on a slow
-			// connect must not keep it from ever converging.
+		//
+		// Three guards, because every ConnectTarget tears the ladder down and
+		// restarts it: a dispatched connect the engine has not published state
+		// for yet (connectPending), a hard one-per-second throttle for key
+		// repeats, and the published in-flight states themselves.
+		if m.connectPending {
 			return m, nil
 		}
-		if m.relayCursor == 0 {
-			return m, m.connectCmd(connectcore.RelayTarget{})
+		if !m.lastConnectAt.IsZero() && m.now.Sub(m.lastConnectAt) < time.Second {
+			return m, nil
 		}
-		if m.relayCursor <= len(m.relays) {
+		switch m.state.Status {
+		case connectcore.StatusPreparing, connectcore.StatusConnecting, connectcore.StatusDisconnecting:
+			// A connect or teardown is already in flight; mashing enter on a
+			// slow connect must not keep it from ever converging.
+			return m, nil
+		}
+		var target connectcore.RelayTarget
+		if m.relayCursor > 0 {
+			if m.relayCursor > len(m.relays) {
+				return m, nil
+			}
 			// Enter on the relay the session is already on would drop the live
 			// session just to rebuild it; only a different row reconnects.
 			if m.state.Status == connectcore.StatusConnected && m.infoOK &&
 				m.relays[m.relayCursor-1].Relay.ID == m.info.Relay.ID {
 				return m, nil
 			}
-			return m, m.connectCmd(connectcore.RelayTarget{RelayID: m.relays[m.relayCursor-1].Relay.ID})
+			target = connectcore.RelayTarget{RelayID: m.relays[m.relayCursor-1].Relay.ID}
 		}
+		m.connectPending = true
+		m.lastConnectAt = m.now
+		return m, m.connectCmd(target)
 	}
 	return m, nil
 }
