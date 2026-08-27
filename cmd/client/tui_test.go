@@ -178,6 +178,55 @@ func TestRelaysEnterConnectsToTheHighlightedRelay(t *testing.T) {
 	}
 }
 
+// Enter must not restart a connect that is already in flight (every
+// ConnectTarget tears down and rebuilds the ladder, so mashing enter would
+// keep it from converging), and enter on the relay the session is already on
+// must not drop the live session — while Auto select stays live as an
+// explicit "re-pick" even when connected.
+func TestEnterGuardsInFlightAndCurrentRelay(t *testing.T) {
+	driver := &fakeDriver{}
+	m := newTestModel(driver)
+	m.view = viewRelays
+	m.relays = []connectcore.DirectoryRelay{{Relay: brokerapi.RelayDescriptor{ID: "relay_a"}}}
+
+	for _, status := range []connectcore.Status{
+		connectcore.StatusPreparing, connectcore.StatusConnecting, connectcore.StatusDisconnecting,
+	} {
+		m.state = connectcore.State{Status: status}
+		m, _ = update(t, m, keyMsg("enter"))
+		if len(driver.connects) != 0 {
+			t.Fatalf("enter during %s issued a connect", status)
+		}
+	}
+
+	m.state = connectcore.State{Status: connectcore.StatusConnected}
+	m.infoOK = true
+	m.info = connectcore.ConnectionInfo{Relay: brokerapi.RelayDescriptor{ID: "relay_a"}}
+	m, _ = update(t, m, keyMsg("down")) // onto the connected relay's own row
+	m, _ = update(t, m, keyMsg("enter"))
+	if len(driver.connects) != 0 {
+		t.Fatal("enter on the connected relay dropped and rebuilt the session")
+	}
+	m, _ = update(t, m, keyMsg("up")) // back to Auto select
+	m, _ = update(t, m, keyMsg("enter"))
+	if len(driver.connects) != 1 {
+		t.Fatalf("Auto select while connected did not reconnect: %d connects", len(driver.connects))
+	}
+}
+
+// -relay-country keeps the engine's country-scoped connect (and its
+// intra-country failover) reachable from the binary now that the TUI holds no
+// target state.
+func TestRelayCountryFlagSeedsTheTarget(t *testing.T) {
+	cfg, err := parseCommonFlags("check", []string{"-relay-country", "kr"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target := cfg.target(); target.Country != "kr" || !target.Targeted() {
+		t.Fatalf("target = %+v, want country kr", target)
+	}
+}
+
 // Auto select — the list's first row, where the cursor starts — connects with
 // no target at all: the broker's ranked pick. It works before the directory
 // has ever loaded, since a ranked connect needs no list.
@@ -422,7 +471,8 @@ func TestRelaysWindowFollowsCursor(t *testing.T) {
 	driver := &fakeDriver{}
 	m := newTestModel(driver)
 	m.view = viewRelays
-	m.height = 12 // body of 8 rows: notice-free header + 7 list rows visible
+	m.refreshing = false
+	m.height = 12 // body of 7 rows; the brand mark reserves 4, header 1 → 2 list rows
 	for i := 0; i < 30; i++ {
 		m.relays = append(m.relays, connectcore.DirectoryRelay{
 			Relay: brokerapi.RelayDescriptor{ID: fmt.Sprintf("relay_%02d", i), Label: fmt.Sprintf("node-%02d", i)},

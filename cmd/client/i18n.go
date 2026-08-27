@@ -4,6 +4,8 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/openrung/openrung/connectcore"
 )
 
 // The TUI ships English, Chinese, and Russian. There is no settings entry for
@@ -50,6 +52,11 @@ type translation struct {
 	labelProxy     string
 	labelBroker    string
 	labelError     string
+
+	// statusNames word the connection state for terminals with no color: the
+	// state is normally the status bar's background alone, which the Ascii
+	// profile (NO_COLOR, dumb terminals) cannot render.
+	statusNames map[connectcore.Status]string
 
 	captureTUN     string
 	captureProxy   string
@@ -119,6 +126,15 @@ var translations = [languageCount]*translation{
 		labelBroker:    "Broker",
 		labelError:     "Error",
 
+		statusNames: map[connectcore.Status]string{
+			connectcore.StatusDisconnected:  "disconnected",
+			connectcore.StatusPreparing:     "preparing",
+			connectcore.StatusConnecting:    "connecting",
+			connectcore.StatusConnected:     "connected",
+			connectcore.StatusDisconnecting: "disconnecting",
+			connectcore.StatusFailed:        "failed",
+		},
+
 		captureTUN:     "TUN — whole device",
 		captureProxy:   "proxy — applications configured for the endpoint below",
 		proxyResolving: "resolving…",
@@ -185,6 +201,15 @@ var translations = [languageCount]*translation{
 		labelProxy:     "代理",
 		labelBroker:    "调度服务器",
 		labelError:     "错误",
+
+		statusNames: map[connectcore.Status]string{
+			connectcore.StatusDisconnected:  "未连接",
+			connectcore.StatusPreparing:     "准备中",
+			connectcore.StatusConnecting:    "连接中",
+			connectcore.StatusConnected:     "已连接",
+			connectcore.StatusDisconnecting: "断开中",
+			connectcore.StatusFailed:        "失败",
+		},
 
 		captureTUN:     "TUN — 全设备接管",
 		captureProxy:   "代理 — 应用需配置为下方端点",
@@ -253,6 +278,15 @@ var translations = [languageCount]*translation{
 		labelBroker:    "Брокер",
 		labelError:     "Ошибка",
 
+		statusNames: map[connectcore.Status]string{
+			connectcore.StatusDisconnected:  "не подключено",
+			connectcore.StatusPreparing:     "подготовка",
+			connectcore.StatusConnecting:    "подключение",
+			connectcore.StatusConnected:     "подключено",
+			connectcore.StatusDisconnecting: "отключение",
+			connectcore.StatusFailed:        "сбой",
+		},
+
 		captureTUN:     "TUN — всё устройство",
 		captureProxy:   "прокси — приложения настраиваются на адрес ниже",
 		proxyResolving: "определение…",
@@ -314,6 +348,13 @@ func (m tuiModel) tr() *translation {
 		return translations[langEnglish]
 	}
 	return translations[m.lang]
+}
+
+func (tr *translation) statusName(status connectcore.Status) string {
+	if name, ok := tr.statusNames[status]; ok {
+		return name
+	}
+	return string(status)
 }
 
 // padCell pads to display width, not byte count: fmt's %-8s would leave CJK

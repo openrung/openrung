@@ -109,7 +109,7 @@ func runTUI(cfg connectConfig) error {
 	// interactive client holds no target state at all, so a passed one would
 	// otherwise go silently dead.
 	if cfg.target().Targeted() {
-		ring.push(stampLog(time.Now(), "warning: -relay-id/-relay-label are ignored by the interactive client — pick a relay in the Relays list (they still work with -headless, check, and config)"))
+		ring.push(stampLog(time.Now(), "warning: -relay-id/-relay-label/-relay-country are ignored by the interactive client — pick a relay in the Relays list (they still work with -headless, check, and config)"))
 	}
 
 	// Crash recovery and persisted recents; runs before the event loop exists,
@@ -603,10 +603,23 @@ func (m tuiModel) handleRelaysKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Row 0 is Auto select: the zero target, the broker's ranking picks.
 		// Every row below connects to exactly that relay. The target is built
 		// here and handed straight to the engine; nothing is stored.
+		switch m.state.Status {
+		case connectcore.StatusPreparing, connectcore.StatusConnecting, connectcore.StatusDisconnecting:
+			// A connect or teardown is already in flight. Every ConnectTarget
+			// tears the ladder down and restarts it, so mashing enter on a slow
+			// connect must not keep it from ever converging.
+			return m, nil
+		}
 		if m.relayCursor == 0 {
 			return m, m.connectCmd(connectcore.RelayTarget{})
 		}
 		if m.relayCursor <= len(m.relays) {
+			// Enter on the relay the session is already on would drop the live
+			// session just to rebuild it; only a different row reconnects.
+			if m.state.Status == connectcore.StatusConnected && m.infoOK &&
+				m.relays[m.relayCursor-1].Relay.ID == m.info.Relay.ID {
+				return m, nil
+			}
 			return m, m.connectCmd(connectcore.RelayTarget{RelayID: m.relays[m.relayCursor-1].Relay.ID})
 		}
 	}

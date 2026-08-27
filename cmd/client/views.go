@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -70,11 +71,13 @@ func (m tuiModel) View() string {
 	case viewSettings:
 		body = m.settingsView()
 	}
-	body = fitLines(body, m.bodyHeight())
-	// The Logs view keeps every display cell for diagnostics. In the other
-	// views the bottom-right cells hold low-priority or empty presentation.
-	if m.view != viewLogs {
-		body = m.overlayBrandMark(body)
+	// The bottom rows are RESERVED for the brand mark before the body is fit,
+	// so the mark can never cover content — in particular the relay list's
+	// cursor-followed last row, or Settings' copyable commands on a short
+	// terminal. Logs reserves nothing: its newest lines own the corner.
+	body = fitLines(body, m.bodyHeight()-m.brandMarkRows())
+	if m.brandMarkRows() > 0 {
+		body += "\n" + m.brandMarkLines()
 	}
 	frame := m.headerView() + "\n\n" + body + "\n\n" + m.statusFooterView() + "\n" + m.footerView()
 	// Ascii means no color at all (a dumb terminal, NO_COLOR, or a test),
@@ -98,27 +101,29 @@ var openrungArt = []string{
 // brandMargin keeps the mark off the terminal's right edge.
 const brandMargin = 1
 
-// overlayBrandMark draws openrungArt over the body's bottom-right corner. The
-// caller deliberately excludes Logs, whose newest diagnostic lines occupy
-// this corner. Elsewhere the mark wins over whatever the corner held: a
-// per-line collision check would tear it apart or blink it in and out as
-// lists grow. It renders whole or not at all — only when the terminal is wide
-// enough for the mark plus a gap to content, and tall enough that a couple of
-// content rows stay clear above it.
-func (m tuiModel) overlayBrandMark(body string) string {
+// brandMarkRows is how many body lines the corner mark reserves: the mark's
+// height when it renders, 0 when it does not. The mark renders whole or not at
+// all — never in Logs, and only when the terminal is wide enough for the mark
+// plus a gap to content and tall enough that a couple of content rows remain
+// above it. Views size their content against the remaining lines, so the mark
+// occupies blank rows instead of overwriting whatever the corner held.
+func (m tuiModel) brandMarkRows() int {
+	if m.view == viewLogs {
+		return 0
+	}
 	artW := lipgloss.Width(openrungArt[0])
 	if m.width < artW+2+2*brandMargin || m.bodyHeight() < len(openrungArt)+2 {
-		return body
+		return 0
 	}
-	lines := strings.Split(body, "\n")
-	start := len(lines) - len(openrungArt)
-	col := m.width - artW - brandMargin
+	return len(openrungArt)
+}
+
+// brandMarkLines renders the mark right-aligned on its own reserved lines.
+func (m tuiModel) brandMarkLines() string {
+	col := m.width - lipgloss.Width(openrungArt[0]) - brandMargin
+	lines := make([]string, len(openrungArt))
 	for i, artLine := range openrungArt {
-		// ANSI-aware cut: body lines carry styled segments whose escape
-		// sequences a byte or rune slice would sever mid-sequence.
-		line := ansi.Truncate(lines[start+i], col-1, "")
-		pad := col - lipgloss.Width(line)
-		lines[start+i] = line + strings.Repeat(" ", max(0, pad)) + brandStyle.Render(artLine)
+		lines[i] = strings.Repeat(" ", col) + brandStyle.Render(artLine)
 	}
 	return strings.Join(lines, "\n")
 }
@@ -128,6 +133,12 @@ const (
 	themeSeq = "\x1b[32;40m" // green foreground, black background
 	resetSeq = "\x1b[0m"
 )
+
+// sgrResetPattern matches any full SGR reset — \x1b[m, \x1b[0m, \x1b[00m —
+// not only the one literal lipgloss happens to emit today: sing-box's own
+// ANSI reaches the painted Logs frame unsanitized, and a styling-stack
+// upgrade may change the emitted form.
+var sgrResetPattern = regexp.MustCompile("\x1b\\[0*m")
 
 // paintFrame lays the theme base under the composed frame. Padding every line
 // to the full terminal width carries the black background to the right edge,
@@ -142,7 +153,14 @@ func paintFrame(frame string, width int) string {
 		if pad := width - lipgloss.Width(line); pad > 0 {
 			line += strings.Repeat(" ", pad)
 		}
-		lines[i] = themeSeq + strings.ReplaceAll(line, resetSeq, resetSeq+themeSeq) + resetSeq
+		if strings.Contains(line, "\x1b") {
+			// Partial resets would drop a single channel back to the terminal
+			// default mid-line; rewrite them to the theme's own channel.
+			line = strings.ReplaceAll(line, "\x1b[39m", "\x1b[32m")
+			line = strings.ReplaceAll(line, "\x1b[49m", "\x1b[40m")
+			line = sgrResetPattern.ReplaceAllString(line, resetSeq+themeSeq)
+		}
+		lines[i] = themeSeq + line + resetSeq
 	}
 	return strings.Join(lines, "\n")
 }
@@ -270,7 +288,10 @@ func (m tuiModel) statusFooterView() string {
 
 	pinBudget := 0 // ≤0 = unlimited
 	if m.width > 0 {
-		pinBudget = m.width - 2 // the bar's leading and trailing space
+		// Clamped to at least 1: a computed budget of exactly 0 would read as
+		// the unlimited sentinel and ship a full-width pin past a tiny
+		// terminal — the over-width defect class the marquee clamp fixed.
+		pinBudget = max(1, m.width-2) // the bar's leading and trailing space
 	}
 	right := m.statusPin(pinBudget)
 	if right != "" && m.width > 0 {
@@ -279,7 +300,7 @@ func (m tuiModel) statusFooterView() string {
 		contentBudget := max(0, m.width-statusBarChrome)
 		if lipgloss.Width(detail)+lipgloss.Width(right) > contentBudget {
 			lane := min(statusDetailLaneWidth, max(0, contentBudget-statusPinMinWidth))
-			right = m.statusPin(max(0, contentBudget-lane))
+			right = m.statusPin(max(1, contentBudget-lane))
 		}
 	}
 	if right != "" {
@@ -296,7 +317,15 @@ func (m tuiModel) statusFooterView() string {
 	}
 	left := " " + detail
 	pad := m.width - lipgloss.Width(left) - lipgloss.Width(right)
-	return style.Render(left + strings.Repeat(" ", max(0, pad)) + right)
+	line := left + strings.Repeat(" ", max(0, pad)) + right
+	// Last-resort clamp: at widths too small for even the bar's chrome the
+	// budgets above cannot hold the invariant on their own, and an over-width
+	// line makes bubbletea truncate it with the background stopping short of
+	// the terminal edge.
+	if m.width > 0 && lipgloss.Width(line) > m.width {
+		line = truncateWidth(line, m.width)
+	}
+	return style.Render(line)
 }
 
 // statusPin is the status bar's fixed right edge while connected: the relay
@@ -373,12 +402,14 @@ func (m tuiModel) statusDetail() string {
 	// a second, different relay. The class badge is not duplicated anywhere, so
 	// it stays — bracketed, it labels itself.
 	parts := make([]string, 0, 10)
+	// The state is normally the bar's color alone; with no color to carry it
+	// (NO_COLOR, dumb terminals — the Ascii profile) the translated state word
+	// leads the detail instead, so the bar still says what it is.
+	if lipgloss.ColorProfile() == termenv.Ascii {
+		parts = append(parts, tr.statusName(status))
+	}
 	if m.infoOK {
-		if brokerapi.EffectiveNodeClass(m.info.Relay.NodeClass) == brokerapi.NodeClassFoundation {
-			parts = append(parts, tr.badgeFoundation)
-		} else {
-			parts = append(parts, tr.badgeVolunteer)
-		}
+		parts = append(parts, nodeClassText(tr, m.info.Relay.NodeClass))
 	}
 
 	transport := "—"
@@ -419,7 +450,15 @@ func (m tuiModel) statusDetail() string {
 	if m.state.LastError != nil {
 		parts = append(parts, field(tr.labelError, *m.state.LastError))
 	}
-	return strings.Join(parts, " · ")
+	// One line by contract: engine strings can carry newlines (a broker front's
+	// HTML error body survives brokerapi's trim), and a stray \n here would make
+	// the frame taller than the terminal.
+	return oneLine(strings.Join(parts, " · "))
+}
+
+// oneLine collapses every whitespace run — newlines included — to one space.
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // footerMarqueeWindow returns one display-cell-aware window into overflowing
@@ -499,13 +538,24 @@ func transportLabel(tr *translation, info connectcore.ConnectionInfo) string {
 	}
 }
 
-func nodeClassBadge(tr *translation, nodeClass string) string {
-	// A missing or unrecognized class is the volunteer class, per the
-	// descriptor contract; EffectiveNodeClass is that rule.
+// nodeClassText is the unstyled class label — the single home of the
+// class→label rule, shared by the relay list's badge and the status bar. A
+// missing or unrecognized class is the volunteer class, per the descriptor
+// contract; EffectiveNodeClass is that rule.
+func nodeClassText(tr *translation, nodeClass string) string {
 	if brokerapi.EffectiveNodeClass(nodeClass) == brokerapi.NodeClassFoundation {
-		return foundationBadgeStyle.Render(tr.badgeFoundation)
+		return tr.badgeFoundation
 	}
-	return volunteerBadgeStyle.Render(tr.badgeVolunteer)
+	return tr.badgeVolunteer
+}
+
+// nodeClassBadge is nodeClassText in the relay list's class color.
+func nodeClassBadge(tr *translation, nodeClass string) string {
+	text := nodeClassText(tr, nodeClass)
+	if brokerapi.EffectiveNodeClass(nodeClass) == brokerapi.NodeClassFoundation {
+		return foundationBadgeStyle.Render(text)
+	}
+	return volunteerBadgeStyle.Render(text)
 }
 
 // healthText renders the latest mid-session probe sweep. The engine only
@@ -586,7 +636,10 @@ func (m tuiModel) relaysView() string {
 	// Window the list to the rows the body has left after any notice lines and
 	// the column header, following the cursor: fitLines hard-truncates the body,
 	// so without this the selection could sit on a row the screen never shows.
-	visible := m.bodyHeight() - len(rows)
+	// The window budget excludes the brand mark's reserved rows: the cursor
+	// pins the selection to the window's last line, which must stay a real
+	// content line.
+	visible := m.bodyHeight() - m.brandMarkRows() - len(rows)
 	if visible < 1 {
 		visible = 1
 	}

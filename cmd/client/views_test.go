@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -318,7 +319,6 @@ func TestStatusBarKeepsDurationPinnedWhileScrolling(t *testing.T) {
 // too many — and disconnected, where no summary absorbs it, the bar shipped
 // one cell past the terminal (width 80, Relays, English, step 111).
 func TestFooterMarqueeHoldsItsWidthAtEveryPhase(t *testing.T) {
-	names := []string{"status", "relays", "logs", "settings"}
 	label := "merry-falcon"
 	for _, width := range []int{20, 30, 40, 60, 80, 100, 120} {
 		for _, connected := range []bool{false, true} {
@@ -341,8 +341,8 @@ func TestFooterMarqueeHoldsItsWidthAtEveryPhase(t *testing.T) {
 							"status": m.statusFooterView(),
 						} {
 							if w := lipgloss.Width(got); w > width {
-								t.Fatalf("w=%d %s lang=%d conn=%t step=%d: %s bar is %d cells",
-									width, names[v], lang, connected, step, bar, w)
+								t.Fatalf("w=%d view=%q lang=%d conn=%t step=%d: %s bar is %d cells",
+									width, m.tr().tabs[v], lang, connected, step, bar, w)
 							}
 						}
 					}
@@ -597,21 +597,47 @@ func TestBrandMarkHiddenOnSmallTerminals(t *testing.T) {
 	}
 }
 
-// Outside Logs, the mark wins the corner over body content, and the cut under
-// it is ANSI-aware so styled body lines are never severed mid-escape-sequence.
-func TestBrandMarkWinsTheCornerOverContent(t *testing.T) {
+// The mark's rows are RESERVED, not overlaid: even with the cursor scrolled to
+// the tail — which pins the highlighted relay to the list window's last line —
+// every cell of that row (latency, class) stays readable, and the mark renders
+// whole on its own lines below.
+func TestBrandMarkNeverCoversContent(t *testing.T) {
 	m := newTestModel(&fakeDriver{})
-	m.width, m.height = 60, 24
-	wide := errorStyle.Render(strings.Repeat("x", m.width)) // full-width AND styled
-	body := m.overlayBrandMark(fitLines(strings.Repeat(wide+"\n", 19)+wide, m.bodyHeight()))
-	lines := strings.Split(body, "\n")
-	for _, line := range lines[len(lines)-len(openrungArt):] {
-		if w := lipgloss.Width(line); w > m.width {
-			t.Errorf("overlaid line is %d cells wide, max %d: %q", w, m.width, line)
+	m.width, m.height = 80, 24
+	m.view = viewRelays
+	m.refreshing = false
+	for i := 0; i < 25; i++ {
+		m.relays = append(m.relays, connectcore.DirectoryRelay{
+			Relay: brokerapi.RelayDescriptor{ID: fmt.Sprintf("relay_%02d", i), Label: fmt.Sprintf("node-%02d", i)},
+		})
+	}
+	m.relayCursor = len(m.relays) // the last relay: the window's final line
+
+	view := m.View()
+	var cursorRow string
+	for _, row := range strings.Split(view, "\n") {
+		if strings.Contains(row, "▸") {
+			cursorRow = row
 		}
 	}
-	if !strings.Contains(body, openrungArt[0]) {
-		t.Fatalf("full-width content displaced the brand mark:\n%s", body)
+	if cursorRow == "" {
+		t.Fatalf("highlighted row not rendered:\n%s", view)
+	}
+	if !strings.Contains(cursorRow, "node-24") || !strings.Contains(cursorRow, "[volunteer]") {
+		t.Fatalf("highlighted row lost its cells to the mark: %q", cursorRow)
+	}
+	for _, artLine := range openrungArt {
+		if strings.Contains(cursorRow, strings.TrimSpace(artLine)[:8]) {
+			t.Fatalf("brand mark drawn over the highlighted row: %q", cursorRow)
+		}
+		if !strings.Contains(view, artLine) {
+			t.Fatalf("brand mark row %q missing:\n%s", artLine, view)
+		}
+	}
+	for i, line := range strings.Split(view, "\n") {
+		if w := lipgloss.Width(line); w > m.width {
+			t.Errorf("line %d is %d cells wide, max %d", i, w, m.width)
+		}
 	}
 }
 
@@ -652,6 +678,61 @@ func TestSettingsOffersNoTargetFields(t *testing.T) {
 	}
 	if strings.Contains(m.footerView(), "1-4") {
 		t.Fatalf("footer still advertises the view keys: %q", m.footerView())
+	}
+}
+
+// Engine strings can carry newlines — a broker front's HTML error body
+// survives brokerapi's trim — and the status bar is one line by contract: a
+// stray \n would make the frame taller than the terminal.
+func TestStatusBarStaysOneLineWithNewlineErrors(t *testing.T) {
+	m := newTestModel(&fakeDriver{})
+	m.width = 400
+	failure := "broker list relays: <html>\n<body>502 Bad Gateway</body>\n</html>"
+	m.state = connectcore.State{Status: connectcore.StatusFailed, LastError: &failure}
+	if bar := m.statusFooterView(); strings.Contains(bar, "\n") {
+		t.Fatalf("multi-line error made the status bar multi-line:\n%q", bar)
+	}
+	if !strings.Contains(m.statusDetail(), "502 Bad Gateway") {
+		t.Fatalf("sanitizing the error lost its text:\n%s", m.statusDetail())
+	}
+}
+
+// The state is normally the bar's color alone; the Ascii profile (NO_COLOR,
+// dumb terminals) cannot render color, so there — and only there — the
+// translated state word leads the detail.
+func TestStateWordAppearsOnlyWithoutColor(t *testing.T) {
+	m := newTestModel(&fakeDriver{})
+	m.width = 400
+	m.state = connectcore.State{Status: connectcore.StatusConnecting}
+	if detail := m.statusDetail(); !strings.Contains(detail, "connecting") {
+		t.Fatalf("Ascii-profile detail carries no state word:\n%s", detail)
+	}
+	m.lang = langChinese
+	if detail := m.statusDetail(); !strings.Contains(detail, "连接中") {
+		t.Fatalf("state word not translated:\n%s", detail)
+	}
+	m.lang = langEnglish
+
+	lipgloss.SetColorProfile(termenv.ANSI)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+	if detail := m.statusDetail(); strings.Contains(detail, "connecting") {
+		t.Fatalf("colored detail duplicates the bar's color as a word:\n%s", detail)
+	}
+}
+
+// The never-exceed-width invariant must hold even at pathological widths: a
+// computed pin budget of exactly 0 used to read as the unlimited sentinel and
+// ship a full-width pin past the terminal.
+func TestStatusBarNeverExceedsTinyWidths(t *testing.T) {
+	label := "merry-falcon"
+	for width := 1; width <= 10; width++ {
+		m := newTestModel(&fakeDriver{})
+		m.width = width
+		m.state = connectcore.State{Status: connectcore.StatusConnected, RelayLabel: &label}
+		m.connectedAt = m.now.Add(-time.Minute)
+		if w := lipgloss.Width(m.statusFooterView()); w > width {
+			t.Errorf("width %d: status bar is %d cells", width, w)
+		}
 	}
 }
 

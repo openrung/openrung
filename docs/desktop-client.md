@@ -326,10 +326,12 @@ non-zero on a terminal failure, and an interrupt disconnects cleanly, restoring
 the system proxy. `check` and `config` are fetch-and-print only: they open no
 telemetry session and start no tunnel.
 
-Common flags: `-broker` (empty races the built-in HTTPS fronts), `-relay-id`
-and `-relay-label` to pin a relay (`-headless`, `check`, and `config`; the
-interactive client selects from the Relays list and warns if they are
-passed), `-relay-family` for `check`/`config`,
+Common flags: `-broker` (empty races the built-in HTTPS fronts), `-relay-id`,
+`-relay-label`, and `-relay-country` to pin a relay or scope the connect to a
+country — a country target keeps mid-session failover within that country
+(`-headless`, `check`, and `config`; the interactive client selects from the
+Relays list and warns if they are passed), `-relay-family` for
+`check`/`config`,
 `-mtu` for the TUN device, and `-sing-box` to substitute an external sing-box
 binary for the bundled engine. Run `go run ./cmd/client help` for the full
 list.
