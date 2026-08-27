@@ -12,6 +12,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+
+	"github.com/openrung/openrung/connectcore/sudouser"
 
 	"openrung/internal/proxymode"
 )
@@ -42,6 +46,10 @@ type proxyEndpoint struct {
 // so tests can point it at a temp directory.
 type Store struct {
 	dir string
+	// stateDir pins the directory by descriptor for the process lifetime, and
+	// is set only under sudo. Writes then go through *at syscalls, so the
+	// directory validated in New cannot be swapped for a symlink afterwards.
+	stateDir *sudouser.StateDir
 }
 
 // New resolves the per-install config directory (os.UserConfigDir()/openrung),
@@ -52,10 +60,36 @@ func New() (*Store, error) {
 		return nil, err
 	}
 	dir := filepath.Join(base, dirName)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := sudouser.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	return &Store{dir: dir}, nil
+	store := &Store{dir: dir}
+	if sudouser.Active() {
+		// Refusing an unsafe state directory is fatal: a Store rooted at a
+		// symlinked path has root writing the user's files wherever the link
+		// points, which for a name like proxy-env-1080.sh and a target like
+		// /etc/profile.d means a user-writable script that root later sources.
+		stateDir, err := sudouser.OpenStateDir(dir)
+		if err != nil {
+			return nil, err
+		}
+		store.stateDir = stateDir
+		// The ownership repair is the opposite case. An earlier sudo'd run
+		// (TUN mode) may have left the directory or the files in it
+		// root-owned, which makes every later plain run silently fail to read
+		// or write them. A repair that cannot run costs one root-owned file,
+		// while failing New costs the caller its whole store — recents, the
+		// stable proxy port, the crash snapshot — so each step is best-effort.
+		_ = stateDir.RepairOwner()
+		if entries, err := stateDir.Entries(); err == nil {
+			for _, entry := range entries {
+				if repairableStateFile(entry.Name()) {
+					_ = stateDir.RepairEntry(entry.Name())
+				}
+			}
+		}
+	}
+	return store, nil
 }
 
 // NewInDir builds a Store rooted at an explicit directory (tests).
@@ -67,7 +101,7 @@ func NewInDir(dir string) *Store {
 // when none are stored or the file is unreadable/corrupt — recents are a
 // convenience, never a hard dependency.
 func (s *Store) LoadRecents() []RecentNode {
-	data, err := os.ReadFile(filepath.Join(s.dir, recentsFile))
+	data, err := s.readFile(recentsFile)
 	if err != nil {
 		return nil
 	}
@@ -87,7 +121,7 @@ func (s *Store) SaveRecents(recents []RecentNode) error {
 // unreadable, corrupt, and out-of-range files are treated as absent so the
 // caller can allocate and persist a fresh port.
 func (s *Store) LoadProxyPort() (int, bool) {
-	data, err := os.ReadFile(filepath.Join(s.dir, proxyPortFile))
+	data, err := s.readFile(proxyPortFile)
 	if err != nil {
 		return 0, false
 	}
@@ -152,7 +186,7 @@ func (s *Store) SaveProxySnapshot(snap proxymode.Snapshot) error {
 // LoadProxySnapshot returns the persisted snapshot and whether one existed. A
 // present snapshot on startup means a prior session did not restore cleanly.
 func (s *Store) LoadProxySnapshot() (proxymode.Snapshot, bool) {
-	data, err := os.ReadFile(filepath.Join(s.dir, proxySnapshotHdr))
+	data, err := s.readFile(proxySnapshotHdr)
 	if err != nil {
 		return proxymode.Snapshot{}, false
 	}
@@ -165,11 +199,29 @@ func (s *Store) LoadProxySnapshot() (proxymode.Snapshot, bool) {
 
 // ClearProxySnapshot removes the snapshot after a clean restore.
 func (s *Store) ClearProxySnapshot() error {
-	err := os.Remove(filepath.Join(s.dir, proxySnapshotHdr))
+	var err error
+	if s.stateDir != nil {
+		// Deleting by pathname would follow a symlink swapped in after New
+		// validated the directory, letting root unlink the file elsewhere.
+		err = s.stateDir.Remove(proxySnapshotHdr)
+	} else {
+		err = os.Remove(filepath.Join(s.dir, proxySnapshotHdr))
+	}
 	if os.IsNotExist(err) {
 		return nil
 	}
 	return err
+}
+
+// readFile reads one state file, through the pinned descriptor when the run is
+// elevated. Every caller treats an error as "absent", so a symlink or a FIFO
+// left at a state path reads as missing state instead of sending root through
+// it — os.ReadFile would follow the one and block in open(2) on the other.
+func (s *Store) readFile(name string) ([]byte, error) {
+	if s.stateDir != nil {
+		return s.stateDir.ReadFile(name)
+	}
+	return os.ReadFile(filepath.Join(s.dir, name))
 }
 
 func (s *Store) writeJSON(name string, value any) error {
@@ -181,6 +233,10 @@ func (s *Store) writeJSON(name string, value any) error {
 }
 
 func (s *Store) writeFile(name string, data []byte) error {
+	if s.stateDir != nil {
+		// Elevated runs write relative to the pinned directory descriptor.
+		return s.stateDir.WriteFile(name, data, 0o600)
+	}
 	// Write-then-rename for atomicity, so a crash never leaves a half file.
 	// A unique temporary name also lets concurrent callers safely refresh the
 	// same port-qualified helper.
@@ -198,10 +254,27 @@ func (s *Store) writeFile(name string, data []byte) error {
 		_ = file.Close()
 		return err
 	}
+	if err := sudouser.ChownFile(file); err != nil {
+		_ = file.Close()
+		return err
+	}
 	if err := file.Close(); err != nil {
 		return err
 	}
 	return os.Rename(tmp, filepath.Join(s.dir, name))
+}
+
+func repairableStateFile(name string) bool {
+	switch name {
+	case recentsFile, proxyPortFile, proxyPortLockFile, proxySnapshotHdr, "client-id":
+		return true
+	}
+	if !strings.HasPrefix(name, "proxy-env-") || !strings.HasSuffix(name, ".sh") {
+		return false
+	}
+	portText := strings.TrimSuffix(strings.TrimPrefix(name, "proxy-env-"), ".sh")
+	port, err := strconv.Atoi(portText)
+	return err == nil && validPort(port) && strconv.Itoa(port) == portText
 }
 
 func validPort(port int) bool {
