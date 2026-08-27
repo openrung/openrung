@@ -5,10 +5,12 @@ package sudouser
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -195,6 +197,37 @@ func (d *StateDir) RepairEntry(name string) error {
 	return ChownFile(file)
 }
 
+// ReadFile reads one state file relative to the pinned directory, never
+// following a symlink at its name and never blocking on a FIFO left there.
+func (d *StateDir) ReadFile(name string) ([]byte, error) {
+	if !validStateName(name) {
+		return nil, fmt.Errorf("invalid state file %q", name)
+	}
+	file, err := openRegularFileAt(d.file, name, filepath.Join(d.file.Name(), name), os.O_RDONLY, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return io.ReadAll(file)
+}
+
+// Remove deletes one state file relative to the pinned directory. The error
+// wraps the underlying errno, so os.IsNotExist still recognises a file that
+// was already gone.
+func (d *StateDir) Remove(name string) error {
+	if !validStateName(name) {
+		return fmt.Errorf("invalid state file %q", name)
+	}
+	if err := unix.Unlinkat(int(d.file.Fd()), name, 0); err != nil {
+		return &os.PathError{Op: "unlinkat", Path: filepath.Join(d.file.Name(), name), Err: err}
+	}
+	return nil
+}
+
+// tmpSequence keeps temporary names unique within the process; the pid keeps
+// them unique between processes.
+var tmpSequence atomic.Uint64
+
 // WriteFile atomically replaces one state file, relative to the pinned
 // directory throughout: the temporary file is created, written and renamed
 // with *at syscalls, so swapping the directory's pathname for a symlink after
@@ -204,24 +237,35 @@ func (d *StateDir) WriteFile(name string, data []byte, perm os.FileMode) error {
 		return fmt.Errorf("invalid state file %q", name)
 	}
 	fd := int(d.file.Fd())
-	// Qualifying by pid keeps concurrent client processes from colliding, the
-	// same property os.CreateTemp provides on the unelevated path.
-	tmp := "." + name + ".tmp-" + strconv.Itoa(os.Getpid())
-	cleanup := func() { _ = unix.Unlinkat(fd, tmp, 0) }
-
-	file, err := openRegularFileAt(d.file, tmp, filepath.Join(d.file.Name(), tmp), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
-	if err != nil {
-		return err
+	// Every attempt takes its own exclusive name, so concurrent callers
+	// refreshing the same state file cannot open, truncate, or rename each
+	// other's temporary file — the guarantee os.CreateTemp provides on the
+	// unelevated path.
+	prefix := "." + name + ".tmp-" + strconv.Itoa(os.Getpid()) + "-"
+	for attempt := 0; attempt < 10000; attempt++ {
+		tmp := prefix + strconv.FormatUint(tmpSequence.Add(1), 10)
+		file, err := openRegularFileAt(d.file, tmp, filepath.Join(d.file.Name(), tmp),
+			os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+		if err != nil {
+			// A leftover temporary from a crashed run with a recycled pid;
+			// the next sequence number is untaken.
+			if errors.Is(err, syscall.EEXIST) {
+				continue
+			}
+			return err
+		}
+		cleanup := func() { _ = unix.Unlinkat(fd, tmp, 0) }
+		if err := writeAndClose(file, data, perm); err != nil {
+			cleanup()
+			return err
+		}
+		if err := unix.Renameat(fd, tmp, fd, name); err != nil {
+			cleanup()
+			return &os.PathError{Op: "renameat", Path: filepath.Join(d.file.Name(), name), Err: err}
+		}
+		return nil
 	}
-	if err := writeAndClose(file, data, perm); err != nil {
-		cleanup()
-		return err
-	}
-	if err := unix.Renameat(fd, tmp, fd, name); err != nil {
-		cleanup()
-		return &os.PathError{Op: "renameat", Path: filepath.Join(d.file.Name(), name), Err: err}
-	}
-	return nil
+	return fmt.Errorf("no free temporary name for %s", filepath.Join(d.file.Name(), name))
 }
 
 func writeAndClose(file *os.File, data []byte, perm os.FileMode) error {

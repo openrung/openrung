@@ -101,7 +101,7 @@ func NewInDir(dir string) *Store {
 // when none are stored or the file is unreadable/corrupt — recents are a
 // convenience, never a hard dependency.
 func (s *Store) LoadRecents() []RecentNode {
-	data, err := os.ReadFile(filepath.Join(s.dir, recentsFile))
+	data, err := s.readFile(recentsFile)
 	if err != nil {
 		return nil
 	}
@@ -121,7 +121,7 @@ func (s *Store) SaveRecents(recents []RecentNode) error {
 // unreadable, corrupt, and out-of-range files are treated as absent so the
 // caller can allocate and persist a fresh port.
 func (s *Store) LoadProxyPort() (int, bool) {
-	data, err := os.ReadFile(filepath.Join(s.dir, proxyPortFile))
+	data, err := s.readFile(proxyPortFile)
 	if err != nil {
 		return 0, false
 	}
@@ -186,7 +186,7 @@ func (s *Store) SaveProxySnapshot(snap proxymode.Snapshot) error {
 // LoadProxySnapshot returns the persisted snapshot and whether one existed. A
 // present snapshot on startup means a prior session did not restore cleanly.
 func (s *Store) LoadProxySnapshot() (proxymode.Snapshot, bool) {
-	data, err := os.ReadFile(filepath.Join(s.dir, proxySnapshotHdr))
+	data, err := s.readFile(proxySnapshotHdr)
 	if err != nil {
 		return proxymode.Snapshot{}, false
 	}
@@ -199,11 +199,29 @@ func (s *Store) LoadProxySnapshot() (proxymode.Snapshot, bool) {
 
 // ClearProxySnapshot removes the snapshot after a clean restore.
 func (s *Store) ClearProxySnapshot() error {
-	err := os.Remove(filepath.Join(s.dir, proxySnapshotHdr))
+	var err error
+	if s.stateDir != nil {
+		// Deleting by pathname would follow a symlink swapped in after New
+		// validated the directory, letting root unlink the file elsewhere.
+		err = s.stateDir.Remove(proxySnapshotHdr)
+	} else {
+		err = os.Remove(filepath.Join(s.dir, proxySnapshotHdr))
+	}
 	if os.IsNotExist(err) {
 		return nil
 	}
 	return err
+}
+
+// readFile reads one state file, through the pinned descriptor when the run is
+// elevated. Every caller treats an error as "absent", so a symlink or a FIFO
+// left at a state path reads as missing state instead of sending root through
+// it — os.ReadFile would follow the one and block in open(2) on the other.
+func (s *Store) readFile(name string) ([]byte, error) {
+	if s.stateDir != nil {
+		return s.stateDir.ReadFile(name)
+	}
+	return os.ReadFile(filepath.Join(s.dir, name))
 }
 
 func (s *Store) writeJSON(name string, value any) error {

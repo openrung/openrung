@@ -43,6 +43,14 @@ func (d *StateDir) RepairOwner() error { return nil }
 
 func (d *StateDir) RepairEntry(name string) error { return nil }
 
+func (d *StateDir) ReadFile(name string) ([]byte, error) {
+	return os.ReadFile(filepath.Join(d.dir, name))
+}
+
+func (d *StateDir) Remove(name string) error {
+	return os.Remove(filepath.Join(d.dir, name))
+}
+
 func (d *StateDir) WriteFile(name string, data []byte, perm os.FileMode) error {
 	if name == "" || name == "." || name == ".." || filepath.Base(name) != name {
 		return fmt.Errorf("invalid state file %q", name)
