@@ -170,8 +170,9 @@ func TestRelaysEnterConnectsToTheHighlightedRelay(t *testing.T) {
 
 	// The target lived only in that call: back on Auto select, the next connect
 	// is ranked again — no pin lingers from the relay connect before it. (The
-	// engine publishes state and time passes first, or the connect-spam guards
-	// would swallow the press.)
+	// requested connect reports in, ends, and time passes first, or the
+	// connect-spam guards would swallow the press.)
+	m, _ = update(t, m, engineStateMsg(connectcore.State{Status: connectcore.StatusPreparing}))
 	m, _ = update(t, m, engineStateMsg(connectcore.State{Status: connectcore.StatusDisconnected}))
 	m.now = m.now.Add(2 * time.Second)
 	m, _ = update(t, m, keyMsg("up"))
@@ -197,19 +198,49 @@ func TestEnterSpamDispatchesOneConnect(t *testing.T) {
 		t.Fatalf("queued enters dispatched %d connects, want 1", len(driver.connects))
 	}
 
-	// The engine answered and went back to disconnected, but within the same
-	// second: the throttle still holds.
+	// A reconnect's teardown publishes the OLD session's Disconnected first,
+	// and the new ladder may not report in for seconds. That event must not
+	// unlatch enter — the reproduction was: connected → enter → old session's
+	// Disconnected → wait past the throttle → enter → two ConnectTargets.
 	m, _ = update(t, m, engineStateMsg(connectcore.State{Status: connectcore.StatusDisconnected}))
+	m.now = m.now.Add(2 * time.Second)
 	m, _ = update(t, m, keyMsg("enter"))
 	if len(driver.connects) != 1 {
-		t.Fatalf("sub-second re-press dispatched %d connects, want 1", len(driver.connects))
+		t.Fatalf("old session's Disconnected unlatched enter: %d connects, want 1", len(driver.connects))
 	}
 
-	// A second later the press is a deliberate retry, not spam.
+	// Only the requested connect's own Preparing hands control back to the
+	// status guard; once that attempt ends and a second passes, a fresh press
+	// is a deliberate retry.
+	m, _ = update(t, m, engineStateMsg(connectcore.State{Status: connectcore.StatusPreparing}))
+	m, _ = update(t, m, keyMsg("enter")) // in flight: the status guard holds
+	if len(driver.connects) != 1 {
+		t.Fatalf("enter during preparing dispatched %d connects, want 1", len(driver.connects))
+	}
+	m, _ = update(t, m, engineStateMsg(connectcore.State{Status: connectcore.StatusDisconnected}))
 	m.now = m.now.Add(2 * time.Second)
 	m, _ = update(t, m, keyMsg("enter"))
 	if len(driver.connects) != 2 {
 		t.Fatalf("deliberate retry dispatched %d connects, want 2", len(driver.connects))
+	}
+}
+
+// A connect torn down before it ever publishes preparing must not leave the
+// pending latch stuck: an explicit d hands the latch back.
+func TestDisconnectUnlatchesAPendingConnect(t *testing.T) {
+	driver := &fakeDriver{}
+	m := newTestModel(driver)
+	m.view = viewRelays
+
+	m, _ = update(t, m, keyMsg("enter"))
+	if len(driver.connects) != 1 {
+		t.Fatalf("connects = %d, want 1", len(driver.connects))
+	}
+	m, _ = update(t, m, keyMsg("d"))
+	m.now = m.now.Add(2 * time.Second)
+	m, _ = update(t, m, keyMsg("enter"))
+	if len(driver.connects) != 2 {
+		t.Fatalf("enter after an explicit disconnect stayed latched: %d connects", len(driver.connects))
 	}
 }
 

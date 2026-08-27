@@ -423,13 +423,16 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case engineStateMsg:
-		// The engine has published state for the dispatched connect (or for
-		// whatever else happened); from here the enter guard's status check is
-		// current again.
-		m.connectPending = false
 		m.state = connectcore.State(msg)
 		switch m.state.Status {
 		case connectcore.StatusPreparing:
+			// The requested connect is now the engine's published state, so the
+			// status guard takes over from the pending latch. Preparing is the
+			// ONLY event that clears it: a reconnect's teardown publishes the
+			// OLD session's Disconnected first (and can then flush telemetry
+			// for seconds), and unlatching there re-opened the enter window
+			// before the new ladder had reported in at all.
+			m.connectPending = false
 			// Only a fresh ConnectTarget passes through preparing (a failover
 			// recovery re-promotes via connecting), so this is where a genuinely
 			// new session starts: drop the previous session's activity notice.
@@ -582,6 +585,10 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.view = (m.view + viewCount - 1) % viewCount
 		return m, nil
 	case "d":
+		// An explicit disconnect supersedes any dispatched connect; without
+		// this, a connect torn down before it ever published preparing would
+		// leave the pending latch stuck and enter dead.
+		m.connectPending = false
 		return m, m.disconnectCmd()
 	case "r":
 		if m.refreshing {
