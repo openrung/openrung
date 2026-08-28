@@ -28,7 +28,7 @@ func TestMidSessionFailoverEmitsTypedNotices(t *testing.T) {
 
 	crash := make(chan error, 1)
 	var runs int32
-	s.runTunnel = func(ctx context.Context, configPath string) error {
+	s.TunnelRuntime = runFuncRuntime(func(ctx context.Context, configJSON []byte) error {
 		if atomic.AddInt32(&runs, 1) == 1 {
 			select {
 			case err := <-crash:
@@ -39,7 +39,7 @@ func TestMidSessionFailoverEmitsTypedNotices(t *testing.T) {
 		}
 		<-ctx.Done()
 		return nil
-	}
+	})
 
 	if err := s.Connect(sink.srv.URL, "", ""); err != nil {
 		t.Fatalf("connect: %v", err)

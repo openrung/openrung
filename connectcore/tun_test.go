@@ -40,11 +40,11 @@ func TestTUNConnectRefusedWithoutPrivileges(t *testing.T) {
 		fetched.Store(true)
 		return discovery.Fetch{}, errors.New("broker must not be reached")
 	}
-	s.runTunnel = func(ctx context.Context, configPath string) error {
+	s.TunnelRuntime = runFuncRuntime(func(ctx context.Context, configJSON []byte) error {
 		tunnelStarted.Store(true)
 		<-ctx.Done()
 		return nil
-	}
+	})
 
 	if err := s.Connect("", "", ""); err != nil {
 		t.Fatalf("Connect: %v", err)
@@ -116,16 +116,18 @@ func TestTUNConnectSkipsProxyPortAndOSProxy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var configJSON []byte
-	s.writeConfig = func(data []byte) (string, error) {
-		configJSON = append([]byte(nil), data...)
-		return writeTempConfig(data)
-	}
+	configs := make(chan []byte, 1)
+	s.TunnelRuntime = runFuncRuntime(func(ctx context.Context, config []byte) error {
+		configs <- append([]byte(nil), config...)
+		<-ctx.Done()
+		return nil
+	})
 
 	if err := s.Connect("", "", ""); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	waitForStatus(t, s, StatusConnected)
+	configJSON := <-configs
 
 	info, ok := s.ActiveConnectionInfo()
 	if !ok || info.ProxyPort != 0 {

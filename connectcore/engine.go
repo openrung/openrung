@@ -23,7 +23,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -140,18 +139,21 @@ type candidateResult struct {
 	frontID         string
 	ctx             context.Context
 	cancel          context.CancelFunc
-	runErrCh        chan error
-	reaped          bool // runErrCh already drained (the process is reaped)
-	torndown        bool
-	punch           *PunchPath // live punched path, nil when using the hub
+	// run is the live tunnel run from the TunnelRuntime seam; runDone is its
+	// single exit report (run.Done() captured once). stopGrace is the graceful
+	// budget teardown passes to run.Stop, pinned when the run starts.
+	run       TunnelRun
+	runDone   <-chan error
+	stopGrace time.Duration
+	torndown  bool
+	punch     *PunchPath // live punched path, nil when using the hub
 
-	// The WSS adapter remains alive until sing-box has been cancelled and reaped.
+	// The WSS adapter remains alive until the tunnel run has been stopped.
 	// Its separate context preserves that teardown order.
 	wssBridge    wssBridge
 	wssDone      chan struct{}
 	wssCancel    context.CancelFunc
 	transportErr chan error
-	configPath   string
 	proxyPort    int
 	tcpMS        int64
 	hasTCPMS     bool
@@ -195,9 +197,11 @@ func localCandidateErrorStage(err error) (string, bool) {
 }
 
 // teardown releases a candidate's resources in the pinned order: cancel the
-// candidate context, reap sing-box, close the punched path (only after the
-// process exits — the bridge must not close while sing-box could still read
-// it), remove the temp config. Safe to call more than once and on nil.
+// candidate context, stop the tunnel run (Stop blocks until the core has
+// exited or the forced-stop budget expires), close the punched path (only
+// after that — the bridge must not close while sing-box could still read it).
+// The runtime owns the config's lifetime. Safe to call more than once and on
+// nil.
 func (c *candidateResult) teardown() {
 	if c == nil || c.torndown {
 		return
@@ -206,9 +210,8 @@ func (c *candidateResult) teardown() {
 	if c.cancel != nil {
 		c.cancel()
 	}
-	if c.runErrCh != nil && !c.reaped {
-		<-c.runErrCh
-		c.reaped = true
+	if c.run != nil {
+		_ = c.run.Stop(c.stopGrace)
 	}
 	if c.punch != nil {
 		_ = c.punch.Close()
@@ -221,9 +224,6 @@ func (c *candidateResult) teardown() {
 	}
 	if c.wssDone != nil {
 		<-c.wssDone
-	}
-	if c.configPath != "" {
-		_ = os.Remove(c.configPath)
 	}
 }
 
@@ -292,6 +292,12 @@ type Engine struct {
 	// QUIC punch transport still runs the full ladder.
 	PunchEstablisher PunchEstablisher
 
+	// TunnelRuntime executes the tunnel core for each connect-ladder
+	// candidate (ADR-003 A1). Nil selects the subprocess default, shaped by
+	// SingBoxPath and SingBoxStopsOnStdinClose; the mobile binding injects
+	// its in-process libbox runtime here.
+	TunnelRuntime TunnelRuntime
+
 	// connectMu serializes the Connect/Disconnect mutation surface. Hosts may
 	// dispatch every call on its own goroutine (the desktop webview bridge
 	// does), so without this two overlapping Connects could both pass
@@ -319,14 +325,13 @@ type Engine struct {
 
 	// Test seams (nil means the production implementation). They mirror the
 	// platform-hook injection pattern above so ladder tests need no network,
-	// no broker, and no sing-box binary.
-	runTunnel         func(ctx context.Context, configPath string) error
+	// no broker, and no sing-box binary (the tunnel itself is faked through
+	// the exported TunnelRuntime seam).
 	probeTunnel       func(ctx context.Context, proxyPort int) (int64, error)
 	healthProbe       func(ctx context.Context, proxyPort int) error
 	dialRelay         func(ctx context.Context, host string, port int) (int64, error)
 	fetchRelays       func(ctx context.Context, brokerURL string, limit int, clientID, sessionID string) (discovery.Fetch, error)
 	tunnelReady       func(ctx context.Context, proxyPort int) error
-	writeConfig       func(data []byte) (string, error)
 	requestWSSTicket  func(ctx context.Context, brokerURL string, request brokerapi.WSSTicketRequest, clientID, sessionID string) (brokerapi.WSSTicketResponse, error)
 	dialWSS           func(ctx context.Context, rawURL, ticket string) (wssBridge, error)
 	waitWSSRetry      func(ctx context.Context, delay time.Duration) error
@@ -334,13 +339,6 @@ type Engine struct {
 	healthTick        time.Duration // 0 means HealthProbeInterval
 	networkRetryDelay time.Duration // 0 means networkRecoveryPollInterval
 	tunnelReadyLimit  time.Duration // 0 means TunnelReadyTimeout
-}
-
-func (s *Engine) candidateConfigWriter() func([]byte) (string, error) {
-	if s.writeConfig != nil {
-		return s.writeConfig
-	}
-	return writeTempConfig
 }
 
 func (s *Engine) tunnelReadyProbe() func(context.Context, int) error {
@@ -353,28 +351,16 @@ func (s *Engine) tunnelReadyProbe() func(context.Context, int) error {
 	return loopbackReady
 }
 
-func (s *Engine) tunnelRunner() func(context.Context, string) error {
-	if s.runTunnel != nil {
-		return s.runTunnel
-	}
-	// A TUN candidate holds a device plus the routes and DNS settings that go
-	// with it, so it gets the longer grace to unwind them on interrupt; hard
-	// killing it would leave the host's routing table pointing at a gone
-	// interface.
-	killGrace := LadderKillGrace
+// candidateStopGrace is the graceful-stop budget a candidate's teardown
+// passes to TunnelRun.Stop. A TUN candidate holds a device plus the routes
+// and DNS settings that go with it, so it gets the longer grace to unwind
+// them on the stop request; hard killing it would leave the host's routing
+// table pointing at a gone interface.
+func (s *Engine) candidateStopGrace() time.Duration {
 	if s.tunMode() {
-		killGrace = TUNKillGrace
+		return TUNKillGrace
 	}
-	return func(ctx context.Context, configPath string) error {
-		runner := client.SingBoxRunner{
-			Path:             s.SingBoxPath,
-			Stdout:           s.logWriter(),
-			Stderr:           s.logWriter(),
-			KillGrace:        killGrace,
-			StopOnStdinClose: s.SingBoxStopsOnStdinClose,
-		}
-		return runner.Run(ctx, configPath)
-	}
+	return LadderKillGrace
 }
 
 func (s *Engine) tunnelProber() func(context.Context, int) (int64, error) {
@@ -587,11 +573,11 @@ func (s *Engine) SessionID() string {
 const tunnelReadyPollInterval = 25 * time.Millisecond
 
 // awaitTunnelReady blocks until the mixed inbound on 127.0.0.1:port accepts a
-// loopback connection (sing-box came up), the process exits (crash — a bad
+// loopback connection (sing-box came up), the run exits (crash — a bad
 // config or a bind failure), or TunnelReadyTimeout elapses. It returns
 // the real start-to-ready duration for tunnel_start_ms. On the ready path it
-// does NOT consume runErrCh, so the supervisor still owns the live process's
-// exit; on the crash path it marks the candidate reaped.
+// does NOT consume runDone, so the supervisor still owns the live run's exit
+// report.
 func (s *Engine) awaitTunnelReady(ctx context.Context, res *candidateResult, port int) (int64, error) {
 	started := time.Now()
 	deadline := started.Add(s.readyLimit())
@@ -599,8 +585,7 @@ func (s *Engine) awaitTunnelReady(ctx context.Context, res *candidateResult, por
 	defer ticker.Stop()
 	for {
 		select {
-		case runErr := <-res.runErrCh:
-			res.reaped = true
+		case runErr := <-res.runDone:
 			if runErr == nil {
 				runErr = errors.New("sing-box exited")
 			}
@@ -959,7 +944,7 @@ func (s *Engine) candidateConfigInput(cand brokerapi.RelayDescriptor, port int) 
 	return input
 }
 
-// startCandidate owns path-independent config, process, readiness, and
+// startCandidate owns path-independent config, run launch, readiness, and
 // end-to-end validation. Every path uses identical inner Reality settings.
 func (s *Engine) startCandidate(res *candidateResult, configInput client.SingBoxConfigInput) (*candidateResult, error) {
 	configJSON, err := client.BuildSingBoxConfig(configInput)
@@ -967,15 +952,21 @@ func (s *Engine) startCandidate(res *candidateResult, configInput client.SingBox
 		res.teardown()
 		return nil, markLocalCandidateError("config", err)
 	}
-	configPath, err := s.candidateConfigWriter()(configJSON)
+
+	res.stopGrace = s.candidateStopGrace()
+	run, err := s.tunnelRuntime().Run(res.ctx, configJSON)
 	if err != nil {
 		res.teardown()
-		return nil, markLocalCandidateError("config_file", err)
+		// A launch failure defaults to the tunnel_start stage; a runtime that
+		// already staged its error (the subprocess default marks a temp-file
+		// failure config_file) keeps its own.
+		if _, local := localCandidateErrorStage(err); local {
+			return nil, err
+		}
+		return nil, markLocalCandidateError("tunnel_start", err)
 	}
-	res.configPath = configPath
-
-	res.runErrCh = make(chan error, 1)
-	go func(errCh chan<- error, path string) { errCh <- s.tunnelRunner()(res.ctx, path) }(res.runErrCh, configPath)
+	res.run = run
+	res.runDone = run.Done()
 
 	// Wait until sing-box binds the mixed inbound (a real start measurement, and
 	// far faster than a fixed grace when the engine is ready in tens of ms), or
@@ -1013,9 +1004,10 @@ func (s *Engine) startCandidate(res *candidateResult, configInput client.SingBox
 	return res, nil
 }
 
-// probeCandidate watches both the process and WSS adapter while the internet
-// probe is running. A sing-box exit is local; a WSS session exit is transport-
-// scoped; only a completed failing probe is a relay data-path result.
+// probeCandidate watches both the tunnel run and WSS adapter while the
+// internet probe is running. A sing-box exit is local; a WSS session exit is
+// transport-scoped; only a completed failing probe is a relay data-path
+// result.
 func (s *Engine) probeCandidate(res *candidateResult) (int64, error) {
 	type probeResult struct {
 		ms  int64
@@ -1029,8 +1021,7 @@ func (s *Engine) probeCandidate(res *candidateResult) (int64, error) {
 	select {
 	case result := <-probeCh:
 		return result.ms, result.err
-	case runErr := <-res.runErrCh:
-		res.reaped = true
+	case runErr := <-res.runDone:
 		if runErr == nil {
 			runErr = errors.New("sing-box exited during internet verification")
 		}

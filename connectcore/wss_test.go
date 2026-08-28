@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -254,11 +253,15 @@ func TestWSSLocalSetupFailuresDoNotRequestTicketsOrDamageHealth(t *testing.T) {
 			return invalid
 		},
 		"temp file": func(service *Engine, _ chan struct{}) brokerapi.RelayDescriptor {
-			service.writeConfig = func([]byte) (string, error) { return "", errors.New("temporary config unavailable") }
+			service.TunnelRuntime = tunnelRuntimeFunc(func(context.Context, []byte) (TunnelRun, error) {
+				return nil, markLocalCandidateError("config_file", errors.New("temporary config unavailable"))
+			})
 			return fixture
 		},
 		"start or bind": func(service *Engine, _ chan struct{}) brokerapi.RelayDescriptor {
-			service.runTunnel = func(context.Context, string) error { return errors.New("sing-box could not bind local inbound") }
+			service.TunnelRuntime = runFuncRuntime(func(context.Context, []byte) error {
+				return errors.New("sing-box could not bind local inbound")
+			})
 			return fixture
 		},
 		"ready timeout": func(service *Engine, _ chan struct{}) brokerapi.RelayDescriptor {
@@ -268,14 +271,14 @@ func TestWSSLocalSetupFailuresDoNotRequestTicketsOrDamageHealth(t *testing.T) {
 		},
 		"process exit during probe": func(service *Engine, probeStarted chan struct{}) brokerapi.RelayDescriptor {
 			exit := make(chan struct{})
-			service.runTunnel = func(ctx context.Context, _ string) error {
+			service.TunnelRuntime = runFuncRuntime(func(ctx context.Context, _ []byte) error {
 				select {
 				case <-exit:
 					return errors.New("sing-box exited during probe")
 				case <-ctx.Done():
 					return nil
 				}
-			}
+			})
 			service.probeTunnel = func(ctx context.Context, _ int) (int64, error) {
 				close(probeStarted)
 				close(exit)
@@ -379,17 +382,14 @@ func TestWSSDirectFailureFallsBackOnSameRelayAndPreservesReality(t *testing.T) {
 		return bridge, nil
 	}
 	type configCapture struct {
-		path string
 		body []byte
-		err  error
 	}
 	configs := make(chan configCapture, 1)
-	s.runTunnel = func(ctx context.Context, path string) error {
-		body, err := os.ReadFile(path)
-		configs <- configCapture{path: path, body: body, err: err}
+	s.TunnelRuntime = runFuncRuntime(func(ctx context.Context, config []byte) error {
+		configs <- configCapture{body: append([]byte(nil), config...)}
 		<-ctx.Done()
 		return nil
-	}
+	})
 
 	if err := s.Connect(sink.srv.URL, "", ""); err != nil {
 		t.Fatal(err)
@@ -401,9 +401,6 @@ func TestWSSDirectFailureFallsBackOnSameRelayAndPreservesReality(t *testing.T) {
 		t.Fatalf("ticket call = %+v", call)
 	}
 	captured := <-configs
-	if captured.err != nil {
-		t.Fatal(captured.err)
-	}
 	var generated struct {
 		Outbounds []struct {
 			Type       string `json:"type"`
@@ -436,9 +433,8 @@ func TestWSSDirectFailureFallsBackOnSameRelayAndPreservesReality(t *testing.T) {
 	if bridge.closeCalls.Load() != 1 {
 		t.Fatalf("bridge Close calls = %d", bridge.closeCalls.Load())
 	}
-	if _, err := os.Stat(captured.path); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("candidate config survived cleanup: %v", err)
-	}
+	// Temp-config cleanup is the subprocess runtime's job now — proven in
+	// TestSubprocessRuntimeMaterializesConfigAndCleansUp.
 	attempts := sink.named("relay_attempt_failed")
 	if len(attempts) != 1 || attempts[0].RelayID != fixture.ID {
 		t.Fatalf("direct failure health events = %+v", attempts)
@@ -733,14 +729,14 @@ func TestWSSActiveSingBoxExitIsLocalAndDoesNotMintAnotherTicket(t *testing.T) {
 	bridge := newFakeWSSBridge()
 	s.dialWSS = func(context.Context, string, string) (wssBridge, error) { return bridge, nil }
 	crash := make(chan error, 1)
-	s.runTunnel = func(ctx context.Context, _ string) error {
+	s.TunnelRuntime = runFuncRuntime(func(ctx context.Context, _ []byte) error {
 		select {
 		case err := <-crash:
 			return err
 		case <-ctx.Done():
 			return nil
 		}
-	}
+	})
 
 	if err := s.Connect(sink.srv.URL, "", ""); err != nil {
 		t.Fatal(err)

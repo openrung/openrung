@@ -36,12 +36,13 @@ type SingBoxRunner struct {
 	Path   string
 	Stdout io.Writer
 	Stderr io.Writer
-	// KillGrace bounds the wait between the stop request sent on context
+	// KillGrace bounds the wait between the stop request Run sends on context
 	// cancel (stdin close and/or interrupt) and the hard kill. Zero keeps the
-	// 5s default. The desktop connect ladder shortens it: an external binary
-	// on Windows receives no stop request at all (os.Interrupt is unsupported
-	// there), so without a short grace every failed candidate's teardown would
-	// cost the full default.
+	// 5s default. Only Run consults it; a Start caller passes its grace to
+	// SingBoxProcess.Stop directly (the connectcore engine shortens it for
+	// failed ladder candidates: an external binary on Windows receives no stop
+	// request at all — os.Interrupt is unsupported there — so without a short
+	// grace every failed candidate's teardown would cost the full default).
 	KillGrace time.Duration
 	// StopOnStdinClose declares that the binary at Path speaks the stdin-close
 	// stop protocol (see StopOnStdinCloseFlag). The bundled runtime does; an
@@ -52,9 +53,33 @@ type SingBoxRunner struct {
 	StopOnStdinClose bool
 }
 
+// Run supervises one sing-box run to completion: it returns the decorated
+// exit error when the child dies on its own, and on context cancellation it
+// stops the child (gracefully, then forced after KillGrace) and returns the
+// stop's outcome. It is Start + Done/Stop composed for hosts that want the
+// whole lifetime as one blocking call (cmd/wssmatrix does).
 func (r SingBoxRunner) Run(ctx context.Context, configPath string) error {
+	process, err := r.Start(configPath)
+	if err != nil {
+		return err
+	}
+	select {
+	case err := <-process.Done():
+		return err
+	case <-ctx.Done():
+		return process.Stop(r.KillGrace)
+	}
+}
+
+// Start launches sing-box and returns a handle for the started process. It
+// returns at *launched*, not *ready* — readiness stays the caller's job (the
+// connectcore engine proves it with its own startup verification). This is
+// the subprocess half of the engine's TunnelRuntime seam (ADR-003 A1): every
+// engine start/stop runs through Start, SingBoxProcess.Done, and
+// SingBoxProcess.Stop.
+func (r SingBoxRunner) Start(configPath string) (*SingBoxProcess, error) {
 	if configPath == "" {
-		return errors.New("sing-box config path is required")
+		return nil, errors.New("sing-box config path is required")
 	}
 
 	binary := r.Path
@@ -63,7 +88,7 @@ func (r SingBoxRunner) Run(ctx context.Context, configPath string) error {
 	}
 	resolved, err := exec.LookPath(binary)
 	if err != nil {
-		return fmt.Errorf("find sing-box %q: %w", binary, err)
+		return nil, fmt.Errorf("find sing-box %q: %w", binary, err)
 	}
 
 	args := []string{"run", "-c", configPath}
@@ -73,21 +98,20 @@ func (r SingBoxRunner) Run(ctx context.Context, configPath string) error {
 	cmd := exec.Command(resolved, args...)
 	configureSingBoxProcess(cmd)
 
-	// The stop pipe (see StopOnStdinCloseFlag). Both ends stay open until Run
-	// returns: the write end held open is what makes the child's stdin read
-	// block, and closing it is the stop request. The deferred closes also
-	// cover the hard-kill-timeout path, where Run returns while the child may
-	// still be alive — the EOF then still reaches it.
-	var stopPipe *os.File
+	// The stop pipe (see StopOnStdinCloseFlag). Both ends stay open for the
+	// child's lifetime: the write end held open is what makes the child's
+	// stdin read block, and closing it is the stop request. The supervision
+	// goroutine closes both once the child exits; on the hard-kill-timeout
+	// path — Stop returning while the child may still be alive — the write
+	// end was already closed by the stop request, so the EOF still reaches it.
+	var stopPipeRead, stopPipeWrite *os.File
 	if r.StopOnStdinClose {
 		stdinRead, stdinWrite, pipeErr := os.Pipe()
 		if pipeErr != nil {
-			return fmt.Errorf("create sing-box stop pipe: %w", pipeErr)
+			return nil, fmt.Errorf("create sing-box stop pipe: %w", pipeErr)
 		}
-		defer stdinRead.Close()
-		defer stdinWrite.Close()
 		cmd.Stdin = stdinRead
-		stopPipe = stdinWrite
+		stopPipeRead, stopPipeWrite = stdinRead, stdinWrite
 	}
 	// Each stream gets its own recorder — a shared one would splice a partial
 	// stderr line together with stdout chatter into a misleading quote — and
@@ -112,7 +136,21 @@ func (r SingBoxRunner) Run(ctx context.Context, configPath string) error {
 	cmd.Stderr = stderr
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start sing-box: %w", err)
+		if stopPipeRead != nil {
+			_ = stopPipeRead.Close()
+			_ = stopPipeWrite.Close()
+		}
+		return nil, fmt.Errorf("start sing-box: %w", err)
+	}
+	process := &SingBoxProcess{
+		cmd:           cmd,
+		stopPipeRead:  stopPipeRead,
+		stopPipeWrite: stopPipeWrite,
+		stdout:        stdout,
+		stderr:        stderr,
+		release:       func() {},
+		exited:        make(chan struct{}),
+		done:          make(chan error, 1),
 	}
 	// Windows: a kill-on-close job object so an external binary — which speaks
 	// no stop protocol — cannot outlive a runner that died without teardown
@@ -124,51 +162,109 @@ func (r SingBoxRunner) Run(ctx context.Context, configPath string) error {
 	// orphan teardown, which is that child's parent-death cleanup.
 	// Best-effort; see the Windows implementation.
 	if !r.StopOnStdinClose {
-		releaseSupervision := superviseSingBoxProcess(cmd)
-		defer releaseSupervision()
+		process.release = superviseSingBoxProcess(cmd)
 	}
+	go process.supervise()
+	return process, nil
+}
 
-	waitCh := make(chan error, 1)
-	go func() {
-		waitCh <- cmd.Wait()
-	}()
+// SingBoxProcess is one started sing-box run. Its exit is reported exactly
+// once through Done; Stop requests a graceful stop and blocks until the child
+// has exited (or the forced-kill budget expires). A fresh handle per run —
+// there is no restart — so a Done report is never ambiguous about which run
+// it belongs to.
+type SingBoxProcess struct {
+	cmd           *exec.Cmd
+	stopPipeRead  *os.File
+	stopPipeWrite *os.File
+	stdout        *crashLineRecorder
+	stderr        *crashLineRecorder
+	release       func()
 
+	mu            sync.Mutex
+	stopRequested bool
+
+	stopSignal  sync.Once
+	releaseOnce sync.Once
+	exited      chan struct{} // closed when cmd.Wait has returned
+	done        chan error    // the decorated exit report; sent once, then closed
+}
+
+// supervise owns the process's exit: it reaps the child, releases the
+// platform supervision, frees the stop pipe, and delivers the run's exit
+// report to Done — the decorated crash quote for an exit nobody requested,
+// nil for one that Stop requested.
+func (p *SingBoxProcess) supervise() {
+	waitErr := p.cmd.Wait()
+	p.mu.Lock()
+	stopRequested := p.stopRequested
+	p.mu.Unlock()
+	close(p.exited)
+	p.releaseOnce.Do(p.release)
+	if p.stopPipeRead != nil {
+		_ = p.stopPipeRead.Close()
+		// Concurrent-close-safe against the stop request's own close.
+		_ = p.stopPipeWrite.Close()
+	}
+	switch {
+	case stopRequested:
+		p.done <- nil
+	case waitErr != nil:
+		if line := firstCrashLine(p.stderr, p.stdout); line != "" {
+			p.done <- &crashError{quote: line, cause: waitErr}
+		} else {
+			p.done <- fmt.Errorf("sing-box exited: %w", waitErr)
+		}
+	default:
+		p.done <- errors.New("sing-box exited")
+	}
+	close(p.done)
+}
+
+// Done delivers the run's exit report exactly once, then the channel is
+// closed: non-nil for an exit nobody requested (with the child's own crash
+// line when it said one — see crashError), nil for an exit Stop requested.
+func (p *SingBoxProcess) Done() <-chan error { return p.done }
+
+// Stop requests a graceful stop and blocks until the child exits, escalating
+// to a hard kill after grace (zero or negative keeps the 5s default) and
+// giving up singBoxHardKillWait after that. Both stop channels fire: the pipe
+// close is the one a bundled child acts on everywhere including Windows, the
+// interrupt is what an external binary understands (and is harmlessly refused
+// on Windows). Safe on a child that already exited; the returned error
+// reports only a stop that failed to take effect.
+func (p *SingBoxProcess) Stop(grace time.Duration) error {
+	if grace <= 0 {
+		grace = 5 * time.Second
+	}
+	p.mu.Lock()
+	p.stopRequested = true
+	p.mu.Unlock()
+	p.stopSignal.Do(func() {
+		if p.stopPipeWrite != nil {
+			_ = p.stopPipeWrite.Close()
+		}
+		_ = interruptSingBoxProcess(p.cmd)
+	})
 	select {
-	case err := <-waitCh:
-		if err != nil {
-			if line := firstCrashLine(stderr, stdout); line != "" {
-				return &crashError{quote: line, cause: err}
-			}
-			return fmt.Errorf("sing-box exited: %w", err)
+	case <-p.exited:
+		return nil
+	case <-time.After(grace):
+	}
+	killErr := killSingBoxProcess(p.cmd)
+	select {
+	case <-p.exited:
+		return nil
+	case <-time.After(singBoxHardKillWait):
+		// One more attempt to take the child down before giving up: on
+		// Windows, closing the job handle terminates a stopless child
+		// (kill-on-close) — the backstop Run's deferred release used to
+		// provide here.
+		p.releaseOnce.Do(p.release)
+		if killErr != nil {
+			return fmt.Errorf("kill sing-box after cancellation: %w", killErr)
 		}
-		return errors.New("sing-box exited")
-	case <-ctx.Done():
-		grace := r.KillGrace
-		if grace <= 0 {
-			grace = 5 * time.Second
-		}
-		// Both stop channels fire: the pipe close is the one a bundled child
-		// acts on everywhere including Windows, the interrupt is what an
-		// external binary understands (and is harmlessly refused on Windows).
-		if stopPipe != nil {
-			_ = stopPipe.Close()
-		}
-		_ = interruptSingBoxProcess(cmd)
-		select {
-		case <-waitCh:
-			return nil
-		case <-time.After(grace):
-			killErr := killSingBoxProcess(cmd)
-			select {
-			case <-waitCh:
-				return nil
-			case <-time.After(singBoxHardKillWait):
-				if killErr != nil {
-					return fmt.Errorf("kill sing-box after cancellation: %w", killErr)
-				}
-				return errors.New("sing-box did not exit after hard kill")
-			}
-		}
+		return errors.New("sing-box did not exit after hard kill")
 	}
 }
 
