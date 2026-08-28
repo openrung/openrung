@@ -244,7 +244,7 @@ func TestTUNHealthFailoverSkipsTheNetworkAliveGate(t *testing.T) {
 	}
 
 	failCh := make(chan error, 1)
-	go s.healthLoop(t.Context(), 0, nil, failCh)
+	go s.healthLoop(t.Context(), 0, nil, failCh, nil)
 	select {
 	case <-failCh:
 	case <-time.After(5 * time.Second):

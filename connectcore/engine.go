@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/openrung/openrung/brokerapi"
+	"github.com/openrung/openrung/wsscore"
 
 	"github.com/openrung/openrung/connectcore/client"
 	"github.com/openrung/openrung/connectcore/clienttelemetry"
@@ -126,6 +127,18 @@ type connection struct {
 	// heartbeatOnce starts the telemetry heartbeat loop at most once per
 	// session, however many times a recovery re-ladder promotes a new relay.
 	heartbeatOnce sync.Once
+	// netNotify wakes the session's supervisor (or its recovery gate) when
+	// the platform network tracker crosses an epoch boundary; capacity one,
+	// coalesced — the epoch counter carries what the wake cannot.
+	netNotify chan struct{}
+	// handledNetEpoch is the network epoch the supervisor has accounted for.
+	// Touched only by the runConnect goroutine.
+	handledNetEpoch uint64
+	// flushBudget bounds the terminal telemetry flush (see Shutdown); zero
+	// keeps the 5s default. flushErr stores that flush's outcome. Both under
+	// the engine's mu.
+	flushBudget time.Duration
+	flushErr    error
 }
 
 // candidateResult owns one connect-ladder candidate's live resources and the
@@ -298,6 +311,20 @@ type Engine struct {
 	// its in-process libbox runtime here.
 	TunnelRuntime TunnelRuntime
 
+	// SocketProtector keeps the engine's own physical-network sockets out of
+	// the host's device-wide tunnel capture (ADR-003 A2): the Android adapter
+	// implements Protect with VpnService.protect(fd); hosts that own their
+	// sockets by other means (PacketTunnel) and desktop/TUI leave it nil,
+	// which keeps every network construction byte-identical to before the
+	// seam. See sockets.go for exactly which sockets it covers — and which
+	// (through-tunnel probes) it deliberately never touches. Assign before
+	// Start or the first Connect, like every other hook.
+	SocketProtector wsscore.SocketProtector
+
+	// protectedBrokerState lazily caches the shared protected broker client
+	// (see brokerHTTPClient).
+	protectedBrokerState
+
 	// connectMu serializes the Connect/Disconnect mutation surface. Hosts may
 	// dispatch every call on its own goroutine (the desktop webview bridge
 	// does), so without this two overlapping Connects could both pass
@@ -315,6 +342,18 @@ type Engine struct {
 	mode Mode
 
 	directory *directoryCache
+
+	// netMu guards the platform network-signal tracker (see network.go):
+	// the baseline-absorbed last observation and the epoch counter.
+	netMu        sync.Mutex
+	netBaselined bool
+	netLast      NetworkState
+	netEpoch     uint64
+
+	// pauseMu guards resumedCh: nil while running, non-nil while paused
+	// (closed by Resume). See lifecycle.go.
+	pauseMu   sync.Mutex
+	resumedCh chan struct{}
 
 	// proxyPortMu pins only a successfully resolved endpoint for this process.
 	// A transient resolution failure remains retryable on the next call.
@@ -337,6 +376,7 @@ type Engine struct {
 	waitWSSRetry      func(ctx context.Context, delay time.Duration) error
 	checkNetworkAlive func(ctx context.Context, fronts []string) bool
 	healthTick        time.Duration // 0 means HealthProbeInterval
+	heartbeatTick     time.Duration // 0 means the randomized heartbeat cadence
 	networkRetryDelay time.Duration // 0 means networkRecoveryPollInterval
 	tunnelReadyLimit  time.Duration // 0 means TunnelReadyTimeout
 }
@@ -387,8 +427,9 @@ func (s *Engine) relayDialer() func(context.Context, string, int) (int64, error)
 	if s.dialRelay != nil {
 		return s.dialRelay
 	}
+	control := s.dialControl()
 	return func(ctx context.Context, host string, port int) (int64, error) {
-		return RelayTCPReachable(ctx, host, port, RelayTCPTimeout)
+		return relayTCPReachable(ctx, host, port, RelayTCPTimeout, control)
 	}
 }
 
@@ -398,10 +439,11 @@ func (s *Engine) relayFetcher() func(context.Context, string, int, string, strin
 	}
 	return func(ctx context.Context, brokerURL string, limit int, clientID, sessionID string) (discovery.Fetch, error) {
 		return discovery.FirstReachable(ctx, brokerapi.BrokerCandidates(brokerURL), discovery.Options{
-			Limit:     limit,
-			ClientID:  clientID,
-			SessionID: sessionID,
-			Platform:  s.telemetryPlatform(),
+			Limit:      limit,
+			ClientID:   clientID,
+			SessionID:  sessionID,
+			Platform:   s.telemetryPlatform(),
+			HTTPClient: s.brokerHTTPClient(),
 		})
 	}
 }
@@ -453,13 +495,13 @@ func (s *Engine) Start() {
 	}
 }
 
-// Stop tears down any live tunnel so the OS proxy is restored on quit. Held
-// under connectMu like Connect/Disconnect so a connect racing app-quit can't
-// slip a new connection in behind the teardown.
+// Stop tears down any live tunnel so the OS proxy is restored on quit. It is
+// Shutdown with the engine's default flush budget, its outcome dropped — a
+// desktop quit has no one left to tell. Held under connectMu like
+// Connect/Disconnect so a connect racing app-quit can't slip a new connection
+// in behind the teardown.
 func (s *Engine) Stop() {
-	s.connectMu.Lock()
-	s.teardownExisting()
-	s.connectMu.Unlock()
+	_ = s.Shutdown(0)
 }
 
 // Prepare mirrors the mobile bridge's OS-consent step: proxy mode needs no OS
@@ -491,7 +533,7 @@ func (s *Engine) ConnectTarget(brokerURL string, target RelayTarget) error {
 	s.teardownExisting()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	conn := &connection{cancel: cancel, done: make(chan struct{})}
+	conn := &connection{cancel: cancel, done: make(chan struct{}), netNotify: make(chan struct{}, 1)}
 	s.mu.Lock()
 	s.conn = conn
 	s.mu.Unlock()
@@ -672,7 +714,7 @@ func (s *Engine) connectFlow(ctx context.Context, conn *connection, brokerURL st
 		mgr.Record("connection_attempted", "", nil, nil)
 		// Concurrent with the broker fetch and ranking; abandoned (never
 		// waited for) at the ladder and finalize boundaries below.
-		conn.geo = attachGeoAttributes(mgr)
+		conn.geo = attachGeoAttributes(mgr, s.geoHTTPClient())
 	}
 
 	// TUN mode binds no local port, so it neither resolves nor reserves the
@@ -1088,6 +1130,11 @@ func (s *Engine) promote(ctx context.Context, conn *connection, res *candidateRe
 	}
 	conn.active = res
 	conn.activeRelayID = res.relay.ID
+	// A transport belongs to the network epoch it was promoted in: baseline
+	// here — the engine equivalent of the mobile monitors' fresh per-session
+	// baseline — so an epoch that predates this candidate never retires it,
+	// and one observed after CONNECTED always postdates the baseline.
+	conn.handledNetEpoch = s.networkEpoch()
 	s.markConnectedLocked(label, recent)
 	s.mu.Unlock()
 
@@ -1102,7 +1149,7 @@ func (s *Engine) promote(ctx context.Context, conn *connection, res *candidateRe
 			conn.mgr.Record("connection_succeeded", res.relay.ID, attrs, connectMeasurements(res, brokerFetchMS))
 			_ = conn.mgr.Flush(ctx)
 		}
-		conn.heartbeatOnce.Do(func() { go conn.mgr.RunHeartbeatLoop(ctx) })
+		conn.heartbeatOnce.Do(func() { go s.heartbeatLoop(ctx, conn.mgr) })
 	}
 	return true
 }
@@ -1257,7 +1304,8 @@ func (s *Engine) finalizeConn(conn *connection, stage string, err error) {
 		s.mu.Lock()
 		s.emitStatusLocked(StatusDisconnected, clearLabel, clearError)
 		s.mu.Unlock()
-		endSession(conn.mgr, "disconnect")
+		conn.mgr.EndSession("disconnect")
+		s.storeFlushResult(conn, flushBounded(conn.mgr, s.connFlushBudget(conn)))
 	default:
 		msg := err.Error()
 		s.appendLog("connect failed: " + msg)
@@ -1274,7 +1322,7 @@ func (s *Engine) finalizeConn(conn *connection, stage string, err error) {
 			}
 			conn.mgr.Record("connection_failed", "", attrs, nil)
 			conn.mgr.EndSession("connection_failed")
-			_ = FlushOnShutdown(conn.mgr)
+			s.storeFlushResult(conn, flushBounded(conn.mgr, s.connFlushBudget(conn)))
 		}
 	}
 	s.clearConn(conn)

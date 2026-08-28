@@ -90,6 +90,12 @@ type PunchOptions struct {
 	// success or failure. Nil drops it.
 	Notify func(Notice)
 
+	// HTTPClient overrides the hub coordination client. Nil keeps the
+	// insecure-aware default (see punchHTTPClient); a non-nil client is used
+	// verbatim and takes precedence over Insecure — the engine passes its
+	// socket-protected client here, built to honor its own Insecure flag.
+	HTTPClient *http.Client
+
 	// Establish is the host's punch implementation (see PunchEstablisher).
 	// Nil disables punching regardless of Enabled, taking the hub path — but
 	// the skip is recorded as punch_skipped (reason no_establisher): enabling
@@ -126,7 +132,11 @@ func AttemptPunch(ctx context.Context, mgr *clienttelemetry.Manager, selected br
 	}
 
 	mgr.Record("punch_attempted", selected.ID, nil, nil)
-	hub := punchcore.HubClient{BaseURL: punchBaseURL(opts.BaseURL, selected), HTTPClient: punchHTTPClient(opts.Insecure)}
+	hubHTTP := opts.HTTPClient
+	if hubHTTP == nil {
+		hubHTTP = punchHTTPClient(opts.Insecure)
+	}
+	hub := punchcore.HubClient{BaseURL: punchBaseURL(opts.BaseURL, selected), HTTPClient: hubHTTP}
 	est, res, err := opts.Establish(ctx, hub, selected.ID)
 	if err != nil {
 		if opts.Log != nil {
@@ -179,12 +189,13 @@ func AttemptPunch(ctx context.Context, mgr *clienttelemetry.Manager, selected br
 // maybePunch runs the engine's punch attempt with its configured options.
 func (s *Engine) maybePunch(ctx context.Context, mgr *clienttelemetry.Manager, selected brokerapi.RelayDescriptor) *PunchPath {
 	return AttemptPunch(ctx, mgr, selected, PunchOptions{
-		Enabled:   s.PunchEnabled,
-		BaseURL:   s.PunchURL,
-		Insecure:  s.PunchInsecure,
-		Log:       s.appendLog,
-		Notify:    s.notify,
-		Establish: s.PunchEstablisher,
+		Enabled:    s.PunchEnabled,
+		BaseURL:    s.PunchURL,
+		Insecure:   s.PunchInsecure,
+		HTTPClient: s.punchCoordinationClient(),
+		Log:        s.appendLog,
+		Notify:     s.notify,
+		Establish:  s.PunchEstablisher,
 	})
 }
 

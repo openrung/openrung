@@ -412,3 +412,9 @@ func durationMs(from, to time.Time) int64 {
 func nextHeartbeatDelay() time.Duration {
 	return heartbeatMin + time.Duration(rand.Int63n(int64(heartbeatMax-heartbeatMin)+1))
 }
+
+// NextHeartbeatDelay returns one randomized heartbeat interval on the shared
+// Android cadence (50–70s), for a host that runs the heartbeat loop itself —
+// the engine's pause-aware loop does, so suspending the host silences the
+// upload without changing the cadence policy.
+func NextHeartbeatDelay() time.Duration { return nextHeartbeatDelay() }

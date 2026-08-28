@@ -21,7 +21,11 @@ import (
 const (
 	accessTransportWSS = "wss"
 	// wssSessionEndedStage marks an orderly session end rather than a failure.
-	wssSessionEndedStage  = "wss_session_ended"
+	wssSessionEndedStage = "wss_session_ended"
+	// wssNetworkEpochStage marks a WSS session retired by a physical-network
+	// epoch boundary (see network.go): orderly like a session end — neither
+	// the relay nor the front failed — but distinguishable in telemetry.
+	wssNetworkEpochStage  = "wss_network_epoch"
 	wssTicketAttemptLimit = 5 * time.Second
 	wssTicketDefaultRetry = 10 * time.Second
 	wssTicketMaxRetry     = 30 * time.Second
@@ -138,8 +142,9 @@ func (s *Engine) wssTicketRequester() func(context.Context, string, brokerapi.WS
 	}
 	return func(ctx context.Context, brokerURL string, request brokerapi.WSSTicketRequest, clientID, sessionID string) (brokerapi.WSSTicketResponse, error) {
 		brokerClient := client.BrokerClient{
-			BaseURL:  brokerURL,
-			Platform: s.telemetryPlatform(),
+			BaseURL:    brokerURL,
+			HTTPClient: s.brokerHTTPClient(),
+			Platform:   s.telemetryPlatform(),
 		}
 		return brokerClient.RequestWSSSessionTicket(ctx, request, clientID, sessionID)
 	}
@@ -152,6 +157,7 @@ func (s *Engine) wssDialer() func(context.Context, string, string) (wssBridge, e
 	return func(ctx context.Context, rawURL, ticket string) (wssBridge, error) {
 		return wsscore.DialClient(ctx, wsscore.ClientOptions{
 			URL: rawURL, Ticket: ticket, NativeFrontNoSNI: true,
+			SocketProtector: s.SocketProtector,
 		})
 	}
 }
@@ -352,7 +358,7 @@ func serveWSS(result *candidateResult, ctx context.Context, bridge wssBridge) {
 // without the peer saying so is evidence that the path was lost.
 func gracefulWSSSessionEnd(err error) bool {
 	stage, ok := wssTransportStage(err)
-	return ok && stage == wssSessionEndedStage
+	return ok && (stage == wssSessionEndedStage || stage == wssNetworkEpochStage)
 }
 
 func (s *Engine) recordTransportFallback(mgr *clienttelemetry.Manager, relayID string, directErr error) {
@@ -373,8 +379,13 @@ func (s *Engine) recordWSSTransportEnded(mgr *clienttelemetry.Manager, relayID s
 		return
 	}
 	attrs := map[string]string{"transport": accessTransportWSS}
-	if _, frontID, ok := wssTransportMetadata(err); ok && frontID != "" {
-		attrs["front_id"] = frontID
+	if stage, frontID, ok := wssTransportMetadata(err); ok {
+		if frontID != "" {
+			attrs["front_id"] = frontID
+		}
+		if stage == wssNetworkEpochStage {
+			attrs["trigger"] = "network_epoch"
+		}
 	}
 	mgr.Record("transport_session_ended", relayID, attrs, nil)
 }

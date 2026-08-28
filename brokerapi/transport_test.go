@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -677,4 +678,50 @@ func appendUint16(dst []byte, value uint16) []byte {
 	var encoded [2]byte
 	binary.BigEndian.PutUint16(encoded[:], value)
 	return append(dst, encoded[:]...)
+}
+
+// The dial-control client is the hook a device-wide-tunnel host uses to keep
+// broker sockets out of its own capture (VpnService.protect). The control must
+// see every underlying TCP socket before it connects, and a control error must
+// fail the dial outright — an unprotected broker socket must never fall back
+// to the captured path.
+func TestNewHTTPClientWithDialControlRunsOnEverySocket(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		for {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			_, _ = io.ReadAll(io.LimitReader(conn, 1))
+			_, _ = conn.Write([]byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n"))
+			_ = conn.Close()
+		}
+	}()
+
+	var controlled atomic.Int32
+	var sawFD atomic.Bool
+	client := NewHTTPClientWithDialControl(5*time.Second, func(network, address string, conn syscall.RawConn) error {
+		controlled.Add(1)
+		return conn.Control(func(fd uintptr) { sawFD.Store(fd != 0) })
+	})
+	response, err := client.Get("http://" + listener.Addr().String() + "/")
+	if err != nil {
+		t.Fatalf("controlled GET: %v", err)
+	}
+	_ = response.Body.Close()
+	if controlled.Load() == 0 || !sawFD.Load() {
+		t.Fatalf("dial control never observed the socket (calls=%d, fd=%t)", controlled.Load(), sawFD.Load())
+	}
+
+	refused := NewHTTPClientWithDialControl(5*time.Second, func(network, address string, conn syscall.RawConn) error {
+		return errors.New("socket protection failed")
+	})
+	if _, err := refused.Get("http://" + listener.Addr().String() + "/"); err == nil {
+		t.Fatal("a failing dial control must fail the request, not fall back to an unprotected socket")
+	}
 }

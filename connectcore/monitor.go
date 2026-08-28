@@ -17,76 +17,121 @@ import (
 
 const networkRecoveryPollInterval = 5 * time.Second
 
-// supervise owns the connected phase: it watches the live tunnel process and a
-// periodic through-tunnel health probe, and on either trigger runs one
-// automatic recovery pass (fresh relay fetch + candidate ladder). It runs in
-// the runConnect goroutine that owns conn and never touches s.conn — a user
-// disconnect always wins. Returns ("", nil) on a clean end, or the terminal
-// (stage, error) when a recovery pass is exhausted.
+// supervise owns the connected phase: it watches the live tunnel process, a
+// periodic through-tunnel health probe, and the platform network signals, and
+// on a trigger runs one automatic recovery pass (fresh relay fetch +
+// candidate ladder). It runs in the runConnect goroutine that owns conn and
+// never touches s.conn — a user disconnect always wins. Returns ("", nil) on
+// a clean end, or the terminal (stage, error) when a recovery pass is
+// exhausted. While the engine is paused, a received trigger is held and its
+// recovery starts on Resume.
 func (s *Engine) supervise(ctx context.Context, conn *connection, cur *candidateResult, port int, target RelayTarget) (string, error) {
 	for {
 		healthFail := make(chan error, 1)
-		go s.healthLoop(cur.ctx, port, s.livenessFronts(conn), healthFail)
+		healthKick := make(chan struct{}, 1)
+		go s.healthLoop(cur.ctx, port, s.livenessFronts(conn), healthFail, healthKick)
 
 		var trigger error
 		var triggerReason string
 		transportFailure := false
-		select {
-		case <-ctx.Done():
-			return "", nil
-		case runErr := <-cur.runDone:
-			if ctx.Err() != nil || s.isDisconnecting(conn) {
+	watchTrigger:
+		for {
+			select {
+			case <-ctx.Done():
 				return "", nil
-			}
-			if runErr == nil {
-				// The runtime reports nil only for an engine-requested stop,
-				// and nobody requested one: treat like any other unexpected
-				// exit.
-				runErr = errors.New("tunnel exited unexpectedly")
-			}
-			if cur.accessTransport == accessTransportWSS {
-				// The WSS adapter is still alive: this is a local sing-box
-				// process failure, not evidence that either the CDN path or the
-				// relay failed. A fresh ladder could turn this local crash into a
-				// new single-use ticket request, so fail closed and let the user
-				// restart after the local fault has been corrected.
-				s.appendLog("local tunnel process stopped unexpectedly")
-				return "tunnel_process", markLocalCandidateError("active_tunnel_process", runErr)
-			}
-			trigger = runErr
-			triggerReason = "tunnel process exited unexpectedly"
-			s.appendLog("tunnel process exited unexpectedly; reconnecting")
-		case transportErr := <-cur.transportErr:
-			if ctx.Err() != nil || s.isDisconnecting(conn) {
-				return "", nil
-			}
-			if transportErr == nil {
-				transportErr = markWSSTransportError("wss_session", cur.frontID, errors.New("WSS access transport stopped"))
-			}
-			trigger = transportErr
-			transportFailure = true
-			if gracefulWSSSessionEnd(trigger) {
-				triggerReason = "WSS session ended"
-				s.appendLog("WSS access transport session ended; reconnecting")
-			} else {
-				triggerReason = "WSS transport stopped unexpectedly"
-				s.appendLog("WSS access transport stopped unexpectedly; reconnecting")
-			}
-		case probeErr := <-healthFail:
-			if ctx.Err() != nil || s.isDisconnecting(conn) {
-				return "", nil
-			}
-			if cur.accessTransport == accessTransportWSS {
-				// A live WSS socket can still have a blackholed CDN data path.
-				// Keep that failure transport-scoped so it never demotes the
-				// destination relay or emits relay_attempt_failed.
-				trigger = markWSSTransportError("wss_health_probe", cur.frontID, probeErr)
+			case runErr := <-cur.runDone:
+				if ctx.Err() != nil || s.isDisconnecting(conn) {
+					return "", nil
+				}
+				if runErr == nil {
+					// The runtime reports nil only for an engine-requested stop,
+					// and nobody requested one: treat like any other unexpected
+					// exit.
+					runErr = errors.New("tunnel exited unexpectedly")
+				}
+				if cur.accessTransport == accessTransportWSS {
+					// The WSS adapter is still alive: this is a local sing-box
+					// process failure, not evidence that either the CDN path or the
+					// relay failed. A fresh ladder could turn this local crash into a
+					// new single-use ticket request, so fail closed and let the user
+					// restart after the local fault has been corrected.
+					s.appendLog("local tunnel process stopped unexpectedly")
+					return "tunnel_process", markLocalCandidateError("active_tunnel_process", runErr)
+				}
+				trigger = runErr
+				triggerReason = "tunnel process exited unexpectedly"
+				s.appendLog("tunnel process exited unexpectedly; reconnecting")
+				break watchTrigger
+			case transportErr := <-cur.transportErr:
+				if ctx.Err() != nil || s.isDisconnecting(conn) {
+					return "", nil
+				}
+				if transportErr == nil {
+					transportErr = markWSSTransportError("wss_session", cur.frontID, errors.New("WSS access transport stopped"))
+				}
+				trigger = transportErr
 				transportFailure = true
-			} else {
-				trigger = probeErr
+				if gracefulWSSSessionEnd(trigger) {
+					triggerReason = "WSS session ended"
+					s.appendLog("WSS access transport session ended; reconnecting")
+				} else {
+					triggerReason = "WSS transport stopped unexpectedly"
+					s.appendLog("WSS access transport stopped unexpectedly; reconnecting")
+				}
+				break watchTrigger
+			case probeErr := <-healthFail:
+				if ctx.Err() != nil || s.isDisconnecting(conn) {
+					return "", nil
+				}
+				if cur.accessTransport == accessTransportWSS {
+					// A live WSS socket can still have a blackholed CDN data path.
+					// Keep that failure transport-scoped so it never demotes the
+					// destination relay or emits relay_attempt_failed.
+					trigger = markWSSTransportError("wss_health_probe", cur.frontID, probeErr)
+					transportFailure = true
+				} else {
+					trigger = probeErr
+				}
+				triggerReason = fmt.Sprintf("tunnel health check failed %d times", HealthFailureThreshold)
+				s.appendLog(fmt.Sprintf("tunnel health check failed %d times; reconnecting", HealthFailureThreshold))
+				break watchTrigger
+			case <-conn.netNotify:
+				if ctx.Err() != nil || s.isDisconnecting(conn) {
+					return "", nil
+				}
+				epoch := s.networkEpoch()
+				if epoch == conn.handledNetEpoch {
+					continue // a wake for an epoch this candidate already covers
+				}
+				conn.handledNetEpoch = epoch
+				if cur.accessTransport == accessTransportWSS {
+					// A WSS socket is bound to one physical-network epoch
+					// (the mobile invariant): retire the session — orderly,
+					// blaming neither the relay nor the front — and recover
+					// with a fresh direct-first ladder.
+					trigger = markWSSTransportError(wssNetworkEpochStage, cur.frontID, errors.New("physical network epoch changed"))
+					transportFailure = true
+					triggerReason = "physical network epoch changed"
+					s.appendLog("physical network epoch changed; rebuilding the session")
+					break watchTrigger
+				}
+				// A direct or punched path may have survived the change; the
+				// end-to-end probe is the authority, so run one now instead of
+				// waiting out the probe interval.
+				s.appendLog("physical network epoch changed; checking tunnel health now")
+				select {
+				case healthKick <- struct{}{}:
+				default:
+				}
 			}
-			triggerReason = fmt.Sprintf("tunnel health check failed %d times", HealthFailureThreshold)
-			s.appendLog(fmt.Sprintf("tunnel health check failed %d times; reconnecting", HealthFailureThreshold))
+		}
+		// A trigger received while paused starts its recovery on Resume; a
+		// teardown (which cancels ctx) still interrupts the wait.
+		if !s.awaitResumed(ctx) {
+			return "", nil
+		}
+		if s.isDisconnecting(conn) {
+			return "", nil
 		}
 
 		oldRelayID := cur.relay.ID
@@ -119,6 +164,9 @@ func (s *Engine) supervise(ctx context.Context, conn *connection, cur *candidate
 		var next *candidateResult
 		var fetchMS int64
 		for {
+			if !s.awaitResumed(ctx) {
+				return "", nil
+			}
 			if transportFailure && !s.waitForNetworkRecovery(ctx, conn) {
 				return "", nil
 			}
@@ -243,7 +291,10 @@ func (s *Engine) reladder(ctx context.Context, conn *connection, port int, targe
 // available than any single relay and independent of the tunnel. Network alive
 // means the tunnel itself is dead: report a failover trigger on failCh. Network
 // down (a wifi blip, sleep) means leave the tunnel alone and keep probing.
-func (s *Engine) healthLoop(ctx context.Context, port int, fronts []string, failCh chan<- error) {
+// A kick runs the next sweep immediately (the supervisor sends one on a
+// network epoch a direct path may have survived), and each sweep holds while
+// the engine is paused — resuming runs the held sweep right away.
+func (s *Engine) healthLoop(ctx context.Context, port int, fronts []string, failCh chan<- error, kick <-chan struct{}) {
 	base := s.healthTick
 	if base <= 0 {
 		base = HealthProbeInterval
@@ -256,8 +307,18 @@ func (s *Engine) healthLoop(ctx context.Context, port int, fronts []string, fail
 		case <-ctx.Done():
 			return
 		case <-timer.C:
+		case <-kick:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
 		}
 		timer.Reset(jitter(base))
+		if !s.awaitResumed(ctx) {
+			return
+		}
 
 		err := s.healthProber()(ctx, port)
 		if err == nil {
@@ -311,8 +372,9 @@ func (s *Engine) networkAlive(ctx context.Context, fronts []string) bool {
 	if s.checkNetworkAlive != nil {
 		return s.checkNetworkAlive(ctx, fronts)
 	}
+	control := s.dialControl()
 	for _, addr := range fronts {
-		dialer := net.Dialer{Timeout: RelayTCPTimeout}
+		dialer := net.Dialer{Timeout: RelayTCPTimeout, Control: control}
 		conn, err := dialer.DialContext(ctx, "tcp", addr)
 		if err == nil {
 			_ = conn.Close()
@@ -349,12 +411,26 @@ func (s *Engine) waitForNetworkRecovery(ctx context.Context, conn *connection) b
 		case <-ctx.Done():
 			return false
 		case <-timer.C:
-			if s.networkAlive(ctx, fronts) {
-				s.appendLog("network connectivity restored; starting a fresh direct-first ladder")
-				return true
+		case <-conn.netNotify:
+			// A platform network signal rechecks immediately instead of
+			// waiting out the poll — the dial probe below stays the
+			// authority on "alive", so a signal can accelerate recovery but
+			// never wedge it.
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
 			}
-			timer.Reset(delay)
 		}
+		if !s.awaitResumed(ctx) {
+			return false
+		}
+		if s.networkAlive(ctx, fronts) {
+			s.appendLog("network connectivity restored; starting a fresh direct-first ladder")
+			return true
+		}
+		timer.Reset(delay)
 	}
 }
 

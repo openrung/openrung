@@ -877,7 +877,7 @@ func TestHealthLoopGateRequiresLiveNetwork(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	failCh := make(chan error, 1)
-	go offline.healthLoop(ctx, 1080, []string{dead}, failCh)
+	go offline.healthLoop(ctx, 1080, []string{dead}, failCh, nil)
 	select {
 	case err := <-failCh:
 		t.Fatalf("health loop failed over during a local outage: %v", err)
@@ -889,7 +889,7 @@ func TestHealthLoopGateRequiresLiveNetwork(t *testing.T) {
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	defer cancel2()
 	failCh2 := make(chan error, 1)
-	go online.healthLoop(ctx2, 1080, []string{dead, live}, failCh2)
+	go online.healthLoop(ctx2, 1080, []string{dead, live}, failCh2, nil)
 	select {
 	case err := <-failCh2:
 		if !strings.Contains(err.Error(), "health probe failed") {
@@ -918,7 +918,7 @@ func TestHealthLoopResetsOnProbeSuccess(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	failCh := make(chan error, 1)
-	go s.healthLoop(ctx, 1080, []string{live}, failCh)
+	go s.healthLoop(ctx, 1080, []string{live}, failCh, nil)
 	select {
 	case err := <-failCh:
 		t.Fatalf("health loop triggered despite periodic probe successes: %v", err)

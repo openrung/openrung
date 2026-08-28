@@ -3,6 +3,7 @@ package connectcore
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -25,7 +26,7 @@ func (s *Engine) newManager(brokerURL string) *clienttelemetry.Manager {
 		brokerURL,
 		client.AppVersion(),
 		platform,
-		nil,
+		s.brokerHTTPClient(),
 	)
 	if err != nil {
 		return nil
@@ -69,7 +70,7 @@ func (g *geoLookup) abandon() {
 // The caller must abandon the returned lookup before the tunnel can capture
 // traffic — afterwards a still-running lookup would ride the tunnel and
 // report the relay's geo instead of the client's.
-func attachGeoAttributes(mgr *clienttelemetry.Manager) *geoLookup {
+func attachGeoAttributes(mgr *clienttelemetry.Manager, httpClient *http.Client) *geoLookup {
 	if mgr == nil {
 		return nil
 	}
@@ -78,7 +79,7 @@ func attachGeoAttributes(mgr *clienttelemetry.Manager) *geoLookup {
 	go func() {
 		defer close(g.done)
 		defer cancel()
-		mgr.SetGeoAttributes(lookupGeoAttributes(ctx, nil))
+		mgr.SetGeoAttributes(lookupGeoAttributes(ctx, httpClient))
 	}()
 	return g
 }
@@ -90,25 +91,40 @@ func managerClientID(mgr *clienttelemetry.Manager) string {
 	return mgr.ClientID()
 }
 
-func endSession(mgr *clienttelemetry.Manager, reason string) {
-	if mgr == nil {
-		return
-	}
-	mgr.EndSession(reason)
-	_ = FlushOnShutdown(mgr)
-}
-
 // FlushOnShutdown flushes remaining telemetry with a fresh bounded context, so
 // it still runs after the connect context has been cancelled. It returns the
 // flush error for callers that surface it (the CLI warns on stderr); the
-// engine drops it, since a shutdown flush has no one left to tell.
+// engine reports it through Shutdown and otherwise drops it.
 func FlushOnShutdown(mgr *clienttelemetry.Manager) error {
+	return flushBounded(mgr, 0)
+}
+
+// flushBounded is FlushOnShutdown with a caller-owned budget: zero or
+// negative keeps the engine's 5-second default (see Engine.Shutdown).
+func flushBounded(mgr *clienttelemetry.Manager, budget time.Duration) error {
 	if mgr == nil {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if budget <= 0 {
+		budget = 5 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 	return mgr.Flush(ctx)
+}
+
+// connFlushBudget and storeFlushResult move the Shutdown flush budget and its
+// outcome across the finalizer under the engine's mu.
+func (s *Engine) connFlushBudget(conn *connection) time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return conn.flushBudget
+}
+
+func (s *Engine) storeFlushResult(conn *connection, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	conn.flushErr = err
 }
 
 // usableRelays filters the broker response to usable candidates, preserving

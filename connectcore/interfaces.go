@@ -65,6 +65,10 @@ const (
 	// Reason is the human-readable outcome (success includes the NAT class,
 	// failure the reason and the hub fallback).
 	NoticePunchOutcome NoticeKind = "punch_outcome"
+	// NoticeNetworkEpoch: the host reported a physical-network change (loss,
+	// restoration, or a path-fingerprint change) that starts a new network
+	// epoch (see UpdateNetworkState). Reason describes the transition.
+	NoticeNetworkEpoch NoticeKind = "network_epoch"
 	// NoticeHealthProbe: one mid-session health sweep finished. Failures is
 	// the consecutive-failure count (0 means the sweep passed) out of
 	// Threshold; Reason is set when a failed sweep did not trigger a failover

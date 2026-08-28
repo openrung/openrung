@@ -579,7 +579,7 @@ func TestAttachGeoAttributesStampsSessionTelemetry(t *testing.T) {
 		t.Fatalf("begin session: %v", err)
 	}
 
-	g := attachGeoAttributes(mgr)
+	g := attachGeoAttributes(mgr, nil)
 	select {
 	case <-g.done:
 		t.Fatal("done closed while the lookup was still in flight")
@@ -616,7 +616,7 @@ func TestAttachGeoAttributesNilManagerSkipsLookup(t *testing.T) {
 	}
 	t.Cleanup(func() { lookupGeoAttributes = orig })
 
-	if g := attachGeoAttributes(nil); g != nil {
+	if g := attachGeoAttributes(nil, nil); g != nil {
 		t.Fatal("nil manager must return a nil lookup")
 	}
 	(*geoLookup)(nil).abandon() // must be a safe no-op
@@ -647,7 +647,7 @@ func TestGeoLookupAbandonCancelsWithoutWaiting(t *testing.T) {
 		t.Fatalf("begin session: %v", err)
 	}
 
-	g := attachGeoAttributes(mgr)
+	g := attachGeoAttributes(mgr, nil)
 	g.abandon()
 	g.abandon() // idempotent
 
@@ -699,7 +699,7 @@ func TestFinalizeConnAbandonsStuckGeoLookup(t *testing.T) {
 		cancel: func() {},
 		done:   make(chan struct{}),
 		mgr:    mgr,
-		geo:    attachGeoAttributes(mgr),
+		geo:    attachGeoAttributes(mgr, nil),
 	}
 	s.finalizeConn(conn, "broker_fetch", errors.New("boom"))
 
