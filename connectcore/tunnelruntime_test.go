@@ -236,6 +236,87 @@ func TestSubprocessRuntimeRefusesLaunchAfterCancel(t *testing.T) {
 	}
 }
 
+// cancelAfterErrChecks is a context whose Err flips to Canceled after its
+// nilFor-th check, pinning cancellation to an exact point inside Run's
+// launch sequence (only Err is consulted there).
+type cancelAfterErrChecks struct {
+	context.Context
+	mu     sync.Mutex
+	checks int
+	nilFor int
+}
+
+func (c *cancelAfterErrChecks) Err() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.checks++
+	if c.checks > c.nilFor {
+		return context.Canceled
+	}
+	return nil
+}
+
+// Cancellation that lands while the config is being materialized must remove
+// the file and return the context error without ever launching a child.
+func TestSubprocessRuntimeCancelDuringMaterializationLaunchesNothing(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("TMPDIR does not steer os.CreateTemp on windows")
+	}
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	ctx := &cancelAfterErrChecks{Context: context.Background(), nilFor: 1}
+	// A runner whose binary does not exist: were the launch (incorrectly)
+	// attempted, Run would report the lookup failure instead of Canceled.
+	rt := subprocessRuntime{runner: client.SingBoxRunner{Path: filepath.Join(tmp, "missing-binary")}}
+	run, err := rt.Run(ctx, []byte("{}"))
+	if run != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run cancelled mid-materialization = %v, %v; want nil, context.Canceled", run, err)
+	}
+	entries, readErr := os.ReadDir(tmp)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), "openrung-proxy-") {
+			t.Fatalf("aborted launch left the temp config behind: %s", entry.Name())
+		}
+	}
+}
+
+// Cancellation that lands as the child comes up must stop it and clean up
+// instead of handing the caller a live run — a disconnect racing the launch
+// would otherwise briefly start a tunnel nobody supervises.
+func TestSubprocessRuntimeCancelDuringLaunchStopsTheStartedChild(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the stub child is a shell script")
+	}
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	dir := t.TempDir()
+	script := filepath.Join(dir, "stubbox")
+	stub := "#!/bin/sh\ncat > /dev/null\nexit 0\n" // stop protocol: block until stdin EOF
+	if err := os.WriteFile(script, []byte(stub), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+
+	ctx := &cancelAfterErrChecks{Context: context.Background(), nilFor: 2}
+	rt := subprocessRuntime{runner: client.SingBoxRunner{Path: script, StopOnStdinClose: true}}
+	run, err := rt.Run(ctx, []byte("{}"))
+	if run != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run cancelled mid-launch = %v, %v; want nil, context.Canceled", run, err)
+	}
+	// The abort unwound fully before Run returned: no temp config left.
+	entries, readErr := os.ReadDir(tmp)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), "openrung-proxy-") {
+			t.Fatalf("aborted launch left the temp config behind: %s", entry.Name())
+		}
+	}
+}
+
 // A temp-file failure keeps the config_file stage it has always had, so
 // telemetry keeps telling local disk trouble apart from a binary that would
 // not launch.
@@ -255,8 +336,10 @@ func TestSubprocessRuntimeConfigFileFailureKeepsItsStage(t *testing.T) {
 
 // The subprocess default end to end: the config bytes reach the child as the
 // file the seam materialized, Stop ends a stop-protocol child through the
-// stdin-close request, Done reports nil for that requested exit, and the temp
-// config is gone by the time Done reports.
+// stdin-close request and returns only once the temp config — which carries
+// the relay's credentials — is off disk (a host exiting right after a
+// shutdown Stop must not leave it behind), and Done reports nil for that
+// requested exit.
 func TestSubprocessRuntimeMaterializesConfigAndCleansUp(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the stub child is a shell script")
@@ -298,8 +381,19 @@ func TestSubprocessRuntimeMaterializesConfigAndCleansUp(t *testing.T) {
 			t.Fatal("child never captured the materialized config")
 		}
 	}
+	tempPath, err := os.ReadFile(pathFile)
+	if err != nil {
+		t.Fatalf("child recorded no config path: %v", err)
+	}
+	if !strings.Contains(filepath.Base(string(tempPath)), "openrung-proxy-") {
+		t.Fatalf("temp config path = %q; want the openrung-proxy-* temp name", tempPath)
+	}
 	if err := run.Stop(5 * time.Second); err != nil {
 		t.Fatalf("Stop: %v", err)
+	}
+	// The cleanup guarantee: gone the moment Stop returns, not eventually.
+	if _, err := os.Stat(string(tempPath)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temp config still on disk when Stop returned: %v", err)
 	}
 	select {
 	case err := <-run.Done():
@@ -316,15 +410,5 @@ func TestSubprocessRuntimeMaterializesConfigAndCleansUp(t *testing.T) {
 	}
 	if string(body) != string(configJSON) {
 		t.Fatalf("child read %q; want the config bytes %q", body, configJSON)
-	}
-	tempPath, err := os.ReadFile(pathFile)
-	if err != nil {
-		t.Fatalf("child recorded no config path: %v", err)
-	}
-	if !strings.Contains(filepath.Base(string(tempPath)), "openrung-proxy-") {
-		t.Fatalf("temp config path = %q; want the openrung-proxy-* temp name", tempPath)
-	}
-	if _, err := os.Stat(string(tempPath)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("temp config survived the run's exit: %v", err)
 	}
 }

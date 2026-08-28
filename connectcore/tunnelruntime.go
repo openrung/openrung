@@ -77,6 +77,11 @@ type subprocessRuntime struct {
 	runner client.SingBoxRunner
 }
 
+// Run materializes the config, launches sing-box, and rechecks the launch
+// context at every stage: cancellation observed before, during, or right
+// after the launch unwinds whatever exists — file removed, a started child
+// stopped — and returns the context error, never a live run (the seam's
+// stop-during-start contract).
 func (rt subprocessRuntime) Run(ctx context.Context, configJSON []byte) (TunnelRun, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -88,29 +93,61 @@ func (rt subprocessRuntime) Run(ctx context.Context, configJSON []byte) (TunnelR
 		// local disk trouble from a binary that would not launch.
 		return nil, markLocalCandidateError("config_file", err)
 	}
+	if err := ctx.Err(); err != nil {
+		_ = os.Remove(configPath)
+		return nil, err
+	}
 	process, err := rt.runner.Start(configPath)
 	if err != nil {
 		_ = os.Remove(configPath)
 		return nil, err
 	}
-	run := &subprocessRun{process: process, done: make(chan error, 1)}
-	go func() {
-		exitErr := <-process.Done()
-		// Only after the exit: sing-box may re-read its config while alive.
-		_ = os.Remove(configPath)
-		run.done <- exitErr
-		close(run.done)
-	}()
+	run := &subprocessRun{
+		process:    process,
+		configPath: configPath,
+		done:       make(chan error, 1),
+		cleaned:    make(chan struct{}),
+	}
+	go run.forward()
+	if err := ctx.Err(); err != nil {
+		// The launch was cancelled while the child came up: unwind it before
+		// answering, so a disconnect racing the launch never yields a live run.
+		_ = run.Stop(0)
+		return nil, err
+	}
 	return run, nil
 }
 
 // subprocessRun forwards the process's exit report so the config file's
-// removal is ordered before Done observes the exit.
+// removal is ordered before Done observes the exit, and marks cleaned so
+// Stop can block until the file is off disk.
 type subprocessRun struct {
-	process *client.SingBoxProcess
-	done    chan error
+	process    *client.SingBoxProcess
+	configPath string
+	done       chan error
+	cleaned    chan struct{}
+}
+
+func (r *subprocessRun) forward() {
+	exitErr := <-r.process.Done()
+	// Only after the exit: sing-box may re-read its config while alive.
+	_ = os.Remove(r.configPath)
+	close(r.cleaned)
+	r.done <- exitErr
+	close(r.done)
 }
 
 func (r *subprocessRun) Done() <-chan error { return r.done }
 
-func (r *subprocessRun) Stop(grace time.Duration) error { return r.process.Stop(grace) }
+// Stop stops the child and, once it has terminated, also waits for the run's
+// cleanup — the temp config (which carries the relay's credentials) must be
+// off disk before Stop returns, so a host that exits right after a shutdown
+// Stop never leaves it behind. On a stop that failed to take effect the
+// child may still be alive; cleanup then happens whenever it finally exits.
+func (r *subprocessRun) Stop(grace time.Duration) error {
+	if err := r.process.Stop(grace); err != nil {
+		return err
+	}
+	<-r.cleaned
+	return nil
+}
