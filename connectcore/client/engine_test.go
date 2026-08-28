@@ -329,6 +329,46 @@ func TestCrashLineRecorderKeepsRuneBoundaries(t *testing.T) {
 	}
 }
 
+// The handle surface behind the connectcore TunnelRuntime seam: an exit
+// nobody requested reaches Done exactly once as the decorated crash error,
+// the channel is then closed, and Stop on the already-dead process is a safe
+// prompt no-op.
+func TestStartHandleReportsUnrequestedExitAndStopIsSafeAfterIt(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "stubbox")
+	stub := "#!/bin/sh\necho 'error: relay handshake rejected' >&2\nexit 7\n"
+	if err := os.WriteFile(script, []byte(stub), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	config := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(config, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	process, err := SingBoxRunner{Path: script}.Start(config)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	select {
+	case err := <-process.Done():
+		if err == nil || !strings.Contains(err.Error(), "relay handshake rejected") || !strings.Contains(err.Error(), "exit status 7") {
+			t.Fatalf("Done = %v; want the decorated crash error", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Done never reported the crash")
+	}
+	if _, open := <-process.Done(); open {
+		t.Fatal("Done delivered a second report; want a closed channel after the single one")
+	}
+	started := time.Now()
+	if err := process.Stop(5 * time.Second); err != nil {
+		t.Fatalf("Stop after exit: %v", err)
+	}
+	if waited := time.Since(started); waited > time.Second {
+		t.Fatalf("Stop on a dead process took %v; want a prompt no-op", waited)
+	}
+}
+
 // An error line on ANY stream outranks another stream's benign chatter:
 // stderr small talk must not shadow a fatal report that went to stdout.
 func TestRunCrashErrorPrefersStdoutErrorOverStderrChatter(t *testing.T) {

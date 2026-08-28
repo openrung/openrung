@@ -95,12 +95,12 @@ func newLadderService(t *testing.T, relays func() []brokerapi.RelayDescriptor) (
 		return discovery.Fetch{BrokerURL: brokerURL, Response: listOf(relays()...)}, nil
 	}
 	// Defaults every test can override: relays reachable, tunnels healthy until
-	// cancelled, probes instant.
+	// stopped, probes instant.
 	s.dialRelay = func(ctx context.Context, host string, port int) (int64, error) { return 1, nil }
-	s.runTunnel = func(ctx context.Context, configPath string) error {
+	s.TunnelRuntime = runFuncRuntime(func(ctx context.Context, configJSON []byte) error {
 		<-ctx.Done()
 		return nil
-	}
+	})
 	s.probeTunnel = func(ctx context.Context, proxyPort int) (int64, error) { return 2, nil }
 	s.healthProbe = func(ctx context.Context, proxyPort int) error { return nil }
 	// No real sing-box binds the loopback port in tests, so report readiness
@@ -134,11 +134,11 @@ func TestRecoveryReportsStableProxyPortCollisionBeforeBlamingRelays(t *testing.T
 	port := listener.Addr().(*net.TCPAddr).Port
 
 	var tunnelStarted atomic.Bool
-	s.runTunnel = func(ctx context.Context, configPath string) error {
+	s.TunnelRuntime = runFuncRuntime(func(ctx context.Context, configJSON []byte) error {
 		tunnelStarted.Store(true)
 		<-ctx.Done()
 		return nil
-	}
+	})
 	conn := &connection{brokerURL: "http://broker.example"}
 	result, _, stage, err := s.reladder(t.Context(), conn, port, RelayTarget{}, "")
 	if result != nil {
@@ -184,11 +184,11 @@ func TestInitialConnectRechecksStableProxyPortAfterDiscovery(t *testing.T) {
 	}()
 
 	var tunnelStarted atomic.Bool
-	s.runTunnel = func(ctx context.Context, configPath string) error {
+	s.TunnelRuntime = runFuncRuntime(func(ctx context.Context, configJSON []byte) error {
 		tunnelStarted.Store(true)
 		<-ctx.Done()
 		return nil
-	}
+	})
 	if err := s.Connect(sink.srv.URL, "", ""); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -537,7 +537,7 @@ func TestRecoveryRanksBeforeDemotingTheFailedRelay(t *testing.T) {
 
 	crash := make(chan error, 1)
 	var runs int32
-	s.runTunnel = func(ctx context.Context, configPath string) error {
+	s.TunnelRuntime = runFuncRuntime(func(ctx context.Context, configJSON []byte) error {
 		if atomic.AddInt32(&runs, 1) == 1 {
 			select {
 			case err := <-crash:
@@ -548,7 +548,7 @@ func TestRecoveryRanksBeforeDemotingTheFailedRelay(t *testing.T) {
 		}
 		<-ctx.Done()
 		return nil
-	}
+	})
 
 	if err := s.Connect(sink.srv.URL, "", ""); err != nil {
 		t.Fatalf("connect: %v", err)
@@ -603,7 +603,7 @@ func TestUnexpectedTunnelExitFailsOverMidSession(t *testing.T) {
 
 	crash := make(chan error, 1)
 	var runs int32
-	s.runTunnel = func(ctx context.Context, configPath string) error {
+	s.TunnelRuntime = runFuncRuntime(func(ctx context.Context, configJSON []byte) error {
 		if atomic.AddInt32(&runs, 1) == 1 {
 			select {
 			case err := <-crash:
@@ -614,7 +614,7 @@ func TestUnexpectedTunnelExitFailsOverMidSession(t *testing.T) {
 		}
 		<-ctx.Done()
 		return nil
-	}
+	})
 
 	if err := s.Connect(sink.srv.URL, "", ""); err != nil {
 		t.Fatalf("connect: %v", err)
@@ -751,12 +751,12 @@ func TestConcurrentConnectsLeaveOneLiveTunnel(t *testing.T) {
 		s, _ := newLadderService(t, func() []brokerapi.RelayDescriptor { return fixtures })
 		// Each live tunnel increments a counter for its whole lifetime; an
 		// orphaned connection immune to Disconnect would leave it above zero.
-		s.runTunnel = func(ctx context.Context, configPath string) error {
+		s.TunnelRuntime = runFuncRuntime(func(ctx context.Context, configJSON []byte) error {
 			atomic.AddInt32(&running, 1)
 			<-ctx.Done()
 			atomic.AddInt32(&running, -1)
 			return nil
-		}
+		})
 		return s
 	}
 	s := build()

@@ -34,14 +34,14 @@ func (s *Engine) supervise(ctx context.Context, conn *connection, cur *candidate
 		select {
 		case <-ctx.Done():
 			return "", nil
-		case runErr := <-cur.runErrCh:
-			cur.reaped = true
+		case runErr := <-cur.runDone:
 			if ctx.Err() != nil || s.isDisconnecting(conn) {
 				return "", nil
 			}
 			if runErr == nil {
-				// Run returns nil only on the cancel path, and nobody cancelled:
-				// treat like any other unexpected exit.
+				// The runtime reports nil only for an engine-requested stop,
+				// and nobody requested one: treat like any other unexpected
+				// exit.
 				runErr = errors.New("tunnel exited unexpectedly")
 			}
 			if cur.accessTransport == accessTransportWSS {
