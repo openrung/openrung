@@ -38,6 +38,16 @@ import (
 // on its own — it would silently route into the tunnel.
 var errSocketProtectionFailed = errors.New("socket protection failed")
 
+// isSocketProtectionFailure recognizes the host's refusal to protect a socket
+// — the engine's own sentinel on raw dials, wsscore's on the WSS path. It is
+// a local platform failure (the VpnService is gone, the tunnel adapter is
+// mid-teardown): no relay or front is evidence-worthy, no fallback transport
+// can repair it, so the ladder must stop through localCandidateError instead
+// of denting relay health or minting WSS tickets.
+func isSocketProtectionFailure(err error) bool {
+	return errors.Is(err, errSocketProtectionFailed) || errors.Is(err, wsscore.ErrSocketProtectionFailed)
+}
+
 // protectorDialControl adapts the fd-level protector into a net.Dialer
 // Control, with wsscore's semantics: an fd the protector cannot represent or
 // refuses fails the dial.

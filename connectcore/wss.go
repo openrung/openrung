@@ -300,6 +300,12 @@ func (s *Engine) attemptWSSCandidate(
 	bridge, err := s.wssDialer()(candidateCtx, front.URL, ticket.Ticket)
 	if err != nil {
 		cancel()
+		if isSocketProtectionFailure(err) {
+			// A refused protection is a local platform failure, not front
+			// evidence: stop the ladder instead of burning the remaining
+			// fronts' single-use tickets on dials that cannot succeed.
+			return nil, markLocalCandidateError("socket_protection", err)
+		}
 		return nil, markWSSTransportError("wss_handshake", front.ID, fmt.Errorf("connect WSS front: %w", err))
 	}
 	host, port := bridge.Endpoint()

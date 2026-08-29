@@ -2,14 +2,18 @@ package connectcore
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/openrung/openrung/brokerapi"
+	"github.com/openrung/openrung/wsscore"
 )
 
 // recordingProtector is a fake VpnService.protect: it remembers every fd the
@@ -120,5 +124,87 @@ func TestSocketProtectorRefusalFailsClosed(t *testing.T) {
 	}
 	if protector.count() == 0 {
 		t.Fatal("the refusing protector was never consulted")
+	}
+	if !strings.Contains(logLines(s), "local VPN setup failed at socket_protection") {
+		t.Fatalf("refusal was not classified as a local failure:\n%s", logLines(s))
+	}
+}
+
+// A protection refusal on the ladder dial is a LOCAL platform failure: it
+// must not dent the relay's broker health and must not unlock the relay's
+// WSS fronts — retrying a relay or minting a ticket cannot repair a host
+// that refuses to protect sockets.
+func TestSocketProtectionRefusalIsLocalNotRelayEvidence(t *testing.T) {
+	sink := newTelemetrySink(t)
+	fixture := relayWithWSS("relay-a", "JP", "Tokyo", "Japan", "127.0.0.10")
+	s, _ := newLadderService(t, func() []brokerapi.RelayDescriptor { return []brokerapi.RelayDescriptor{fixture} })
+	s.dialRelay = func(context.Context, string, int) (int64, error) {
+		return 0, fmt.Errorf("relay 127.0.0.10:443 is not reachable: %w", errSocketProtectionFailed)
+	}
+	var tickets atomic.Int32
+	s.requestWSSTicket = func(context.Context, string, brokerapi.WSSTicketRequest, string, string) (brokerapi.WSSTicketResponse, error) {
+		tickets.Add(1)
+		return brokerapi.WSSTicketResponse{}, errors.New("must not be reached")
+	}
+
+	if err := s.Connect(sink.srv.URL, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	state := waitForStatus(t, s, StatusFailed)
+	waitIdle(t, s)
+	if state.LastError == nil || !strings.Contains(*state.LastError, "socket protection failed") {
+		t.Fatalf("lastError = %v", state.LastError)
+	}
+	if tickets.Load() != 0 {
+		t.Fatalf("a local protection refusal unlocked WSS fallback (%d tickets)", tickets.Load())
+	}
+	if attempts := sink.named("relay_attempt_failed"); len(attempts) != 0 {
+		t.Fatalf("a local protection refusal dented relay health: %+v", attempts)
+	}
+	if !strings.Contains(logLines(s), "local VPN setup failed at socket_protection") {
+		t.Fatalf("refusal was not classified as a local failure:\n%s", logLines(s))
+	}
+}
+
+// The same classification on the WSS path: wsscore's protection sentinel from
+// the bridge dial stops the ladder instead of burning the remaining fronts'
+// single-use tickets or recording transport damage.
+func TestWSSDialProtectionRefusalStopsLadderWithoutFrontDamage(t *testing.T) {
+	sink := newTelemetrySink(t)
+	frontA := testWSSFront("front-a", testWSSFrontAURL)
+	frontB := testWSSFront("front-b", testWSSFrontBURL)
+	fixture := relayWithWSS("relay-a", "JP", "Tokyo", "Japan", "127.0.0.10", frontA, frontB)
+	s, _ := newLadderService(t, func() []brokerapi.RelayDescriptor { return []brokerapi.RelayDescriptor{fixture} })
+	s.dialRelay = func(context.Context, string, int) (int64, error) {
+		return 0, errors.New("direct TCP blocked") // genuinely unlocks the fronts
+	}
+	var tickets atomic.Int32
+	s.requestWSSTicket = func(_ context.Context, _ string, request brokerapi.WSSTicketRequest, _, _ string) (brokerapi.WSSTicketResponse, error) {
+		tickets.Add(1)
+		if request.FrontID == frontA.ID {
+			return successfulWSSTicket(frontA, "single-use"), nil
+		}
+		return successfulWSSTicket(frontB, "single-use"), nil
+	}
+	var wssDials atomic.Int32
+	s.dialWSS = func(context.Context, string, string) (wssBridge, error) {
+		wssDials.Add(1)
+		return nil, fmt.Errorf("connect WSS front: %w", wsscore.ErrSocketProtectionFailed)
+	}
+
+	if err := s.Connect(sink.srv.URL, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForStatus(t, s, StatusFailed)
+	waitIdle(t, s)
+	if wssDials.Load() != 1 || tickets.Load() != 1 {
+		t.Fatalf("refusal did not stop the ladder: dials=%d tickets=%d (front-b's ticket burned for nothing)", wssDials.Load(), tickets.Load())
+	}
+	if failures := sink.named("transport_failed"); len(failures) != 0 {
+		t.Fatalf("a local protection refusal was recorded as front damage: %+v", failures)
+	}
+	// The direct failure that unlocked the fronts stays legitimately recorded.
+	if attempts := sink.named("relay_attempt_failed"); len(attempts) != 1 {
+		t.Fatalf("relay_attempt_failed = %+v; want exactly the genuine direct failure", attempts)
 	}
 }

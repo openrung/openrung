@@ -95,14 +95,27 @@ func (s *Engine) Shutdown(flushBudget time.Duration) error {
 	defer s.connectMu.Unlock()
 	s.mu.Lock()
 	conn := s.conn
+	var inFlightFlush context.CancelFunc
 	if conn != nil {
 		conn.flushBudget = flushBudget
+		inFlightFlush = conn.flushCancel
 	}
 	s.mu.Unlock()
-	s.teardownExisting()
 	if conn == nil {
 		return nil
 	}
+	if inFlightFlush != nil {
+		// The terminal flush is already running — a Disconnect or a natural
+		// failure started it with an earlier budget. Shorten it to ours:
+		// from this call, the flush gets at most flushBudget more.
+		budget := flushBudget
+		if budget <= 0 {
+			budget = defaultFlushBudget
+		}
+		shorten := time.AfterFunc(budget, inFlightFlush)
+		defer shorten.Stop()
+	}
+	s.teardownExisting()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return conn.flushErr

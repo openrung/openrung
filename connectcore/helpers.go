@@ -91,40 +91,47 @@ func managerClientID(mgr *clienttelemetry.Manager) string {
 	return mgr.ClientID()
 }
 
+// defaultFlushBudget bounds a terminal telemetry flush when no caller-owned
+// budget was set (see Engine.Shutdown).
+const defaultFlushBudget = 5 * time.Second
+
 // FlushOnShutdown flushes remaining telemetry with a fresh bounded context, so
 // it still runs after the connect context has been cancelled. It returns the
 // flush error for callers that surface it (the CLI warns on stderr); the
 // engine reports it through Shutdown and otherwise drops it.
 func FlushOnShutdown(mgr *clienttelemetry.Manager) error {
-	return flushBounded(mgr, 0)
-}
-
-// flushBounded is FlushOnShutdown with a caller-owned budget: zero or
-// negative keeps the engine's 5-second default (see Engine.Shutdown).
-func flushBounded(mgr *clienttelemetry.Manager, budget time.Duration) error {
 	if mgr == nil {
 		return nil
 	}
-	if budget <= 0 {
-		budget = 5 * time.Second
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultFlushBudget)
 	defer cancel()
 	return mgr.Flush(ctx)
 }
 
-// connFlushBudget and storeFlushResult move the Shutdown flush budget and its
-// outcome across the finalizer under the engine's mu.
-func (s *Engine) connFlushBudget(conn *connection) time.Duration {
+// terminalFlush drains the session's outbox once, bounded by the connection's
+// flush budget (Shutdown's, else the default). The budget read and the cancel
+// registration share one lock acquisition, so either Shutdown's budget is
+// stored before the flush starts and bounds it directly, or Shutdown finds
+// flushCancel and shortens the flush already in flight — a Shutdown can never
+// be left waiting out an earlier, longer budget. The outcome lands in
+// conn.flushErr for Shutdown to report.
+func (s *Engine) terminalFlush(conn *connection) {
+	if conn.mgr == nil {
+		return
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return conn.flushBudget
-}
-
-func (s *Engine) storeFlushResult(conn *connection, err error) {
+	budget := conn.flushBudget
+	if budget <= 0 {
+		budget = defaultFlushBudget
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	conn.flushCancel = cancel
+	s.mu.Unlock()
+	defer cancel()
+	err := conn.mgr.Flush(ctx)
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	conn.flushErr = err
+	s.mu.Unlock()
 }
 
 // usableRelays filters the broker response to usable candidates, preserving

@@ -222,6 +222,57 @@ func TestShutdownBoundsTheTerminalFlushAndReportsOutcome(t *testing.T) {
 	}
 }
 
+// A Shutdown that arrives while the terminal flush is ALREADY running must
+// shorten that flush to its own budget: a Disconnect (or natural failure)
+// starts the flush with the 5s default, and a jetsam-pressed Shutdown right
+// behind it cannot afford to wait that default out.
+func TestShutdownShortensAnAlreadyRunningTerminalFlush(t *testing.T) {
+	requests := make(chan struct{}, 8)
+	release := make(chan struct{})
+	hanging := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- struct{}{}
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer hanging.Close()
+	defer close(release)
+
+	fixtures := []brokerapi.RelayDescriptor{relayAt("a", "JP", "Tokyo", "Japan", "127.0.0.10")}
+	s, _ := newLadderService(t, func() []brokerapi.RelayDescriptor { return fixtures })
+	if err := s.Connect(hanging.URL, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForStatus(t, s, StatusConnected)
+	<-requests // promote's success flush is parked at the broker
+
+	if err := s.Disconnect(); err != nil {
+		t.Fatal(err)
+	}
+	// The terminal flush's own upload arriving proves finalize entered the
+	// flush — with its cancel registered — before Shutdown is called.
+	select {
+	case <-requests:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the terminal flush never reached the broker")
+	}
+
+	started := time.Now()
+	err := s.Shutdown(100 * time.Millisecond)
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("the shortened flush should report its interruption")
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("Shutdown took %v; it waited out the flush's earlier budget instead of shortening it", elapsed)
+	}
+	if state := s.State(); state.Status != StatusDisconnected {
+		t.Fatalf("status after Shutdown = %s", state.Status)
+	}
+	waitIdle(t, s)
+}
+
 // The happy path: a responsive broker gets the session-end events inside the
 // budget and Shutdown reports the clean flush.
 func TestShutdownFlushesSessionEndWithinBudget(t *testing.T) {

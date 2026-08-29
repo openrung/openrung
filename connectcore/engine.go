@@ -135,9 +135,12 @@ type connection struct {
 	// Touched only by the runConnect goroutine.
 	handledNetEpoch uint64
 	// flushBudget bounds the terminal telemetry flush (see Shutdown); zero
-	// keeps the 5s default. flushErr stores that flush's outcome. Both under
-	// the engine's mu.
+	// keeps the 5s default. flushCancel is set while that flush runs, so a
+	// Shutdown arriving mid-flush can shorten it to its own budget instead of
+	// waiting out one that captured an earlier (longer) budget. flushErr
+	// stores the flush's outcome. All under the engine's mu.
 	flushBudget time.Duration
+	flushCancel context.CancelFunc
 	flushErr    error
 }
 
@@ -945,6 +948,12 @@ func (s *Engine) attemptDirectCandidate(ctx context.Context, conn *connection, c
 	s.appendLog("checking relay TCP reachability")
 	tcpMS, err := s.relayDialer()(ctx, cand.PublicHost, cand.PublicPort)
 	if err != nil {
+		if isSocketProtectionFailure(err) {
+			// The host refused to protect the socket: a local platform
+			// failure, never relay evidence — it must not dent relay health
+			// or unlock the relay's WSS fronts.
+			return nil, markLocalCandidateError("socket_protection", err)
+		}
 		return nil, markDirectPathError("tcp", err)
 	}
 
@@ -1305,7 +1314,7 @@ func (s *Engine) finalizeConn(conn *connection, stage string, err error) {
 		s.emitStatusLocked(StatusDisconnected, clearLabel, clearError)
 		s.mu.Unlock()
 		conn.mgr.EndSession("disconnect")
-		s.storeFlushResult(conn, flushBounded(conn.mgr, s.connFlushBudget(conn)))
+		s.terminalFlush(conn)
 	default:
 		msg := err.Error()
 		s.appendLog("connect failed: " + msg)
@@ -1322,7 +1331,7 @@ func (s *Engine) finalizeConn(conn *connection, stage string, err error) {
 			}
 			conn.mgr.Record("connection_failed", "", attrs, nil)
 			conn.mgr.EndSession("connection_failed")
-			s.storeFlushResult(conn, flushBounded(conn.mgr, s.connFlushBudget(conn)))
+			s.terminalFlush(conn)
 		}
 	}
 	s.clearConn(conn)
