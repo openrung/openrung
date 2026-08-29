@@ -157,7 +157,8 @@ func (s *Engine) wssDialer() func(context.Context, string, string) (wssBridge, e
 	return func(ctx context.Context, rawURL, ticket string) (wssBridge, error) {
 		return wsscore.DialClient(ctx, wsscore.ClientOptions{
 			URL: rawURL, Ticket: ticket, NativeFrontNoSNI: true,
-			SocketProtector: s.SocketProtector,
+			SocketProtector: s.currentProtector(),
+			DNSServers:      s.currentDNSServers(),
 		})
 	}
 }
@@ -285,6 +286,9 @@ func (s *Engine) attemptWSSCandidate(
 	proxyPort int,
 	attempt int,
 ) (*candidateResult, error) {
+	// Captured before the ticket request and the bridge dial: the WSS outer
+	// socket belongs to epochs at or after this point (candidateResult.netEpoch).
+	attemptEpoch := s.networkEpoch()
 	candidateCtx, cancel := context.WithCancel(ctx)
 	ticket, err := s.requestWSSSessionTicket(candidateCtx, conn, brokerapi.WSSTicketRequest{
 		RelayID: candidate.ID,
@@ -336,6 +340,7 @@ func (s *Engine) attemptWSSCandidate(
 		transportErr: make(chan error, 1),
 		proxyPort:    proxyPort, transportMS: time.Since(started).Milliseconds(),
 		attempt: int64(attempt), brokerIndex: -1,
+		netEpoch: attemptEpoch,
 	}
 	go serveWSS(result, serveCtx, bridge)
 	s.appendLog(fmt.Sprintf("connected through WSS front %s", front.ID))

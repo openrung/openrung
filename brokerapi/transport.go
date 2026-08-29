@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -237,39 +238,70 @@ func NewHTTPClient(timeout time.Duration) *http.Client {
 // the package's authenticated ECH retry-config state, but owns its own
 // connection pool. A control error fails the dial: an unprotected socket must
 // never fall back to the captured path. A nil control returns NewHTTPClient.
+//
+// dnsServers, when supplied (host:port or bare IP, port 53 default), routes
+// the dialer's DNS through a pure-Go resolver whose query sockets also run
+// the hook: Control covers only the final connection socket, while every
+// built-in broker candidate is a hostname — a DNS query captured into the
+// device-wide tunnel blackholes exactly when this client is discovering a way
+// out of it. The servers come from the host (Android LinkProperties): the
+// pure-Go resolver has no query target of its own on Android, so without them
+// the platform resolver is kept — working, with only the connection socket
+// hooked.
 func NewHTTPClientWithDialControl(
 	timeout time.Duration,
 	control func(network, address string, conn syscall.RawConn) error,
+	dnsServers ...string,
 ) *http.Client {
 	if control == nil {
 		return NewHTTPClient(timeout)
 	}
 	base := http.DefaultTransport.(*http.Transport).Clone()
-	// The resolver's own query sockets must run the hook too: Control covers
-	// only the final connection socket, while every built-in broker candidate
-	// is a hostname — a DNS query captured into the device-wide tunnel
-	// blackholes exactly when this client is discovering a way out of it.
-	// PreferGo forces the in-process resolver so the query sockets exist to be
-	// hooked (the cgo getaddrinfo path resolves outside the process entirely).
-	queryDialer := &net.Dialer{Timeout: 10 * time.Second, Control: control}
-	// Mirror http.DefaultTransport's dialer shape; Control and the protected
+	// Mirror http.DefaultTransport's dialer shape; Control and the hooked
 	// resolver are the only additions.
 	dialer := &net.Dialer{
 		Timeout:   30 * time.Second,
 		KeepAlive: 30 * time.Second,
 		Control:   control,
-		Resolver: &net.Resolver{
-			PreferGo: true,
-			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-				// address is the DNS server, an IP literal — no recursion.
-				return queryDialer.DialContext(ctx, network, address)
-			},
-		},
+		Resolver:  hookedResolver(control, dnsServers),
 	}
 	base.DialContext = dialer.DialContext
 	return &http.Client{
 		Transport:     newTransport(base, defaultECHState, brokerECHTimeout),
 		Timeout:       timeout,
 		CheckRedirect: refuseRedirect,
+	}
+}
+
+// hookedResolver builds the pure-Go resolver for NewHTTPClientWithDialControl
+// (nil unless nameservers were supplied — see there). It ignores the address
+// the resolver derives from its own configuration and queries the supplied
+// servers instead, each query socket running the control hook.
+func hookedResolver(
+	control func(network, address string, conn syscall.RawConn) error,
+	dnsServers []string,
+) *net.Resolver {
+	servers := make([]string, 0, len(dnsServers))
+	for _, server := range dnsServers {
+		server = strings.TrimSpace(server)
+		if server == "" {
+			continue
+		}
+		if _, _, err := net.SplitHostPort(server); err != nil {
+			server = net.JoinHostPort(strings.Trim(server, "[]"), "53")
+		}
+		servers = append(servers, server)
+	}
+	if len(servers) == 0 {
+		return nil
+	}
+	queryDialer := &net.Dialer{Timeout: 10 * time.Second, Control: control}
+	var next atomic.Uint64
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			server := servers[next.Add(1)%uint64(len(servers))]
+			return queryDialer.DialContext(ctx, network, server)
+		},
 	}
 }

@@ -284,12 +284,20 @@ func TestNetworkAliveReportsAliveOnProtectionRefusal(t *testing.T) {
 	defer front.Close()
 
 	s := New()
-	s.SocketProtector = &recordingProtector{refuse: true}
+	s.SetSocketProtector(&recordingProtector{refuse: true})
 	if !s.networkAlive(context.Background(), []string{front.Addr().String()}) {
 		t.Fatal("a protection refusal was read as a network outage — recovery would wait forever")
 	}
+	// The refusal must also survive a HOSTNAME front: it then fires on the
+	// protected resolver's DNS socket and reaches this gate stringified
+	// inside *net.DNSError — the shape every real broker front produces.
+	s.SetDNSServers([]string{"127.0.0.1"})
+	if !s.networkAlive(context.Background(), []string{"openrung-protection-test.invalid:443"}) {
+		t.Fatal("a refusal on the resolver's query socket was read as a network outage")
+	}
 	// The same gate still measures the network when protection works.
-	s.SocketProtector = &recordingProtector{}
+	s.SetSocketProtector(&recordingProtector{})
+	s.SetDNSServers(nil)
 	if !s.networkAlive(context.Background(), []string{front.Addr().String()}) {
 		t.Fatal("a reachable front behind a working protector read as down")
 	}
@@ -302,7 +310,7 @@ func TestNetworkAliveReportsAliveOnProtectionRefusal(t *testing.T) {
 func TestProtectedClientsCachePerProtectorAndRebuildOnChange(t *testing.T) {
 	s := New()
 	first := &recordingProtector{}
-	s.SocketProtector = first
+	s.SocketProtector = first // the construction-time assignment
 	brokerA, brokerB := s.brokerHTTPClient(), s.brokerHTTPClient()
 	if brokerA == nil || brokerA != brokerB {
 		t.Fatalf("the protected broker client is not cached: %p vs %p", brokerA, brokerB)
@@ -311,12 +319,49 @@ func TestProtectedClientsCachePerProtectorAndRebuildOnChange(t *testing.T) {
 		t.Fatal("the geo/punch clients are rebuilt per call")
 	}
 
-	s.SocketProtector = &recordingProtector{}
-	if s.brokerHTTPClient() == brokerA {
+	// A changed nameserver set rebuilds too: the cached resolvers would
+	// otherwise keep querying the dead network's DNS.
+	s.SetDNSServers([]string{"10.0.0.1"})
+	brokerServers := s.brokerHTTPClient()
+	if brokerServers == brokerA {
+		t.Fatal("changed DNS servers kept serving clients built for the old ones")
+	}
+
+	// The mid-life swap goes through the synchronized setter (VpnService
+	// recreate); the construction-time field is no longer consulted after it.
+	s.SetSocketProtector(&recordingProtector{})
+	if s.brokerHTTPClient() == brokerServers {
 		t.Fatal("a replaced protector kept serving clients built for the old one")
 	}
-	s.SocketProtector = nil
+	s.SetSocketProtector(nil)
 	if s.brokerHTTPClient() != nil || s.geoHTTPClient() != nil || s.punchCoordinationClient() != nil {
 		t.Fatal("without a protector every client must fall back to the module defaults (nil)")
 	}
+}
+
+// The protector swap is exercised against live engine goroutines under the
+// race detector: SetSocketProtector during a connected session must be safe
+// while probes and telemetry read the live protector concurrently.
+func TestSetSocketProtectorIsSafeMidSession(t *testing.T) {
+	sink := newTelemetrySink(t)
+	fixtures := []brokerapi.RelayDescriptor{relayAt("a", "JP", "Tokyo", "Japan", "127.0.0.10")}
+	s, _ := newLadderService(t, func() []brokerapi.RelayDescriptor { return fixtures })
+	s.healthTick = 5 * time.Millisecond
+	if err := s.Connect(sink.srv.URL, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForStatus(t, s, StatusConnected)
+	for i := 0; i < 20; i++ {
+		s.SetSocketProtector(&recordingProtector{})
+		s.SetDNSServers([]string{"10.0.0.1", "10.0.0.2"})
+		time.Sleep(2 * time.Millisecond)
+	}
+	s.SetSocketProtector(nil)
+	s.SetDNSServers(nil)
+	if state := s.State(); state.Status != StatusConnected {
+		t.Fatalf("status after protector churn = %s", state.Status)
+	}
+	_ = s.Disconnect()
+	waitForStatus(t, s, StatusDisconnected)
+	waitIdle(t, s)
 }

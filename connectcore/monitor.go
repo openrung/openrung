@@ -315,10 +315,15 @@ func (s *Engine) healthLoop(ctx context.Context, port int, fronts []string, fail
 				}
 			}
 		}
-		timer.Reset(jitter(base))
 		if !s.awaitResumed(ctx) {
 			return
 		}
+		// Reset only after the pause gate: rescheduling before a long pause
+		// would let the interval elapse DURING it, making the held sweep and
+		// the next one fire back to back on resume — two probe failures in
+		// one instant against a three-failure threshold calibrated to demand
+		// ~90s of evidence.
+		timer.Reset(jitter(base))
 
 		err := s.healthProber()(ctx, port)
 		if err == nil {

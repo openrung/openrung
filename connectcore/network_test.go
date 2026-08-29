@@ -143,26 +143,37 @@ func TestNetworkEpochKicksImmediateHealthProbeOnDirectPath(t *testing.T) {
 	waitIdle(t, s)
 }
 
-// An epoch that predates a candidate never retires it: each promoted
-// transport re-baselines, the engine equivalent of the mobile monitors'
-// fresh per-session baseline.
-func TestNetworkEpochBeforePromoteDoesNotRetireFreshSession(t *testing.T) {
+// The epoch baseline is the CANDIDATE's, captured before its attempt dials
+// anything: epochs that predate the attempt never retire the session, while
+// one that lands between the transport's dial and promote is still pending
+// afterwards and rebuilds the fresh session — its sockets may be bound to the
+// network that just died (a wifi-to-cellular handover mid-connect must not be
+// absorbed into the baseline).
+func TestEpochBetweenDialAndPromoteRetiresTheFreshSession(t *testing.T) {
 	sink := newTelemetrySink(t)
 	fixture := relayWithWSS("relay-a", "JP", "Tokyo", "Japan", "127.0.0.10")
 	s, events := newLadderService(t, func() []brokerapi.RelayDescriptor { return []brokerapi.RelayDescriptor{fixture} })
+	s.networkRetryDelay = 2 * time.Millisecond
+	s.checkNetworkAlive = func(context.Context, []string) bool { return true }
 	s.dialRelay = func(context.Context, string, int) (int64, error) {
 		return 0, errors.New("direct path blocked")
 	}
 	var ticketCalls atomic.Int32
 	s.requestWSSTicket = func(context.Context, string, brokerapi.WSSTicketRequest, string, string) (brokerapi.WSSTicketResponse, error) {
-		ticketCalls.Add(1)
-		return successfulWSSTicket(fixture.WSSFronts[0], "single-use"), nil
+		call := ticketCalls.Add(1)
+		return successfulWSSTicket(fixture.WSSFronts[0], "single-use-"+string(rune('0'+call))), nil
 	}
-	bridge := newFakeWSSBridge()
-	s.dialWSS = func(context.Context, string, string) (wssBridge, error) { return bridge, nil }
+	first, second := newFakeWSSBridge(), newFakeWSSBridge()
+	var bridgeCalls atomic.Int32
+	s.dialWSS = func(context.Context, string, string) (wssBridge, error) {
+		if bridgeCalls.Add(1) == 1 {
+			return first, nil
+		}
+		return second, nil
+	}
 
-	// Hold the ladder at readiness so the epoch lands mid-connect, after the
-	// connection exists but before any candidate is promoted.
+	// Hold the first candidate at readiness so an epoch can land mid-attempt,
+	// after its WSS socket exists but before promote.
 	release := make(chan struct{})
 	readyGate := make(chan struct{}, 1)
 	s.tunnelReady = func(ctx context.Context, _ int) error {
@@ -178,22 +189,28 @@ func TestNetworkEpochBeforePromoteDoesNotRetireFreshSession(t *testing.T) {
 		}
 	}
 
-	s.UpdateNetworkState(NetworkState{Up: true, Fingerprint: "wifi-home"}) // baseline, absorbed
+	// Epochs BEFORE the attempt are settled history: baseline plus a change,
+	// both pre-connect, must not retire the session that follows.
+	s.UpdateNetworkState(NetworkState{Up: true, Fingerprint: "wifi-home"})
+	s.UpdateNetworkState(NetworkState{Up: true, Fingerprint: "wifi-office"})
 	if err := s.Connect(sink.srv.URL, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	<-readyGate
-	s.UpdateNetworkState(NetworkState{Up: true, Fingerprint: "cellular"}) // epoch mid-ladder
+	// The handover lands mid-attempt: after the WSS dial, before promote.
+	s.UpdateNetworkState(NetworkState{Up: true, Fingerprint: "cellular"})
 	close(release)
-	waitForStatus(t, s, StatusConnected)
 
-	// The fresh session belongs to the new epoch: no retirement follows.
-	time.Sleep(50 * time.Millisecond)
-	if got := events.noticesOf(NoticeFailoverStarted); len(got) != 0 {
-		t.Fatalf("the fresh session was retired by an epoch it postdates: %+v", got)
+	// The fresh session is retired for the epoch its socket predates and
+	// rebuilt on the new one.
+	waitWSSSignal(t, second.started, "rebuild after the mid-attempt handover")
+	waitForStatus(t, s, StatusConnected)
+	if ticketCalls.Load() != 2 {
+		t.Fatalf("ticket calls = %d; want the held session plus its rebuild", ticketCalls.Load())
 	}
-	if ticketCalls.Load() != 1 {
-		t.Fatalf("ticket calls = %d; the session was rebuilt", ticketCalls.Load())
+	started := events.noticesOf(NoticeFailoverStarted)
+	if len(started) != 1 || started[0].Reason != "physical network epoch changed" {
+		t.Fatalf("failover notices = %+v; want exactly the mid-attempt handover (pre-attempt epochs must stay absorbed)", started)
 	}
 	_ = s.Disconnect()
 	waitForStatus(t, s, StatusDisconnected)

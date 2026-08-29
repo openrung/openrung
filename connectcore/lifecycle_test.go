@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -60,6 +61,75 @@ func TestPauseHoldsHealthSweepsAndHeartbeatsUntilResume(t *testing.T) {
 			t.Fatalf("periodic machinery never resumed: probes=%d heartbeats=%d", probes.Load(), heartbeats())
 		}
 		time.Sleep(2 * time.Millisecond)
+	}
+	_ = s.Disconnect()
+	waitForStatus(t, s, StatusDisconnected)
+	waitIdle(t, s)
+}
+
+// A pause longer than one probe interval must not double-probe on resume:
+// rescheduling the timer before the pause gate would let the interval elapse
+// during the pause, firing the held sweep and the next one back to back — two
+// failures of a three-failure threshold in one instant.
+func TestResumeAfterLongPauseRunsOneProbeNotTwo(t *testing.T) {
+	sink := newTelemetrySink(t)
+	fixtures := []brokerapi.RelayDescriptor{relayAt("a", "JP", "Tokyo", "Japan", "127.0.0.10")}
+	s, _ := newLadderService(t, func() []brokerapi.RelayDescriptor { return fixtures })
+	s.healthTick = 100 * time.Millisecond // jittered to [75ms, 125ms]
+	var probeMu sync.Mutex
+	var probeTimes []time.Time
+	s.healthProbe = func(context.Context, int) error {
+		probeMu.Lock()
+		probeTimes = append(probeTimes, time.Now())
+		probeMu.Unlock()
+		return nil
+	}
+
+	if err := s.Connect(sink.srv.URL, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForStatus(t, s, StatusConnected)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		probeMu.Lock()
+		ran := len(probeTimes) > 0
+		probeMu.Unlock()
+		if ran {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the health loop never probed")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	s.Pause()
+	time.Sleep(300 * time.Millisecond) // several intervals elapse while paused
+	probeMu.Lock()
+	baseline := len(probeTimes)
+	probeMu.Unlock()
+	s.Resume()
+
+	// Wait for two post-resume probes and check their spacing: the held sweep
+	// runs immediately, the next one a full (jittered) interval later.
+	deadline = time.Now().Add(10 * time.Second)
+	for {
+		probeMu.Lock()
+		count := len(probeTimes)
+		probeMu.Unlock()
+		if count >= baseline+2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the health loop never resumed probing")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	probeMu.Lock()
+	gap := probeTimes[baseline+1].Sub(probeTimes[baseline])
+	probeMu.Unlock()
+	if gap < 40*time.Millisecond {
+		t.Fatalf("post-resume probes fired %v apart; the pause double-probed instead of rescheduling", gap)
 	}
 	_ = s.Disconnect()
 	waitForStatus(t, s, StatusDisconnected)

@@ -184,6 +184,13 @@ type candidateResult struct {
 	// rankProbeMS is the ranker's measured TCP latency, nil when this relay was
 	// not probed or its probe failed.
 	rankProbeMS *int64
+	// netEpoch is the network epoch when this candidate's attempt began —
+	// before any of its sockets existed. promote adopts it as the session's
+	// baseline, so an epoch that lands anywhere between the first dial and
+	// promote still retires (or health-checks) the fresh session instead of
+	// being absorbed: the transport may be bound to the network that just
+	// died.
+	netEpoch uint64
 }
 
 // localCandidateError marks failures independent of the selected relay path:
@@ -321,7 +328,10 @@ type Engine struct {
 	// which keeps every network construction byte-identical to before the
 	// seam. See sockets.go for exactly which sockets it covers — and which
 	// (through-tunnel probes) it deliberately never touches. Assign before
-	// Start or the first Connect, like every other hook.
+	// Start or the first Connect, like every other hook; once the engine is
+	// running, replace it only through SetSocketProtector (a VpnService
+	// recreate), never by writing this field — engine goroutines read the
+	// live protector concurrently.
 	SocketProtector wsscore.SocketProtector
 
 	// protectedHTTP caches the protector-derived HTTP clients (see
@@ -357,6 +367,15 @@ type Engine struct {
 	// (closed by Resume). See lifecycle.go.
 	pauseMu   sync.Mutex
 	resumedCh chan struct{}
+
+	// protectorMu guards the mid-life protector replacement and the
+	// host-supplied DNS servers (see SetSocketProtector / SetDNSServers) —
+	// engine goroutines read them while adapters update them from platform
+	// callbacks.
+	protectorMu       sync.Mutex
+	protectorReplaced bool
+	protectorOverride wsscore.SocketProtector
+	dnsServers        []string
 
 	// proxyPortMu pins only a successfully resolved endpoint for this process.
 	// A transient resolution failure remains retryable on the next call.
@@ -944,6 +963,9 @@ func (s *Engine) attemptCandidate(ctx context.Context, conn *connection, cand br
 // attemptDirectCandidate is the existing direct/punched rung split from its
 // path-independent sing-box lifecycle so WSS can reuse that lifecycle safely.
 func (s *Engine) attemptDirectCandidate(ctx context.Context, conn *connection, cand brokerapi.RelayDescriptor, port, attempt int) (*candidateResult, error) {
+	// Captured before the first dial: every socket this candidate will hold
+	// belongs to epochs at or after this point (see candidateResult.netEpoch).
+	attemptEpoch := s.networkEpoch()
 	s.appendLog(fmt.Sprintf("trying relay %s at %s:%d", cand.ID, cand.PublicHost, cand.PublicPort))
 	s.appendLog("checking relay TCP reachability")
 	tcpMS, err := s.relayDialer()(ctx, cand.PublicHost, cand.PublicPort)
@@ -962,6 +984,7 @@ func (s *Engine) attemptDirectCandidate(ctx context.Context, conn *connection, c
 		relay: cand, accessTransport: brokerapi.TransportDirect,
 		ctx: candCtx, cancel: cancel, proxyPort: port,
 		tcpMS: tcpMS, hasTCPMS: true, attempt: int64(attempt), brokerIndex: -1,
+		netEpoch: attemptEpoch,
 	}
 
 	// Try a direct NAT-punched path first; on any failure fall back to the
@@ -1139,11 +1162,13 @@ func (s *Engine) promote(ctx context.Context, conn *connection, res *candidateRe
 	}
 	conn.active = res
 	conn.activeRelayID = res.relay.ID
-	// A transport belongs to the network epoch it was promoted in: baseline
-	// here — the engine equivalent of the mobile monitors' fresh per-session
-	// baseline — so an epoch that predates this candidate never retires it,
-	// and one observed after CONNECTED always postdates the baseline.
-	conn.handledNetEpoch = s.networkEpoch()
+	// The session's epoch baseline is the CANDIDATE's, captured before its
+	// attempt dialed anything: an epoch that predates the attempt never
+	// retires it (the mobile monitors' fresh per-session baseline), while one
+	// that landed between the transport's dial and this promote is still
+	// pending and retires or health-checks the fresh session — its sockets
+	// may be bound to the network that just died.
+	conn.handledNetEpoch = res.netEpoch
 	s.markConnectedLocked(label, recent)
 	s.mu.Unlock()
 

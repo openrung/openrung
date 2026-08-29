@@ -95,19 +95,6 @@ func managerClientID(mgr *clienttelemetry.Manager) string {
 // budget was set (see Engine.Shutdown).
 const defaultFlushBudget = 5 * time.Second
 
-// FlushOnShutdown flushes remaining telemetry with a fresh bounded context, so
-// it still runs after the connect context has been cancelled. It returns the
-// flush error for callers that surface it (the CLI warns on stderr); the
-// engine reports it through Shutdown and otherwise drops it.
-func FlushOnShutdown(mgr *clienttelemetry.Manager) error {
-	if mgr == nil {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), defaultFlushBudget)
-	defer cancel()
-	return mgr.Flush(ctx)
-}
-
 // terminalFlush drains the session's outbox once, bounded by the connection's
 // flush budget (Shutdown's, else the default). The budget read and the cancel
 // registration share one lock acquisition, so either Shutdown's budget is
