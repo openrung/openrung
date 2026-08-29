@@ -209,6 +209,13 @@ func (s *Engine) requestWSSSessionTicket(
 			if err == nil {
 				return ticket, nil
 			}
+			if isSocketProtectionFailure(err) {
+				// The host refused to protect the ticket request's socket: a
+				// local platform failure every remaining front and the retry
+				// round would reproduce — stop here and let the caller
+				// classify it local.
+				return brokerapi.WSSTicketResponse{}, err
+			}
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -285,6 +292,11 @@ func (s *Engine) attemptWSSCandidate(
 	})
 	if err != nil {
 		cancel()
+		if isSocketProtectionFailure(err) {
+			// A refused protection is a local platform failure, never front
+			// evidence (same classification as the bridge dial below).
+			return nil, markLocalCandidateError("socket_protection", err)
+		}
 		return nil, markWSSTransportError("ticket", front.ID, fmt.Errorf("request WSS ticket: %w", err))
 	}
 	if ticket.URL != front.URL {

@@ -166,6 +166,51 @@ func TestSocketProtectionRefusalIsLocalNotRelayEvidence(t *testing.T) {
 	}
 }
 
+// A protection refusal during the WSS TICKET fetch is the same local failure:
+// it must stop after the first broker-front attempt — not grind through every
+// front and the bounded retry round — and must not be recorded as front
+// damage.
+func TestWSSTicketProtectionRefusalStopsAfterOneAttempt(t *testing.T) {
+	sink := newTelemetrySink(t)
+	frontA := testWSSFront("front-a", testWSSFrontAURL)
+	frontB := testWSSFront("front-b", testWSSFrontBURL)
+	fixture := relayWithWSS("relay-a", "JP", "Tokyo", "Japan", "127.0.0.10", frontA, frontB)
+	s, _ := newLadderService(t, func() []brokerapi.RelayDescriptor { return []brokerapi.RelayDescriptor{fixture} })
+	s.dialRelay = func(context.Context, string, int) (int64, error) {
+		return 0, errors.New("direct TCP blocked") // genuinely unlocks the fronts
+	}
+	var tickets atomic.Int32
+	s.requestWSSTicket = func(context.Context, string, brokerapi.WSSTicketRequest, string, string) (brokerapi.WSSTicketResponse, error) {
+		tickets.Add(1)
+		return brokerapi.WSSTicketResponse{}, fmt.Errorf("post ticket request: %w", errSocketProtectionFailed)
+	}
+	s.dialWSS = func(context.Context, string, string) (wssBridge, error) {
+		t.Error("a refused ticket fetch still dialed a WSS front")
+		return nil, errors.New("unreachable")
+	}
+
+	if err := s.Connect(sink.srv.URL, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	state := waitForStatus(t, s, StatusFailed)
+	waitIdle(t, s)
+	if state.LastError == nil || !strings.Contains(*state.LastError, "socket protection failed") {
+		t.Fatalf("lastError = %v", state.LastError)
+	}
+	if tickets.Load() != 1 {
+		t.Fatalf("ticket attempts = %d; a local refusal must stop after the first broker front", tickets.Load())
+	}
+	if failures := sink.named("transport_failed"); len(failures) != 0 {
+		t.Fatalf("a local protection refusal was recorded as front damage: %+v", failures)
+	}
+	if attempts := sink.named("relay_attempt_failed"); len(attempts) != 1 {
+		t.Fatalf("relay_attempt_failed = %+v; want exactly the genuine direct failure", attempts)
+	}
+	if !strings.Contains(logLines(s), "local VPN setup failed at socket_protection") {
+		t.Fatalf("refusal was not classified as a local failure:\n%s", logLines(s))
+	}
+}
+
 // The same classification on the WSS path: wsscore's protection sentinel from
 // the bridge dial stops the ladder instead of burning the remaining fronts'
 // single-use tickets or recording transport damage.
