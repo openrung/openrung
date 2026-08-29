@@ -372,12 +372,20 @@ func (s *Engine) networkAlive(ctx context.Context, fronts []string) bool {
 	if s.checkNetworkAlive != nil {
 		return s.checkNetworkAlive(ctx, fronts)
 	}
-	control := s.dialControl()
+	dialer := s.protectedNetDialer(RelayTCPTimeout)
 	for _, addr := range fronts {
-		dialer := net.Dialer{Timeout: RelayTCPTimeout, Control: control}
 		conn, err := dialer.DialContext(ctx, "tcp", addr)
 		if err == nil {
 			_ = conn.Close()
+			return true
+		}
+		if isSocketProtectionFailure(err) {
+			// The host refuses to protect sockets, so this gate cannot
+			// measure the network — and waiting cannot help, since every
+			// recovery dial would meet the same refusal. Report alive so the
+			// ladder runs and surfaces the terminal LOCAL failure, instead of
+			// reading the refusal as "network down" and holding
+			// waitForNetworkRecovery (and the user, on CONNECTING) forever.
 			return true
 		}
 		if ctx.Err() != nil {

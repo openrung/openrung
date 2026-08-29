@@ -10,7 +10,7 @@ require (
 
 require (
 	github.com/openrung/openrung/punchcore v0.1.0 // indirect
-	github.com/openrung/openrung/wsscore v0.6.0 // indirect
+	github.com/openrung/openrung/wsscore v0.7.0 // indirect
 )
 
 require (

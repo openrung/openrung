@@ -139,7 +139,7 @@ func TestSocketProtectionRefusalIsLocalNotRelayEvidence(t *testing.T) {
 	fixture := relayWithWSS("relay-a", "JP", "Tokyo", "Japan", "127.0.0.10")
 	s, _ := newLadderService(t, func() []brokerapi.RelayDescriptor { return []brokerapi.RelayDescriptor{fixture} })
 	s.dialRelay = func(context.Context, string, int) (int64, error) {
-		return 0, fmt.Errorf("relay 127.0.0.10:443 is not reachable: %w", errSocketProtectionFailed)
+		return 0, fmt.Errorf("relay 127.0.0.10:443 is not reachable: %w", wsscore.ErrSocketProtectionFailed)
 	}
 	var tickets atomic.Int32
 	s.requestWSSTicket = func(context.Context, string, brokerapi.WSSTicketRequest, string, string) (brokerapi.WSSTicketResponse, error) {
@@ -182,7 +182,7 @@ func TestWSSTicketProtectionRefusalStopsAfterOneAttempt(t *testing.T) {
 	var tickets atomic.Int32
 	s.requestWSSTicket = func(context.Context, string, brokerapi.WSSTicketRequest, string, string) (brokerapi.WSSTicketResponse, error) {
 		tickets.Add(1)
-		return brokerapi.WSSTicketResponse{}, fmt.Errorf("post ticket request: %w", errSocketProtectionFailed)
+		return brokerapi.WSSTicketResponse{}, fmt.Errorf("post ticket request: %w", wsscore.ErrSocketProtectionFailed)
 	}
 	s.dialWSS = func(context.Context, string, string) (wssBridge, error) {
 		t.Error("a refused ticket fetch still dialed a WSS front")
@@ -251,5 +251,72 @@ func TestWSSDialProtectionRefusalStopsLadderWithoutFrontDamage(t *testing.T) {
 	// The direct failure that unlocked the fronts stays legitimately recorded.
 	if attempts := sink.named("relay_attempt_failed"); len(attempts) != 1 {
 		t.Fatalf("relay_attempt_failed = %+v; want exactly the genuine direct failure", attempts)
+	}
+}
+
+// The directory/map listings ride the same protected broker client as the
+// connect path — a listing fetched through an unprotected default would
+// blackhole into a live tunnel exactly like a discovery fetch.
+func TestDirectoryDiscoveryUsesTheProtectedBrokerClient(t *testing.T) {
+	fixtures := []brokerapi.RelayDescriptor{relayAt("a", "JP", "Tokyo", "Japan", "127.0.0.10")}
+	s, _ := newLadderService(t, func() []brokerapi.RelayDescriptor { return fixtures })
+	if got := s.identityForDirectory().HTTPClient; got != nil {
+		t.Fatalf("without a protector the directory must keep brokerapi's default client, got %v", got)
+	}
+	s.SocketProtector = &recordingProtector{}
+	if got := s.identityForDirectory().HTTPClient; got == nil {
+		t.Fatal("directory discovery bypasses the protected broker client")
+	}
+	if s.identityForDirectory().HTTPClient != s.brokerHTTPClient() {
+		t.Fatal("directory discovery does not share the connect path's pooled protected client")
+	}
+}
+
+// A protector that starts refusing mid-session must not read as "network
+// down": the network-alive gate reports alive so the recovery ladder runs and
+// surfaces the terminal LOCAL failure, instead of holding
+// waitForNetworkRecovery — and the user, on CONNECTING — forever.
+func TestNetworkAliveReportsAliveOnProtectionRefusal(t *testing.T) {
+	front, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer front.Close()
+
+	s := New()
+	s.SocketProtector = &recordingProtector{refuse: true}
+	if !s.networkAlive(context.Background(), []string{front.Addr().String()}) {
+		t.Fatal("a protection refusal was read as a network outage — recovery would wait forever")
+	}
+	// The same gate still measures the network when protection works.
+	s.SocketProtector = &recordingProtector{}
+	if !s.networkAlive(context.Background(), []string{front.Addr().String()}) {
+		t.Fatal("a reachable front behind a working protector read as down")
+	}
+}
+
+// The protected clients are cached per protector — pooled connections are
+// reused across calls — and rebuilt when the protector changes, so an adapter
+// that keeps one Engine across a VpnService recreate is not latched to a
+// protector whose service is gone.
+func TestProtectedClientsCachePerProtectorAndRebuildOnChange(t *testing.T) {
+	s := New()
+	first := &recordingProtector{}
+	s.SocketProtector = first
+	brokerA, brokerB := s.brokerHTTPClient(), s.brokerHTTPClient()
+	if brokerA == nil || brokerA != brokerB {
+		t.Fatalf("the protected broker client is not cached: %p vs %p", brokerA, brokerB)
+	}
+	if s.geoHTTPClient() != s.geoHTTPClient() || s.punchCoordinationClient() != s.punchCoordinationClient() {
+		t.Fatal("the geo/punch clients are rebuilt per call")
+	}
+
+	s.SocketProtector = &recordingProtector{}
+	if s.brokerHTTPClient() == brokerA {
+		t.Fatal("a replaced protector kept serving clients built for the old one")
+	}
+	s.SocketProtector = nil
+	if s.brokerHTTPClient() != nil || s.geoHTTPClient() != nil || s.punchCoordinationClient() != nil {
+		t.Fatal("without a protector every client must fall back to the module defaults (nil)")
 	}
 }

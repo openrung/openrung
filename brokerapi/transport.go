@@ -245,11 +245,26 @@ func NewHTTPClientWithDialControl(
 		return NewHTTPClient(timeout)
 	}
 	base := http.DefaultTransport.(*http.Transport).Clone()
-	// Mirror http.DefaultTransport's dialer shape; only Control is added.
+	// The resolver's own query sockets must run the hook too: Control covers
+	// only the final connection socket, while every built-in broker candidate
+	// is a hostname — a DNS query captured into the device-wide tunnel
+	// blackholes exactly when this client is discovering a way out of it.
+	// PreferGo forces the in-process resolver so the query sockets exist to be
+	// hooked (the cgo getaddrinfo path resolves outside the process entirely).
+	queryDialer := &net.Dialer{Timeout: 10 * time.Second, Control: control}
+	// Mirror http.DefaultTransport's dialer shape; Control and the protected
+	// resolver are the only additions.
 	dialer := &net.Dialer{
 		Timeout:   30 * time.Second,
 		KeepAlive: 30 * time.Second,
 		Control:   control,
+		Resolver: &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+				// address is the DNS server, an IP literal — no recursion.
+				return queryDialer.DialContext(ctx, network, address)
+			},
+		},
 	}
 	base.DialContext = dialer.DialContext
 	return &http.Client{

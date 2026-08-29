@@ -3,8 +3,6 @@ package connectcore
 import (
 	"context"
 	"time"
-
-	"github.com/openrung/openrung/connectcore/clienttelemetry"
 )
 
 // This file owns the explicit lifecycle surface (ADR-003 A2): mobile hosts
@@ -119,28 +117,4 @@ func (s *Engine) Shutdown(flushBudget time.Duration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return conn.flushErr
-}
-
-// heartbeatLoop sends session heartbeats on the shared randomized cadence
-// until ctx ends, holding each send while the engine is paused. It replaces
-// clienttelemetry.RunHeartbeatLoop for the engine so Pause can silence the
-// one periodic upload a suspended host would otherwise keep making.
-func (s *Engine) heartbeatLoop(ctx context.Context, mgr *clienttelemetry.Manager) {
-	for {
-		delay := s.heartbeatTick
-		if delay <= 0 {
-			delay = clienttelemetry.NextHeartbeatDelay()
-		}
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return
-		case <-timer.C:
-		}
-		if !s.awaitResumed(ctx) {
-			return
-		}
-		_ = mgr.Heartbeat(ctx)
-	}
 }

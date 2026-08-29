@@ -324,9 +324,9 @@ type Engine struct {
 	// Start or the first Connect, like every other hook.
 	SocketProtector wsscore.SocketProtector
 
-	// protectedBrokerState lazily caches the shared protected broker client
-	// (see brokerHTTPClient).
-	protectedBrokerState
+	// protectedHTTP caches the protector-derived HTTP clients (see
+	// sockets.go), rebuilt when the protector changes.
+	protectedHTTP protectedHTTPClients
 
 	// connectMu serializes the Connect/Disconnect mutation surface. Hosts may
 	// dispatch every call on its own goroutine (the desktop webview bridge
@@ -430,9 +430,9 @@ func (s *Engine) relayDialer() func(context.Context, string, int) (int64, error)
 	if s.dialRelay != nil {
 		return s.dialRelay
 	}
-	control := s.dialControl()
+	dialer := s.protectedNetDialer(RelayTCPTimeout)
 	return func(ctx context.Context, host string, port int) (int64, error) {
-		return relayTCPReachable(ctx, host, port, RelayTCPTimeout, control)
+		return relayTCPReachable(ctx, host, port, dialer)
 	}
 }
 
@@ -1158,7 +1158,7 @@ func (s *Engine) promote(ctx context.Context, conn *connection, res *candidateRe
 			conn.mgr.Record("connection_succeeded", res.relay.ID, attrs, connectMeasurements(res, brokerFetchMS))
 			_ = conn.mgr.Flush(ctx)
 		}
-		conn.heartbeatOnce.Do(func() { go s.heartbeatLoop(ctx, conn.mgr) })
+		conn.heartbeatOnce.Do(func() { go conn.mgr.RunHeartbeatLoopGated(ctx, s.heartbeatTick, s.awaitResumed) })
 	}
 	return true
 }

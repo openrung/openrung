@@ -188,3 +188,38 @@ func TestLifecycleAndClientBoundsRejectUnsafeValues(t *testing.T) {
 		t.Fatal("encrypted client hello was accepted for CloudFront no-SNI mode")
 	}
 }
+
+// The resolver's own query sockets must be protected too: Dialer.Control
+// covers only the final connection socket, so without a protected pure-Go
+// resolver every DNS query for a front hostname would bypass the protector
+// (or leave the process entirely via getaddrinfo) and blackhole into the
+// device-wide tunnel the dial is trying to escape.
+func TestProtectedResolverRoutesQuerySocketsThroughTheProtector(t *testing.T) {
+	if resolver := ProtectedResolver(nil); resolver != nil {
+		t.Fatalf("nil protector should keep the platform resolver, got %+v", resolver)
+	}
+	protector := &recordingProtector{allow: true}
+	resolver := ProtectedResolver(protector)
+	if resolver == nil || !resolver.PreferGo || resolver.Dial == nil {
+		t.Fatalf("protected resolver not fully wired: %+v", resolver)
+	}
+	// A UDP dial to a nameserver address creates the query socket immediately,
+	// with no server needed on the other end.
+	conn, err := resolver.Dial(t.Context(), "udp", "127.0.0.1:53")
+	if err != nil {
+		t.Fatalf("resolver query dial: %v", err)
+	}
+	_ = conn.Close()
+	protector.mu.Lock()
+	defer protector.mu.Unlock()
+	if len(protector.fds) != 1 {
+		t.Fatalf("resolver query socket never reached the protector: %v", protector.fds)
+	}
+
+	if dialer := newNetworkDialer(time.Second, protector, nil); dialer.Resolver == nil || !dialer.Resolver.PreferGo {
+		t.Fatal("the WSS network dialer does not carry the protected resolver")
+	}
+	if dialer := newNetworkDialer(time.Second, nil, nil); dialer.Resolver != nil {
+		t.Fatal("an unprotected dialer must keep the platform resolver")
+	}
+}

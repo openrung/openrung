@@ -6,7 +6,6 @@ import (
 	"net"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -18,23 +17,17 @@ import (
 // A zero timeout uses RelayTCPTimeout, the mobile-matched default; a caller
 // with a different budget passes its own (the CLI keeps its historical 10s).
 func RelayTCPReachable(ctx context.Context, host string, port int, timeout time.Duration) (int64, error) {
-	return relayTCPReachable(ctx, host, port, timeout, nil)
-}
-
-// relayTCPReachable is RelayTCPReachable with the engine's socket-control
-// hook on the dial (see sockets.go); nil control keeps the exported behavior.
-func relayTCPReachable(
-	ctx context.Context,
-	host string,
-	port int,
-	timeout time.Duration,
-	control func(network, address string, conn syscall.RawConn) error,
-) (int64, error) {
 	if timeout <= 0 {
 		timeout = RelayTCPTimeout
 	}
+	return relayTCPReachable(ctx, host, port, &net.Dialer{Timeout: timeout})
+}
+
+// relayTCPReachable is RelayTCPReachable over a caller-owned dialer, so the
+// engine's default can carry the protector's control and resolver (see
+// sockets.go).
+func relayTCPReachable(ctx context.Context, host string, port int, dialer *net.Dialer) (int64, error) {
 	cleanHost := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(host), "["), "]")
-	dialer := net.Dialer{Timeout: timeout, Control: control}
 	started := time.Now()
 	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(cleanHost, strconv.Itoa(port)))
 	if err != nil {

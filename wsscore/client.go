@@ -313,8 +313,18 @@ func normalizeClientOptions(opts ClientOptions) (time.Duration, time.Duration, t
 	return handshakeTimeout, pingInterval, pingWriteTimeout, readLimit, lifecycle, nil
 }
 
-func socketControl(protector SocketProtector) func(context.Context, string, string, syscall.RawConn) error {
-	return func(_ context.Context, _, _ string, raw syscall.RawConn) error {
+// SocketControl adapts a protector into the net.Dialer Control shape, for
+// hosts that must exclude sockets beyond this package's own from a
+// device-wide tunnel (the connectcore engine protects its broker, telemetry,
+// and probe dials with it). An fd the protector cannot represent or refuses
+// fails the dial with ErrSocketProtectionFailed — failing closed is the
+// point: an unprotected socket would not error on its own, it would silently
+// route into the tunnel. A nil protector returns nil.
+func SocketControl(protector SocketProtector) func(network, address string, conn syscall.RawConn) error {
+	if protector == nil {
+		return nil
+	}
+	return func(_, _ string, raw syscall.RawConn) error {
 		var protectErr error
 		controlErr := raw.Control(func(fd uintptr) {
 			const maxInt32 = uintptr(1<<31 - 1)
@@ -329,8 +339,39 @@ func socketControl(protector SocketProtector) func(context.Context, string, stri
 	}
 }
 
+func socketControl(protector SocketProtector) func(context.Context, string, string, syscall.RawConn) error {
+	control := SocketControl(protector)
+	return func(_ context.Context, network, address string, raw syscall.RawConn) error {
+		return control(network, address, raw)
+	}
+}
+
+// ProtectedResolver returns a pure-Go resolver whose own query sockets go
+// through the protector. Dialer.Control alone covers only the final
+// connection socket: the resolver's UDP/TCP DNS queries — and the whole cgo
+// getaddrinfo path, the default where cgo is enabled — would bypass the
+// protector, and a DNS query captured into a live device-wide tunnel
+// blackholes exactly when the tunnel is being established or repaired.
+// PreferGo forces the in-process resolver so every query socket exists to be
+// protected. A nil protector returns nil (the platform default resolver).
+func ProtectedResolver(protector SocketProtector) *net.Resolver {
+	control := SocketControl(protector)
+	if control == nil {
+		return nil
+	}
+	queryDialer := &net.Dialer{Timeout: 10 * time.Second, Control: control}
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			// address is the DNS server (an IP literal from the platform's
+			// resolver configuration) — no recursive resolution happens here.
+			return queryDialer.DialContext(ctx, network, address)
+		},
+	}
+}
+
 func newNetworkDialer(timeout time.Duration, protector SocketProtector, phases *dialPhases) *net.Dialer {
-	dialer := &net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}
+	dialer := &net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second, Resolver: ProtectedResolver(protector)}
 	var protectorControl func(context.Context, string, string, syscall.RawConn) error
 	if protector != nil {
 		protectorControl = socketControl(protector)
