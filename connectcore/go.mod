@@ -4,9 +4,9 @@ go 1.25.0
 
 require (
 	github.com/gorilla/websocket v1.5.3
-	github.com/openrung/openrung/brokerapi v0.5.0
+	github.com/openrung/openrung/brokerapi v0.6.0
 	github.com/openrung/openrung/punchcore v0.1.0
-	github.com/openrung/openrung/wsscore v0.6.0
+	github.com/openrung/openrung/wsscore v0.7.0
 	golang.org/x/sys v0.45.0
 )
 

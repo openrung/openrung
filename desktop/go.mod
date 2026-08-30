@@ -3,7 +3,7 @@ module openrung/desktop
 go 1.25.5
 
 require (
-	github.com/openrung/openrung/brokerapi v0.5.0
+	github.com/openrung/openrung/brokerapi v0.6.0
 	github.com/openrung/openrung/connectcore v0.0.0
 	github.com/wailsapp/wails/v2 v2.12.0
 	openrung v0.0.0
@@ -92,7 +92,7 @@ require (
 	github.com/mitchellh/go-ps v1.0.0 // indirect
 	github.com/openai/openai-go/v3 v3.26.0 // indirect
 	github.com/openrung/openrung/punchcore v0.1.0 // indirect
-	github.com/openrung/openrung/wsscore v0.6.0 // indirect
+	github.com/openrung/openrung/wsscore v0.7.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.26 // indirect
 	github.com/pion/dtls/v3 v3.1.5 // indirect
 	github.com/pion/logging v0.2.4 // indirect

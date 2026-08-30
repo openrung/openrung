@@ -300,18 +300,36 @@ func (m *Manager) Flush(ctx context.Context) error {
 // RunHeartbeatLoop sends heartbeats on the randomized Android cadence until ctx
 // is cancelled. Mirrors OpenRungVpnService.startHeartbeatLoop.
 func (m *Manager) RunHeartbeatLoop(ctx context.Context) {
+	m.RunHeartbeatLoopGated(ctx, 0, nil)
+}
+
+// RunHeartbeatLoopGated is RunHeartbeatLoop with the loop's two host knobs:
+// interval overrides the randomized cadence (zero or negative keeps it), and
+// gate — when non-nil — runs after each interval elapses, before the
+// heartbeat is sent. The connectcore engine passes its pause gate so a
+// suspended host uploads nothing and a heartbeat held by the pause is sent on
+// resume; a false return ends the loop (the gate observed ctx end). One loop
+// serves every caller, so cadence and policy changes cannot fork.
+func (m *Manager) RunHeartbeatLoopGated(ctx context.Context, interval time.Duration, gate func(context.Context) bool) {
 	if m == nil {
 		return
 	}
 	for {
-		timer := time.NewTimer(nextHeartbeatDelay())
+		delay := interval
+		if delay <= 0 {
+			delay = nextHeartbeatDelay()
+		}
+		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
 			return
 		case <-timer.C:
-			_ = m.Heartbeat(ctx)
 		}
+		if gate != nil && !gate(ctx) {
+			return
+		}
+		_ = m.Heartbeat(ctx)
 	}
 }
 

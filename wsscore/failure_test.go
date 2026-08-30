@@ -820,7 +820,7 @@ func TestBogonControlPreservesProtectorSemantics(t *testing.T) {
 
 	t.Run("observes the resolved address without a protector", func(t *testing.T) {
 		phases := &dialPhases{}
-		conn, err := newNetworkDialer(time.Second, nil, phases).DialContext(t.Context(), "tcp", listener.Addr().String())
+		conn, err := newNetworkDialer(time.Second, nil, phases, nil).DialContext(t.Context(), "tcp", listener.Addr().String())
 		if err != nil {
 			t.Fatalf("unprotected dial: %v", err)
 		}
@@ -833,7 +833,7 @@ func TestBogonControlPreservesProtectorSemantics(t *testing.T) {
 	t.Run("keeps the protector veto and its bare sentinel", func(t *testing.T) {
 		phases := &dialPhases{}
 		protector := &recordingProtector{allow: false}
-		conn, err := newNetworkDialer(time.Second, protector, phases).DialContext(t.Context(), "tcp", listener.Addr().String())
+		conn, err := newNetworkDialer(time.Second, protector, phases, nil).DialContext(t.Context(), "tcp", listener.Addr().String())
 		if conn != nil {
 			_ = conn.Close()
 			t.Fatal("socket connected after protection was denied")

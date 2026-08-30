@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -222,6 +223,49 @@ var (
 func NewHTTPClient(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Transport:     defaultTransport,
+		Timeout:       timeout,
+		CheckRedirect: refuseRedirect,
+	}
+}
+
+// NewHTTPClientWithDialControl is NewHTTPClient over a base dialer whose
+// Control is the supplied hook, for hosts whose own sockets must be excluded
+// from a device-wide tunnel (Android's VpnService.protect: the broker request
+// that discovers relays must not be captured into the tunnel it is trying to
+// establish). The ECH and no-SNI dial behavior is identical — the hook runs on
+// the underlying TCP socket before any TLS — and the returned client shares
+// the package's authenticated ECH retry-config state, but owns its own
+// connection pool. A control error fails the dial: an unprotected socket must
+// never fall back to the captured path. A nil control returns NewHTTPClient.
+//
+// resolver, when supplied, carries the dialer's DNS: Control covers only the
+// final connection socket, while every built-in broker candidate is a
+// hostname — a DNS query captured into the device-wide tunnel blackholes
+// exactly when this client is discovering a way out of it, so the caller
+// passes a resolver whose own query sockets run the same hook
+// (wsscore.ProtectedResolver is the one in-repo implementation; this module
+// cannot import its sibling, so the resolver arrives prebuilt). Nil keeps the
+// platform resolver — working, with only the connection socket hooked.
+func NewHTTPClientWithDialControl(
+	timeout time.Duration,
+	control func(network, address string, conn syscall.RawConn) error,
+	resolver *net.Resolver,
+) *http.Client {
+	if control == nil {
+		return NewHTTPClient(timeout)
+	}
+	base := http.DefaultTransport.(*http.Transport).Clone()
+	// Mirror http.DefaultTransport's dialer shape; Control and the hooked
+	// resolver are the only additions.
+	dialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+		Control:   control,
+		Resolver:  resolver,
+	}
+	base.DialContext = dialer.DialContext
+	return &http.Client{
+		Transport:     newTransport(base, defaultECHState, brokerECHTimeout),
 		Timeout:       timeout,
 		CheckRedirect: refuseRedirect,
 	}

@@ -3,6 +3,7 @@ package connectcore
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -25,7 +26,7 @@ func (s *Engine) newManager(brokerURL string) *clienttelemetry.Manager {
 		brokerURL,
 		client.AppVersion(),
 		platform,
-		nil,
+		s.brokerHTTPClient(),
 	)
 	if err != nil {
 		return nil
@@ -69,7 +70,7 @@ func (g *geoLookup) abandon() {
 // The caller must abandon the returned lookup before the tunnel can capture
 // traffic — afterwards a still-running lookup would ride the tunnel and
 // report the relay's geo instead of the client's.
-func attachGeoAttributes(mgr *clienttelemetry.Manager) *geoLookup {
+func attachGeoAttributes(mgr *clienttelemetry.Manager, httpClient *http.Client) *geoLookup {
 	if mgr == nil {
 		return nil
 	}
@@ -78,7 +79,7 @@ func attachGeoAttributes(mgr *clienttelemetry.Manager) *geoLookup {
 	go func() {
 		defer close(g.done)
 		defer cancel()
-		mgr.SetGeoAttributes(lookupGeoAttributes(ctx, nil))
+		mgr.SetGeoAttributes(lookupGeoAttributes(ctx, httpClient))
 	}()
 	return g
 }
@@ -90,25 +91,34 @@ func managerClientID(mgr *clienttelemetry.Manager) string {
 	return mgr.ClientID()
 }
 
-func endSession(mgr *clienttelemetry.Manager, reason string) {
-	if mgr == nil {
+// defaultFlushBudget bounds a terminal telemetry flush when no caller-owned
+// budget was set (see Engine.Shutdown).
+const defaultFlushBudget = 5 * time.Second
+
+// terminalFlush drains the session's outbox once, bounded by the connection's
+// flush budget (Shutdown's, else the default). The budget read and the cancel
+// registration share one lock acquisition, so either Shutdown's budget is
+// stored before the flush starts and bounds it directly, or Shutdown finds
+// flushCancel and shortens the flush already in flight — a Shutdown can never
+// be left waiting out an earlier, longer budget. The outcome lands in
+// conn.flushErr for Shutdown to report.
+func (s *Engine) terminalFlush(conn *connection) {
+	if conn.mgr == nil {
 		return
 	}
-	mgr.EndSession(reason)
-	_ = FlushOnShutdown(mgr)
-}
-
-// FlushOnShutdown flushes remaining telemetry with a fresh bounded context, so
-// it still runs after the connect context has been cancelled. It returns the
-// flush error for callers that surface it (the CLI warns on stderr); the
-// engine drops it, since a shutdown flush has no one left to tell.
-func FlushOnShutdown(mgr *clienttelemetry.Manager) error {
-	if mgr == nil {
-		return nil
+	s.mu.Lock()
+	budget := conn.flushBudget
+	if budget <= 0 {
+		budget = defaultFlushBudget
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	conn.flushCancel = cancel
+	s.mu.Unlock()
 	defer cancel()
-	return mgr.Flush(ctx)
+	err := conn.mgr.Flush(ctx)
+	s.mu.Lock()
+	conn.flushErr = err
+	s.mu.Unlock()
 }
 
 // usableRelays filters the broker response to usable candidates, preserving

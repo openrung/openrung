@@ -20,8 +20,14 @@ func RelayTCPReachable(ctx context.Context, host string, port int, timeout time.
 	if timeout <= 0 {
 		timeout = RelayTCPTimeout
 	}
+	return relayTCPReachable(ctx, host, port, &net.Dialer{Timeout: timeout})
+}
+
+// relayTCPReachable is RelayTCPReachable over a caller-owned dialer, so the
+// engine's default can carry the protector's control and resolver (see
+// sockets.go).
+func relayTCPReachable(ctx context.Context, host string, port int, dialer *net.Dialer) (int64, error) {
 	cleanHost := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(host), "["), "]")
-	dialer := net.Dialer{Timeout: timeout}
 	started := time.Now()
 	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(cleanHost, strconv.Itoa(port)))
 	if err != nil {

@@ -10,7 +10,7 @@ require (
 
 require (
 	github.com/openrung/openrung/punchcore v0.1.0 // indirect
-	github.com/openrung/openrung/wsscore v0.6.0 // indirect
+	github.com/openrung/openrung/wsscore v0.7.0 // indirect
 )
 
 require (
@@ -30,7 +30,7 @@ require (
 	github.com/leaanthony/u v1.1.1 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.23 // indirect
-	github.com/openrung/openrung/brokerapi v0.5.0 // indirect
+	github.com/openrung/openrung/brokerapi v0.6.0 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/quic-go/quic-go v0.60.0 // indirect

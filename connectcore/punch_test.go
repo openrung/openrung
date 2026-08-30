@@ -44,10 +44,10 @@ func TestPunchBaseURL(t *testing.T) {
 }
 
 func TestPunchHTTPClientInsecure(t *testing.T) {
-	if punchHTTPClient(false) != nil {
+	if punchHTTPClient(false, nil) != nil {
 		t.Fatal("secure mode should return nil (default client)")
 	}
-	c := punchHTTPClient(true)
+	c := punchHTTPClient(true, nil)
 	if c == nil {
 		t.Fatal("insecure mode should return a client")
 	}

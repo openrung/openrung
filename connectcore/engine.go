@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/openrung/openrung/brokerapi"
+	"github.com/openrung/openrung/wsscore"
 
 	"github.com/openrung/openrung/connectcore/client"
 	"github.com/openrung/openrung/connectcore/clienttelemetry"
@@ -126,6 +127,21 @@ type connection struct {
 	// heartbeatOnce starts the telemetry heartbeat loop at most once per
 	// session, however many times a recovery re-ladder promotes a new relay.
 	heartbeatOnce sync.Once
+	// netNotify wakes the session's supervisor (or its recovery gate) when
+	// the platform network tracker crosses an epoch boundary; capacity one,
+	// coalesced — the epoch counter carries what the wake cannot.
+	netNotify chan struct{}
+	// handledNetEpoch is the network epoch the supervisor has accounted for.
+	// Touched only by the runConnect goroutine.
+	handledNetEpoch uint64
+	// flushBudget bounds the terminal telemetry flush (see Shutdown); zero
+	// keeps the 5s default. flushCancel is set while that flush runs, so a
+	// Shutdown arriving mid-flush can shorten it to its own budget instead of
+	// waiting out one that captured an earlier (longer) budget. flushErr
+	// stores the flush's outcome. All under the engine's mu.
+	flushBudget time.Duration
+	flushCancel context.CancelFunc
+	flushErr    error
 }
 
 // candidateResult owns one connect-ladder candidate's live resources and the
@@ -168,6 +184,13 @@ type candidateResult struct {
 	// rankProbeMS is the ranker's measured TCP latency, nil when this relay was
 	// not probed or its probe failed.
 	rankProbeMS *int64
+	// netEpoch is the network epoch when this candidate's attempt began —
+	// before any of its sockets existed. promote adopts it as the session's
+	// baseline, so an epoch that lands anywhere between the first dial and
+	// promote still retires (or health-checks) the fresh session instead of
+	// being absorbed: the transport may be bound to the network that just
+	// died.
+	netEpoch uint64
 }
 
 // localCandidateError marks failures independent of the selected relay path:
@@ -298,6 +321,23 @@ type Engine struct {
 	// its in-process libbox runtime here.
 	TunnelRuntime TunnelRuntime
 
+	// SocketProtector keeps the engine's own physical-network sockets out of
+	// the host's device-wide tunnel capture (ADR-003 A2): the Android adapter
+	// implements Protect with VpnService.protect(fd); hosts that own their
+	// sockets by other means (PacketTunnel) and desktop/TUI leave it nil,
+	// which keeps every network construction byte-identical to before the
+	// seam. See sockets.go for exactly which sockets it covers — and which
+	// (through-tunnel probes) it deliberately never touches. Assign before
+	// Start or the first Connect, like every other hook; once the engine is
+	// running, replace it only through SetSocketProtector (a VpnService
+	// recreate), never by writing this field — engine goroutines read the
+	// live protector concurrently.
+	SocketProtector wsscore.SocketProtector
+
+	// protectedHTTP caches the protector-derived HTTP clients (see
+	// sockets.go), rebuilt when the protector changes.
+	protectedHTTP protectedHTTPClients
+
 	// connectMu serializes the Connect/Disconnect mutation surface. Hosts may
 	// dispatch every call on its own goroutine (the desktop webview bridge
 	// does), so without this two overlapping Connects could both pass
@@ -315,6 +355,27 @@ type Engine struct {
 	mode Mode
 
 	directory *directoryCache
+
+	// netMu guards the platform network-signal tracker (see network.go):
+	// the baseline-absorbed last observation and the epoch counter.
+	netMu        sync.Mutex
+	netBaselined bool
+	netLast      NetworkState
+	netEpoch     uint64
+
+	// pauseMu guards resumedCh: nil while running, non-nil while paused
+	// (closed by Resume). See lifecycle.go.
+	pauseMu   sync.Mutex
+	resumedCh chan struct{}
+
+	// protectorMu guards the mid-life protector replacement and the
+	// host-supplied DNS servers (see SetSocketProtector / SetDNSServers) —
+	// engine goroutines read them while adapters update them from platform
+	// callbacks.
+	protectorMu       sync.Mutex
+	protectorReplaced bool
+	protectorOverride wsscore.SocketProtector
+	dnsServers        []string
 
 	// proxyPortMu pins only a successfully resolved endpoint for this process.
 	// A transient resolution failure remains retryable on the next call.
@@ -337,6 +398,7 @@ type Engine struct {
 	waitWSSRetry      func(ctx context.Context, delay time.Duration) error
 	checkNetworkAlive func(ctx context.Context, fronts []string) bool
 	healthTick        time.Duration // 0 means HealthProbeInterval
+	heartbeatTick     time.Duration // 0 means the randomized heartbeat cadence
 	networkRetryDelay time.Duration // 0 means networkRecoveryPollInterval
 	tunnelReadyLimit  time.Duration // 0 means TunnelReadyTimeout
 }
@@ -387,8 +449,9 @@ func (s *Engine) relayDialer() func(context.Context, string, int) (int64, error)
 	if s.dialRelay != nil {
 		return s.dialRelay
 	}
+	dialer := s.protectedNetDialer(RelayTCPTimeout)
 	return func(ctx context.Context, host string, port int) (int64, error) {
-		return RelayTCPReachable(ctx, host, port, RelayTCPTimeout)
+		return relayTCPReachable(ctx, host, port, dialer)
 	}
 }
 
@@ -398,10 +461,11 @@ func (s *Engine) relayFetcher() func(context.Context, string, int, string, strin
 	}
 	return func(ctx context.Context, brokerURL string, limit int, clientID, sessionID string) (discovery.Fetch, error) {
 		return discovery.FirstReachable(ctx, brokerapi.BrokerCandidates(brokerURL), discovery.Options{
-			Limit:     limit,
-			ClientID:  clientID,
-			SessionID: sessionID,
-			Platform:  s.telemetryPlatform(),
+			Limit:      limit,
+			ClientID:   clientID,
+			SessionID:  sessionID,
+			Platform:   s.telemetryPlatform(),
+			HTTPClient: s.brokerHTTPClient(),
 		})
 	}
 }
@@ -453,13 +517,13 @@ func (s *Engine) Start() {
 	}
 }
 
-// Stop tears down any live tunnel so the OS proxy is restored on quit. Held
-// under connectMu like Connect/Disconnect so a connect racing app-quit can't
-// slip a new connection in behind the teardown.
+// Stop tears down any live tunnel so the OS proxy is restored on quit. It is
+// Shutdown with the engine's default flush budget, its outcome dropped — a
+// desktop quit has no one left to tell. Held under connectMu like
+// Connect/Disconnect so a connect racing app-quit can't slip a new connection
+// in behind the teardown.
 func (s *Engine) Stop() {
-	s.connectMu.Lock()
-	s.teardownExisting()
-	s.connectMu.Unlock()
+	_ = s.Shutdown(0)
 }
 
 // Prepare mirrors the mobile bridge's OS-consent step: proxy mode needs no OS
@@ -491,7 +555,7 @@ func (s *Engine) ConnectTarget(brokerURL string, target RelayTarget) error {
 	s.teardownExisting()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	conn := &connection{cancel: cancel, done: make(chan struct{})}
+	conn := &connection{cancel: cancel, done: make(chan struct{}), netNotify: make(chan struct{}, 1)}
 	s.mu.Lock()
 	s.conn = conn
 	s.mu.Unlock()
@@ -672,7 +736,7 @@ func (s *Engine) connectFlow(ctx context.Context, conn *connection, brokerURL st
 		mgr.Record("connection_attempted", "", nil, nil)
 		// Concurrent with the broker fetch and ranking; abandoned (never
 		// waited for) at the ladder and finalize boundaries below.
-		conn.geo = attachGeoAttributes(mgr)
+		conn.geo = attachGeoAttributes(mgr, s.geoHTTPClient())
 	}
 
 	// TUN mode binds no local port, so it neither resolves nor reserves the
@@ -899,10 +963,14 @@ func (s *Engine) attemptCandidate(ctx context.Context, conn *connection, cand br
 // attemptDirectCandidate is the existing direct/punched rung split from its
 // path-independent sing-box lifecycle so WSS can reuse that lifecycle safely.
 func (s *Engine) attemptDirectCandidate(ctx context.Context, conn *connection, cand brokerapi.RelayDescriptor, port, attempt int) (*candidateResult, error) {
+	// Captured before the first dial: every socket this candidate will hold
+	// belongs to epochs at or after this point (see candidateResult.netEpoch).
+	attemptEpoch := s.networkEpoch()
 	s.appendLog(fmt.Sprintf("trying relay %s at %s:%d", cand.ID, cand.PublicHost, cand.PublicPort))
 	s.appendLog("checking relay TCP reachability")
 	tcpMS, err := s.relayDialer()(ctx, cand.PublicHost, cand.PublicPort)
 	if err != nil {
+		// A socket-protection refusal is classified local inside the marker.
 		return nil, markDirectPathError("tcp", err)
 	}
 
@@ -911,6 +979,7 @@ func (s *Engine) attemptDirectCandidate(ctx context.Context, conn *connection, c
 		relay: cand, accessTransport: brokerapi.TransportDirect,
 		ctx: candCtx, cancel: cancel, proxyPort: port,
 		tcpMS: tcpMS, hasTCPMS: true, attempt: int64(attempt), brokerIndex: -1,
+		netEpoch: attemptEpoch,
 	}
 
 	// Try a direct NAT-punched path first; on any failure fall back to the
@@ -1088,6 +1157,13 @@ func (s *Engine) promote(ctx context.Context, conn *connection, res *candidateRe
 	}
 	conn.active = res
 	conn.activeRelayID = res.relay.ID
+	// The session's epoch baseline is the CANDIDATE's, captured before its
+	// attempt dialed anything: an epoch that predates the attempt never
+	// retires it (the mobile monitors' fresh per-session baseline), while one
+	// that landed between the transport's dial and this promote is still
+	// pending and retires or health-checks the fresh session — its sockets
+	// may be bound to the network that just died.
+	conn.handledNetEpoch = res.netEpoch
 	s.markConnectedLocked(label, recent)
 	s.mu.Unlock()
 
@@ -1102,7 +1178,7 @@ func (s *Engine) promote(ctx context.Context, conn *connection, res *candidateRe
 			conn.mgr.Record("connection_succeeded", res.relay.ID, attrs, connectMeasurements(res, brokerFetchMS))
 			_ = conn.mgr.Flush(ctx)
 		}
-		conn.heartbeatOnce.Do(func() { go conn.mgr.RunHeartbeatLoop(ctx) })
+		conn.heartbeatOnce.Do(func() { go conn.mgr.RunHeartbeatLoopGated(ctx, s.heartbeatTick, s.awaitResumed) })
 	}
 	return true
 }
@@ -1257,7 +1333,8 @@ func (s *Engine) finalizeConn(conn *connection, stage string, err error) {
 		s.mu.Lock()
 		s.emitStatusLocked(StatusDisconnected, clearLabel, clearError)
 		s.mu.Unlock()
-		endSession(conn.mgr, "disconnect")
+		conn.mgr.EndSession("disconnect")
+		s.terminalFlush(conn)
 	default:
 		msg := err.Error()
 		s.appendLog("connect failed: " + msg)
@@ -1274,7 +1351,7 @@ func (s *Engine) finalizeConn(conn *connection, stage string, err error) {
 			}
 			conn.mgr.Record("connection_failed", "", attrs, nil)
 			conn.mgr.EndSession("connection_failed")
-			_ = FlushOnShutdown(conn.mgr)
+			s.terminalFlush(conn)
 		}
 	}
 	s.clearConn(conn)

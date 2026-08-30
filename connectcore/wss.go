@@ -21,7 +21,11 @@ import (
 const (
 	accessTransportWSS = "wss"
 	// wssSessionEndedStage marks an orderly session end rather than a failure.
-	wssSessionEndedStage  = "wss_session_ended"
+	wssSessionEndedStage = "wss_session_ended"
+	// wssNetworkEpochStage marks a WSS session retired by a physical-network
+	// epoch boundary (see network.go): orderly like a session end — neither
+	// the relay nor the front failed — but distinguishable in telemetry.
+	wssNetworkEpochStage  = "wss_network_epoch"
 	wssTicketAttemptLimit = 5 * time.Second
 	wssTicketDefaultRetry = 10 * time.Second
 	wssTicketMaxRetry     = 30 * time.Second
@@ -49,6 +53,13 @@ func markDirectPathError(stage string, err error) error {
 	if err == nil {
 		err = errors.New("direct relay path failed")
 	}
+	if isSocketProtectionFailure(err) {
+		// The chokepoint for refusal classification: a socket the host would
+		// not protect is a local platform failure wherever it surfaces —
+		// marking it here means no dial path, present or future, can record
+		// a VpnService refusal as relay evidence or unlock WSS fallback.
+		return markLocalCandidateError("socket_protection", err)
+	}
 	return &directPathError{stage: stage, err: err}
 }
 
@@ -74,6 +85,11 @@ func (e *wssTransportError) Unwrap() error { return e.err }
 func markWSSTransportError(stage, frontID string, err error) error {
 	if err == nil {
 		err = errors.New("WSS access transport failed")
+	}
+	if isSocketProtectionFailure(err) {
+		// Same chokepoint as markDirectPathError: a refusal is never front
+		// evidence, whichever ticket/handshake/session path surfaced it.
+		return markLocalCandidateError("socket_protection", err)
 	}
 	return &wssTransportError{stage: stage, frontID: frontID, err: err}
 }
@@ -138,8 +154,9 @@ func (s *Engine) wssTicketRequester() func(context.Context, string, brokerapi.WS
 	}
 	return func(ctx context.Context, brokerURL string, request brokerapi.WSSTicketRequest, clientID, sessionID string) (brokerapi.WSSTicketResponse, error) {
 		brokerClient := client.BrokerClient{
-			BaseURL:  brokerURL,
-			Platform: s.telemetryPlatform(),
+			BaseURL:    brokerURL,
+			HTTPClient: s.brokerHTTPClient(),
+			Platform:   s.telemetryPlatform(),
 		}
 		return brokerClient.RequestWSSSessionTicket(ctx, request, clientID, sessionID)
 	}
@@ -152,6 +169,8 @@ func (s *Engine) wssDialer() func(context.Context, string, string) (wssBridge, e
 	return func(ctx context.Context, rawURL, ticket string) (wssBridge, error) {
 		return wsscore.DialClient(ctx, wsscore.ClientOptions{
 			URL: rawURL, Ticket: ticket, NativeFrontNoSNI: true,
+			SocketProtector: s.currentProtector(),
+			DNSServers:      s.currentDNSServers(),
 		})
 	}
 }
@@ -202,6 +221,13 @@ func (s *Engine) requestWSSSessionTicket(
 			cancel()
 			if err == nil {
 				return ticket, nil
+			}
+			if isSocketProtectionFailure(err) {
+				// The host refused to protect the ticket request's socket: a
+				// local platform failure every remaining front and the retry
+				// round would reproduce — stop here and let the caller
+				// classify it local.
+				return brokerapi.WSSTicketResponse{}, err
 			}
 			if firstErr == nil {
 				firstErr = err
@@ -272,6 +298,9 @@ func (s *Engine) attemptWSSCandidate(
 	proxyPort int,
 	attempt int,
 ) (*candidateResult, error) {
+	// Captured before the ticket request and the bridge dial: the WSS outer
+	// socket belongs to epochs at or after this point (candidateResult.netEpoch).
+	attemptEpoch := s.networkEpoch()
 	candidateCtx, cancel := context.WithCancel(ctx)
 	ticket, err := s.requestWSSSessionTicket(candidateCtx, conn, brokerapi.WSSTicketRequest{
 		RelayID: candidate.ID,
@@ -279,6 +308,7 @@ func (s *Engine) attemptWSSCandidate(
 	})
 	if err != nil {
 		cancel()
+		// A socket-protection refusal is classified local inside the marker.
 		return nil, markWSSTransportError("ticket", front.ID, fmt.Errorf("request WSS ticket: %w", err))
 	}
 	if ticket.URL != front.URL {
@@ -294,6 +324,7 @@ func (s *Engine) attemptWSSCandidate(
 	bridge, err := s.wssDialer()(candidateCtx, front.URL, ticket.Ticket)
 	if err != nil {
 		cancel()
+		// A socket-protection refusal is classified local inside the marker.
 		return nil, markWSSTransportError("wss_handshake", front.ID, fmt.Errorf("connect WSS front: %w", err))
 	}
 	host, port := bridge.Endpoint()
@@ -312,6 +343,7 @@ func (s *Engine) attemptWSSCandidate(
 		transportErr: make(chan error, 1),
 		proxyPort:    proxyPort, transportMS: time.Since(started).Milliseconds(),
 		attempt: int64(attempt), brokerIndex: -1,
+		netEpoch: attemptEpoch,
 	}
 	go serveWSS(result, serveCtx, bridge)
 	s.appendLog(fmt.Sprintf("connected through WSS front %s", front.ID))
@@ -352,7 +384,7 @@ func serveWSS(result *candidateResult, ctx context.Context, bridge wssBridge) {
 // without the peer saying so is evidence that the path was lost.
 func gracefulWSSSessionEnd(err error) bool {
 	stage, ok := wssTransportStage(err)
-	return ok && stage == wssSessionEndedStage
+	return ok && (stage == wssSessionEndedStage || stage == wssNetworkEpochStage)
 }
 
 func (s *Engine) recordTransportFallback(mgr *clienttelemetry.Manager, relayID string, directErr error) {
@@ -373,8 +405,13 @@ func (s *Engine) recordWSSTransportEnded(mgr *clienttelemetry.Manager, relayID s
 		return
 	}
 	attrs := map[string]string{"transport": accessTransportWSS}
-	if _, frontID, ok := wssTransportMetadata(err); ok && frontID != "" {
-		attrs["front_id"] = frontID
+	if stage, frontID, ok := wssTransportMetadata(err); ok {
+		if frontID != "" {
+			attrs["front_id"] = frontID
+		}
+		if stage == wssNetworkEpochStage {
+			attrs["trigger"] = "network_epoch"
+		}
 	}
 	mgr.Record("transport_session_ended", relayID, attrs, nil)
 }

@@ -11,10 +11,10 @@ require (
 	github.com/hashicorp/yamux v0.1.2
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/muesli/termenv v0.16.0
-	github.com/openrung/openrung/brokerapi v0.5.0
+	github.com/openrung/openrung/brokerapi v0.6.0
 	github.com/openrung/openrung/connectcore v0.0.0
 	github.com/openrung/openrung/punchcore v0.1.0
-	github.com/openrung/openrung/wsscore v0.6.0
+	github.com/openrung/openrung/wsscore v0.7.0
 	github.com/quic-go/quic-go v0.60.0
 	github.com/sagernet/sing v0.9.0-beta.2
 	github.com/sagernet/sing-box v1.14.0-beta.17

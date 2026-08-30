@@ -183,7 +183,7 @@ func TestHealthLoopEmitsProbeNotices(t *testing.T) {
 	s.checkNetworkAlive = func(context.Context, []string) bool { return true }
 
 	failCh := make(chan error, 1)
-	go s.healthLoop(context.Background(), 1080, nil, failCh)
+	go s.healthLoop(context.Background(), 1080, nil, failCh, nil)
 	select {
 	case <-failCh:
 	case <-time.After(5 * time.Second):
@@ -221,7 +221,7 @@ func TestHealthLoopCapsNotifiedFailuresAtThreshold(t *testing.T) {
 	}
 
 	failCh := make(chan error, 1)
-	go s.healthLoop(context.Background(), 1080, nil, failCh)
+	go s.healthLoop(context.Background(), 1080, nil, failCh, nil)
 	select {
 	case <-failCh:
 	case <-time.After(5 * time.Second):

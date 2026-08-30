@@ -10,6 +10,7 @@ import (
 	"net/http/httptrace"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -18,6 +19,21 @@ import (
 )
 
 var ErrSocketProtectionFailed = errors.New("WSS socket protection failed")
+
+// IsSocketProtectionFailed reports whether err is the protector's refusal.
+// errors.Is alone is not enough: a refusal that fires on a protected
+// resolver's own query socket is stringified into *net.DNSError.Err by the
+// net package (DNSError carries its cause as text, severing the wrap chain
+// that IP-literal dials preserve), so every hostname dial would otherwise
+// lose the sentinel. Callers classifying protection refusals must use this,
+// never a bare errors.Is.
+func IsSocketProtectionFailed(err error) bool {
+	if errors.Is(err, ErrSocketProtectionFailed) {
+		return true
+	}
+	var dnsErr *net.DNSError
+	return errors.As(err, &dnsErr) && strings.Contains(dnsErr.Err, ErrSocketProtectionFailed.Error())
+}
 
 // SocketProtector is deliberately gomobile-friendly. An Android adapter
 // should implement Protect by calling VpnService.protect(fd), returning its
@@ -53,6 +69,11 @@ type ClientOptions struct {
 	LoopbackHost     string
 	Lifecycle        LifecycleOptions
 	SocketProtector  SocketProtector
+
+	// DNSServers are the host-supplied nameservers for the protected
+	// resolver (see ProtectedResolver); ignored without a SocketProtector.
+	// Empty keeps the platform resolver.
+	DNSServers []string
 }
 
 // Client owns the WSS connection, yamux session, and loopback listener that a
@@ -138,7 +159,7 @@ func DialClient(ctx context.Context, opts ClientOptions) (*Client, error) {
 	dialer.TLSClientConfig = tlsConfig
 	phases := &dialPhases{}
 	if dialer.NetDialContext == nil {
-		networkDialer := newNetworkDialer(handshakeTimeout, opts.SocketProtector, phases)
+		networkDialer := newNetworkDialer(handshakeTimeout, opts.SocketProtector, phases, opts.DNSServers)
 		dialer.NetDialContext = networkDialer.DialContext
 	}
 	// Mark TCP completion on whichever network dial is in use (module default
@@ -185,7 +206,9 @@ func DialClient(ctx context.Context, opts ClientOptions) (*Client, error) {
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
 		}
-		if errors.Is(err, ErrSocketProtectionFailed) {
+		if IsSocketProtectionFailed(err) {
+			// Across the protected resolver's DNSError boundary too — a
+			// refusal on the DNS query socket is the same local failure.
 			return nil, ErrSocketProtectionFailed
 		}
 		return nil, newDialError(reason)
@@ -313,8 +336,18 @@ func normalizeClientOptions(opts ClientOptions) (time.Duration, time.Duration, t
 	return handshakeTimeout, pingInterval, pingWriteTimeout, readLimit, lifecycle, nil
 }
 
-func socketControl(protector SocketProtector) func(context.Context, string, string, syscall.RawConn) error {
-	return func(_ context.Context, _, _ string, raw syscall.RawConn) error {
+// SocketControl adapts a protector into the net.Dialer Control shape, for
+// hosts that must exclude sockets beyond this package's own from a
+// device-wide tunnel (the connectcore engine protects its broker, telemetry,
+// and probe dials with it). An fd the protector cannot represent or refuses
+// fails the dial with ErrSocketProtectionFailed — failing closed is the
+// point: an unprotected socket would not error on its own, it would silently
+// route into the tunnel. A nil protector returns nil.
+func SocketControl(protector SocketProtector) func(network, address string, conn syscall.RawConn) error {
+	if protector == nil {
+		return nil
+	}
+	return func(_, _ string, raw syscall.RawConn) error {
 		var protectErr error
 		controlErr := raw.Control(func(fd uintptr) {
 			const maxInt32 = uintptr(1<<31 - 1)
@@ -329,11 +362,60 @@ func socketControl(protector SocketProtector) func(context.Context, string, stri
 	}
 }
 
-func newNetworkDialer(timeout time.Duration, protector SocketProtector, phases *dialPhases) *net.Dialer {
-	dialer := &net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}
+// ProtectedResolver returns a pure-Go resolver whose own query sockets go
+// through the protector, querying the given nameservers (bare IPs default to
+// port 53). Dialer.Control alone covers only the final connection socket: the
+// resolver's UDP/TCP DNS queries — and the whole cgo getaddrinfo path, the
+// default where cgo is enabled — would bypass the protector, and a DNS query
+// captured into a live device-wide tunnel blackholes exactly when the tunnel
+// is being established or repaired.
+//
+// The nameservers come from the host (Android: the physical network's
+// LinkProperties), because PreferGo needs a query target and Android has no
+// /etc/resolv.conf for the pure-Go resolver to read — forcing PreferGo
+// without one would break every hostname dial on exactly the platform that
+// protects sockets. A nil protector or an empty nameserver list therefore
+// returns nil: the platform default resolver, working but with only the final
+// connection socket protected.
+func ProtectedResolver(protector SocketProtector, nameservers []string) *net.Resolver {
+	control := SocketControl(protector)
+	if control == nil || len(nameservers) == 0 {
+		return nil
+	}
+	servers := make([]string, 0, len(nameservers))
+	for _, server := range nameservers {
+		server = strings.TrimSpace(server)
+		if server == "" {
+			continue
+		}
+		if _, _, err := net.SplitHostPort(server); err != nil {
+			server = net.JoinHostPort(strings.Trim(server, "[]"), "53")
+		}
+		servers = append(servers, server)
+	}
+	if len(servers) == 0 {
+		return nil
+	}
+	queryDialer := &net.Dialer{Timeout: 10 * time.Second, Control: control}
+	var next atomic.Uint64
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			// The address the resolver derived from its own configuration is
+			// ignored: the host-supplied nameservers are the query targets.
+			server := servers[next.Add(1)%uint64(len(servers))]
+			return queryDialer.DialContext(ctx, network, server)
+		},
+	}
+}
+
+func newNetworkDialer(timeout time.Duration, protector SocketProtector, phases *dialPhases, nameservers []string) *net.Dialer {
+	dialer := &net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second, Resolver: ProtectedResolver(protector, nameservers)}
 	var protectorControl func(context.Context, string, string, syscall.RawConn) error
-	if protector != nil {
-		protectorControl = socketControl(protector)
+	if control := SocketControl(protector); control != nil {
+		protectorControl = func(_ context.Context, network, address string, raw syscall.RawConn) error {
+			return control(network, address, raw)
+		}
 	}
 	// The bogon observation always runs; protection semantics are delegated
 	// unchanged (bogonAwareControl never vetoes or alters the dial).
