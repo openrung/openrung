@@ -305,3 +305,74 @@ func TestManagerHeartbeatMigratesTheFallbackBeforeUsingTheStore(t *testing.T) {
 		t.Fatalf("the migrated stream did not drain: %d pending", got)
 	}
 }
+
+// When the migration CANNOT complete — another process still owns the store —
+// the heartbeat must take the in-memory piggyback path: the stranded events
+// ride ahead of the heartbeat in the same request, preserving order without
+// delaying the cadence (the store path would send the heartbeat alone and
+// leave the older events to a later flush).
+func TestManagerHeartbeatUsesTheMemoryPiggybackWhileTheStoreIsHeld(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("AppData", tmp)
+
+	// The memory path posts through the manager's own poster.
+	var mu sync.Mutex
+	var order []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Events []Event `json:"events"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		for _, event := range body.Events {
+			order = append(order, event.Event)
+		}
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	directory := t.TempDir()
+	broker := &outboxTestBroker{}
+	owner, err := NewOutbox(directory, testOutboxFileName, broker.send)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(owner.Close)
+	_ = owner.PendingCount() // holds the flock for the whole test
+
+	contended, err := NewOutbox(directory, testOutboxFileName, broker.send)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(contended.Close)
+	mgr, err := New(server.URL, "1.0.0", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr.UsePersistentOutbox(contended)
+	if _, err := mgr.BeginSession(); err != nil {
+		t.Fatal(err)
+	}
+	mgr.MarkConnected("relay-9")
+
+	mgr.Record("stranded", "", nil, nil) // store locked out: memory fallback
+	if err := mgr.Heartbeat(context.Background()); err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+
+	mu.Lock()
+	got := append([]string(nil), order...)
+	mu.Unlock()
+	if len(got) != 2 || got[0] != "stranded" || got[1] != "session_heartbeat" {
+		t.Fatalf("wire order = %v; want the stranded event riding ahead of the heartbeat", got)
+	}
+	mgr.mu.Lock()
+	left := len(mgr.outbox)
+	mgr.mu.Unlock()
+	if left != 0 {
+		t.Fatalf("the memory piggyback did not commit: %d events left", left)
+	}
+}
