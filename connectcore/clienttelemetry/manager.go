@@ -251,10 +251,14 @@ func (m *Manager) Record(event, relayID string, attrs map[string]string, meas ma
 		Attributes:    merged,
 		Measurements:  meas,
 	}
-	if m.store != nil && m.store.Enqueue(built) {
-		// The store has its own lock and lands the event on disk; holding
-		// m.mu across it is fine (the store never calls back), and keeps
-		// Record atomic with the session snapshot above.
+	// The store has its own lock and lands events on disk; holding m.mu
+	// across it is fine (the store never calls back), and keeps Record atomic
+	// with the session snapshot above. Any in-memory fallback events migrate
+	// FIRST: newer events must not resume landing in the store while older
+	// ones would drain behind them (Flush is store-then-memory), so either
+	// the whole stream is in the store, in order, or this event joins the
+	// fallback behind its elders.
+	if m.store != nil && m.migrateFallbackLocked() && m.store.Enqueue(built) {
 		return
 	}
 	// No store, or the store is unavailable this operation (locked out,
@@ -262,6 +266,23 @@ func (m *Manager) Record(event, relayID string, attrs map[string]string, meas ma
 	// without a durable directory has always had — a broken outbox must
 	// degrade telemetry's durability, never silence it. Flush drains both.
 	m.enqueueLocked(built)
+}
+
+// migrateFallbackLocked moves the in-memory fallback into the store, oldest
+// first, reporting whether the fallback is now empty (an unavailable store
+// stops the migration; the remainder keeps its order and later events queue
+// behind it). Caller holds m.mu.
+func (m *Manager) migrateFallbackLocked() bool {
+	for len(m.outbox) > 0 {
+		head := m.outbox[0]
+		if _, valid := validateOutboxEvent(head); valid && !m.store.Enqueue(head) {
+			return false
+		}
+		// Migrated — or invalid, which no queue can ever send: drop it rather
+		// than wedge the migration.
+		m.outbox = m.outbox[1:]
+	}
+	return true
 }
 
 // EndSession emits connection_ended with session/connection durations and clears

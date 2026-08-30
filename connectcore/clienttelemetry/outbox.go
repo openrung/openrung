@@ -55,6 +55,13 @@ const (
 	// application and upload request (ApplicationConnectionAggregator's
 	// MAX_REPORTED_FLOWS).
 	maxReportedFlows = int64(100_000)
+
+	// outboxBatchByteBudget bounds one request's SERIALIZED size: the
+	// broker's body cap minus envelope slack. Counting events alone is not
+	// enough — 200 individually valid events can exceed the body cap, the
+	// client then rejects the request locally, and a retained batch would be
+	// re-selected forever, wedging the queue behind it.
+	outboxBatchByteBudget = brokerapi.MaxTelemetryBodyBytes - 1024
 )
 
 var (
@@ -244,10 +251,14 @@ func (o *Outbox) FlushNextBatch(ctx context.Context, brokerURL string) (sent, pe
 		o.mu.Unlock()
 		return 0, 0, ErrOutboxUnavailable
 	}
-	batch := outboxUploadBatch(o.events, outboxBatchSize)
+	batch, oversized := outboxUploadBatch(o.events, outboxBatchSize, outboxBatchByteBudget)
 	pending = len(o.events)
 	o.mu.Unlock()
 
+	if len(oversized) > 0 {
+		// Unsendable however batched: discard, or they wedge the queue.
+		pending = o.removeSent(oversized)
+	}
 	if len(batch) == 0 {
 		return 0, pending, nil
 	}
@@ -285,15 +296,22 @@ func (o *Outbox) SendHeartbeat(ctx context.Context, brokerURL string, heartbeat 
 	// A failed load must not block the cadence: the heartbeat goes alone and
 	// the queue is retried by the next operation.
 	_ = o.loadLocked()
-	var piggybacked []Event
+	var piggybacked, oversized []Event
 	if len(o.events) > 0 &&
 		o.events[0].ClientID == heartbeat.ClientID &&
 		o.events[0].SessionID == heartbeat.SessionID {
-		piggybacked = outboxUploadBatch(o.events, outboxBatchSize-1)
+		budget := outboxBatchByteBudget
+		if line, err := json.Marshal(heartbeat); err == nil {
+			budget -= len(line) + 1 // the heartbeat rides in the same request
+		}
+		piggybacked, oversized = outboxUploadBatch(o.events, outboxBatchSize-1, budget)
 	}
 	pending = len(o.events)
 	o.mu.Unlock()
 
+	if len(oversized) > 0 {
+		pending = o.removeSent(oversized)
+	}
 	if err := o.post(ctx, brokerURL, append(piggybacked[:len(piggybacked):len(piggybacked)], heartbeat)); err != nil {
 		return 0, pending, err
 	}
@@ -618,19 +636,23 @@ func sanitizeOutboxEvent(event Event) Event {
 
 // outboxUploadBatch selects one upload request from the first event's
 // client/session identity prefix while honoring the broker's represented-flow
-// budget per application. The identity boundary is strict: brokerapi rejects
-// mixed pairs, and later sessions cannot leapfrog the head session. Within
-// that prefix, events that exceed an application's remaining budget are
-// deferred along with later events for that application; unrelated events may
-// still fill the request.
-func outboxUploadBatch(events []Event, limit int) []Event {
+// budget per application AND its serialized body cap. The identity boundary
+// is strict: brokerapi rejects mixed pairs, and later sessions cannot
+// leapfrog the head session. Within that prefix, events that exceed an
+// application's remaining budget are deferred along with later events for
+// that application; unrelated events may still fill the request. Once the
+// batch would exceed byteBudget, it stops — the rest waits for the next
+// request. An event that alone cannot fit any request (or cannot marshal) is
+// UNSENDABLE and returned in oversized for the caller to discard: retained,
+// it would head every future selection and wedge the queue behind it.
+func outboxUploadBatch(events []Event, limit, byteBudget int) (batch, oversized []Event) {
 	if limit <= 0 || len(events) == 0 {
-		return nil
+		return nil, nil
 	}
 	first := events[0]
 	representedByApplication := make(map[string]int64)
 	deferredApplications := make(map[string]struct{})
-	var batch []Event
+	totalBytes := 0
 	for _, event := range events {
 		if event.ClientID != first.ClientID || event.SessionID != first.SessionID {
 			break
@@ -638,7 +660,17 @@ func outboxUploadBatch(events []Event, limit int) []Event {
 		if len(batch) >= limit {
 			break
 		}
+		line, err := json.Marshal(event)
+		size := len(line) + 1 // the array separator's share
+		if err != nil || size > byteBudget {
+			oversized = append(oversized, event)
+			continue
+		}
+		if totalBytes+size > byteBudget {
+			break
+		}
 		if event.Event != applicationConnectionEvent {
+			totalBytes += size
 			batch = append(batch, cloneOutboxEvent(event))
 			continue
 		}
@@ -653,9 +685,10 @@ func outboxUploadBatch(events []Event, limit int) []Event {
 			continue
 		}
 		representedByApplication[application] = used + count
+		totalBytes += size
 		batch = append(batch, cloneOutboxEvent(event))
 	}
-	return batch
+	return batch, oversized
 }
 
 // cloneOutboxEvent gives a batch entry its own attribute and measurement

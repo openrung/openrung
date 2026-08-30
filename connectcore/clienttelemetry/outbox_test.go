@@ -500,7 +500,7 @@ func TestOutboxUploadBatchCopiesAttributeMaps(t *testing.T) {
 		Attributes:   map[string]string{"failure_reason": "timeout"},
 		Measurements: map[string]int64{"attempt": 1},
 	}}
-	batch := outboxUploadBatch(events, 10)
+	batch, _ := outboxUploadBatch(events, 10, outboxBatchByteBudget)
 	if len(batch) != 1 {
 		t.Fatalf("batch holds %d events, want 1", len(batch))
 	}
@@ -752,7 +752,7 @@ func TestOutboxRemoveSentRefusesAfterClose(t *testing.T) {
 		t.Fatal("enqueue rejected a valid event")
 	}
 	outbox.mu.Lock()
-	batch := outboxUploadBatch(outbox.events, outboxBatchSize)
+	batch, _ := outboxUploadBatch(outbox.events, outboxBatchSize, outboxBatchByteBudget)
 	outbox.mu.Unlock()
 	path := filepath.Join(directory, testOutboxFileName)
 	before, err := os.ReadFile(path)
@@ -873,5 +873,67 @@ func TestOutboxDiscardsAPermanentlyRejectedHeadBatch(t *testing.T) {
 	drainOutbox(t, outbox, testOutboxBrokerURL)
 	if got := broker.receivedEventIDs(); len(got) != 1 || got[0] != "healthy" {
 		t.Fatalf("the queue behind the poison batch never drained: %v", got)
+	}
+}
+
+// Batch selection bounds the SERIALIZED request size, not just the event
+// count: 200 individually valid events can exceed the broker's body cap, and
+// a locally-rejected batch would be re-selected forever. Oversized single
+// events — unsendable however batched — are discarded rather than retained as
+// a permanent wedge.
+func TestOutboxBatchSelectionHonorsTheBodyByteBudget(t *testing.T) {
+	directory := t.TempDir()
+	var maxBody int
+	broker := &outboxTestBroker{}
+	outbox, err := NewOutbox(directory, testOutboxFileName, func(ctx context.Context, brokerURL string, events []Event) error {
+		body, err := json.Marshal(struct {
+			Events []Event `json:"events"`
+		}{Events: events})
+		if err != nil {
+			return err
+		}
+		if len(body) > maxBody {
+			maxBody = len(body)
+		}
+		return broker.send(ctx, brokerURL, events)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(outbox.Close)
+
+	// 200 events of ~4KB each: individually fine, together ~800KB — over the
+	// 512KB body cap if selected by count alone.
+	fat := strings.Repeat("x", 4096)
+	for i := 0; i < outboxBatchSize; i++ {
+		event := testOutboxEvent(fmt.Sprintf("fat-%03d", i), "connection_failed", "c", "s")
+		event.Attributes = map[string]string{"detail": fat}
+		outbox.Enqueue(event)
+	}
+	// One event that can never fit any request: it must be dropped, not
+	// retained at the head of every future selection.
+	whale := testOutboxEvent("whale", "connection_failed", "c", "s")
+	whale.Attributes = map[string]string{"detail": strings.Repeat("y", outboxBatchByteBudget)}
+	outbox.Enqueue(whale)
+
+	drainOutbox(t, outbox, testOutboxBrokerURL)
+	if maxBody > outboxBatchByteBudget+64 {
+		t.Fatalf("a request serialized to %d bytes; the byte budget did not bound it", maxBody)
+	}
+	batches := broker.received()
+	if len(batches) < 2 {
+		t.Fatalf("an over-cap queue should split into multiple requests, got %d", len(batches))
+	}
+	got := broker.receivedEventIDs()
+	if len(got) != outboxBatchSize {
+		t.Fatalf("delivered %d events, want all %d sendable ones", len(got), outboxBatchSize)
+	}
+	for _, id := range got {
+		if id == "whale" {
+			t.Fatal("an unsendable event reached the wire")
+		}
+	}
+	if pendingAfter := outbox.PendingCount(); pendingAfter != 0 {
+		t.Fatalf("the unsendable event wedged the queue: %d pending", pendingAfter)
 	}
 }

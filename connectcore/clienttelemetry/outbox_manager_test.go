@@ -198,3 +198,55 @@ func TestManagerFallsBackToMemoryWhenTheOutboxIsUnavailable(t *testing.T) {
 		t.Fatalf("delivered %d events, want both the pre-attach and the fallback event", delivered)
 	}
 }
+
+// Order across an outage: events that fell back to memory while the store was
+// unavailable must reach the broker BEFORE events recorded after recovery —
+// the fallback migrates into the store when persistence resumes, so the
+// stream stays in order through the store-then-memory flush.
+func TestManagerFallbackPreservesEventOrderAcrossRecovery(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("AppData", tmp)
+
+	directory := t.TempDir()
+	broker := &outboxTestBroker{}
+	owner, err := NewOutbox(directory, testOutboxFileName, broker.send)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner.Enqueue(testOutboxEvent("pre-outage", "x", "c", "s")) // takes the flock
+
+	contended, err := NewOutbox(directory, testOutboxFileName, broker.send)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(contended.Close)
+	mgr, err := New(testOutboxBrokerURL, "1.0.0", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr.UsePersistentOutbox(contended)
+	if _, err := mgr.BeginSession(); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr.Record("first", "", nil, nil)  // store locked out: memory fallback
+	owner.Close()                      // the outage ends
+	mgr.Record("second", "", nil, nil) // must not leapfrog "first"
+
+	if err := mgr.Flush(context.Background()); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	var order []string
+	for _, batch := range broker.received() {
+		for _, event := range batch {
+			if event.Event == "first" || event.Event == "second" {
+				order = append(order, event.Event)
+			}
+		}
+	}
+	if len(order) != 2 || order[0] != "first" || order[1] != "second" {
+		t.Fatalf("delivery order = %v; the fallback event must stay ahead of post-recovery events", order)
+	}
+}
