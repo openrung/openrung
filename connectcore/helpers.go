@@ -2,6 +2,7 @@ package connectcore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -37,7 +38,53 @@ func (s *Engine) newManager(brokerURL string) *clienttelemetry.Manager {
 	if platform != brokerapi.PlatformDesktop {
 		mgr.SetPlatformLabel(string(platform))
 	}
+	if outbox := s.telemetryOutbox(); outbox != nil {
+		mgr.UsePersistentOutbox(outbox)
+	}
 	return mgr
+}
+
+// telemetryOutboxFileName is the engine's outbox file inside
+// TelemetryOutboxDirectory. Fixed: the file (and its sibling .lock) is an
+// engine artifact, not host configuration.
+const telemetryOutboxFileName = "openrung-telemetry-outbox.jsonl"
+
+// telemetryOutbox lazily opens the shared persistent outbox, once for the
+// engine's lifetime. Nil when the host set no directory or the open failed —
+// telemetry then stays on the in-memory queue, and must never fail a connect.
+func (s *Engine) telemetryOutbox() *clienttelemetry.Outbox {
+	if s.TelemetryOutboxDirectory == "" {
+		return nil
+	}
+	s.outboxOnce.Do(func() {
+		outbox, err := clienttelemetry.NewOutbox(
+			s.TelemetryOutboxDirectory,
+			telemetryOutboxFileName,
+			func(ctx context.Context, brokerURL string, events []clienttelemetry.Event) error {
+				err := clienttelemetry.HTTPClient{
+					BaseURL:    brokerURL,
+					HTTP:       s.brokerHTTPClient(),
+					AppVersion: client.AppVersion(),
+					Platform:   s.telemetryPlatform(),
+				}.Send(ctx, events)
+				var statusErr *brokerapi.BrokerStatusError
+				if errors.As(err, &statusErr) && statusErr.StatusCode >= 400 && statusErr.StatusCode < 500 &&
+					statusErr.StatusCode != 408 && statusErr.StatusCode != 429 {
+					// A definitive broker refusal no retry can repair: mark it
+					// so the outbox discards the poison batch instead of
+					// wedging the queue behind it forever.
+					return fmt.Errorf("%w: %w", clienttelemetry.ErrBatchRejected, err)
+				}
+				return err
+			},
+		)
+		if err != nil {
+			s.appendLog("telemetry outbox unavailable; events stay in memory")
+			return
+		}
+		s.outbox = outbox
+	})
+	return s.outbox
 }
 
 // geoLookupTimeout is the hard backstop on the public-IP geo lookup, above

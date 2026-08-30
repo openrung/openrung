@@ -34,6 +34,7 @@ func (s *Engine) supervise(ctx context.Context, conn *connection, cur *candidate
 		var trigger error
 		var triggerReason string
 		transportFailure := false
+		triggerWasHealth := false
 	watchTrigger:
 		for {
 			select {
@@ -92,6 +93,7 @@ func (s *Engine) supervise(ctx context.Context, conn *connection, cur *candidate
 				} else {
 					trigger = probeErr
 				}
+				triggerWasHealth = true
 				triggerReason = fmt.Sprintf("tunnel health check failed %d times", HealthFailureThreshold)
 				s.appendLog(fmt.Sprintf("tunnel health check failed %d times; reconnecting", HealthFailureThreshold))
 				break watchTrigger
@@ -160,6 +162,53 @@ func (s *Engine) supervise(ctx context.Context, conn *connection, cur *candidate
 		// Let traffic fall back to the normal network during the reconnect gap
 		// instead of blackholing it against the dead loopback port.
 		s.releaseProxy(conn)
+
+		// A punched path's loss feeds the per-relay recovery circuit breaker
+		// (PunchRecoveryCircuitBreaker.kt / .swift via punchbreaker.go). The
+		// counting rule is Android's: a health-probe failure always counts
+		// (its own gate already proved the network alive), an unsolicited
+		// tunnel death counts only when the physical network is up — the
+		// network-alive gate is the engine's active probe, the analog of
+		// OpenRungVpnService.physicalNetworkAlive(). An exempt loss waits for
+		// the network first (Android awaits it only when it was down); a
+		// counted one waits the breaker's jittered backoff before the
+		// re-ladder, and an opened circuit records punch_fallback and makes
+		// every later punch attempt for this relay skip to the hub.
+		if cur.accessTransport == "punch" {
+			// A proxy-mode health trigger already proved the network alive (its
+			// own gate dialed the fronts before failing over); the TUN-mode
+			// health loop deliberately SKIPS that gate (no reference point
+			// outside the tunnel), so on TUN — the mobile target — the probe
+			// runs here instead, after teardown restored the normal routes. A
+			// physical outage must be an exempt loss, not punch instability.
+			counted := (triggerWasHealth && !s.tunMode()) || s.networkAlive(ctx, s.livenessFronts(conn))
+			decision := conn.punchBreaker.onDirectPathLost(cur.relay.ID, time.Now(), counted)
+			if decision.useRelayHub {
+				s.appendLog(fmt.Sprintf("punched path to relay %s is unstable; using the relay hub for the rest of this connection", cur.relay.ID))
+				if conn.mgr != nil {
+					attrs := map[string]string{"failure_reason": "unstable_direct_path"}
+					// The engine's telemetry-safe rendering instead of the
+					// mobile raw reason.take(256): raw error text can carry
+					// local paths, which must never reach the broker.
+					if detail := clienttelemetry.ErrorDetail(trigger); detail != "" {
+						attrs["failure_detail"] = detail
+					}
+					conn.mgr.Record("punch_fallback", cur.relay.ID, attrs, map[string]int64{
+						"rapid_failure_count": int64(decision.rapidFailures),
+						"direct_uptime_ms":    decision.directUptime.Milliseconds(),
+						"recovery_delay_ms":   decision.delay.Milliseconds(),
+					})
+				}
+			} else if decision.counted && decision.delay > 0 {
+				s.appendLog(fmt.Sprintf("punched path lost %d time(s) in a row; retrying direct in %s", decision.rapidFailures, decision.delay.Round(time.Millisecond)))
+			}
+			if !counted && !s.waitForNetworkRecovery(ctx, conn) {
+				return "", nil
+			}
+			if decision.delay > 0 && !sleepFor(ctx, decision.delay) {
+				return "", nil
+			}
+		}
 
 		var next *candidateResult
 		var fetchMS int64
@@ -369,6 +418,18 @@ func (s *Engine) healthLoop(ctx context.Context, port int, fronts []string, fail
 	}
 }
 
+// sleepFor waits delay, interruptible by ctx; false when ctx ended first.
+func sleepFor(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
 // networkAlive dials the broker fronts to decide whether the local network is
 // up. The fronts (Cloudflare + CloudFront, plus any user override) are highly
 // available and independent of the relay fleet, so unlike dialing the candidate
@@ -412,7 +473,7 @@ func (s *Engine) waitForNetworkRecovery(ctx context.Context, conn *connection) b
 	if ctx.Err() != nil {
 		return false
 	}
-	s.appendLog("WSS transport stopped while the local network is down; waiting for connectivity")
+	s.appendLog("the tunnel stopped while the local network is down; waiting for connectivity")
 	delay := s.networkRetryDelay
 	if delay <= 0 {
 		delay = networkRecoveryPollInterval

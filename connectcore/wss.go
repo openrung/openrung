@@ -29,6 +29,13 @@ const (
 	wssTicketAttemptLimit = 5 * time.Second
 	wssTicketDefaultRetry = 10 * time.Second
 	wssTicketMaxRetry     = 30 * time.Second
+	// wssTicketTotalDeadline bounds the WHOLE ticket ladder — every front,
+	// both rounds, and the Retry-After wait — with one shared budget, the
+	// policy the mobile clients enforce (WssTicketClient.kt
+	// totalDeadlineMillis / WssTicketClient.swift totalDeadlineMilliseconds =
+	// 15s): without it, N fronts x 5s attempts plus a 30s wait could hold a
+	// single ladder rung for over a minute.
+	wssTicketTotalDeadline = 15 * time.Second
 )
 
 type wssBridge interface {
@@ -212,11 +219,36 @@ func (s *Engine) requestWSSSessionTicket(
 		return brokerapi.WSSTicketResponse{}, errors.New("no HTTPS broker fronts configured for WSS ticket")
 	}
 	requester := s.wssTicketRequester()
+	budget := s.wssTicketBudget
+	if budget <= 0 {
+		budget = wssTicketTotalDeadline
+	}
+	deadline := time.Now().Add(budget)
+	// firstErr spans BOTH rounds (mobile's first-error-wins: the diagnostic
+	// that surfaces is the first failure ever recorded, not the retry
+	// round's — WssTicketClient.kt firstFailure / WssTicketClient.swift
+	// firstFailure).
+	var firstErr error
+	deadlineExceeded := func() error {
+		if firstErr != nil {
+			return firstErr
+		}
+		return errors.New("WSS ticket request deadline exceeded")
+	}
 	for round := 0; round < 2; round++ {
-		var firstErr error
 		var retryAfter time.Duration
 		for index, brokerURL := range fronts {
-			attemptCtx, cancel := context.WithTimeout(ctx, wssTicketAttemptLimit)
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				return brokerapi.WSSTicketResponse{}, deadlineExceeded()
+			}
+			// Attempts shrink to the remaining shared budget (mobile's
+			// min(perAttemptMillis, remaining)).
+			attemptLimit := wssTicketAttemptLimit
+			if remaining < attemptLimit {
+				attemptLimit = remaining
+			}
+			attemptCtx, cancel := context.WithTimeout(ctx, attemptLimit)
 			ticket, err := requester(attemptCtx, brokerURL, request, managerClientID(conn.mgr), s.SessionID())
 			cancel()
 			if err == nil {
@@ -247,6 +279,17 @@ func (s *Engine) requestWSSSessionTicket(
 		}
 		if retryAfter > wssTicketMaxRetry {
 			retryAfter = wssTicketMaxRetry
+		}
+		if retryAfter >= time.Until(deadline) {
+			// The wait cannot fit the shared budget: surface the first error
+			// now instead of sleeping past the deadline (mobile's strict
+			// wait-fits gate). Deliberate behavior change from the engine's
+			// pre-deadline ladder: a Retry-After hint beyond the remaining
+			// budget — including one clamped to the 30s cap — no longer holds
+			// this rung for up to half a minute; the rung fails, the ladder
+			// moves on, and the once-per-ladder retry stays unconsumed for a
+			// later rung whose hint fits. This is the shipping mobile policy.
+			return brokerapi.WSSTicketResponse{}, firstErr
 		}
 		conn.wssTicketRetryUsed = true
 		s.appendLog(fmt.Sprintf("broker fronts rate-limited WSS tickets; retrying once in %s", retryAfter))

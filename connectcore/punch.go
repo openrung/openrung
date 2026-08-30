@@ -186,8 +186,19 @@ func AttemptPunch(ctx context.Context, mgr *clienttelemetry.Manager, selected br
 	return est
 }
 
-// maybePunch runs the engine's punch attempt with its configured options.
-func (s *Engine) maybePunch(ctx context.Context, mgr *clienttelemetry.Manager, selected brokerapi.RelayDescriptor) *PunchPath {
+// maybePunch runs the engine's punch attempt with its configured options,
+// after the connection's recovery circuit breaker: a relay whose punched path
+// kept collapsing takes the hub for the rest of this connection
+// (OpenRungVpnService.kt attemptDirectPunch:788 / PacketTunnelProvider.swift
+// attemptDirectPunch:577 — punch_skipped with reason recovery_circuit_open).
+func (s *Engine) maybePunch(ctx context.Context, conn *connection, selected brokerapi.RelayDescriptor) *PunchPath {
+	mgr := conn.mgr
+	if s.PunchEnabled && selected.PunchCapable && s.PunchEstablisher != nil &&
+		!conn.punchBreaker.allowsDirectPunch(selected.ID) {
+		mgr.Record("punch_skipped", selected.ID, map[string]string{"reason": "recovery_circuit_open"}, nil)
+		s.appendLog(fmt.Sprintf("punch recovery circuit open for relay %s; using relay hub", selected.ID))
+		return nil
+	}
 	return AttemptPunch(ctx, mgr, selected, PunchOptions{
 		Enabled:    s.PunchEnabled,
 		BaseURL:    s.PunchURL,

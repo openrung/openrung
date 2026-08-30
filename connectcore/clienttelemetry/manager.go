@@ -2,6 +2,7 @@ package clienttelemetry
 
 import (
 	"context"
+	"errors"
 	"math/rand"
 	"net/http"
 	"sync"
@@ -37,6 +38,7 @@ type Manager struct {
 	mu            sync.Mutex
 	session       *Session
 	outbox        []Event
+	store         *Outbox
 	poster        HTTPClient
 	appVersion    string
 	clientID      string
@@ -80,6 +82,24 @@ func NewWithPlatform(
 		clientID:   clientID,
 		now:        time.Now,
 	}, nil
+}
+
+// UsePersistentOutbox routes the manager's queue through the shared on-disk
+// outbox (see Outbox): Record enqueues durably, Flush drains identity-
+// homogeneous batches, Heartbeat piggybacks through the outbox's policy, and
+// SetGeoAttributes back-patches the session's queued events the way the
+// mobile TelemetryManagers do. Events recorded by a session that never
+// flushed — a jetsam kill, an expired Shutdown budget — are uploaded by the
+// next session on the same outbox. Attach before the first Record; the
+// in-memory queue remains the default for hosts without a durable directory
+// (the CLI's single foreground session).
+func (m *Manager) UsePersistentOutbox(store *Outbox) {
+	if m == nil || store == nil {
+		return
+	}
+	m.mu.Lock()
+	m.store = store
+	m.mu.Unlock()
 }
 
 // ClientID returns the resolved persistent client identifier.
@@ -142,7 +162,19 @@ func (m *Manager) SetGeoAttributes(geo map[string]string) {
 	}
 	m.mu.Lock()
 	m.geo = copied
+	store := m.store
+	var sessionID string
+	if m.session != nil {
+		sessionID = m.session.ID
+	}
 	m.mu.Unlock()
+	if store != nil && sessionID != "" {
+		// The mobile geo back-patch: events recorded before the public-IP
+		// lookup resolved still get the session's geo. The in-memory queue
+		// keeps its merge-at-record behavior — its sessions are short and
+		// its events few.
+		store.ApplySessionAttributes(sessionID, copied)
+	}
 }
 
 // SetTrafficCounters registers the source of cumulative session byte counts.
@@ -208,7 +240,7 @@ func (m *Manager) Record(event, relayID string, attrs map[string]string, meas ma
 	if err != nil {
 		return
 	}
-	m.enqueueLocked(Event{
+	built := Event{
 		SchemaVersion: SchemaVersion,
 		EventID:       eventID,
 		Event:         event,
@@ -218,7 +250,39 @@ func (m *Manager) Record(event, relayID string, attrs map[string]string, meas ma
 		RelayID:       resolvedRelay,
 		Attributes:    merged,
 		Measurements:  meas,
-	})
+	}
+	// The store has its own lock and lands events on disk; holding m.mu
+	// across it is fine (the store never calls back), and keeps Record atomic
+	// with the session snapshot above. Any in-memory fallback events migrate
+	// FIRST: newer events must not resume landing in the store while older
+	// ones would drain behind them (Flush is store-then-memory), so either
+	// the whole stream is in the store, in order, or this event joins the
+	// fallback behind its elders.
+	if m.store != nil && m.migrateFallbackLocked() && m.store.Enqueue(built) {
+		return
+	}
+	// No store, or the store is unavailable this operation (locked out,
+	// unreadable): fall back to the in-memory queue, the behavior a host
+	// without a durable directory has always had — a broken outbox must
+	// degrade telemetry's durability, never silence it. Flush drains both.
+	m.enqueueLocked(built)
+}
+
+// migrateFallbackLocked moves the in-memory fallback into the store, oldest
+// first, reporting whether the fallback is now empty (an unavailable store
+// stops the migration; the remainder keeps its order and later events queue
+// behind it). Caller holds m.mu.
+func (m *Manager) migrateFallbackLocked() bool {
+	for len(m.outbox) > 0 {
+		head := m.outbox[0]
+		if _, valid := validateOutboxEvent(head); valid && !m.store.Enqueue(head) {
+			return false
+		}
+		// Migrated — or invalid, which no queue can ever send: drop it rather
+		// than wedge the migration.
+		m.outbox = m.outbox[1:]
+	}
+	return true
 }
 
 // EndSession emits connection_ended with session/connection durations and clears
@@ -265,6 +329,25 @@ func (m *Manager) Heartbeat(ctx context.Context) error {
 		m.mu.Unlock()
 		return nil
 	}
+	// Migrate the fallback before the heartbeat touches the store, exactly as
+	// Record does: a recovered store must not carry (or piggyback) the stream
+	// ahead of older events still sitting in memory — migrated, they join the
+	// store in order and ride this very piggyback. An INCOMPLETE migration
+	// (the store is still unavailable) falls through to the memory piggyback
+	// path below instead: the stranded events then ride ahead of the
+	// heartbeat in the same request, preserving order without delaying the
+	// cadence.
+	if store := m.store; store != nil && m.migrateFallbackLocked() {
+		m.mu.Unlock()
+		// The outbox owns the piggyback policy: the queue head rides along
+		// only when it matches the heartbeat's own identity, so a historical
+		// backlog never delays the cadence. The remainder drains through
+		// Flush afterwards.
+		if _, _, err := store.SendHeartbeat(ctx, m.poster.BaseURL, heartbeat); err != nil {
+			return err
+		}
+		return m.Flush(ctx)
+	}
 	queued := m.snapshotLocked(uploadBatchSize - 1)
 	m.mu.Unlock()
 
@@ -282,6 +365,31 @@ func (m *Manager) Heartbeat(ctx context.Context) error {
 func (m *Manager) Flush(ctx context.Context) error {
 	if m == nil {
 		return nil
+	}
+	m.mu.Lock()
+	store := m.store
+	m.mu.Unlock()
+	if store != nil {
+	storeDrain:
+		for {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			_, pending, err := store.FlushNextBatch(ctx, m.poster.BaseURL)
+			switch {
+			case errors.Is(err, ErrOutboxUnavailable):
+				// The store is not ours this operation (locked out, unreadable);
+				// its events belong to the owner. The in-memory fallback below
+				// is exactly for this — drain it instead of failing.
+				break storeDrain
+			case err != nil:
+				return err
+			case pending == 0:
+				break storeDrain
+			}
+		}
+		// Fall through: the in-memory queue may hold events recorded while
+		// the store was unavailable (or before it was attached).
 	}
 	for {
 		m.mu.Lock()
