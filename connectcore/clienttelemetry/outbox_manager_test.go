@@ -250,3 +250,58 @@ func TestManagerFallbackPreservesEventOrderAcrossRecovery(t *testing.T) {
 		t.Fatalf("delivery order = %v; the fallback event must stay ahead of post-recovery events", order)
 	}
 }
+
+// The heartbeat path runs the same fallback migration as Record: when the
+// outage ends and the NEXT operation is a heartbeat, the stranded memory
+// event migrates into the store first and rides the piggyback in order,
+// instead of the heartbeat using the recovered store ahead of it.
+func TestManagerHeartbeatMigratesTheFallbackBeforeUsingTheStore(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("AppData", tmp)
+
+	directory := t.TempDir()
+	broker := &outboxTestBroker{}
+	owner, err := NewOutbox(directory, testOutboxFileName, broker.send)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = owner.PendingCount() // takes the flock without queueing anything
+
+	contended, err := NewOutbox(directory, testOutboxFileName, broker.send)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(contended.Close)
+	mgr, err := New(testOutboxBrokerURL, "1.0.0", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr.UsePersistentOutbox(contended)
+	if _, err := mgr.BeginSession(); err != nil {
+		t.Fatal(err)
+	}
+	mgr.MarkConnected("relay-9") // heartbeats require a connected session
+
+	mgr.Record("stranded", "", nil, nil) // store locked out: memory fallback
+	owner.Close()                        // the outage ends
+	if err := mgr.Heartbeat(context.Background()); err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+
+	var order []string
+	for _, batch := range broker.received() {
+		for _, event := range batch {
+			if event.Event == "stranded" || event.Event == "session_heartbeat" {
+				order = append(order, event.Event)
+			}
+		}
+	}
+	if len(order) != 2 || order[0] != "stranded" || order[1] != "session_heartbeat" {
+		t.Fatalf("delivery order = %v; the stranded event must migrate and ride ahead of the heartbeat", order)
+	}
+	if got := contended.PendingCount(); got != 0 {
+		t.Fatalf("the migrated stream did not drain: %d pending", got)
+	}
+}

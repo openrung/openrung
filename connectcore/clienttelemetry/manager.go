@@ -331,11 +331,16 @@ func (m *Manager) Heartbeat(ctx context.Context) error {
 	}
 	store := m.store
 	if store != nil {
+		// Migrate the fallback before the heartbeat touches the store, exactly
+		// as Record does: a recovered store must not carry (or piggyback) the
+		// stream ahead of older events still sitting in memory — migrated,
+		// they join the store in order and ride this very piggyback.
+		_ = m.migrateFallbackLocked()
 		m.mu.Unlock()
 		// The outbox owns the piggyback policy: the queue head rides along
 		// only when it matches the heartbeat's own identity, so a historical
-		// backlog never delays the cadence. The remainder — and any events
-		// the in-memory fallback holds — drains through Flush afterwards.
+		// backlog never delays the cadence. The remainder — and whatever an
+		// unfinished migration left in memory — drains through Flush afterwards.
 		if _, _, err := store.SendHeartbeat(ctx, m.poster.BaseURL, heartbeat); err != nil {
 			return err
 		}
