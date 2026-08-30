@@ -970,12 +970,7 @@ func (s *Engine) attemptDirectCandidate(ctx context.Context, conn *connection, c
 	s.appendLog("checking relay TCP reachability")
 	tcpMS, err := s.relayDialer()(ctx, cand.PublicHost, cand.PublicPort)
 	if err != nil {
-		if isSocketProtectionFailure(err) {
-			// The host refused to protect the socket: a local platform
-			// failure, never relay evidence — it must not dent relay health
-			// or unlock the relay's WSS fronts.
-			return nil, markLocalCandidateError("socket_protection", err)
-		}
+		// A socket-protection refusal is classified local inside the marker.
 		return nil, markDirectPathError("tcp", err)
 	}
 

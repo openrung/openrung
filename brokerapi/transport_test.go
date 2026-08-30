@@ -708,7 +708,7 @@ func TestNewHTTPClientWithDialControlRunsOnEverySocket(t *testing.T) {
 	client := NewHTTPClientWithDialControl(5*time.Second, func(network, address string, conn syscall.RawConn) error {
 		controlled.Add(1)
 		return conn.Control(func(fd uintptr) { sawFD.Store(fd != 0) })
-	})
+	}, nil)
 	response, err := client.Get("http://" + listener.Addr().String() + "/")
 	if err != nil {
 		t.Fatalf("controlled GET: %v", err)
@@ -720,7 +720,7 @@ func TestNewHTTPClientWithDialControlRunsOnEverySocket(t *testing.T) {
 
 	refused := NewHTTPClientWithDialControl(5*time.Second, func(network, address string, conn syscall.RawConn) error {
 		return errors.New("socket protection failed")
-	})
+	}, nil)
 	if _, err := refused.Get("http://" + listener.Addr().String() + "/"); err == nil {
 		t.Fatal("a failing dial control must fail the request, not fall back to an unprotected socket")
 	}

@@ -134,7 +134,7 @@ func AttemptPunch(ctx context.Context, mgr *clienttelemetry.Manager, selected br
 	mgr.Record("punch_attempted", selected.ID, nil, nil)
 	hubHTTP := opts.HTTPClient
 	if hubHTTP == nil {
-		hubHTTP = punchHTTPClient(opts.Insecure)
+		hubHTTP = punchHTTPClient(opts.Insecure, nil)
 	}
 	hub := punchcore.HubClient{BaseURL: punchBaseURL(opts.BaseURL, selected), HTTPClient: hubHTTP}
 	est, res, err := opts.Establish(ctx, hub, selected.ID)
@@ -212,23 +212,34 @@ func punchBaseURL(override string, selected brokerapi.RelayDescriptor) string {
 	return "http://" + net.JoinHostPort(selected.PublicHost, defaultPunchPort)
 }
 
-// punchHTTPClient returns the HTTP client for the hub punch coordination API.
-// With insecure set it skips TLS verification, for a hub serving a self-signed
-// cert on its HTTPS punch endpoint (relay hubs on bare IPs cannot get a
-// CA cert). This weakens ONLY the hub coordination channel: the punched QUIC
-// data path still pins the relay's per-session cert by fingerprint, and the
-// tunnel itself is VLESS+REALITY keyed by broker-delivered credentials, so a hub
-// MITM can at worst force a fallback to the relay path, never read or redirect
-// the tunnel.
-func punchHTTPClient(insecure bool) *http.Client {
-	if !insecure {
+// punchHubHTTPTimeout matches punchcore.HubClient's own default client
+// timeout, so the engine-built clients below keep the hub coordination
+// budget the module default has.
+const punchHubHTTPTimeout = 10 * time.Second
+
+// punchHTTPClient returns the HTTP client for the hub punch coordination API,
+// over the given transport (nil means the default transport; the engine's
+// socket-protected path passes its own). With insecure set it skips TLS
+// verification, for a hub serving a self-signed cert on its HTTPS punch
+// endpoint (relay hubs on bare IPs cannot get a CA cert). This weakens ONLY
+// the hub coordination channel: the punched QUIC data path still pins the
+// relay's per-session cert by fingerprint, and the tunnel itself is
+// VLESS+REALITY keyed by broker-delivered credentials, so a hub MITM can at
+// worst force a fallback to the relay path, never read or redirect the
+// tunnel. This function is the ONE place that insecure TLS config exists.
+func punchHTTPClient(insecure bool, transport *http.Transport) *http.Client {
+	if !insecure && transport == nil {
 		return nil // punchcore.HubClient uses its default client
 	}
+	if transport == nil {
+		transport = &http.Transport{}
+	}
+	if insecure {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12} //nolint:gosec // opt-in for a self-signed hub cert; data path is independently secured
+	}
 	return &http.Client{
-		Timeout: 10 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}, //nolint:gosec // opt-in for a self-signed hub cert; data path is independently secured
-		},
+		Timeout:   punchHubHTTPTimeout,
+		Transport: transport,
 	}
 }
 

@@ -53,6 +53,13 @@ func markDirectPathError(stage string, err error) error {
 	if err == nil {
 		err = errors.New("direct relay path failed")
 	}
+	if isSocketProtectionFailure(err) {
+		// The chokepoint for refusal classification: a socket the host would
+		// not protect is a local platform failure wherever it surfaces —
+		// marking it here means no dial path, present or future, can record
+		// a VpnService refusal as relay evidence or unlock WSS fallback.
+		return markLocalCandidateError("socket_protection", err)
+	}
 	return &directPathError{stage: stage, err: err}
 }
 
@@ -78,6 +85,11 @@ func (e *wssTransportError) Unwrap() error { return e.err }
 func markWSSTransportError(stage, frontID string, err error) error {
 	if err == nil {
 		err = errors.New("WSS access transport failed")
+	}
+	if isSocketProtectionFailure(err) {
+		// Same chokepoint as markDirectPathError: a refusal is never front
+		// evidence, whichever ticket/handshake/session path surfaced it.
+		return markLocalCandidateError("socket_protection", err)
 	}
 	return &wssTransportError{stage: stage, frontID: frontID, err: err}
 }
@@ -296,11 +308,7 @@ func (s *Engine) attemptWSSCandidate(
 	})
 	if err != nil {
 		cancel()
-		if isSocketProtectionFailure(err) {
-			// A refused protection is a local platform failure, never front
-			// evidence (same classification as the bridge dial below).
-			return nil, markLocalCandidateError("socket_protection", err)
-		}
+		// A socket-protection refusal is classified local inside the marker.
 		return nil, markWSSTransportError("ticket", front.ID, fmt.Errorf("request WSS ticket: %w", err))
 	}
 	if ticket.URL != front.URL {
@@ -316,12 +324,7 @@ func (s *Engine) attemptWSSCandidate(
 	bridge, err := s.wssDialer()(candidateCtx, front.URL, ticket.Ticket)
 	if err != nil {
 		cancel()
-		if isSocketProtectionFailure(err) {
-			// A refused protection is a local platform failure, not front
-			// evidence: stop the ladder instead of burning the remaining
-			// fronts' single-use tickets on dials that cannot succeed.
-			return nil, markLocalCandidateError("socket_protection", err)
-		}
+		// A socket-protection refusal is classified local inside the marker.
 		return nil, markWSSTransportError("wss_handshake", front.ID, fmt.Errorf("connect WSS front: %w", err))
 	}
 	host, port := bridge.Endpoint()

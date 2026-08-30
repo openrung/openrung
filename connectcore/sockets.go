@@ -1,7 +1,6 @@
 package connectcore
 
 import (
-	"crypto/tls"
 	"net"
 	"net/http"
 	"strings"
@@ -10,6 +9,8 @@ import (
 
 	"github.com/openrung/openrung/brokerapi"
 	"github.com/openrung/openrung/wsscore"
+
+	"github.com/openrung/openrung/connectcore/clienttelemetry"
 )
 
 // This file owns the socket-control seam (ADR-003 A2): on a host whose tunnel
@@ -185,23 +186,20 @@ func (c *protectedHTTPClients) ensure(protector wsscore.SocketProtector, dnsServ
 	c.releaseLocked()
 	c.protector = protector
 	c.dnsServers = serversKey
-	// brokerapi builds its own protected resolver from the control and the
-	// same nameservers, keeping its ECH/no-SNI dial behavior.
-	c.broker = brokerapi.NewHTTPClientWithDialControl(0, wsscore.SocketControl(protector), dnsServers...)
+	// brokerapi keeps its ECH/no-SNI dial behavior over the hook and the
+	// prebuilt protected resolver (it cannot import its sibling module).
+	c.broker = brokerapi.NewHTTPClientWithDialControl(
+		0,
+		wsscore.SocketControl(protector),
+		wsscore.ProtectedResolver(protector, dnsServers),
+	)
 	c.geo = &http.Client{
-		// LookupGeoAttributes' own default timeout, kept in lockstep.
-		Timeout:   4 * time.Second,
+		Timeout:   clienttelemetry.GeoLookupHTTPTimeout,
 		Transport: protectedTransport(protector, dnsServers),
 	}
-	punchTransport := protectedTransport(protector, dnsServers)
-	if punchInsecure {
-		punchTransport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12} //nolint:gosec // same opt-in as punchHTTPClient; data path independently secured
-	}
-	c.punch = &http.Client{
-		// punchcore.HubClient's own default timeout, kept in lockstep.
-		Timeout:   10 * time.Second,
-		Transport: punchTransport,
-	}
+	// punchHTTPClient owns the timeout and the (audit-sensitive) insecure TLS
+	// shape; only the transport is ours.
+	c.punch = punchHTTPClient(punchInsecure, protectedTransport(protector, dnsServers))
 	return c.broker, c.geo, c.punch
 }
 

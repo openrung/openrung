@@ -15,6 +15,11 @@ import (
 // columns the same way it does for mobile clients.
 const geoIPEndpoint = "https://ipwho.is/"
 
+// GeoLookupHTTPTimeout is LookupGeoAttributes' default HTTP client timeout,
+// exported so a host that supplies its own client (the engine's
+// socket-protected one) stays on the same budget without copying the literal.
+const GeoLookupHTTPTimeout = 4 * time.Second
+
 type geoIPResponse struct {
 	IP          string `json:"ip"`
 	Success     bool   `json:"success"`
@@ -34,7 +39,7 @@ type geoIPResponse struct {
 // failure so telemetry/connect never depend on it.
 func LookupGeoAttributes(ctx context.Context, httpClient *http.Client) map[string]string {
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 4 * time.Second}
+		httpClient = &http.Client{Timeout: GeoLookupHTTPTimeout}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, geoIPEndpoint, nil)
 	if err != nil {
