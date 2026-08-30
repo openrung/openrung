@@ -143,7 +143,7 @@ func TestMaybePunchPassesEstablisherThrough(t *testing.T) {
 		called = true
 		return nil, punchcore.PunchResult{Reason: "config"}, context.Canceled
 	}
-	if est := s.maybePunch(t.Context(), nil, brokerapi.RelayDescriptor{ID: "relay-a", PunchCapable: true}); est != nil {
+	if est := s.maybePunch(t.Context(), &connection{}, brokerapi.RelayDescriptor{ID: "relay-a", PunchCapable: true}); est != nil {
 		t.Fatalf("failing establisher returned a path: %+v", est)
 	}
 	if !called {
@@ -155,13 +155,13 @@ func TestMaybePunchSkipsWhenDisabledOrIncapable(t *testing.T) {
 	// Disabled globally.
 	s := New()
 	s.PunchEnabled = false
-	if est := s.maybePunch(t.Context(), nil, brokerapi.RelayDescriptor{PunchCapable: true}); est != nil {
+	if est := s.maybePunch(t.Context(), &connection{}, brokerapi.RelayDescriptor{PunchCapable: true}); est != nil {
 		t.Fatal("punch should be skipped when disabled")
 	}
 
 	// Enabled but relay is not punch-capable (a direct relay) — no hub call.
 	s2 := New()
-	if est := s2.maybePunch(t.Context(), nil, brokerapi.RelayDescriptor{PunchCapable: false}); est != nil {
+	if est := s2.maybePunch(t.Context(), &connection{}, brokerapi.RelayDescriptor{PunchCapable: false}); est != nil {
 		t.Fatal("punch should be skipped for a non-punch-capable relay")
 	}
 }

@@ -138,6 +138,10 @@ func TestWSSTicketBrokerFailoverAndBoundedRetryAfter(t *testing.T) {
 	}
 
 	s := New()
+	// A budget the clamped 30s wait can fit into: with the default 15s shared
+	// deadline the wait-fits gate would (correctly) skip the wait entirely —
+	// the mobile clamp tests configure a custom policy the same way.
+	s.wssTicketBudget = time.Hour
 	conn := &connection{brokerURL: servingFront}
 	var calls []string
 	s.requestWSSTicket = func(_ context.Context, brokerURL string, request brokerapi.WSSTicketRequest, _, _ string) (brokerapi.WSSTicketResponse, error) {
@@ -854,5 +858,97 @@ func TestWSSFatalOfflineWaitStopsOnDisconnect(t *testing.T) {
 	}
 	if logs := logLines(s); !strings.Contains(logs, "waiting for connectivity") {
 		t.Fatalf("missing offline recovery log:\n%s", logs)
+	}
+}
+
+// The whole ticket ladder shares one 15s budget (WssTicketClient.kt
+// totalDeadlineMillis / WssTicketClient.swift totalDeadlineMilliseconds):
+// attempts shrink to the remaining budget, and once it is spent no further
+// front is tried — the first recorded error surfaces.
+func TestWSSTicketLadderHonorsTheSharedTotalDeadline(t *testing.T) {
+	s := New()
+	s.wssTicketBudget = 50 * time.Millisecond
+	conn := &connection{brokerURL: brokerapi.DefaultBrokerURL}
+	var calls atomic.Int32
+	s.requestWSSTicket = func(ctx context.Context, _ string, _ brokerapi.WSSTicketRequest, _, _ string) (brokerapi.WSSTicketResponse, error) {
+		calls.Add(1)
+		<-ctx.Done() // each attempt consumes its (shrinking) share of the budget
+		return brokerapi.WSSTicketResponse{}, ctx.Err()
+	}
+
+	started := time.Now()
+	_, err := s.requestWSSSessionTicket(t.Context(), conn, brokerapi.WSSTicketRequest{RelayID: "relay-a", FrontID: "front-a"})
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("an exhausted budget must fail the ticket request")
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("ticket ladder ran %v; the shared deadline did not bound it", elapsed)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("attempts = %d; the spent budget must stop the ladder before the next front", got)
+	}
+}
+
+// A Retry-After wait that cannot fit the remaining budget is not taken: the
+// first error surfaces immediately and the once-per-ladder retry stays
+// unconsumed (the mobile strict wait-fits gate, WssTicketClient.kt:167 /
+// WssTicketClient.swift:175).
+func TestWSSTicketRetryWaitMustFitTheRemainingBudget(t *testing.T) {
+	s := New()
+	s.wssTicketBudget = 100 * time.Millisecond
+	var waits atomic.Int32
+	s.waitWSSRetry = func(context.Context, time.Duration) error {
+		waits.Add(1)
+		return nil
+	}
+	conn := &connection{brokerURL: brokerapi.DefaultBrokerURL}
+	s.requestWSSTicket = func(context.Context, string, brokerapi.WSSTicketRequest, string, string) (brokerapi.WSSTicketResponse, error) {
+		return brokerapi.WSSTicketResponse{}, &client.WSSTicketStatusError{StatusCode: 429, RetryAfter: 10 * time.Second}
+	}
+
+	started := time.Now()
+	_, err := s.requestWSSSessionTicket(t.Context(), conn, brokerapi.WSSTicketRequest{RelayID: "relay-a", FrontID: "front-a"})
+	if err == nil {
+		t.Fatal("the rate-limited ladder must fail")
+	}
+	var statusErr *client.WSSTicketStatusError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != 429 {
+		t.Fatalf("surfaced error = %v; want the recorded 429", err)
+	}
+	if waits.Load() != 0 {
+		t.Fatalf("a wait that cannot fit the budget was still taken (%d waits)", waits.Load())
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("ladder ran %v despite the unfittable wait", elapsed)
+	}
+	if conn.wssTicketRetryUsed {
+		t.Fatal("an untaken wait must not consume the once-per-ladder retry")
+	}
+}
+
+// The surfaced diagnostic is the FIRST failure ever recorded, spanning both
+// rounds (the mobile first-error-wins: WssTicketClient.kt firstFailure /
+// WssTicketClient.swift firstFailure) — the retry round's fresher errors
+// must not replace it.
+func TestWSSTicketFirstErrorWinsAcrossRounds(t *testing.T) {
+	s := New()
+	s.waitWSSRetry = func(context.Context, time.Duration) error { return nil }
+	conn := &connection{brokerURL: brokerapi.DefaultBrokerURL}
+	var calls atomic.Int32
+	s.requestWSSTicket = func(context.Context, string, brokerapi.WSSTicketRequest, string, string) (brokerapi.WSSTicketResponse, error) {
+		if calls.Add(1) == 1 {
+			return brokerapi.WSSTicketResponse{}, &client.WSSTicketStatusError{StatusCode: 429, RetryAfter: time.Millisecond}
+		}
+		return brokerapi.WSSTicketResponse{}, errors.New("later front noise")
+	}
+
+	_, err := s.requestWSSSessionTicket(t.Context(), conn, brokerapi.WSSTicketRequest{RelayID: "relay-a", FrontID: "front-a"})
+	var statusErr *client.WSSTicketStatusError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != 429 {
+		t.Fatalf("surfaced error = %v; want round 0's first failure (the 429)", err)
+	}
+	if calls.Load() < 3 {
+		t.Fatalf("calls = %d; the retry round should have run", calls.Load())
 	}
 }

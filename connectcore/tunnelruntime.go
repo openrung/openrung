@@ -62,19 +62,26 @@ func (s *Engine) tunnelRuntime() TunnelRuntime {
 	if s.TunnelRuntime != nil {
 		return s.TunnelRuntime
 	}
-	return subprocessRuntime{runner: client.SingBoxRunner{
-		Path:             s.SingBoxPath,
-		Stdout:           s.logWriter(),
-		Stderr:           s.logWriter(),
-		StopOnStdinClose: s.SingBoxStopsOnStdinClose,
-	}}
+	return subprocessRuntime{
+		runner: client.SingBoxRunner{
+			Path:             s.SingBoxPath,
+			Stdout:           s.logWriter(),
+			Stderr:           s.logWriter(),
+			StopOnStdinClose: s.SingBoxStopsOnStdinClose,
+		},
+		abortGrace: s.candidateStopGrace(),
+	}
 }
 
 // subprocessRuntime is the desktop/TUI default: each run writes the config
 // bytes to a temp file, starts sing-box through client.SingBoxRunner, and
-// removes the file once that run's process has exited.
+// removes the file once that run's process has exited. abortGrace bounds the
+// graceful stop of a launch the context cancelled mid-flight — the same
+// mode-appropriate grace the engine passes to Stop, so an aborted launch is
+// not slower to unwind than a torn-down candidate.
 type subprocessRuntime struct {
-	runner client.SingBoxRunner
+	runner     client.SingBoxRunner
+	abortGrace time.Duration
 }
 
 // Run materializes the config, launches sing-box, and rechecks the launch
@@ -112,7 +119,7 @@ func (rt subprocessRuntime) Run(ctx context.Context, configJSON []byte) (TunnelR
 	if err := ctx.Err(); err != nil {
 		// The launch was cancelled while the child came up: unwind it before
 		// answering, so a disconnect racing the launch never yields a live run.
-		_ = run.Stop(0)
+		_ = run.Stop(rt.abortGrace)
 		return nil, err
 	}
 	return run, nil

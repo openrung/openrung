@@ -134,6 +134,10 @@ type connection struct {
 	// handledNetEpoch is the network epoch the supervisor has accounted for.
 	// Touched only by the runConnect goroutine.
 	handledNetEpoch uint64
+	// punchBreaker damps punch recovery per relay (see punchbreaker.go). Its
+	// lifetime IS the reset policy: a user connect builds a fresh connection
+	// and so a fresh breaker; automatic recovery re-ladders share it.
+	punchBreaker punchRecoveryBreaker
 	// flushBudget bounds the terminal telemetry flush (see Shutdown); zero
 	// keeps the 5s default. flushCancel is set while that flush runs, so a
 	// Shutdown arriving mid-flush can shorten it to its own budget instead of
@@ -321,6 +325,16 @@ type Engine struct {
 	// its in-process libbox runtime here.
 	TunnelRuntime TunnelRuntime
 
+	// TelemetryOutboxDirectory, when set, gives the engine's telemetry the
+	// durable on-disk outbox (clienttelemetry.Outbox, ADR-003 A3): events a
+	// session could not flush — a killed process, an expired Shutdown budget
+	// — are uploaded by the next session instead of dying with the process.
+	// The mobile hosts set it (Android files dir, the iOS App Group
+	// container); desktop and the TUI may leave it empty and keep the
+	// in-memory queue their single foreground sessions have always had.
+	// Assign before Start or the first Connect.
+	TelemetryOutboxDirectory string
+
 	// SocketProtector keeps the engine's own physical-network sockets out of
 	// the host's device-wide tunnel capture (ADR-003 A2): the Android adapter
 	// implements Protect with VpnService.protect(fd); hosts that own their
@@ -337,6 +351,13 @@ type Engine struct {
 	// protectedHTTP caches the protector-derived HTTP clients (see
 	// sockets.go), rebuilt when the protector changes.
 	protectedHTTP protectedHTTPClients
+
+	// outboxOnce lazily opens the one shared persistent outbox (nil when
+	// TelemetryOutboxDirectory is unset or the open failed); every session's
+	// manager attaches to it, so the cross-process file lock is taken once
+	// for the engine's lifetime.
+	outboxOnce sync.Once
+	outbox     *clienttelemetry.Outbox
 
 	// connectMu serializes the Connect/Disconnect mutation surface. Hosts may
 	// dispatch every call on its own goroutine (the desktop webview bridge
@@ -388,19 +409,21 @@ type Engine struct {
 	// platform-hook injection pattern above so ladder tests need no network,
 	// no broker, and no sing-box binary (the tunnel itself is faked through
 	// the exported TunnelRuntime seam).
-	probeTunnel       func(ctx context.Context, proxyPort int) (int64, error)
-	healthProbe       func(ctx context.Context, proxyPort int) error
-	dialRelay         func(ctx context.Context, host string, port int) (int64, error)
-	fetchRelays       func(ctx context.Context, brokerURL string, limit int, clientID, sessionID string) (discovery.Fetch, error)
-	tunnelReady       func(ctx context.Context, proxyPort int) error
-	requestWSSTicket  func(ctx context.Context, brokerURL string, request brokerapi.WSSTicketRequest, clientID, sessionID string) (brokerapi.WSSTicketResponse, error)
-	dialWSS           func(ctx context.Context, rawURL, ticket string) (wssBridge, error)
-	waitWSSRetry      func(ctx context.Context, delay time.Duration) error
-	checkNetworkAlive func(ctx context.Context, fronts []string) bool
-	healthTick        time.Duration // 0 means HealthProbeInterval
-	heartbeatTick     time.Duration // 0 means the randomized heartbeat cadence
-	networkRetryDelay time.Duration // 0 means networkRecoveryPollInterval
-	tunnelReadyLimit  time.Duration // 0 means TunnelReadyTimeout
+	probeTunnel        func(ctx context.Context, proxyPort int) (int64, error)
+	healthProbe        func(ctx context.Context, proxyPort int) error
+	dialRelay          func(ctx context.Context, host string, port int) (int64, error)
+	fetchRelays        func(ctx context.Context, brokerURL string, limit int, clientID, sessionID string) (discovery.Fetch, error)
+	tunnelReady        func(ctx context.Context, proxyPort int) error
+	requestWSSTicket   func(ctx context.Context, brokerURL string, request brokerapi.WSSTicketRequest, clientID, sessionID string) (brokerapi.WSSTicketResponse, error)
+	dialWSS            func(ctx context.Context, rawURL, ticket string) (wssBridge, error)
+	waitWSSRetry       func(ctx context.Context, delay time.Duration) error
+	checkNetworkAlive  func(ctx context.Context, fronts []string) bool
+	healthTick         time.Duration      // 0 means HealthProbeInterval
+	heartbeatTick      time.Duration      // 0 means the randomized heartbeat cadence
+	wssTicketBudget    time.Duration      // 0 means wssTicketTotalDeadline
+	punchBreakerConfig punchBreakerConfig // zero means the mobile constants
+	networkRetryDelay  time.Duration      // 0 means networkRecoveryPollInterval
+	tunnelReadyLimit   time.Duration      // 0 means TunnelReadyTimeout
 }
 
 func (s *Engine) tunnelReadyProbe() func(context.Context, int) error {
@@ -556,6 +579,7 @@ func (s *Engine) ConnectTarget(brokerURL string, target RelayTarget) error {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	conn := &connection{cancel: cancel, done: make(chan struct{}), netNotify: make(chan struct{}, 1)}
+	conn.punchBreaker.config = s.punchBreakerConfig
 	s.mu.Lock()
 	s.conn = conn
 	s.mu.Unlock()
@@ -985,7 +1009,7 @@ func (s *Engine) attemptDirectCandidate(ctx context.Context, conn *connection, c
 	// Try a direct NAT-punched path first; on any failure fall back to the
 	// relay hub endpoint so the outcome is never worse than not punching.
 	configInput := s.candidateConfigInput(cand, port)
-	if est := s.maybePunch(candCtx, conn.mgr, cand); est != nil {
+	if est := s.maybePunch(candCtx, conn, cand); est != nil {
 		res.punch = est
 		res.accessTransport = "punch"
 		configInput.BridgeHost = est.BridgeHost
@@ -1168,6 +1192,12 @@ func (s *Engine) promote(ctx context.Context, conn *connection, res *candidateRe
 	s.mu.Unlock()
 
 	s.applyProxy(conn, res.proxyPort)
+	if res.accessTransport == "punch" {
+		// The breaker judges the path's stability at its NEXT loss from this
+		// stamp (OpenRungVpnService.kt startPunchMonitor markDirectConnected /
+		// PacketTunnelProvider.swift startPunchMonitor).
+		conn.punchBreaker.markDirectConnected(res.relay.ID, time.Now())
+	}
 	if conn.mgr != nil {
 		conn.mgr.MarkConnected(res.relay.ID)
 		if initial {

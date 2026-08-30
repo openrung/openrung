@@ -37,6 +37,7 @@ type Manager struct {
 	mu            sync.Mutex
 	session       *Session
 	outbox        []Event
+	store         *Outbox
 	poster        HTTPClient
 	appVersion    string
 	clientID      string
@@ -80,6 +81,24 @@ func NewWithPlatform(
 		clientID:   clientID,
 		now:        time.Now,
 	}, nil
+}
+
+// UsePersistentOutbox routes the manager's queue through the shared on-disk
+// outbox (see Outbox): Record enqueues durably, Flush drains identity-
+// homogeneous batches, Heartbeat piggybacks through the outbox's policy, and
+// SetGeoAttributes back-patches the session's queued events the way the
+// mobile TelemetryManagers do. Events recorded by a session that never
+// flushed — a jetsam kill, an expired Shutdown budget — are uploaded by the
+// next session on the same outbox. Attach before the first Record; the
+// in-memory queue remains the default for hosts without a durable directory
+// (the CLI's single foreground session).
+func (m *Manager) UsePersistentOutbox(store *Outbox) {
+	if m == nil || store == nil {
+		return
+	}
+	m.mu.Lock()
+	m.store = store
+	m.mu.Unlock()
 }
 
 // ClientID returns the resolved persistent client identifier.
@@ -142,7 +161,19 @@ func (m *Manager) SetGeoAttributes(geo map[string]string) {
 	}
 	m.mu.Lock()
 	m.geo = copied
+	store := m.store
+	var sessionID string
+	if m.session != nil {
+		sessionID = m.session.ID
+	}
 	m.mu.Unlock()
+	if store != nil && sessionID != "" {
+		// The mobile geo back-patch: events recorded before the public-IP
+		// lookup resolved still get the session's geo. The in-memory queue
+		// keeps its merge-at-record behavior — its sessions are short and
+		// its events few.
+		store.ApplySessionAttributes(sessionID, copied)
+	}
 }
 
 // SetTrafficCounters registers the source of cumulative session byte counts.
@@ -208,7 +239,7 @@ func (m *Manager) Record(event, relayID string, attrs map[string]string, meas ma
 	if err != nil {
 		return
 	}
-	m.enqueueLocked(Event{
+	built := Event{
 		SchemaVersion: SchemaVersion,
 		EventID:       eventID,
 		Event:         event,
@@ -218,7 +249,15 @@ func (m *Manager) Record(event, relayID string, attrs map[string]string, meas ma
 		RelayID:       resolvedRelay,
 		Attributes:    merged,
 		Measurements:  meas,
-	})
+	}
+	if m.store != nil {
+		// The store has its own lock and lands the event on disk; holding
+		// m.mu across it is fine (the store never calls back), and keeps
+		// Record atomic with the session snapshot above.
+		m.store.Enqueue(built)
+		return
+	}
+	m.enqueueLocked(built)
 }
 
 // EndSession emits connection_ended with session/connection durations and clears
@@ -265,6 +304,18 @@ func (m *Manager) Heartbeat(ctx context.Context) error {
 		m.mu.Unlock()
 		return nil
 	}
+	store := m.store
+	if store != nil {
+		m.mu.Unlock()
+		// The outbox owns the piggyback policy: the queue head rides along
+		// only when it matches the heartbeat's own identity, so a historical
+		// backlog never delays the cadence. The remainder drains here, like
+		// the memory path's post-heartbeat flush.
+		if _, pending, err := store.SendHeartbeat(ctx, m.poster.BaseURL, heartbeat); err != nil || pending == 0 {
+			return err
+		}
+		return m.Flush(ctx)
+	}
 	queued := m.snapshotLocked(uploadBatchSize - 1)
 	m.mu.Unlock()
 
@@ -282,6 +333,23 @@ func (m *Manager) Heartbeat(ctx context.Context) error {
 func (m *Manager) Flush(ctx context.Context) error {
 	if m == nil {
 		return nil
+	}
+	m.mu.Lock()
+	store := m.store
+	m.mu.Unlock()
+	if store != nil {
+		for {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			_, pending, err := store.FlushNextBatch(ctx, m.poster.BaseURL)
+			if err != nil {
+				return err
+			}
+			if pending == 0 {
+				return nil
+			}
+		}
 	}
 	for {
 		m.mu.Lock()

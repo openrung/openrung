@@ -80,10 +80,10 @@ func (s *Engine) awaitResumed(ctx context.Context) bool {
 //     tunnel, whatever happens to telemetry.
 //  2. The terminal state (disconnected) reaches the sink.
 //  3. The session-end events are recorded and the outbox is flushed, bounded
-//     by flushBudget. This is the only step the budget may cut short; events
-//     that do not flush in time are dropped with the process (the bound
-//     outbox's cancellation contract — its disk-backed durability arrives
-//     with A3).
+//     by flushBudget. This is the only step the budget may cut short. With
+//     TelemetryOutboxDirectory set, events that do not flush in time stay on
+//     disk and the next session uploads them; without it they are dropped
+//     with the process (the in-memory queue's historical behavior).
 //
 // The in-flight geo lookup is cancelled, never awaited — telemetry must not
 // delay teardown. Shutdown works while paused (Pause never blocks teardown)

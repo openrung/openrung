@@ -37,7 +37,44 @@ func (s *Engine) newManager(brokerURL string) *clienttelemetry.Manager {
 	if platform != brokerapi.PlatformDesktop {
 		mgr.SetPlatformLabel(string(platform))
 	}
+	if outbox := s.telemetryOutbox(); outbox != nil {
+		mgr.UsePersistentOutbox(outbox)
+	}
 	return mgr
+}
+
+// telemetryOutboxFileName is the engine's outbox file inside
+// TelemetryOutboxDirectory. Fixed: the file (and its sibling .lock) is an
+// engine artifact, not host configuration.
+const telemetryOutboxFileName = "openrung-telemetry-outbox.jsonl"
+
+// telemetryOutbox lazily opens the shared persistent outbox, once for the
+// engine's lifetime. Nil when the host set no directory or the open failed —
+// telemetry then stays on the in-memory queue, and must never fail a connect.
+func (s *Engine) telemetryOutbox() *clienttelemetry.Outbox {
+	if s.TelemetryOutboxDirectory == "" {
+		return nil
+	}
+	s.outboxOnce.Do(func() {
+		outbox, err := clienttelemetry.NewOutbox(
+			s.TelemetryOutboxDirectory,
+			telemetryOutboxFileName,
+			func(ctx context.Context, brokerURL string, events []clienttelemetry.Event) error {
+				return clienttelemetry.HTTPClient{
+					BaseURL:    brokerURL,
+					HTTP:       s.brokerHTTPClient(),
+					AppVersion: client.AppVersion(),
+					Platform:   s.telemetryPlatform(),
+				}.Send(ctx, events)
+			},
+		)
+		if err != nil {
+			s.appendLog("telemetry outbox unavailable; events stay in memory")
+			return
+		}
+		s.outbox = outbox
+	})
+	return s.outbox
 }
 
 // geoLookupTimeout is the hard backstop on the public-IP geo lookup, above
