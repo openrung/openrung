@@ -1,9 +1,11 @@
 package clienttelemetry
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"maps"
 	"os"
@@ -12,6 +14,8 @@ import (
 	"sync"
 
 	"github.com/openrung/openrung/brokerapi"
+
+	"github.com/openrung/openrung/connectcore/sudouser"
 )
 
 // This file is the shared on-disk telemetry outbox (ADR-003 A3): the queue
@@ -64,6 +68,13 @@ var (
 	// ErrOutboxClosed: the outbox was closed; queued events belong to the
 	// next open.
 	ErrOutboxClosed = errors.New("telemetry outbox closed")
+	// ErrBatchRejected is how a send function reports a batch the broker
+	// PERMANENTLY refuses (a 4xx that no retry can repair): FlushNextBatch
+	// then discards that batch instead of retrying it forever — a poison
+	// head batch would otherwise wedge the whole queue behind it, since
+	// batches are FIFO identity prefixes and events are removed only on
+	// success. Wrap it around the transport error (errors.Is matches).
+	ErrBatchRejected = errors.New("telemetry batch rejected by the broker")
 )
 
 // SendTelemetryBatch posts one identity-homogeneous batch to the broker. The
@@ -108,9 +119,14 @@ func NewOutbox(directory, fileName string, send SendTelemetryBatch) (*Outbox, er
 	}, nil
 }
 
-// Enqueue appends one event. An event without the identity fields is dropped
-// and reported false; the outbox itself stays usable — telemetry must never
-// take down the reporting path.
+// Enqueue queues one event, reporting whether it was ACCEPTED: false means
+// the event is nowhere (no identity fields, a closed outbox, or one another
+// process owns) and the caller may re-queue it elsewhere without duplication.
+// Persistence is best-effort per event — a failed append leaves the event in
+// this outbox's in-memory queue, uploadable this process lifetime and
+// re-persisted by the next successful rewrite. A caller that needs durable
+// acceptance (it deletes its only other copy on the answer) uses EnqueueBatch,
+// whose contract is fsync-backed.
 func (o *Outbox) Enqueue(event Event) bool {
 	event, ok := validateOutboxEvent(event)
 	if !ok {
@@ -236,6 +252,14 @@ func (o *Outbox) FlushNextBatch(ctx context.Context, brokerURL string) (sent, pe
 		return 0, pending, nil
 	}
 	if err := o.post(ctx, brokerURL, batch); err != nil {
+		if errors.Is(err, ErrBatchRejected) {
+			// Permanently refused: discard the batch so the queue behind it
+			// can drain, and still surface the error for the caller's
+			// diagnostics. (A rejected heartbeat piggyback is NOT discarded —
+			// the rejection may be the heartbeat's own; the next flush sends
+			// the head batch alone and classifies it cleanly.)
+			return 0, o.removeSent(batch), err
+		}
 		return 0, pending, err
 	}
 	return len(batch), o.removeSent(batch), nil
@@ -391,7 +415,7 @@ func (o *Outbox) loadLocked() bool {
 	// stale cache — the coordination the platform outboxes' NSFileCoordinator
 	// previously provided.
 	if o.lockFile == nil {
-		lock, err := os.OpenFile(o.path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+		lock, err := openOutboxFile(o.path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
 		if err != nil {
 			return false
 		}
@@ -401,7 +425,7 @@ func (o *Outbox) loadLocked() bool {
 		}
 		o.lockFile = lock
 	}
-	raw, err := os.ReadFile(o.path)
+	raw, err := readOutboxFile(o.path)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		// A transient read failure must not read as an empty queue: a later
 		// rewrite would replace the intact backlog on disk with the empty
@@ -423,11 +447,19 @@ func (o *Outbox) loadLocked() bool {
 		// element exactly like live enqueues — a row without the identity
 		// fields can never anchor (and permanently poison) an upload batch,
 		// and one undecodable element cannot discard the decodable remainder.
-		// Always rewritten as NDJSON below: the one-time format migration.
+		// Streaming the elements (instead of the binding's whole-array
+		// Unmarshal) extends that to the ARRAY itself: a file truncated by a
+		// process kill still yields its decodable prefix rather than an empty
+		// queue durably replacing the backlog. Always rewritten as NDJSON
+		// below: the one-time format migration.
 		dirty = true
-		var rawEvents []json.RawMessage
-		if json.Unmarshal(raw, &rawEvents) == nil {
-			for _, message := range rawEvents {
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		if token, err := decoder.Token(); err == nil && token == json.Delim('[') {
+			for decoder.More() {
+				var message json.RawMessage
+				if decoder.Decode(&message) != nil {
+					break // the corruption point; keep what decoded before it
+				}
 				if event, ok := decodeOutboxEvent(string(message)); ok {
 					parsed = append(parsed, event)
 				}
@@ -497,7 +529,7 @@ func (o *Outbox) rewriteLocked() bool {
 		lines = append(lines, '\n')
 	}
 	temp := o.path + ".tmp"
-	file, err := os.OpenFile(temp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	file, err := openOutboxFile(temp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return false
 	}
@@ -521,13 +553,37 @@ func (o *Outbox) rewriteLocked() bool {
 }
 
 func appendOutboxFile(path string, lines []byte) error {
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	file, err := openOutboxFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return err
 	}
 	_, writeErr := file.Write(lines)
 	closeErr := file.Close()
 	return errors.Join(writeErr, closeErr)
+}
+
+// openOutboxFile opens outbox-owned files through the sudouser hardening the
+// sibling identity store uses (see identity.go): O_NOFOLLOW-style regular-file
+// opens, and — under a sudo-elevated host (a TUN run) — ownership handed back
+// to the invoking user, so a later plain run is not locked out of its own
+// telemetry by root-owned state (the PR #164 bug class).
+func openOutboxFile(path string, flag int, perm os.FileMode) (*os.File, error) {
+	file, err := sudouser.OpenRegularFile(path, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	_ = sudouser.ChownFile(file)
+	return file, nil
+}
+
+// readOutboxFile reads through the same hardened open.
+func readOutboxFile(path string) ([]byte, error) {
+	file, err := sudouser.OpenRegularFile(path, os.O_RDONLY, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return io.ReadAll(file)
 }
 
 // decodeOutboxEvent accepts one stored Event line, ignoring unknown keys
@@ -637,7 +693,9 @@ func outboxLineNeedsScrub(line string, event Event) bool {
 // storage — the legacy import deletes its only other copy on this promise, so
 // "accepted" must survive a power loss.
 func syncOutboxFile(path string) error {
-	file, err := os.OpenFile(path, os.O_RDONLY, 0)
+	// Write access, not read: Windows FlushFileBuffers requires it, and unix
+	// fsync is indifferent.
+	file, err := sudouser.OpenRegularFile(path, os.O_WRONLY, 0)
 	if err != nil {
 		return err
 	}

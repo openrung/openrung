@@ -175,7 +175,13 @@ func (s *Engine) supervise(ctx context.Context, conn *connection, cur *candidate
 		// re-ladder, and an opened circuit records punch_fallback and makes
 		// every later punch attempt for this relay skip to the hub.
 		if cur.accessTransport == "punch" {
-			counted := triggerWasHealth || s.networkAlive(ctx, s.livenessFronts(conn))
+			// A proxy-mode health trigger already proved the network alive (its
+			// own gate dialed the fronts before failing over); the TUN-mode
+			// health loop deliberately SKIPS that gate (no reference point
+			// outside the tunnel), so on TUN — the mobile target — the probe
+			// runs here instead, after teardown restored the normal routes. A
+			// physical outage must be an exempt loss, not punch instability.
+			counted := (triggerWasHealth && !s.tunMode()) || s.networkAlive(ctx, s.livenessFronts(conn))
 			decision := conn.punchBreaker.onDirectPathLost(cur.relay.ID, time.Now(), counted)
 			if decision.useRelayHub {
 				s.appendLog(fmt.Sprintf("punched path to relay %s is unstable; using the relay hub for the rest of this connection", cur.relay.ID))
@@ -467,7 +473,7 @@ func (s *Engine) waitForNetworkRecovery(ctx context.Context, conn *connection) b
 	if ctx.Err() != nil {
 		return false
 	}
-	s.appendLog("WSS transport stopped while the local network is down; waiting for connectivity")
+	s.appendLog("the tunnel stopped while the local network is down; waiting for connectivity")
 	delay := s.networkRetryDelay
 	if delay <= 0 {
 		delay = networkRecoveryPollInterval

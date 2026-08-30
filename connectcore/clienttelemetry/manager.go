@@ -2,6 +2,7 @@ package clienttelemetry
 
 import (
 	"context"
+	"errors"
 	"math/rand"
 	"net/http"
 	"sync"
@@ -250,13 +251,16 @@ func (m *Manager) Record(event, relayID string, attrs map[string]string, meas ma
 		Attributes:    merged,
 		Measurements:  meas,
 	}
-	if m.store != nil {
+	if m.store != nil && m.store.Enqueue(built) {
 		// The store has its own lock and lands the event on disk; holding
 		// m.mu across it is fine (the store never calls back), and keeps
 		// Record atomic with the session snapshot above.
-		m.store.Enqueue(built)
 		return
 	}
+	// No store, or the store is unavailable this operation (locked out,
+	// unreadable): fall back to the in-memory queue, the behavior a host
+	// without a durable directory has always had — a broken outbox must
+	// degrade telemetry's durability, never silence it. Flush drains both.
 	m.enqueueLocked(built)
 }
 
@@ -309,9 +313,9 @@ func (m *Manager) Heartbeat(ctx context.Context) error {
 		m.mu.Unlock()
 		// The outbox owns the piggyback policy: the queue head rides along
 		// only when it matches the heartbeat's own identity, so a historical
-		// backlog never delays the cadence. The remainder drains here, like
-		// the memory path's post-heartbeat flush.
-		if _, pending, err := store.SendHeartbeat(ctx, m.poster.BaseURL, heartbeat); err != nil || pending == 0 {
+		// backlog never delays the cadence. The remainder — and any events
+		// the in-memory fallback holds — drains through Flush afterwards.
+		if _, _, err := store.SendHeartbeat(ctx, m.poster.BaseURL, heartbeat); err != nil {
 			return err
 		}
 		return m.Flush(ctx)
@@ -338,18 +342,26 @@ func (m *Manager) Flush(ctx context.Context) error {
 	store := m.store
 	m.mu.Unlock()
 	if store != nil {
+	storeDrain:
 		for {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
 			_, pending, err := store.FlushNextBatch(ctx, m.poster.BaseURL)
-			if err != nil {
+			switch {
+			case errors.Is(err, ErrOutboxUnavailable):
+				// The store is not ours this operation (locked out, unreadable);
+				// its events belong to the owner. The in-memory fallback below
+				// is exactly for this — drain it instead of failing.
+				break storeDrain
+			case err != nil:
 				return err
-			}
-			if pending == 0 {
-				return nil
+			case pending == 0:
+				break storeDrain
 			}
 		}
+		// Fall through: the in-memory queue may hold events recorded while
+		// the store was unavailable (or before it was attached).
 	}
 	for {
 		m.mu.Lock()

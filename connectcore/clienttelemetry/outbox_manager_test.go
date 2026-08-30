@@ -2,6 +2,10 @@ package clienttelemetry
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/openrung/openrung/brokerapi"
@@ -127,5 +131,70 @@ func TestManagerPersistentOutboxCarriesEventsAcrossSessions(t *testing.T) {
 	}
 	if ended != 1 {
 		t.Fatal("the stranded session's connection_ended never reached the broker")
+	}
+}
+
+// An unavailable outbox (another process owns it, an unreadable file) must
+// degrade telemetry's DURABILITY, never silence it: Record falls back to the
+// in-memory queue, and Flush drains that fallback — along with anything
+// recorded before the store was attached.
+func TestManagerFallsBackToMemoryWhenTheOutboxIsUnavailable(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("AppData", tmp)
+
+	// A loopback broker for the manager's own (memory-path) poster.
+	var mu sync.Mutex
+	var wire []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Events []Event `json:"events"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		for _, event := range body.Events {
+			wire = append(wire, event.EventID)
+		}
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	directory := t.TempDir()
+	broker := &outboxTestBroker{}
+	owner, err := NewOutbox(directory, testOutboxFileName, broker.send)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(owner.Close)
+	owner.Enqueue(testOutboxEvent("owner-holds-the-lock", "x", "c", "s")) // takes the flock
+	lockedOut, err := NewOutbox(directory, testOutboxFileName, broker.send)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(lockedOut.Close)
+
+	mgr, err := New(server.URL, "1.0.0", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.BeginSession(); err != nil {
+		t.Fatal(err)
+	}
+	// Recorded BEFORE the store attaches: must not be stranded by it.
+	mgr.Record("connection_attempted", "", nil, nil)
+	mgr.UsePersistentOutbox(lockedOut)
+	// Recorded through the unavailable store: must fall back to memory.
+	mgr.Record("connection_succeeded", "relay-9", nil, nil)
+
+	if err := mgr.Flush(context.Background()); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	mu.Lock()
+	delivered := len(wire)
+	mu.Unlock()
+	if delivered != 2 {
+		t.Fatalf("delivered %d events, want both the pre-attach and the fallback event", delivered)
 	}
 }

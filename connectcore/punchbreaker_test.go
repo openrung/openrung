@@ -256,3 +256,76 @@ func TestPunchFlappingOpensTheRecoveryCircuitAndFallsBackToTheHub(t *testing.T) 
 		t.Fatalf("punch_attempted = %d; want the three attempts before the circuit opened", len(attempts))
 	}
 }
+
+// The finding-1 regression: in TUN mode the health loop deliberately skips
+// its own network-alive gate, so a health-triggered punched-path loss must be
+// probed HERE — a physical network outage is an exempt loss (Android's
+// countTowardBreaker=false when physicalNetworkAlive() fails), never punch
+// instability, and the circuit must not open however many times it repeats.
+func TestTUNHealthLossesDuringNetworkOutageAreExemptFromThePunchBreaker(t *testing.T) {
+	sink := newTelemetrySink(t)
+	fixture := relayAt("relay-a", "JP", "Tokyo", "Japan", "127.0.0.10")
+	fixture.PunchCapable = true
+	s, _ := newLadderService(t, func() []brokerapi.RelayDescriptor { return []brokerapi.RelayDescriptor{fixture} })
+	s.Elevation = permitElevation{}
+	if err := s.SetMode(ModeTUN); err != nil {
+		t.Fatal(err)
+	}
+	s.PunchEnabled = true
+	s.healthTick = 5 * time.Millisecond
+	s.networkRetryDelay = 2 * time.Millisecond
+	s.punchBreakerConfig = punchBreakerConfig{
+		initialBackoff:    time.Millisecond,
+		maxBackoff:        2 * time.Millisecond,
+		pickJitteredDelay: minJitter,
+	}
+	s.PunchEstablisher = func(context.Context, punchcore.HubClient, string) (*PunchPath, punchcore.PunchResult, error) {
+		return &PunchPath{
+			BridgeHost: "127.0.0.1", BridgePort: 45112, PeerIP: "203.0.113.7",
+			NATClass: "eim", Bridge: fakePunchBridge{},
+		}, punchcore.PunchResult{NATClass: "eim"}, nil
+	}
+	// The physical network is down for the whole flapping phase: the exempt
+	// decision (first networkAlive call of each recovery) sees it down; the
+	// recovery gate's later calls see it back so the re-ladder proceeds.
+	var aliveCalls atomic.Int32
+	var outageOver atomic.Bool
+	s.checkNetworkAlive = func(context.Context, []string) bool {
+		if outageOver.Load() {
+			return true
+		}
+		return aliveCalls.Add(1)%2 == 0 // decision call down, recovery-gate call up
+	}
+	var probesFailing atomic.Bool
+	probesFailing.Store(true)
+	s.healthProbe = func(context.Context, int) error {
+		if probesFailing.Load() {
+			return errors.New("through-tunnel probe blackholed")
+		}
+		return nil
+	}
+
+	if err := s.Connect(sink.srv.URL, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	// Well past the three losses that would open the circuit if they counted.
+	deadline := time.Now().Add(10 * time.Second)
+	for len(sink.named("punch_attempted")) < 5 {
+		if time.Now().After(deadline) {
+			t.Fatalf("punch attempts = %d; recoveries stalled\nlog:\n%s", len(sink.named("punch_attempted")), logLines(s))
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	probesFailing.Store(false)
+	outageOver.Store(true)
+
+	if skips := sink.named("punch_skipped"); len(skips) != 0 {
+		t.Fatalf("exempt losses opened the circuit: %+v", skips)
+	}
+	if fallbacks := sink.named("punch_fallback"); len(fallbacks) != 0 {
+		t.Fatalf("exempt losses recorded punch_fallback: %+v", fallbacks)
+	}
+	_ = s.Disconnect()
+	waitForStatus(t, s, StatusDisconnected)
+	waitIdle(t, s)
+}

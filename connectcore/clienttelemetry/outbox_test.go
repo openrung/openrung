@@ -3,6 +3,7 @@ package clienttelemetry
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -807,5 +808,70 @@ func TestOutboxCancelledSendCommitsNothing(t *testing.T) {
 	}
 	if got := outbox.PendingCount(); got != 1 {
 		t.Fatalf("a cancelled send must commit nothing, have %d queued", got)
+	}
+}
+
+// A truncated legacy array (a process kill mid-write) yields its decodable
+// prefix instead of an empty queue durably replacing the backlog — the
+// element-by-element salvage extends to the array itself.
+func TestOutboxTruncatedLegacyArraySalvagesThePrefix(t *testing.T) {
+	directory := t.TempDir()
+	truncated := `[` +
+		`{"schema_version":1,"event_id":"keep-1","event":"connection_failed","occurred_at":"2026-07-01T08:00:00Z","client_id":"c","session_id":"s"},` +
+		`{"schema_version":1,"event_id":"keep-2","event":"connection_ended","occurred_at":"2026-07-01T08:01:00Z","client_id":"c","session_id":"s"},` +
+		`{"schema_version":1,"event_id":"torn","event":"conne` // the kill point
+	if err := os.WriteFile(filepath.Join(directory, "outbox.json"), []byte(truncated), 0o600); err != nil {
+		t.Fatalf("writing truncated legacy outbox: %v", err)
+	}
+
+	broker := &outboxTestBroker{}
+	outbox, err := NewOutbox(directory, "outbox.json", broker.send)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(outbox.Close)
+	if got := outbox.PendingCount(); got != 2 {
+		t.Fatalf("truncated array salvaged %d events, want the 2 decodable ones", got)
+	}
+	migrated, err := os.ReadFile(filepath.Join(directory, "outbox.json"))
+	if err != nil || len(migrated) == 0 || migrated[0] == '[' {
+		t.Fatalf("salvage did not land the NDJSON migration: %v", err)
+	}
+	drainOutbox(t, outbox, testOutboxBrokerURL)
+	if got := broker.receivedEventIDs(); len(got) != 2 || got[0] != "keep-1" || got[1] != "keep-2" {
+		t.Fatalf("salvaged prefix lost: %v", got)
+	}
+}
+
+// A batch the broker permanently refuses (the send function wraps
+// ErrBatchRejected) is discarded instead of wedging the queue behind it —
+// while a rejected heartbeat piggyback discards nothing, since the rejection
+// may be the heartbeat's own.
+func TestOutboxDiscardsAPermanentlyRejectedHeadBatch(t *testing.T) {
+	directory := t.TempDir()
+	broker := &outboxTestBroker{}
+	outbox := testOutbox(t, directory, broker)
+	outbox.Enqueue(testOutboxEvent("poison", "connection_failed", "c", "session-1"))
+	outbox.Enqueue(testOutboxEvent("healthy", "connection_failed", "c", "session-2"))
+
+	broker.setFail(fmt.Errorf("%w: broker says 400", ErrBatchRejected))
+	sent, pending, err := outbox.FlushNextBatch(context.Background(), testOutboxBrokerURL)
+	if err == nil || !errors.Is(err, ErrBatchRejected) {
+		t.Fatalf("rejection must still surface: sent=%d err=%v", sent, err)
+	}
+	if pending != 1 {
+		t.Fatalf("the poison batch must be discarded (pending=%d, want the healthy session's 1)", pending)
+	}
+
+	// A rejected heartbeat commits nothing.
+	hbSent, hbPending, hbErr := outbox.SendHeartbeat(context.Background(), testOutboxBrokerURL, testOutboxEvent("hb", "session_heartbeat", "c", "session-2"))
+	if hbErr == nil || hbSent != 0 || hbPending != 1 {
+		t.Fatalf("rejected heartbeat must discard nothing: sent=%d pending=%d err=%v", hbSent, hbPending, hbErr)
+	}
+
+	broker.setFail(nil)
+	drainOutbox(t, outbox, testOutboxBrokerURL)
+	if got := broker.receivedEventIDs(); len(got) != 1 || got[0] != "healthy" {
+		t.Fatalf("the queue behind the poison batch never drained: %v", got)
 	}
 }

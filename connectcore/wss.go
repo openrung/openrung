@@ -283,7 +283,12 @@ func (s *Engine) requestWSSSessionTicket(
 		if retryAfter >= time.Until(deadline) {
 			// The wait cannot fit the shared budget: surface the first error
 			// now instead of sleeping past the deadline (mobile's strict
-			// wait-fits gate). The once-per-ladder retry stays unconsumed.
+			// wait-fits gate). Deliberate behavior change from the engine's
+			// pre-deadline ladder: a Retry-After hint beyond the remaining
+			// budget — including one clamped to the 30s cap — no longer holds
+			// this rung for up to half a minute; the rung fails, the ladder
+			// moves on, and the once-per-ladder retry stays unconsumed for a
+			// later rung whose hint fits. This is the shipping mobile policy.
 			return brokerapi.WSSTicketResponse{}, firstErr
 		}
 		conn.wssTicketRetryUsed = true
