@@ -1,11 +1,13 @@
 // Package contract serves the golden contract vectors in contract/vectors to
 // the Go test suites that check them.
 //
-// The vectors describe load-bearing behavior that four suites across two repos
-// must agree on — failure classification, relay-directory decoding, and the
-// broker-front list — and the mobile repo vendors the same files for its
-// Kotlin, Swift, and TypeScript suites. Each file carries its own doc header
-// stating that rule and the version-bump discipline that goes with it.
+// The vectors describe load-bearing behavior that suites across two repos
+// must agree on — failure classification, relay-directory decoding, the
+// broker-front list, and the engine's event sequences — and the mobile repo
+// vendors the same files for its own suites. Each file names its consumers in
+// a suites field (plus pending_suites for consumers whose runners are still
+// arriving) and carries its own doc header stating that rule and the
+// version-bump discipline that goes with it.
 //
 // The files are embedded rather than read by path so a test can load them from
 // any package without a relative path that breaks when the caller moves. Only

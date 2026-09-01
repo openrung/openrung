@@ -11,10 +11,10 @@
   "comment": "Golden cross-repo vectors for the engine state machine's observable behavior (ADR-003 A4): each scenario scripts an initial relay directory, canonical transport outcomes, and a timeline of host actions, and freezes the three ordered output streams the engine must produce for them — status transitions, typed notices, and telemetry events with their failure tokens. The Go suite (connectcore/sequence_vectors_test.go) drives the real engine through the A1 stub tunnel runtime and the A2 platform-signal seams and compares whole sequences; the expected blocks are GENERATED from that engine (see 'regenerate'), so an engine change that alters observable behavior fails the suite and forces a deliberate regeneration plus a version bump, which is what carries the change into every vendored copy. The pending suites arrive with ADR-003 Track B: the mobile repo's punchbridge Go suite first runs these scenarios against the gomobile-bound engine (covered by the same vendored-copy check as the other files), and the Kotlin and Swift suites graduate from pending to consuming when the platform adapters can be driven through the same scenario timeline. There is deliberately no 'ts' suite, for classification.json's reason: the React Native layer renders engine state, it never orchestrates a connect, so there is no TypeScript state machine to run a scenario against.",
   "format": {
     "directory": "The relay directory the scripted broker serves, in broker order. Rows are relay identities: 'id', 'country_code', 'city', 'country' name the relay; 'wss_fronts' lists the ids of signed WSS fronts advertised on it (their URLs and protocol versions are the driver's business); 'punch_capable' marks it eligible for NAT punching. Network addresses never appear in a scenario — each driver assigns its own loopback endpoints.",
-    "script": "Canonical transport outcomes, fixed before the timeline runs. 'dials': per-relay direct TCP dial outcome as a cause token (relays not listed are reachable); every dial to that relay fails the same way. 'punch': enables punching with an establisher that always fails, reporting the given reason — the hub-fallback shape. 'hold_first_ready': the first candidate attempt's readiness probe blocks until a release_ready step, opening a deterministic window for mid-connect injections; later attempts pass immediately. 'telemetry_held_until_released': the broker refuses telemetry uploads (HTTP 503) until a release_telemetry step, so recorded events accumulate as a pending backlog.",
-    "causes": "Cause tokens name the canonical error a driver must construct: 'connection_refused' is a dial failure wrapping ECONNREFUSED, whose failure_reason token is pinned by classification.json; 'unclassified' is an error with no classifiable shape, the deliberate stand-in for runtime-specific failures (a tunnel process death) whose classification belongs to the runtime and the classification vectors, not to this sequence contract. A canonical error renders the fixed text these vectors freeze ('scripted dial: connection refused'), never the platform's own errno string — the typed cause drives classification, the fixed text drives the notice reasons.",
+    "script": "Canonical transport outcomes, fixed before the timeline runs. 'dials': per-relay direct TCP dial outcome as a cause token (relays not listed are reachable); every dial to that relay fails the same way. 'punch': enables punching with an establisher that always fails, reporting the given reason — the hub-fallback shape. 'hold_first_ready': every readiness probe blocks until a release_ready step, opening a deterministic window for mid-connect injections; probes reached after the release pass immediately. 'telemetry_held_until_released': the broker refuses telemetry uploads (HTTP 503) until a release_telemetry step, so recorded events accumulate as a pending backlog.",
+    "causes": "Cause tokens name the canonical error a driver must construct: 'connection_refused' is a dial failure wrapping ECONNREFUSED, whose failure_reason token is pinned by classification.json; 'unclassified' is an error with no classifiable shape, the deliberate stand-in for runtime-specific failures (a tunnel process death) whose classification belongs to the runtime and the classification vectors, not to this sequence contract. Only a canonical error's typed cause matters — it drives classification; its rendered text never appears in the projected streams, so drivers may render it however they like.",
     "steps": "The timeline, run in order; await steps are synchronization points with a generous driver-owned deadline. 'connect' starts a default (untargeted) connect against the scripted broker. 'await_status' waits until 'status' has appeared 'count' times (default 1) in the collapsed status stream. 'await_notice' waits until 'count' notices of 'kind' have been emitted. 'network' feeds one platform observation into UpdateNetworkState ('up' + 'fingerprint'). 'crash_tunnel' makes the live tunnel run exit with 'cause' (default 'unclassified'). 'await_ready_hold' waits until the held readiness probe is reached; 'release_ready' releases it. 'release_telemetry' lets the broker accept telemetry uploads. 'disconnect' is the user disconnect. 'shutdown' calls Shutdown with 'flush_budget_ms' and requires the terminal flush to succeed within it.",
-    "expect": "Three ordered streams, compared exactly. 'statuses': the engine status transitions as delivered to the host sink, with consecutive duplicates collapsed — the contract is over transitions, never emission counts. 'notices': every typed notice in emission order, projected to kind, relay_id, from_relay_id, front_id, reason, failures, threshold (wait durations are timing, not sequence, and are excluded). 'events': every telemetry event in broker arrival order, deduplicated by event id like the real ingest, with session_heartbeat excluded (cadence-driven, not sequence-driven) and attributes projected per 'attribute_projection'.",
+    "expect": "Three ordered streams, compared exactly. 'statuses': the engine status transitions as delivered to the host sink, with consecutive duplicates collapsed — the contract is over transitions, never emission counts. 'notices': every typed notice in emission order, projected to its structural fields — kind, relay_id, from_relay_id, front_id, failures, threshold. A notice's reason is human-readable presentation (engine display prose, or a wrapped failure's error text) and is excluded for the same reason the event projection excludes failure_detail; the trigger distinctions the contract needs ride the telemetry attributes instead. Wait durations are timing, not sequence, and are likewise excluded. 'events': every telemetry event in broker arrival order, deduplicated by event id like the real ingest, with session_heartbeat excluded (cadence-driven, not sequence-driven) and attributes projected per 'attribute_projection'.",
     "attribute_projection": "Expected events carry exactly the contract-bearing attribute keys: transport, from_transport, to_transport, front_id, trigger, reason, nat_class, from_relay_id, failure_reason, failure_stage. Everything else on a real event — failure_detail (host error text), geo attributes, platform labels, and all measurements — is host-variant metadata outside this contract, and a suite must ignore it rather than assert it.",
     "determinism": "Scenarios are deterministic by construction: periodic engine activity (health sweeps, heartbeats) is suppressed so nothing fires except what a step provokes, transport outcomes are scripted, and the geo lookup is stubbed out. A driver must reproduce those conditions, run each scenario's timeline, and compare the full projected streams."
   },
@@ -132,8 +132,7 @@
           {
             "kind": "wss_fallback",
             "relay_id": "relay-a",
-            "front_id": "front-a",
-            "reason": "scripted dial: connection refused"
+            "front_id": "front-a"
           }
         ],
         "events": [
@@ -180,7 +179,7 @@
     },
     {
       "id": "tunnel_death_fails_over_mid_session",
-      "description": "The promoted tunnel process dies mid-session: the engine returns to connecting (never disconnected), dents the dying relay with a bare relay_attempt_failed, emits failover_started, runs one automatic recovery pass that demotes the failed relay to the end of the fresh ladder, and promotes the other relay — recorded as one relay_failover (not a second connection_succeeded) plus failover_completed carrying the trigger reason.",
+      "description": "The promoted tunnel process dies mid-session: the engine returns to connecting (never disconnected), dents the dying relay with a bare relay_attempt_failed, emits failover_started, runs one automatic recovery pass that demotes the failed relay to the end of the fresh ladder, and promotes the other relay — recorded as one relay_failover (not a second connection_succeeded) plus failover_completed naming the old and new relays.",
       "directory": [
         {
           "id": "relay-a",
@@ -236,14 +235,12 @@
         "notices": [
           {
             "kind": "failover_started",
-            "from_relay_id": "relay-a",
-            "reason": "tunnel process exited unexpectedly"
+            "from_relay_id": "relay-a"
           },
           {
             "kind": "failover_completed",
             "relay_id": "relay-b",
-            "from_relay_id": "relay-a",
-            "reason": "tunnel process exited unexpectedly"
+            "from_relay_id": "relay-a"
           }
         ],
         "events": [
@@ -331,8 +328,7 @@
         "notices": [
           {
             "kind": "punch_outcome",
-            "relay_id": "relay-a",
-            "reason": "failed (hub_declined); using relay hub"
+            "relay_id": "relay-a"
           }
         ],
         "events": [
@@ -449,36 +445,30 @@
         ],
         "notices": [
           {
-            "kind": "network_epoch",
-            "reason": "physical network epoch changed"
+            "kind": "network_epoch"
           },
           {
             "kind": "wss_fallback",
             "relay_id": "relay-a",
-            "front_id": "front-a",
-            "reason": "scripted dial: connection refused"
+            "front_id": "front-a"
           },
           {
-            "kind": "network_epoch",
-            "reason": "physical network epoch changed"
+            "kind": "network_epoch"
           },
           {
             "kind": "failover_started",
-            "from_relay_id": "relay-a",
-            "reason": "physical network epoch changed"
+            "from_relay_id": "relay-a"
           },
           {
             "kind": "wss_fallback",
             "relay_id": "relay-a",
-            "front_id": "front-a",
-            "reason": "scripted dial: connection refused"
+            "front_id": "front-a"
           },
           {
             "kind": "failover_completed",
             "relay_id": "relay-a",
             "from_relay_id": "relay-a",
-            "front_id": "front-a",
-            "reason": "physical network epoch changed"
+            "front_id": "front-a"
           }
         ],
         "events": [
@@ -610,8 +600,7 @@
         ],
         "notices": [
           {
-            "kind": "network_epoch",
-            "reason": "physical network epoch changed"
+            "kind": "network_epoch"
           },
           {
             "kind": "health_probe",

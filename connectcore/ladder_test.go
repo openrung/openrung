@@ -22,9 +22,12 @@ import (
 
 // telemetrySink is a loopback broker that records every telemetry event the
 // service flushes (loopback endpoints are exempt from the HTTPS requirement,
-// like the relay-list signing exemption).
+// like the relay-list signing exemption). While held (hold/release), it
+// refuses every upload with 503 so recorded events accumulate as a pending
+// backlog — the sequence vectors' shutdown scenario.
 type telemetrySink struct {
 	mu     sync.Mutex
+	held   bool
 	events []clienttelemetry.Event
 	seen   map[string]bool
 	srv    *httptest.Server
@@ -34,26 +37,56 @@ func newTelemetrySink(t *testing.T) *telemetrySink {
 	t.Helper()
 	sink := &telemetrySink{seen: map[string]bool{}}
 	sink.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sink.mu.Lock()
+		defer sink.mu.Unlock()
+		if sink.held {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
 		var batch struct {
 			Events []clienttelemetry.Event `json:"events"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&batch); err == nil {
-			sink.mu.Lock()
-			for _, event := range batch.Events {
-				// The manager is at-least-once (concurrent flushes may resend a
-				// snapshot); dedupe by event id like the real broker ingest.
-				if sink.seen[event.EventID] {
-					continue
-				}
-				sink.seen[event.EventID] = true
-				sink.events = append(sink.events, event)
+		if err := json.NewDecoder(r.Body).Decode(&batch); err != nil {
+			// Never acknowledge a batch that was not recorded: a 204 here
+			// would tell the manager to drop events this sink discarded.
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		for _, event := range batch.Events {
+			// The manager is at-least-once (concurrent flushes may resend a
+			// snapshot); dedupe by event id like the real broker ingest.
+			if sink.seen[event.EventID] {
+				continue
 			}
-			sink.mu.Unlock()
+			sink.seen[event.EventID] = true
+			sink.events = append(sink.events, event)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	t.Cleanup(sink.srv.Close)
 	return sink
+}
+
+func (sink *telemetrySink) hold() {
+	sink.mu.Lock()
+	sink.held = true
+	sink.mu.Unlock()
+}
+
+func (sink *telemetrySink) release() {
+	sink.mu.Lock()
+	sink.held = false
+	sink.mu.Unlock()
+}
+
+// snapshot copies the full arrival-ordered event stream, for suites (the
+// sequence vectors) that compare whole sequences rather than single events.
+func (sink *telemetrySink) snapshot() []clienttelemetry.Event {
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	out := make([]clienttelemetry.Event, len(sink.events))
+	copy(out, sink.events)
+	return out
 }
 
 func (sink *telemetrySink) named(name string) []clienttelemetry.Event {

@@ -123,10 +123,15 @@ func attachGeoAttributes(mgr *clienttelemetry.Manager, httpClient *http.Client) 
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), geoLookupTimeout)
 	g := &geoLookup{cancel: cancel, done: make(chan struct{})}
+	// Snapshot the package var on the caller's goroutine: the lookup is
+	// abandoned, never awaited, so a test that swaps and later restores the
+	// stub has no ordering against a read inside the goroutine — while a read
+	// here is ordered by the connect flow the test drives around it.
+	lookup := lookupGeoAttributes
 	go func() {
 		defer close(g.done)
 		defer cancel()
-		mgr.SetGeoAttributes(lookupGeoAttributes(ctx, httpClient))
+		mgr.SetGeoAttributes(lookup(ctx, httpClient))
 	}()
 	return g
 }

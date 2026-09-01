@@ -1,13 +1,14 @@
 package connectcore
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"reflect"
 	"sync"
 	"syscall"
@@ -17,7 +18,6 @@ import (
 	"github.com/openrung/openrung/brokerapi"
 	"github.com/openrung/openrung/punchcore"
 
-	"github.com/openrung/openrung/connectcore/clienttelemetry"
 	"github.com/openrung/openrung/connectcore/contract"
 )
 
@@ -116,12 +116,18 @@ type sequenceExpected struct {
 	Events   []sequenceEvent  `json:"events"`
 }
 
+// sequenceNotice is the notice projection: the structural fields only.
+// Notice.Reason is deliberately absent — it is human-readable presentation
+// (engine display prose, or a wrapped failure's error text), excluded for the
+// same reason the event projection excludes failure_detail; the trigger
+// distinctions the contract needs ride the telemetry attributes instead
+// (transport_session_ended's trigger, punch_failed's reason token). Wait
+// durations are timing, not sequence, and are likewise excluded.
 type sequenceNotice struct {
 	Kind        string `json:"kind"`
 	RelayID     string `json:"relay_id,omitempty"`
 	FromRelayID string `json:"from_relay_id,omitempty"`
 	FrontID     string `json:"front_id,omitempty"`
-	Reason      string `json:"reason,omitempty"`
 	Failures    int    `json:"failures,omitempty"`
 	Threshold   int    `json:"threshold,omitempty"`
 }
@@ -142,9 +148,10 @@ var sequenceAttrKeys = []string{
 }
 
 // scriptedError renders a fixed message while unwrapping to its typed cause:
-// classification sees the canonical errno, but the text — which the vectors
-// freeze wherever a notice reason carries the failure — never varies with the
-// platform's errno strings (Windows spells them differently).
+// classification sees the canonical errno, while the rendered text — which is
+// never part of the contract (the projections exclude error prose) — stays
+// deterministic for debugging instead of varying with the platform's errno
+// strings (Windows spells them differently).
 type scriptedError struct {
 	msg   string
 	cause error
@@ -173,66 +180,25 @@ func scriptedCause(t *testing.T, cause string) error {
 
 const sequenceStepTimeout = 10 * time.Second
 
-// sequenceTelemetrySink is the loopback broker for sequence scenarios: it
-// records every telemetry event in arrival order (deduplicating by event id,
-// like the real ingest), and can hold uploads — refusing every batch with 503
-// — until a release_telemetry step lets them through, which is how the
-// shutdown-with-pending-telemetry scenario builds its backlog.
-type sequenceTelemetrySink struct {
-	mu     sync.Mutex
-	accept bool
-	events []clienttelemetry.Event
-	seen   map[string]bool
-	srv    *httptest.Server
-}
-
-func newSequenceTelemetrySink(t *testing.T, accept bool) *sequenceTelemetrySink {
-	t.Helper()
-	sink := &sequenceTelemetrySink{accept: accept, seen: map[string]bool{}}
-	sink.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sink.mu.Lock()
-		defer sink.mu.Unlock()
-		if !sink.accept {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			return
-		}
-		var batch struct {
-			Events []clienttelemetry.Event `json:"events"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&batch); err == nil {
-			for _, event := range batch.Events {
-				if sink.seen[event.EventID] {
-					continue
-				}
-				sink.seen[event.EventID] = true
-				sink.events = append(sink.events, event)
-			}
-		}
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	t.Cleanup(sink.srv.Close)
-	return sink
-}
-
-func (sink *sequenceTelemetrySink) release() {
-	sink.mu.Lock()
-	sink.accept = true
-	sink.mu.Unlock()
-}
-
-func (sink *sequenceTelemetrySink) snapshot() []clienttelemetry.Event {
-	sink.mu.Lock()
-	defer sink.mu.Unlock()
-	out := make([]clienttelemetry.Event, len(sink.events))
-	copy(out, sink.events)
-	return out
-}
-
 func TestEventSequenceVectors(t *testing.T) {
 	var file sequenceVectorFile
 	if err := contract.LoadVersioned(contract.EventSequenceVectors, eventSequenceVectorsVersion, &file); err != nil {
 		t.Fatal(err)
 	}
+	// The regeneration path marshals sequenceVectorFile back over the file, so
+	// any JSON field the struct does not mirror would be silently deleted on
+	// the next regen. Strict-decode to make that drift a failure now, not a
+	// lost field later.
+	raw, err := contract.Raw(contract.EventSequenceVectors)
+	if err != nil {
+		t.Fatal(err)
+	}
+	strict := json.NewDecoder(bytes.NewReader(raw))
+	strict.DisallowUnknownFields()
+	if err := strict.Decode(&sequenceVectorFile{}); err != nil {
+		t.Fatalf("the vector file carries a field the Go mirror struct does not: %v — add it to the struct (regeneration would silently delete it)", err)
+	}
+
 	seen := map[string]bool{}
 	for _, sc := range file.Scenarios {
 		if seen[sc.ID] {
@@ -265,7 +231,7 @@ func TestEventSequenceVectors(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		path := "contract/vectors/event_sequence.json"
+		path := filepath.Join("contract", "vectors", contract.EventSequenceVectors)
 		if err := os.WriteFile(path, append(blob, '\n'), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -278,7 +244,10 @@ func TestEventSequenceVectors(t *testing.T) {
 // output streams the contract freezes.
 func runSequenceScenario(t *testing.T, sc *sequenceScenario) sequenceExpected {
 	t.Helper()
-	sink := newSequenceTelemetrySink(t, !sc.Script.TelemetryHeld)
+	sink := newTelemetrySink(t)
+	if sc.Script.TelemetryHeld {
+		sink.hold()
+	}
 
 	// The directory: hosts are the driver's business (the file scripts relay
 	// identities, not addresses), assigned deterministically by position. The
@@ -287,6 +256,7 @@ func runSequenceScenario(t *testing.T, sc *sequenceScenario) sequenceExpected {
 	// on engine goroutines, where t.Fatalf must never be called.
 	hostCause := map[string]error{}
 	frontFor := map[string]brokerapi.RelayWSSFront{}
+	relayIDs := map[string]bool{}
 	relays := make([]brokerapi.RelayDescriptor, 0, len(sc.Directory))
 	for i, row := range sc.Directory {
 		host := fmt.Sprintf("127.0.0.%d", 10+i)
@@ -304,10 +274,16 @@ func runSequenceScenario(t *testing.T, sc *sequenceScenario) sequenceExpected {
 		}
 		relay.PunchCapable = row.PunchCapable
 		relays = append(relays, relay)
+		relayIDs[row.ID] = true
 		for _, dial := range sc.Script.Dials {
 			if dial.Relay == row.ID {
 				hostCause[host] = scriptedCause(t, dial.Cause)
 			}
+		}
+	}
+	for _, dial := range sc.Script.Dials {
+		if !relayIDs[dial.Relay] {
+			t.Fatalf("script dials relay %q, which the directory does not serve", dial.Relay)
 		}
 	}
 
@@ -335,7 +311,10 @@ func runSequenceScenario(t *testing.T, sc *sequenceScenario) sequenceExpected {
 		return 1, nil
 	}
 
-	crash := make(chan error, 1)
+	// Unbuffered: a crash_tunnel step hands its error directly to a live
+	// tunnel run, so a crash nothing is running to receive fails the step
+	// rather than silently poisoning a later run.
+	crash := make(chan error)
 	s.TunnelRuntime = runFuncRuntime(func(ctx context.Context, _ []byte) error {
 		select {
 		case err := <-crash:
@@ -372,8 +351,12 @@ func runSequenceScenario(t *testing.T, sc *sequenceScenario) sequenceExpected {
 		}
 	}
 
+	// With hold_first_ready, every readiness probe blocks until release_ready;
+	// probes after the release pass immediately (the channel stays closed) —
+	// the semantics the file's format note documents.
 	readyGate := make(chan struct{}, 1)
 	releaseReady := make(chan struct{})
+	readyReleased := false
 	if sc.Script.HoldFirstReady {
 		s.tunnelReady = func(ctx context.Context, _ int) error {
 			select {
@@ -424,14 +407,31 @@ func runSequenceScenario(t *testing.T, sc *sequenceScenario) sequenceExpected {
 			}
 			s.UpdateNetworkState(NetworkState{Up: *step.Up, Fingerprint: step.Fingerprint})
 		case "crash_tunnel":
-			crash <- scriptedCause(t, step.Cause)
+			// The send must be consumed by a live tunnel run; a bounded wait
+			// turns a mis-scripted crash (no session, or two crashes for one
+			// run) into a step failure instead of a wedged test goroutine.
+			select {
+			case crash <- scriptedCause(t, step.Cause):
+			case <-time.After(sequenceStepTimeout):
+				fail("no tunnel run consumed the previous crash; is a session live?")
+			}
 		case "await_ready_hold":
+			if !sc.Script.HoldFirstReady {
+				fail("await_ready_hold without script.hold_first_ready")
+			}
 			select {
 			case <-readyGate:
 			case <-time.After(sequenceStepTimeout):
 				fail("timed out waiting for the held readiness probe")
 			}
 		case "release_ready":
+			if !sc.Script.HoldFirstReady {
+				fail("release_ready without script.hold_first_ready")
+			}
+			if readyReleased {
+				fail("release_ready scripted twice")
+			}
+			readyReleased = true
 			close(releaseReady)
 		case "release_telemetry":
 			sink.release()
@@ -464,7 +464,6 @@ func runSequenceScenario(t *testing.T, sc *sequenceScenario) sequenceExpected {
 			RelayID:     notice.RelayID,
 			FromRelayID: notice.FromRelayID,
 			FrontID:     notice.FrontID,
-			Reason:      notice.Reason,
 			Failures:    notice.Failures,
 			Threshold:   notice.Threshold,
 		})
