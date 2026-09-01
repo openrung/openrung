@@ -21,12 +21,13 @@ import (
 //go:embed vectors/*.json
 var vectorFS embed.FS
 
-// ClassificationVectors, RelayDecodeVectors, and BrokerFrontsVectors name the
-// vector files. Callers pass one to Load.
+// ClassificationVectors, RelayDecodeVectors, BrokerFrontsVectors, and
+// EventSequenceVectors name the vector files. Callers pass one to Load.
 const (
 	ClassificationVectors = "classification.json"
 	RelayDecodeVectors    = "relay_decode.json"
 	BrokerFrontsVectors   = "broker_fronts.json"
+	EventSequenceVectors  = "event_sequence.json"
 )
 
 // Raw returns the exact bytes of one vector file.

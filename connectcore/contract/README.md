@@ -9,6 +9,7 @@ of all of them:
 | `classification.json` | The closed `failure_reason` token set and the ladder that produces it | go, kotlin, swift | `connectcore/clienttelemetry/classify.go`, `FailureClassifier.kt`, `FailureClassifier.swift` |
 | `relay_decode.json` | Decoding a signed relay directory, and the usability filter over it | go, kotlin, swift, ts | `brokerapi`'s wire validation and exported relay schema, `connectcore/client`'s selector, `src/model/relay.ts` |
 | `broker_fronts.json` | The advertised broker fronts and the order discovery races them in | go, kotlin, swift, ts | `brokerapi.DefaultBrokerURLs`, `BrokerCandidates`, `EndpointUnboundBrokerFront`, and each client's hardcoded front list |
+| `event_sequence.json` | The engine state machine's observable behavior: scripted connect scenarios and the ordered status/notice/telemetry streams they must produce | go (kotlin, swift pending) | `connectcore`'s connect ladder, supervisor, and lifecycle, via `connectcore/sequence_vectors_test.go` |
 
 Each file carries its own doc header naming its consumers and describing the
 shape of its rows. Read that header before editing one.
@@ -24,10 +25,20 @@ suite that no row is claimed by is worse than omitting it: that suite iterates
 the file, asserts nothing, and passes green forever, which reads as coverage.
 `TestClassificationVectorsSuiteDeclaration` fails on exactly that.
 
+A file may also declare `pending_suites`: suites that are committed to
+consuming it but do not run it yet. It is a routing declaration without the
+vacuous-green problem — a change to the file still has to reach those suites'
+vendored copies, but nothing iterates the file asserting nothing. A pending
+suite graduates by moving into `suites` in the same PR that wires its runner.
+`event_sequence.json` ships with kotlin and swift pending: its scenarios can
+only run against the bound engine, which arrives with ADR-003 Track B.
+
 - **Go** (this repo): `connectcore/contract/relay_decode_test.go`,
-  `connectcore/contract/broker_fronts_test.go`, and
-  `connectcore/clienttelemetry/contract_vectors_test.go`. They load the files
-  through the `contract` package, which embeds them.
+  `connectcore/contract/broker_fronts_test.go`,
+  `connectcore/clienttelemetry/contract_vectors_test.go`, and
+  `connectcore/sequence_vectors_test.go` — the last inside the engine package,
+  because its scenarios drive the engine's unexported transport seams. They
+  load the files through the `contract` package, which embeds them.
 - **Kotlin, Swift, and Jest** (`openrung-mobile-app`): that repo vendors a copy
   of these files and its check script compares the vendored copy against a
   pinned `openrung` ref, so a drifted copy fails there rather than passing
@@ -43,6 +54,23 @@ A suite runs every row it claims. Where a row cannot exist on a platform — a
 Winsock errno on Android, say — it says so in the row itself, with a `platform`
 or `suites` field and a note explaining why, so a skip is a stated fact rather
 than a silent gap.
+
+## Generated expectations
+
+`event_sequence.json` is half authored, half generated: the scenarios' scripts
+and timelines are written by hand, while every `expect` block is captured from
+the real engine driven through those scripts —
+
+```
+UPDATE_SEQUENCE_VECTORS=1 go test ./connectcore -run TestEventSequenceVectors
+```
+
+rewrites the file from an actual run (re-run without the variable to verify
+the freshly embedded copy). Generation does not weaken the contract: an engine
+change that alters an observed sequence fails the suite, and regenerating is
+an edit like any other — the version moves, the pinned constant moves, and the
+vendored copies are refreshed, so the behavior change lands in every consuming
+suite as a reviewed diff rather than a silent drift.
 
 ## Changing a vector
 

@@ -13,14 +13,22 @@ var knownSuites = []string{"go", "kotlin", "swift", "ts"}
 
 // vectorFiles is every file in vectors/. A file added there without an entry
 // here fails TestVectorFilesAreDeclared, so it cannot ship unchecked.
-var vectorFiles = []string{ClassificationVectors, RelayDecodeVectors, BrokerFrontsVectors}
+var vectorFiles = []string{ClassificationVectors, RelayDecodeVectors, BrokerFrontsVectors, EventSequenceVectors}
 
 // vectorHeader is the part of every vector file's shape that is common to all
 // of them, whatever their rows look like. Version is deliberately not here:
 // version validation lives in LoadVersioned, which every Go suite loads its
 // file through.
+//
+// pending_suites names suites that are committed to consuming the file but do
+// not run it yet — a routing declaration for a change (the bump has to reach
+// them too, since their vendored copies exist from the moment the mobile repo
+// vendors the directory) without the vacuous-green problem of declaring them
+// in suites before a runner exists. A pending suite graduates by moving to
+// suites in the same PR that wires its runner.
 type vectorHeader struct {
-	Suites []string `json:"suites"`
+	Suites        []string `json:"suites"`
+	PendingSuites []string `json:"pending_suites"`
 }
 
 // TestVectorFileHeaders checks the declaration every vector file carries.
@@ -54,6 +62,17 @@ func TestVectorFileHeaders(t *testing.T) {
 			for index, suite := range header.Suites {
 				if index > 0 && slices.Contains(header.Suites[:index], suite) {
 					t.Errorf("declares suite %q twice", suite)
+				}
+			}
+			for index, suite := range header.PendingSuites {
+				if !slices.Contains(knownSuites, suite) {
+					t.Errorf("declares unknown pending suite %q, want one of %v", suite, knownSuites)
+				}
+				if slices.Contains(header.Suites, suite) {
+					t.Errorf("declares suite %q as both consuming and pending — a suite either runs the file or it does not", suite)
+				}
+				if index > 0 && slices.Contains(header.PendingSuites[:index], suite) {
+					t.Errorf("declares pending suite %q twice", suite)
 				}
 			}
 		})
@@ -112,6 +131,10 @@ func TestRelayDecodeInvalidSuitesAreDeclared(t *testing.T) {
 func runsInGo(name string) bool {
 	switch name {
 	case ClassificationVectors, RelayDecodeVectors, BrokerFrontsVectors:
+		return true
+	case EventSequenceVectors:
+		// connectcore/sequence_vectors_test.go — inside the engine package,
+		// because the scripted transport outcomes drive its unexported seams.
 		return true
 	}
 	return false
