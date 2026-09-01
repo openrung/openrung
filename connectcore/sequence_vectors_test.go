@@ -141,6 +141,18 @@ var sequenceAttrKeys = []string{
 	"reason", "nat_class", "from_relay_id", "failure_reason", "failure_stage",
 }
 
+// scriptedError renders a fixed message while unwrapping to its typed cause:
+// classification sees the canonical errno, but the text — which the vectors
+// freeze wherever a notice reason carries the failure — never varies with the
+// platform's errno strings (Windows spells them differently).
+type scriptedError struct {
+	msg   string
+	cause error
+}
+
+func (e scriptedError) Error() string { return e.msg }
+func (e scriptedError) Unwrap() error { return e.cause }
+
 // scriptedCause maps a scenario's cause token onto the canonical error every
 // driver must construct for it. The tokens double as the classification the
 // failure will carry, pinned by the classification vectors — except
@@ -151,7 +163,7 @@ func scriptedCause(t *testing.T, cause string) error {
 	t.Helper()
 	switch cause {
 	case "connection_refused":
-		return fmt.Errorf("scripted dial: %w", syscall.ECONNREFUSED)
+		return scriptedError{msg: "scripted dial: connection refused", cause: syscall.ECONNREFUSED}
 	case "unclassified", "":
 		return errors.New("scripted failure with no classifiable shape")
 	}
