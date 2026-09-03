@@ -1,0 +1,698 @@
+{
+  "version": 1,
+  "contract": "openrung-event-sequence-v1",
+  "suites": [
+    "go",
+    "kotlin",
+    "swift"
+  ],
+  "comment": "Golden cross-repo vectors for the engine state machine's observable behavior (ADR-003 A4): each scenario scripts an initial relay directory, canonical transport outcomes, and a timeline of host actions, and freezes the three ordered output streams the engine must produce for them — status transitions, typed notices, and telemetry events with their failure tokens. The Go suite (connectcore/sequence_vectors_test.go) drives the real engine through the A1 stub tunnel runtime and the A2 platform-signal seams and compares whole sequences; the expected blocks are GENERATED from that engine (see 'regenerate'), so an engine change that alters observable behavior fails the suite and forces a deliberate regeneration plus a version bump, which is what carries the change into every vendored copy. The kotlin and swift suites are declared consumers whose runners arrive with ADR-003 Track B — like relay_decode.json's, they are recorded as pending with a reason in the mobile repo's testdata/contract/pin.json (its local_suites/pending_suites accounting) until the bound-engine drivers exist. Vendoring is by pin: the mobile check script only fetches files listed in pin.json's 'files', so the Track B connectcore bump must add this file there — contract:sync does not discover new upstream files on its own. The mobile repo's punchbridge Go suite runs these scenarios against the gomobile-bound engine first; the platform adapters follow. There is deliberately no 'ts' suite, for classification.json's reason: the React Native layer renders engine state, it never orchestrates a connect, so there is no TypeScript state machine to run a scenario against.",
+  "format": {
+    "directory": "The relay directory the scripted broker serves, in broker order. Rows are relay identities: 'id', 'country_code', 'city', 'country' name the relay; 'wss_fronts' lists the ids of signed WSS fronts advertised on it (their URLs and protocol versions are the driver's business); 'punch_capable' marks it eligible for NAT punching. Network addresses never appear in a scenario — each driver assigns its own loopback endpoints.",
+    "script": "Canonical transport outcomes, fixed before the timeline runs. 'dials': per-relay direct TCP dial outcome as a cause token (relays not listed are reachable); every dial to that relay fails the same way. 'punch': enables punching with an establisher that always fails, reporting the given reason — the hub-fallback shape. 'hold_readiness': every readiness probe blocks until a release_ready step, opening a deterministic window for mid-connect injections; probes reached after the release pass immediately. 'telemetry_held_until_session_end': the broker refuses every telemetry upload (HTTP 503) until a batch carries the session's connection_ended — the engine-ordered release, so on every interleaving only the terminal flush can deliver, and the whole session's events reach the broker as one flushed backlog.",
+    "causes": "Cause tokens name the canonical error a driver must construct: 'connection_refused' is a dial failure wrapping ECONNREFUSED, whose failure_reason token is pinned by classification.json; 'unclassified' is an error with no classifiable shape, the deliberate stand-in for runtime-specific failures (a tunnel process death) whose classification belongs to the runtime and the classification vectors, not to this sequence contract. Only a canonical error's typed cause matters — it drives classification; its rendered text never appears in the projected streams, so drivers may render it however they like.",
+    "steps": "The timeline, run in order; await steps are synchronization points with a generous driver-owned deadline. 'connect' starts a default (untargeted) connect against the scripted broker. 'await_status' waits until 'status' has appeared 'count' times (default 1) in the collapsed status stream. 'await_notice' waits until 'count' notices of 'kind' have been emitted. 'network' feeds one platform observation into UpdateNetworkState ('up' + 'fingerprint'). 'crash_tunnel' makes the live tunnel run exit with 'cause' (default 'unclassified'). 'await_ready_hold' waits until the held readiness probe is reached; 'release_ready' releases it. 'disconnect' is the user disconnect. 'shutdown' calls Shutdown with 'flush_budget_ms' and requires the terminal flush to succeed within it.",
+    "expect": "Three ordered streams, compared exactly. 'statuses': the engine status transitions as delivered to the host sink, with consecutive duplicates collapsed — the contract is over transitions, never emission counts. 'notices': every typed notice in emission order, projected to its structural fields — kind, relay_id, from_relay_id, front_id, failures, threshold. A notice's reason is human-readable presentation (engine display prose, or a wrapped failure's error text) and is excluded for the same reason the event projection excludes failure_detail; the trigger distinctions the contract needs ride the telemetry attributes instead. Wait durations are timing, not sequence, and are likewise excluded. 'events': every telemetry event in broker arrival order, deduplicated by event id like the real ingest, with session_heartbeat excluded (cadence-driven, not sequence-driven) and attributes projected per 'attribute_projection'.",
+    "attribute_projection": "Expected events carry exactly the contract-bearing attribute keys: transport, from_transport, to_transport, front_id, trigger, reason, nat_class, from_relay_id, failure_reason, failure_stage. Everything else on a real event — failure_detail (host error text), geo attributes, platform labels, and all measurements — is host-variant metadata outside this contract, and a suite must ignore it rather than assert it.",
+    "determinism": "Scenarios are deterministic by construction: periodic engine activity (health sweeps, heartbeats) is suppressed so nothing fires except what a step provokes, transport outcomes are scripted, the network-liveness probe the recovery gates consult is scripted always-alive (a scenario never waits on a real dial to decide the network is up), and the geo lookup is stubbed out. A driver must reproduce those conditions, run each scenario's timeline, and compare the full projected streams."
+  },
+  "regenerate": "cd connectcore && UPDATE_SEQUENCE_VECTORS=1 go test -run TestEventSequenceVectors . — run from inside the module (connectcore is a nested Go module; a ./connectcore pattern from the repo root resolves only through a local gitignored go.work). Rewrites every 'expect' block from an actual engine run; re-run without the variable to verify. Regeneration is an edit like any other: bump 'version', the Go suite's pinned constant, and re-vendor in openrung-mobile-app.",
+  "scenarios": [
+    {
+      "id": "clean_direct_connect",
+      "description": "The happy path: one reachable relay, direct transport, user disconnect. Freezes the baseline session shape — preparing/connecting/connected, the connection_attempted/connection_succeeded pair, and the tunnel_stopped + connection_ended teardown records — that every other scenario builds on.",
+      "directory": [
+        {
+          "id": "relay-a",
+          "country_code": "JP",
+          "city": "Tokyo",
+          "country": "Japan"
+        }
+      ],
+      "script": {},
+      "steps": [
+        {
+          "do": "connect"
+        },
+        {
+          "do": "await_status",
+          "status": "connected"
+        },
+        {
+          "do": "disconnect"
+        },
+        {
+          "do": "await_status",
+          "status": "disconnected"
+        }
+      ],
+      "expect": {
+        "statuses": [
+          "preparing",
+          "connecting",
+          "connected",
+          "disconnecting",
+          "disconnected"
+        ],
+        "notices": [],
+        "events": [
+          {
+            "event": "connection_attempted"
+          },
+          {
+            "event": "connection_succeeded",
+            "relay_id": "relay-a",
+            "attributes": {
+              "transport": "direct"
+            }
+          },
+          {
+            "event": "tunnel_stopped",
+            "relay_id": "relay-a"
+          },
+          {
+            "event": "connection_ended",
+            "relay_id": "relay-a",
+            "attributes": {
+              "reason": "disconnect"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "direct_failure_unlocks_wss_fallback",
+      "description": "The direct path to the only relay is refused, which unlocks that exact relay's signed WSS front: the direct failure dents relay health exactly once (relay_attempt_failed, then transport_fallback), the wss_fallback notice names the relay and front, and the session succeeds over WSS with the front recorded on connection_succeeded.",
+      "directory": [
+        {
+          "id": "relay-a",
+          "country_code": "JP",
+          "city": "Tokyo",
+          "country": "Japan",
+          "wss_fronts": [
+            "front-a"
+          ]
+        }
+      ],
+      "script": {
+        "dials": [
+          {
+            "relay": "relay-a",
+            "cause": "connection_refused"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "do": "connect"
+        },
+        {
+          "do": "await_status",
+          "status": "connected"
+        },
+        {
+          "do": "disconnect"
+        },
+        {
+          "do": "await_status",
+          "status": "disconnected"
+        }
+      ],
+      "expect": {
+        "statuses": [
+          "preparing",
+          "connecting",
+          "connected",
+          "disconnecting",
+          "disconnected"
+        ],
+        "notices": [
+          {
+            "kind": "wss_fallback",
+            "relay_id": "relay-a",
+            "front_id": "front-a"
+          }
+        ],
+        "events": [
+          {
+            "event": "connection_attempted"
+          },
+          {
+            "event": "relay_attempt_failed",
+            "relay_id": "relay-a",
+            "attributes": {
+              "failure_reason": "connection_refused"
+            }
+          },
+          {
+            "event": "transport_fallback",
+            "relay_id": "relay-a",
+            "attributes": {
+              "failure_reason": "connection_refused",
+              "from_transport": "direct",
+              "to_transport": "wss"
+            }
+          },
+          {
+            "event": "connection_succeeded",
+            "relay_id": "relay-a",
+            "attributes": {
+              "front_id": "front-a",
+              "transport": "wss"
+            }
+          },
+          {
+            "event": "tunnel_stopped",
+            "relay_id": "relay-a"
+          },
+          {
+            "event": "connection_ended",
+            "relay_id": "relay-a",
+            "attributes": {
+              "reason": "disconnect"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "tunnel_death_fails_over_mid_session",
+      "description": "The promoted tunnel process dies mid-session: the engine returns to connecting (never disconnected), dents the dying relay with a bare relay_attempt_failed, emits failover_started, runs one automatic recovery pass that demotes the failed relay to the end of the fresh ladder, and promotes the other relay — recorded as one relay_failover (not a second connection_succeeded) plus failover_completed naming the old and new relays.",
+      "directory": [
+        {
+          "id": "relay-a",
+          "country_code": "JP",
+          "city": "Tokyo",
+          "country": "Japan"
+        },
+        {
+          "id": "relay-b",
+          "country_code": "SG",
+          "country": "Singapore"
+        }
+      ],
+      "script": {},
+      "steps": [
+        {
+          "do": "connect"
+        },
+        {
+          "do": "await_status",
+          "status": "connected"
+        },
+        {
+          "do": "crash_tunnel"
+        },
+        {
+          "do": "await_notice",
+          "kind": "failover_completed"
+        },
+        {
+          "do": "await_status",
+          "status": "connected",
+          "count": 2
+        },
+        {
+          "do": "disconnect"
+        },
+        {
+          "do": "await_status",
+          "status": "disconnected"
+        }
+      ],
+      "expect": {
+        "statuses": [
+          "preparing",
+          "connecting",
+          "connected",
+          "connecting",
+          "connected",
+          "disconnecting",
+          "disconnected"
+        ],
+        "notices": [
+          {
+            "kind": "failover_started",
+            "from_relay_id": "relay-a"
+          },
+          {
+            "kind": "failover_completed",
+            "relay_id": "relay-b",
+            "from_relay_id": "relay-a"
+          }
+        ],
+        "events": [
+          {
+            "event": "connection_attempted"
+          },
+          {
+            "event": "connection_succeeded",
+            "relay_id": "relay-a",
+            "attributes": {
+              "transport": "direct"
+            }
+          },
+          {
+            "event": "relay_attempt_failed",
+            "relay_id": "relay-a",
+            "attributes": {
+              "failure_reason": "unknown"
+            }
+          },
+          {
+            "event": "relay_failover",
+            "relay_id": "relay-b",
+            "attributes": {
+              "failure_reason": "unknown",
+              "from_relay_id": "relay-a",
+              "transport": "direct"
+            }
+          },
+          {
+            "event": "tunnel_stopped",
+            "relay_id": "relay-b"
+          },
+          {
+            "event": "connection_ended",
+            "relay_id": "relay-b",
+            "attributes": {
+              "reason": "disconnect"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "punch_failure_falls_back_to_hub",
+      "description": "Punch-first with hub fallback: punching is enabled and the relay is punch-capable, so the attempt is recorded (punch_attempted) before the establisher fails; the failure is recorded with its reason and NAT class (punch_failed) and surfaced as a punch_outcome notice, and the connect silently proceeds over the relay hub — the outcome is never worse than not punching.",
+      "directory": [
+        {
+          "id": "relay-a",
+          "country_code": "JP",
+          "city": "Tokyo",
+          "country": "Japan",
+          "punch_capable": true
+        }
+      ],
+      "script": {
+        "punch": {
+          "reason": "hub_declined"
+        }
+      },
+      "steps": [
+        {
+          "do": "connect"
+        },
+        {
+          "do": "await_status",
+          "status": "connected"
+        },
+        {
+          "do": "disconnect"
+        },
+        {
+          "do": "await_status",
+          "status": "disconnected"
+        }
+      ],
+      "expect": {
+        "statuses": [
+          "preparing",
+          "connecting",
+          "connected",
+          "disconnecting",
+          "disconnected"
+        ],
+        "notices": [
+          {
+            "kind": "punch_outcome",
+            "relay_id": "relay-a"
+          }
+        ],
+        "events": [
+          {
+            "event": "connection_attempted"
+          },
+          {
+            "event": "punch_attempted",
+            "relay_id": "relay-a"
+          },
+          {
+            "event": "punch_failed",
+            "relay_id": "relay-a",
+            "attributes": {
+              "nat_class": "",
+              "reason": "hub_declined"
+            }
+          },
+          {
+            "event": "connection_succeeded",
+            "relay_id": "relay-a",
+            "attributes": {
+              "transport": "direct"
+            }
+          },
+          {
+            "event": "tunnel_stopped",
+            "relay_id": "relay-a"
+          },
+          {
+            "event": "connection_ended",
+            "relay_id": "relay-a",
+            "attributes": {
+              "reason": "disconnect"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "epoch_mid_connect_retires_fresh_wss_session",
+      "description": "A physical-network epoch lands mid-connect, after the WSS session's socket exists but before promote (a wifi-to-cellular handover mid-attempt). Epochs that predate the attempt are settled history — the pre-connect baseline and change must not retire anything — but the mid-attempt epoch is still pending at promote and retires the fresh session, whose socket may be bound to the network that just died: an orderly transport_session_ended with the network_epoch trigger (never transport_failed, and no bare relay damage), then a fresh direct-first recovery ladder that mints a new single-use ticket.",
+      "directory": [
+        {
+          "id": "relay-a",
+          "country_code": "JP",
+          "city": "Tokyo",
+          "country": "Japan",
+          "wss_fronts": [
+            "front-a"
+          ]
+        }
+      ],
+      "script": {
+        "dials": [
+          {
+            "relay": "relay-a",
+            "cause": "connection_refused"
+          }
+        ],
+        "hold_readiness": true
+      },
+      "steps": [
+        {
+          "do": "network",
+          "up": true,
+          "fingerprint": "wifi-home"
+        },
+        {
+          "do": "network",
+          "up": true,
+          "fingerprint": "wifi-office"
+        },
+        {
+          "do": "connect"
+        },
+        {
+          "do": "await_ready_hold"
+        },
+        {
+          "do": "network",
+          "up": true,
+          "fingerprint": "cellular"
+        },
+        {
+          "do": "release_ready"
+        },
+        {
+          "do": "await_notice",
+          "kind": "failover_completed"
+        },
+        {
+          "do": "await_status",
+          "status": "connected",
+          "count": 2
+        },
+        {
+          "do": "disconnect"
+        },
+        {
+          "do": "await_status",
+          "status": "disconnected"
+        }
+      ],
+      "expect": {
+        "statuses": [
+          "preparing",
+          "connecting",
+          "connected",
+          "connecting",
+          "connected",
+          "disconnecting",
+          "disconnected"
+        ],
+        "notices": [
+          {
+            "kind": "network_epoch"
+          },
+          {
+            "kind": "wss_fallback",
+            "relay_id": "relay-a",
+            "front_id": "front-a"
+          },
+          {
+            "kind": "network_epoch"
+          },
+          {
+            "kind": "failover_started",
+            "from_relay_id": "relay-a"
+          },
+          {
+            "kind": "wss_fallback",
+            "relay_id": "relay-a",
+            "front_id": "front-a"
+          },
+          {
+            "kind": "failover_completed",
+            "relay_id": "relay-a",
+            "from_relay_id": "relay-a",
+            "front_id": "front-a"
+          }
+        ],
+        "events": [
+          {
+            "event": "connection_attempted"
+          },
+          {
+            "event": "relay_attempt_failed",
+            "relay_id": "relay-a",
+            "attributes": {
+              "failure_reason": "connection_refused"
+            }
+          },
+          {
+            "event": "transport_fallback",
+            "relay_id": "relay-a",
+            "attributes": {
+              "failure_reason": "connection_refused",
+              "from_transport": "direct",
+              "to_transport": "wss"
+            }
+          },
+          {
+            "event": "connection_succeeded",
+            "relay_id": "relay-a",
+            "attributes": {
+              "front_id": "front-a",
+              "transport": "wss"
+            }
+          },
+          {
+            "event": "transport_session_ended",
+            "relay_id": "relay-a",
+            "attributes": {
+              "front_id": "front-a",
+              "transport": "wss",
+              "trigger": "network_epoch"
+            }
+          },
+          {
+            "event": "relay_attempt_failed",
+            "relay_id": "relay-a",
+            "attributes": {
+              "failure_reason": "connection_refused"
+            }
+          },
+          {
+            "event": "transport_fallback",
+            "relay_id": "relay-a",
+            "attributes": {
+              "failure_reason": "connection_refused",
+              "from_transport": "direct",
+              "to_transport": "wss"
+            }
+          },
+          {
+            "event": "relay_failover",
+            "relay_id": "relay-a",
+            "attributes": {
+              "failure_reason": "unknown",
+              "from_relay_id": "relay-a",
+              "front_id": "front-a",
+              "transport": "wss"
+            }
+          },
+          {
+            "event": "tunnel_stopped",
+            "relay_id": "relay-a"
+          },
+          {
+            "event": "connection_ended",
+            "relay_id": "relay-a",
+            "attributes": {
+              "reason": "disconnect"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "epoch_on_direct_path_probes_instead_of_retiring",
+      "description": "The same epoch boundary against a direct session does NOT retire it: a direct path may survive a network change, so the engine runs one immediate health sweep instead and the sweep's pass is the end of it — the signal accelerates the engine's own probing, which stays the authority (the recorded ADR-003 divergence from the mobile monitors' WSS-only retirement).",
+      "directory": [
+        {
+          "id": "relay-a",
+          "country_code": "JP",
+          "city": "Tokyo",
+          "country": "Japan"
+        }
+      ],
+      "script": {},
+      "steps": [
+        {
+          "do": "connect"
+        },
+        {
+          "do": "await_status",
+          "status": "connected"
+        },
+        {
+          "do": "network",
+          "up": true,
+          "fingerprint": "wifi-home"
+        },
+        {
+          "do": "network",
+          "up": true,
+          "fingerprint": "cellular"
+        },
+        {
+          "do": "await_notice",
+          "kind": "health_probe"
+        },
+        {
+          "do": "disconnect"
+        },
+        {
+          "do": "await_status",
+          "status": "disconnected"
+        }
+      ],
+      "expect": {
+        "statuses": [
+          "preparing",
+          "connecting",
+          "connected",
+          "disconnecting",
+          "disconnected"
+        ],
+        "notices": [
+          {
+            "kind": "network_epoch"
+          },
+          {
+            "kind": "health_probe",
+            "threshold": 3
+          }
+        ],
+        "events": [
+          {
+            "event": "connection_attempted"
+          },
+          {
+            "event": "connection_succeeded",
+            "relay_id": "relay-a",
+            "attributes": {
+              "transport": "direct"
+            }
+          },
+          {
+            "event": "tunnel_stopped",
+            "relay_id": "relay-a"
+          },
+          {
+            "event": "connection_ended",
+            "relay_id": "relay-a",
+            "attributes": {
+              "reason": "disconnect"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "shutdown_flushes_pending_telemetry",
+      "description": "Shutdown with pending telemetry (the D4 debt made policy): the broker refuses every upload until it sees the session's connection_ended, so on every interleaving the whole session's events are still queued at teardown and only Shutdown's bounded terminal flush can deliver them — which it does, in record order, session records included, before returning. The state machine lands on disconnected without a transient disconnecting (host-initiated shutdown, not a user disconnect gesture).",
+      "directory": [
+        {
+          "id": "relay-a",
+          "country_code": "JP",
+          "city": "Tokyo",
+          "country": "Japan"
+        }
+      ],
+      "script": {
+        "telemetry_held_until_session_end": true
+      },
+      "steps": [
+        {
+          "do": "connect"
+        },
+        {
+          "do": "await_status",
+          "status": "connected"
+        },
+        {
+          "do": "shutdown",
+          "flush_budget_ms": 5000
+        },
+        {
+          "do": "await_status",
+          "status": "disconnected"
+        }
+      ],
+      "expect": {
+        "statuses": [
+          "preparing",
+          "connecting",
+          "connected",
+          "disconnected"
+        ],
+        "notices": [],
+        "events": [
+          {
+            "event": "connection_attempted"
+          },
+          {
+            "event": "connection_succeeded",
+            "relay_id": "relay-a",
+            "attributes": {
+              "transport": "direct"
+            }
+          },
+          {
+            "event": "tunnel_stopped",
+            "relay_id": "relay-a"
+          },
+          {
+            "event": "connection_ended",
+            "relay_id": "relay-a",
+            "attributes": {
+              "reason": "disconnect"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

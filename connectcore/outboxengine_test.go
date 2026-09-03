@@ -1,8 +1,6 @@
 package connectcore
 
 import (
-	"context"
-	"net/http"
 	"testing"
 	"time"
 
@@ -17,10 +15,6 @@ import (
 func TestEngineTelemetryOutboxCarriesStrandedEventsAcrossEngines(t *testing.T) {
 	outboxDir := t.TempDir()
 	fixtures := []brokerapi.RelayDescriptor{relayAt("a", "JP", "Tokyo", "Japan", "127.0.0.10")}
-
-	orig := lookupGeoAttributes
-	lookupGeoAttributes = func(context.Context, *http.Client) map[string]string { return nil }
-	t.Cleanup(func() { lookupGeoAttributes = orig })
 
 	// Engine 1 connects and disconnects against a dead broker: every flush
 	// fails, so the whole session — including connection_ended — stays on

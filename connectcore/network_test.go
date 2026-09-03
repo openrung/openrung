@@ -174,20 +174,7 @@ func TestEpochBetweenDialAndPromoteRetiresTheFreshSession(t *testing.T) {
 
 	// Hold the first candidate at readiness so an epoch can land mid-attempt,
 	// after its WSS socket exists but before promote.
-	release := make(chan struct{})
-	readyGate := make(chan struct{}, 1)
-	s.tunnelReady = func(ctx context.Context, _ int) error {
-		select {
-		case readyGate <- struct{}{}:
-		default:
-		}
-		select {
-		case <-release:
-			return nil
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
+	readyGate, release := holdReadiness(s)
 
 	// Epochs BEFORE the attempt are settled history: baseline plus a change,
 	// both pre-connect, must not retire the session that follows.
@@ -199,7 +186,7 @@ func TestEpochBetweenDialAndPromoteRetiresTheFreshSession(t *testing.T) {
 	<-readyGate
 	// The handover lands mid-attempt: after the WSS dial, before promote.
 	s.UpdateNetworkState(NetworkState{Up: true, Fingerprint: "cellular"})
-	close(release)
+	release()
 
 	// The fresh session is retired for the epoch its socket predates and
 	// rebuilt on the new one.

@@ -117,7 +117,7 @@ func (g *geoLookup) abandon() {
 // The caller must abandon the returned lookup before the tunnel can capture
 // traffic — afterwards a still-running lookup would ride the tunnel and
 // report the relay's geo instead of the client's.
-func attachGeoAttributes(mgr *clienttelemetry.Manager, httpClient *http.Client) *geoLookup {
+func attachGeoAttributes(mgr *clienttelemetry.Manager, httpClient *http.Client, lookup func(context.Context, *http.Client) map[string]string) *geoLookup {
 	if mgr == nil {
 		return nil
 	}
@@ -126,7 +126,7 @@ func attachGeoAttributes(mgr *clienttelemetry.Manager, httpClient *http.Client) 
 	go func() {
 		defer close(g.done)
 		defer cancel()
-		mgr.SetGeoAttributes(lookupGeoAttributes(ctx, httpClient))
+		mgr.SetGeoAttributes(lookup(ctx, httpClient))
 	}()
 	return g
 }

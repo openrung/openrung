@@ -22,38 +22,88 @@ import (
 
 // telemetrySink is a loopback broker that records every telemetry event the
 // service flushes (loopback endpoints are exempt from the HTTPS requirement,
-// like the relay-list signing exemption).
+// like the relay-list signing exemption). While held (holdUntilEvent), it
+// refuses every upload with 503 until a batch carries the named event, so a
+// whole session's events accumulate as a pending backlog that only the flush
+// carrying that event can deliver — the sequence vectors' shutdown scenario.
 type telemetrySink struct {
-	mu     sync.Mutex
-	events []clienttelemetry.Event
-	seen   map[string]bool
-	srv    *httptest.Server
+	mu           sync.Mutex
+	held         bool
+	releaseEvent string
+	events       []clienttelemetry.Event
+	seen         map[string]bool
+	srv          *httptest.Server
 }
 
 func newTelemetrySink(t *testing.T) *telemetrySink {
 	t.Helper()
 	sink := &telemetrySink{seen: map[string]bool{}}
 	sink.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Decode before taking the lock: a body read is a network operation,
+		// and holding the mutex across it would serialize every upload and
+		// block hold/release/snapshot/named behind an in-flight request.
 		var batch struct {
 			Events []clienttelemetry.Event `json:"events"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&batch); err == nil {
-			sink.mu.Lock()
+		decodeErr := json.NewDecoder(r.Body).Decode(&batch)
+
+		sink.mu.Lock()
+		defer sink.mu.Unlock()
+		if sink.held {
+			releases := false
 			for _, event := range batch.Events {
-				// The manager is at-least-once (concurrent flushes may resend a
-				// snapshot); dedupe by event id like the real broker ingest.
-				if sink.seen[event.EventID] {
-					continue
+				if decodeErr == nil && event.Event == sink.releaseEvent {
+					releases = true
+					break
 				}
-				sink.seen[event.EventID] = true
-				sink.events = append(sink.events, event)
 			}
-			sink.mu.Unlock()
+			if !releases {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			sink.held = false
+		}
+		if decodeErr != nil {
+			// Never acknowledge a batch that was not recorded — and refuse it
+			// as transient (503), never a 4xx the persistent outbox's poison
+			// classifier would read as a permanent rejection and discard on.
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		for _, event := range batch.Events {
+			// The manager is at-least-once (concurrent flushes may resend a
+			// snapshot); dedupe by event id like the real broker ingest.
+			if sink.seen[event.EventID] {
+				continue
+			}
+			sink.seen[event.EventID] = true
+			sink.events = append(sink.events, event)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	t.Cleanup(sink.srv.Close)
 	return sink
+}
+
+// holdUntilEvent refuses every upload until a batch carries the named event;
+// that batch is accepted whole and lifts the hold. Event-triggered rather than
+// step-triggered so the release is ordered by the engine's own flow — a step
+// could race an in-flight earlier flush and release it early on a slow run.
+func (sink *telemetrySink) holdUntilEvent(event string) {
+	sink.mu.Lock()
+	sink.held = true
+	sink.releaseEvent = event
+	sink.mu.Unlock()
+}
+
+// snapshot copies the full arrival-ordered event stream, for suites (the
+// sequence vectors) that compare whole sequences rather than single events.
+func (sink *telemetrySink) snapshot() []clienttelemetry.Event {
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	out := make([]clienttelemetry.Event, len(sink.events))
+	copy(out, sink.events)
+	return out
 }
 
 func (sink *telemetrySink) named(name string) []clienttelemetry.Event {
@@ -94,6 +144,10 @@ func newLadderService(t *testing.T, relays func() []brokerapi.RelayDescriptor) (
 	s.fetchRelays = func(ctx context.Context, brokerURL string, limit int, clientID, sessionID string) (discovery.Fetch, error) {
 		return discovery.Fetch{BrokerURL: brokerURL, Response: listOf(relays()...)}, nil
 	}
+	// Geo is best-effort metadata resolved over the real network; a hermetic
+	// engine never looks it up. Per-engine seam, so no package global to swap
+	// and restore around goroutines the engine abandons.
+	s.lookupGeo = func(context.Context, *http.Client) map[string]string { return nil }
 	// Defaults every test can override: relays reachable, tunnels healthy until
 	// stopped, probes instant.
 	s.dialRelay = func(ctx context.Context, host string, port int) (int64, error) { return 1, nil }
@@ -107,6 +161,36 @@ func newLadderService(t *testing.T, relays func() []brokerapi.RelayDescriptor) (
 	// immediately instead of dialing it.
 	s.tunnelReady = func(ctx context.Context, proxyPort int) error { return nil }
 	return s, sink
+}
+
+// holdReadiness replaces s.tunnelReady with a gate: every readiness probe
+// blocks until release is called, and probes reached after the release pass
+// immediately. held receives one token per probe that actually held (never
+// from a post-release pass-through), so a test can wait for a candidate to be
+// parked at readiness before injecting something mid-attempt. release is
+// idempotent. Install before Connect.
+func holdReadiness(s *Engine) (held <-chan struct{}, release func()) {
+	gate := make(chan struct{}, 1)
+	releaseCh := make(chan struct{})
+	s.tunnelReady = func(ctx context.Context, _ int) error {
+		select {
+		case <-releaseCh:
+			return nil
+		default:
+		}
+		select {
+		case gate <- struct{}{}:
+		default:
+		}
+		select {
+		case <-releaseCh:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	var once sync.Once
+	return gate, func() { once.Do(func() { close(releaseCh) }) }
 }
 
 func waitForStatus(t *testing.T, s *Engine, want Status) State {

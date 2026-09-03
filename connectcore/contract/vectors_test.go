@@ -13,12 +13,19 @@ var knownSuites = []string{"go", "kotlin", "swift", "ts"}
 
 // vectorFiles is every file in vectors/. A file added there without an entry
 // here fails TestVectorFilesAreDeclared, so it cannot ship unchecked.
-var vectorFiles = []string{ClassificationVectors, RelayDecodeVectors, BrokerFrontsVectors}
+var vectorFiles = []string{ClassificationVectors, RelayDecodeVectors, BrokerFrontsVectors, EventSequenceVectors}
 
 // vectorHeader is the part of every vector file's shape that is common to all
 // of them, whatever their rows look like. Version is deliberately not here:
 // version validation lives in LoadVersioned, which every Go suite loads its
 // file through.
+//
+// suites declares intended consumers, not wired runners: a declared suite the
+// mobile repo does not run yet is recorded there, in testdata/contract
+// pin.json's local_suites/pending_suites accounting, which fails when a
+// declared non-go suite is neither wired nor pending with a reason — the
+// relay_decode.json kotlin/swift precedent, and how event_sequence.json's
+// mobile consumers are declared before Track B wires them.
 type vectorHeader struct {
 	Suites []string `json:"suites"`
 }
@@ -112,6 +119,10 @@ func TestRelayDecodeInvalidSuitesAreDeclared(t *testing.T) {
 func runsInGo(name string) bool {
 	switch name {
 	case ClassificationVectors, RelayDecodeVectors, BrokerFrontsVectors:
+		return true
+	case EventSequenceVectors:
+		// connectcore/sequence_vectors_test.go — inside the engine package,
+		// because the scripted transport outcomes drive its unexported seams.
 		return true
 	}
 	return false
