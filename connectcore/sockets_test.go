@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -58,10 +57,6 @@ func protectedEngine(t *testing.T, protector *recordingProtector) (*Engine, *tel
 			_ = conn.Close()
 		}
 	}()
-
-	orig := lookupGeoAttributes
-	lookupGeoAttributes = func(context.Context, *http.Client) map[string]string { return nil }
-	t.Cleanup(func() { lookupGeoAttributes = orig })
 
 	sink := newTelemetrySink(t)
 	fixture := relayAt("a", "JP", "Tokyo", "Japan", "127.0.0.1")

@@ -20,15 +20,14 @@ var vectorFiles = []string{ClassificationVectors, RelayDecodeVectors, BrokerFron
 // version validation lives in LoadVersioned, which every Go suite loads its
 // file through.
 //
-// pending_suites names suites that are committed to consuming the file but do
-// not run it yet — a routing declaration for a change (the bump has to reach
-// them too, since their vendored copies exist from the moment the mobile repo
-// vendors the directory) without the vacuous-green problem of declaring them
-// in suites before a runner exists. A pending suite graduates by moving to
-// suites in the same PR that wires its runner.
+// suites declares intended consumers, not wired runners: a declared suite the
+// mobile repo does not run yet is recorded there, in testdata/contract
+// pin.json's local_suites/pending_suites accounting, which fails when a
+// declared non-go suite is neither wired nor pending with a reason — the
+// relay_decode.json kotlin/swift precedent, and how event_sequence.json's
+// mobile consumers are declared before Track B wires them.
 type vectorHeader struct {
-	Suites        []string `json:"suites"`
-	PendingSuites []string `json:"pending_suites"`
+	Suites []string `json:"suites"`
 }
 
 // TestVectorFileHeaders checks the declaration every vector file carries.
@@ -62,17 +61,6 @@ func TestVectorFileHeaders(t *testing.T) {
 			for index, suite := range header.Suites {
 				if index > 0 && slices.Contains(header.Suites[:index], suite) {
 					t.Errorf("declares suite %q twice", suite)
-				}
-			}
-			for index, suite := range header.PendingSuites {
-				if !slices.Contains(knownSuites, suite) {
-					t.Errorf("declares unknown pending suite %q, want one of %v", suite, knownSuites)
-				}
-				if slices.Contains(header.Suites, suite) {
-					t.Errorf("declares suite %q as both consuming and pending — a suite either runs the file or it does not", suite)
-				}
-				if index > 0 && slices.Contains(header.PendingSuites[:index], suite) {
-					t.Errorf("declares pending suite %q twice", suite)
 				}
 			}
 		})

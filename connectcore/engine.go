@@ -28,6 +28,8 @@ import (
 	"sync"
 	"time"
 
+	"net/http"
+
 	"github.com/openrung/openrung/brokerapi"
 	"github.com/openrung/openrung/wsscore"
 
@@ -72,10 +74,11 @@ type State struct {
 // os.UserConfigDir()/openrung/client-id with correct per-OS paths.
 var clientID = clienttelemetry.ClientID
 
-// lookupGeoAttributes resolves the client's public-IP geo for telemetry. It is
-// a package var so tests can stub it; it wraps
-// clienttelemetry.LookupGeoAttributes (ipwho.is, best-effort).
-var lookupGeoAttributes = clienttelemetry.LookupGeoAttributes
+// defaultGeoLookup resolves the client's public-IP geo for telemetry
+// (ipwho.is, best-effort). Tests stub the per-engine lookupGeo seam instead:
+// a mutable package global cannot be swapped and restored safely around a
+// lookup goroutine that is abandoned rather than awaited.
+var defaultGeoLookup = clienttelemetry.LookupGeoAttributes
 
 // PlatformCLI identifies the terminal client (cmd/client) on the engine's
 // broker traffic. brokerapi maps only the GUI/mobile platforms to fixed
@@ -418,6 +421,7 @@ type Engine struct {
 	dialWSS            func(ctx context.Context, rawURL, ticket string) (wssBridge, error)
 	waitWSSRetry       func(ctx context.Context, delay time.Duration) error
 	checkNetworkAlive  func(ctx context.Context, fronts []string) bool
+	lookupGeo          func(ctx context.Context, httpClient *http.Client) map[string]string
 	healthTick         time.Duration      // 0 means HealthProbeInterval
 	heartbeatTick      time.Duration      // 0 means the randomized heartbeat cadence
 	wssTicketBudget    time.Duration      // 0 means wssTicketTotalDeadline
@@ -466,6 +470,13 @@ func (s *Engine) healthProber() func(context.Context, int) error {
 		return healthSweepViaTUN
 	}
 	return healthSweepViaProxy
+}
+
+func (s *Engine) geoLookup() func(context.Context, *http.Client) map[string]string {
+	if s.lookupGeo != nil {
+		return s.lookupGeo
+	}
+	return defaultGeoLookup
 }
 
 func (s *Engine) relayDialer() func(context.Context, string, int) (int64, error) {
@@ -760,7 +771,7 @@ func (s *Engine) connectFlow(ctx context.Context, conn *connection, brokerURL st
 		mgr.Record("connection_attempted", "", nil, nil)
 		// Concurrent with the broker fetch and ranking; abandoned (never
 		// waited for) at the ladder and finalize boundaries below.
-		conn.geo = attachGeoAttributes(mgr, s.geoHTTPClient())
+		conn.geo = attachGeoAttributes(mgr, s.geoHTTPClient(), s.geoLookup())
 	}
 
 	// TUN mode binds no local port, so it neither resolves nor reserves the

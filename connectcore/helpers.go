@@ -117,17 +117,12 @@ func (g *geoLookup) abandon() {
 // The caller must abandon the returned lookup before the tunnel can capture
 // traffic — afterwards a still-running lookup would ride the tunnel and
 // report the relay's geo instead of the client's.
-func attachGeoAttributes(mgr *clienttelemetry.Manager, httpClient *http.Client) *geoLookup {
+func attachGeoAttributes(mgr *clienttelemetry.Manager, httpClient *http.Client, lookup func(context.Context, *http.Client) map[string]string) *geoLookup {
 	if mgr == nil {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), geoLookupTimeout)
 	g := &geoLookup{cancel: cancel, done: make(chan struct{})}
-	// Snapshot the package var on the caller's goroutine: the lookup is
-	// abandoned, never awaited, so a test that swaps and later restores the
-	// stub has no ordering against a read inside the goroutine — while a read
-	// here is ordered by the connect flow the test drives around it.
-	lookup := lookupGeoAttributes
 	go func() {
 		defer close(g.done)
 		defer cancel()

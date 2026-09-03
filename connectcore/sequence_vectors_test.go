@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -33,36 +32,30 @@ import (
 //
 // The expected sequences are GENERATED from the engine, not hand-written:
 //
-//	UPDATE_SEQUENCE_VECTORS=1 go test ./connectcore -run TestEventSequenceVectors
+//	cd connectcore && UPDATE_SEQUENCE_VECTORS=1 go test -run TestEventSequenceVectors .
 //
-// rewrites every scenario's "expect" block from an actual run (then re-run
-// without the variable to verify the freshly embedded copy). Editing the file
-// — regenerated or not — means bumping its version, this suite's pinned
-// constant, and the vendored copies, like every other vector file.
+// (from inside the module — connectcore is nested, and a ./connectcore
+// pattern from the repo root resolves only through a local gitignored
+// go.work). It rewrites every scenario's "expect" block from an actual run
+// (then re-run without the variable to verify the freshly embedded copy).
+// Editing the file — regenerated or not — means bumping its version, this
+// suite's pinned constant, and the vendored copies, like every other vector
+// file.
 const eventSequenceVectorsVersion = 1
 
 // sequenceVectorFile mirrors contract/vectors/event_sequence.json exactly.
 // The regeneration path marshals this struct back to the file, so every field
-// the file carries — the prose included — must round-trip through it.
+// the file carries must round-trip through it; the format prose is a
+// json.RawMessage so its subtree round-trips verbatim by construction instead
+// of through a mirror struct that could drift.
 type sequenceVectorFile struct {
-	Version       int                 `json:"version"`
-	Contract      string              `json:"contract"`
-	Suites        []string            `json:"suites"`
-	PendingSuites []string            `json:"pending_suites"`
-	Comment       string              `json:"comment"`
-	Format        sequenceFormatNotes `json:"format"`
-	Regenerate    string              `json:"regenerate"`
-	Scenarios     []sequenceScenario  `json:"scenarios"`
-}
-
-type sequenceFormatNotes struct {
-	Directory   string `json:"directory"`
-	Script      string `json:"script"`
-	Causes      string `json:"causes"`
-	Steps       string `json:"steps"`
-	Expect      string `json:"expect"`
-	Projection  string `json:"attribute_projection"`
-	Determinism string `json:"determinism"`
+	Version    int                `json:"version"`
+	Contract   string             `json:"contract"`
+	Suites     []string           `json:"suites"`
+	Comment    string             `json:"comment"`
+	Format     json.RawMessage    `json:"format"`
+	Regenerate string             `json:"regenerate"`
+	Scenarios  []sequenceScenario `json:"scenarios"`
 }
 
 type sequenceScenario struct {
@@ -208,9 +201,11 @@ func TestEventSequenceVectors(t *testing.T) {
 	}
 
 	update := os.Getenv("UPDATE_SEQUENCE_VECTORS") != ""
+	ran := 0
 	for i := range file.Scenarios {
 		sc := &file.Scenarios[i]
 		t.Run(sc.ID, func(t *testing.T) {
+			ran++
 			got := runSequenceScenario(t, sc)
 			if update {
 				sc.Expect = got
@@ -227,12 +222,21 @@ func TestEventSequenceVectors(t *testing.T) {
 		if t.Failed() {
 			t.Fatal("not rewriting the vector file: a scenario failed to run")
 		}
-		blob, err := json.MarshalIndent(file, "", "  ")
-		if err != nil {
+		// The file is rewritten as a whole, so a partial run must not write:
+		// a -run filter that skips scenarios would freeze the skipped ones at
+		// whatever the loaded copy held without ever having run them.
+		if ran != len(file.Scenarios) {
+			t.Fatalf("not rewriting the vector file: only %d of %d scenarios ran — drop the subtest filter for UPDATE_SEQUENCE_VECTORS", ran, len(file.Scenarios))
+		}
+		var buf bytes.Buffer
+		enc := json.NewEncoder(&buf)
+		enc.SetEscapeHTML(false) // prose stays readable: no <-style escapes
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(file); err != nil {
 			t.Fatal(err)
 		}
 		path := filepath.Join("contract", "vectors", contract.EventSequenceVectors)
-		if err := os.WriteFile(path, append(blob, '\n'), 0o644); err != nil {
+		if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		t.Logf("rewrote %s from this run; re-run without UPDATE_SEQUENCE_VECTORS to verify the embedded copy", path)
@@ -291,18 +295,12 @@ func runSequenceScenario(t *testing.T, sc *sequenceScenario) sequenceExpected {
 
 	// Periodic activity must not fire on its own inside a scenario: sweeps and
 	// heartbeats run only where a step provokes them, so the observed streams
-	// are functions of the script alone.
+	// are functions of the script alone. The network-liveness probe is scripted
+	// always-alive — recovery gates never hold a scenario on real dials — and
+	// the geo lookup is already stubbed per engine by newLadderService.
 	s.healthTick = time.Hour
 	s.heartbeatTick = time.Hour
-	s.networkRetryDelay = 2 * time.Millisecond
 	s.checkNetworkAlive = func(context.Context, []string) bool { return true }
-
-	// The public-IP geo lookup is best-effort metadata, not sequence behavior;
-	// stub it out so no scenario touches the network or races geo attributes
-	// onto events (the projection excludes them anyway).
-	restoreGeo := lookupGeoAttributes
-	lookupGeoAttributes = func(context.Context, *http.Client) map[string]string { return nil }
-	t.Cleanup(func() { lookupGeoAttributes = restoreGeo })
 
 	s.dialRelay = func(_ context.Context, host string, _ int) (int64, error) {
 		if err, ok := hostCause[host]; ok {
@@ -353,12 +351,20 @@ func runSequenceScenario(t *testing.T, sc *sequenceScenario) sequenceExpected {
 
 	// With hold_first_ready, every readiness probe blocks until release_ready;
 	// probes after the release pass immediately (the channel stays closed) —
-	// the semantics the file's format note documents.
+	// the semantics the file's format note documents. Only a probe that
+	// actually holds signals readyGate, so an await_ready_hold scheduled after
+	// the release fails its deadline instead of passing on a pass-through
+	// probe's token.
 	readyGate := make(chan struct{}, 1)
 	releaseReady := make(chan struct{})
 	readyReleased := false
 	if sc.Script.HoldFirstReady {
 		s.tunnelReady = func(ctx context.Context, _ int) error {
+			select {
+			case <-releaseReady:
+				return nil
+			default:
+			}
 			select {
 			case readyGate <- struct{}{}:
 			default:
@@ -383,24 +389,26 @@ func runSequenceScenario(t *testing.T, sc *sequenceScenario) sequenceExpected {
 				fail("connect: %v", err)
 			}
 		case "await_status":
-			count := max(step.Count, 1)
-			deadline := time.Now().Add(sequenceStepTimeout)
-			for occurrences(collapseStatuses(events.statesSnapshot()), step.Status) < count {
-				if time.Now().After(deadline) {
-					fail("timed out waiting for status %q (x%d); statuses so far: %v",
-						step.Status, count, collapseStatuses(events.statesSnapshot()))
-				}
-				time.Sleep(2 * time.Millisecond)
-			}
+			awaitSequenceCondition(t, fail,
+				func() bool {
+					return occurrences(collapseStatuses(events.statesSnapshot()), step.Status) >= max(step.Count, 1)
+				},
+				func() string {
+					return fmt.Sprintf("status %q (x%d); statuses so far: %v",
+						step.Status, max(step.Count, 1), collapseStatuses(events.statesSnapshot()))
+				})
 		case "await_notice":
-			count := max(step.Count, 1)
-			deadline := time.Now().Add(sequenceStepTimeout)
-			for len(events.noticesOf(NoticeKind(step.Kind))) < count {
-				if time.Now().After(deadline) {
-					fail("timed out waiting for notice %q (x%d)", step.Kind, count)
-				}
-				time.Sleep(2 * time.Millisecond)
-			}
+			awaitSequenceCondition(t, fail,
+				func() bool {
+					return len(events.noticesOf(NoticeKind(step.Kind))) >= max(step.Count, 1)
+				},
+				func() string {
+					kinds := []string{}
+					for _, notice := range events.noticesSnapshot() {
+						kinds = append(kinds, string(notice.Kind))
+					}
+					return fmt.Sprintf("notice %q (x%d); notices so far: %v", step.Kind, max(step.Count, 1), kinds)
+				})
 		case "network":
 			if step.Up == nil {
 				fail("network step needs an explicit \"up\"")
@@ -418,6 +426,9 @@ func runSequenceScenario(t *testing.T, sc *sequenceScenario) sequenceExpected {
 		case "await_ready_hold":
 			if !sc.Script.HoldFirstReady {
 				fail("await_ready_hold without script.hold_first_ready")
+			}
+			if readyReleased {
+				fail("await_ready_hold after release_ready: nothing will hold again")
 			}
 			select {
 			case <-readyGate:
@@ -484,6 +495,20 @@ func runSequenceScenario(t *testing.T, sc *sequenceScenario) sequenceExpected {
 		got.Events = append(got.Events, projected)
 	}
 	return got
+}
+
+// awaitSequenceCondition is the one polling loop behind the await_* steps:
+// poll cond until it holds or the step deadline passes, failing with what was
+// actually observed so a timeout names the divergence, not just the wait.
+func awaitSequenceCondition(t *testing.T, fail func(string, ...any), cond func() bool, describe func() string) {
+	t.Helper()
+	deadline := time.Now().Add(sequenceStepTimeout)
+	for !cond() {
+		if time.Now().After(deadline) {
+			fail("timed out waiting for %s", describe())
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
 }
 
 // collapseStatuses reduces the raw state stream to its transitions: platforms

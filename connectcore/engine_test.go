@@ -581,12 +581,10 @@ func TestAttachGeoAttributesStampsSessionTelemetry(t *testing.T) {
 	// The lookup blocks on gate, so the test can prove done tracks the
 	// lookup's actual lifetime.
 	gate := make(chan struct{})
-	orig := lookupGeoAttributes
-	lookupGeoAttributes = func(context.Context, *http.Client) map[string]string {
+	lookup := func(context.Context, *http.Client) map[string]string {
 		<-gate
 		return map[string]string{"country": "Testland", "country_code": "TL", "isp": "Test ISP"}
 	}
-	t.Cleanup(func() { lookupGeoAttributes = orig })
 
 	transport := &captureTransport{}
 	mgr, err := clienttelemetry.New("https://broker.test", "test", &http.Client{Transport: transport})
@@ -597,7 +595,7 @@ func TestAttachGeoAttributesStampsSessionTelemetry(t *testing.T) {
 		t.Fatalf("begin session: %v", err)
 	}
 
-	g := attachGeoAttributes(mgr, nil)
+	g := attachGeoAttributes(mgr, nil, lookup)
 	select {
 	case <-g.done:
 		t.Fatal("done closed while the lookup was still in flight")
@@ -626,15 +624,13 @@ func TestAttachGeoAttributesStampsSessionTelemetry(t *testing.T) {
 }
 
 func TestAttachGeoAttributesNilManagerSkipsLookup(t *testing.T) {
-	orig := lookupGeoAttributes
 	called := false
-	lookupGeoAttributes = func(context.Context, *http.Client) map[string]string {
+	lookup := func(context.Context, *http.Client) map[string]string {
 		called = true
 		return nil
 	}
-	t.Cleanup(func() { lookupGeoAttributes = orig })
 
-	if g := attachGeoAttributes(nil, nil); g != nil {
+	if g := attachGeoAttributes(nil, nil, lookup); g != nil {
 		t.Fatal("nil manager must return a nil lookup")
 	}
 	(*geoLookup)(nil).abandon() // must be a safe no-op
@@ -649,12 +645,10 @@ func TestGeoLookupAbandonCancelsWithoutWaiting(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
-	orig := lookupGeoAttributes
-	lookupGeoAttributes = func(ctx context.Context, _ *http.Client) map[string]string {
+	lookup := func(ctx context.Context, _ *http.Client) map[string]string {
 		<-ctx.Done() // a blocked/censored ipwho.is: only the cancel releases it
 		return nil
 	}
-	t.Cleanup(func() { lookupGeoAttributes = orig })
 
 	transport := &captureTransport{}
 	mgr, err := clienttelemetry.New("https://broker.test", "test", &http.Client{Transport: transport})
@@ -665,7 +659,7 @@ func TestGeoLookupAbandonCancelsWithoutWaiting(t *testing.T) {
 		t.Fatalf("begin session: %v", err)
 	}
 
-	g := attachGeoAttributes(mgr, nil)
+	g := attachGeoAttributes(mgr, nil, lookup)
 	g.abandon()
 	g.abandon() // idempotent
 
@@ -696,12 +690,10 @@ func TestFinalizeConnAbandonsStuckGeoLookup(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
-	orig := lookupGeoAttributes
-	lookupGeoAttributes = func(ctx context.Context, _ *http.Client) map[string]string {
+	lookup := func(ctx context.Context, _ *http.Client) map[string]string {
 		<-ctx.Done()
 		return nil
 	}
-	t.Cleanup(func() { lookupGeoAttributes = orig })
 
 	transport := &captureTransport{}
 	mgr, err := clienttelemetry.New("https://broker.test", "test", &http.Client{Transport: transport})
@@ -717,7 +709,7 @@ func TestFinalizeConnAbandonsStuckGeoLookup(t *testing.T) {
 		cancel: func() {},
 		done:   make(chan struct{}),
 		mgr:    mgr,
-		geo:    attachGeoAttributes(mgr, nil),
+		geo:    attachGeoAttributes(mgr, nil, lookup),
 	}
 	s.finalizeConn(conn, "broker_fetch", errors.New("boom"))
 

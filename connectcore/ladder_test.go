@@ -37,19 +37,25 @@ func newTelemetrySink(t *testing.T) *telemetrySink {
 	t.Helper()
 	sink := &telemetrySink{seen: map[string]bool{}}
 	sink.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Decode before taking the lock: a body read is a network operation,
+		// and holding the mutex across it would serialize every upload and
+		// block hold/release/snapshot/named behind an in-flight request.
+		var batch struct {
+			Events []clienttelemetry.Event `json:"events"`
+		}
+		decodeErr := json.NewDecoder(r.Body).Decode(&batch)
+
 		sink.mu.Lock()
 		defer sink.mu.Unlock()
 		if sink.held {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
-		var batch struct {
-			Events []clienttelemetry.Event `json:"events"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&batch); err != nil {
-			// Never acknowledge a batch that was not recorded: a 204 here
-			// would tell the manager to drop events this sink discarded.
-			w.WriteHeader(http.StatusBadRequest)
+		if decodeErr != nil {
+			// Never acknowledge a batch that was not recorded — and refuse it
+			// as transient (503), never a 4xx the persistent outbox's poison
+			// classifier would read as a permanent rejection and discard on.
+			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
 		for _, event := range batch.Events {
@@ -127,6 +133,10 @@ func newLadderService(t *testing.T, relays func() []brokerapi.RelayDescriptor) (
 	s.fetchRelays = func(ctx context.Context, brokerURL string, limit int, clientID, sessionID string) (discovery.Fetch, error) {
 		return discovery.Fetch{BrokerURL: brokerURL, Response: listOf(relays()...)}, nil
 	}
+	// Geo is best-effort metadata resolved over the real network; a hermetic
+	// engine never looks it up. Per-engine seam, so no package global to swap
+	// and restore around goroutines the engine abandons.
+	s.lookupGeo = func(context.Context, *http.Client) map[string]string { return nil }
 	// Defaults every test can override: relays reachable, tunnels healthy until
 	// stopped, probes instant.
 	s.dialRelay = func(ctx context.Context, host string, port int) (int64, error) { return 1, nil }

@@ -5,9 +5,9 @@
 // must agree on — failure classification, relay-directory decoding, the
 // broker-front list, and the engine's event sequences — and the mobile repo
 // vendors the same files for its own suites. Each file names its consumers in
-// a suites field (plus pending_suites for consumers whose runners are still
-// arriving) and carries its own doc header stating that rule and the
-// version-bump discipline that goes with it.
+// a suites field (declared consumers a repo does not run yet are accounted
+// for in the mobile repo's pin.json) and carries its own doc header stating
+// that rule and the version-bump discipline that goes with it.
 //
 // The files are embedded rather than read by path so a test can load them from
 // any package without a relative path that breaks when the caller moves. Only
