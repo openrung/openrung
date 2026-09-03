@@ -15,6 +15,7 @@
 package contract
 
 import (
+	"bytes"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -62,6 +63,20 @@ func Load(name string, target any) error {
 // mismatch error below is the single copy of that guidance; version
 // validation lives here and nowhere else.
 func LoadVersioned(name string, wantVersion int, target any) error {
+	return loadVersioned(name, wantVersion, target, false)
+}
+
+// LoadVersionedStrict is LoadVersioned with unknown JSON fields refused. It is
+// for a suite whose target struct is the authoritative mirror of the whole
+// file — the event-sequence runner regenerates the file by marshaling its
+// struct back, so a field the struct does not carry would be silently deleted
+// on the next regeneration; strict decoding turns that drift into a failure
+// at load time instead.
+func LoadVersionedStrict(name string, wantVersion int, target any) error {
+	return loadVersioned(name, wantVersion, target, true)
+}
+
+func loadVersioned(name string, wantVersion int, target any, strict bool) error {
 	data, err := Raw(name)
 	if err != nil {
 		return err
@@ -79,6 +94,14 @@ func LoadVersioned(name string, wantVersion int, target any) error {
 		return fmt.Errorf("contract vectors %s are version %d, this suite was written against %d — "+
 			"bump the suite's pinned version constant together with the file, and re-vendor it in openrung-mobile-app",
 			name, header.Version, wantVersion)
+	}
+	if strict {
+		dec := json.NewDecoder(bytes.NewReader(data))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(target); err != nil {
+			return fmt.Errorf("decode contract vectors %s (strict): %w — the suite's mirror struct must cover every field the file carries", name, err)
+		}
+		return nil
 	}
 	if err := json.Unmarshal(data, target); err != nil {
 		return fmt.Errorf("decode contract vectors %s: %w", name, err)

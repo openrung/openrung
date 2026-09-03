@@ -472,7 +472,9 @@ func (s *Engine) healthProber() func(context.Context, int) error {
 	return healthSweepViaProxy
 }
 
-func (s *Engine) geoLookup() func(context.Context, *http.Client) map[string]string {
+// geoResolver resolves the lookupGeo seam (named apart from the geoLookup
+// handle type in helpers.go, which tracks one in-flight lookup).
+func (s *Engine) geoResolver() func(context.Context, *http.Client) map[string]string {
 	if s.lookupGeo != nil {
 		return s.lookupGeo
 	}
@@ -771,7 +773,7 @@ func (s *Engine) connectFlow(ctx context.Context, conn *connection, brokerURL st
 		mgr.Record("connection_attempted", "", nil, nil)
 		// Concurrent with the broker fetch and ranking; abandoned (never
 		// waited for) at the ladder and finalize boundaries below.
-		conn.geo = attachGeoAttributes(mgr, s.geoHTTPClient(), s.geoLookup())
+		conn.geo = attachGeoAttributes(mgr, s.geoHTTPClient(), s.geoResolver())
 	}
 
 	// TUN mode binds no local port, so it neither resolves nor reserves the

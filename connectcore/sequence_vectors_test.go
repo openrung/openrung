@@ -77,10 +77,10 @@ type sequenceRelay struct {
 }
 
 type sequenceScript struct {
-	Dials          []sequenceDial `json:"dials,omitempty"`
-	Punch          *sequencePunch `json:"punch,omitempty"`
-	HoldFirstReady bool           `json:"hold_first_ready,omitempty"`
-	TelemetryHeld  bool           `json:"telemetry_held_until_released,omitempty"`
+	Dials         []sequenceDial `json:"dials,omitempty"`
+	Punch         *sequencePunch `json:"punch,omitempty"`
+	HoldReadiness bool           `json:"hold_readiness,omitempty"`
+	TelemetryHeld bool           `json:"telemetry_held_until_session_end,omitempty"`
 }
 
 type sequenceDial struct {
@@ -174,22 +174,12 @@ func scriptedCause(t *testing.T, cause string) error {
 const sequenceStepTimeout = 10 * time.Second
 
 func TestEventSequenceVectors(t *testing.T) {
+	// Strict: the regeneration path marshals sequenceVectorFile back over the
+	// file, so a JSON field the struct does not mirror would be silently
+	// deleted on the next regen — an unknown field fails the load instead.
 	var file sequenceVectorFile
-	if err := contract.LoadVersioned(contract.EventSequenceVectors, eventSequenceVectorsVersion, &file); err != nil {
+	if err := contract.LoadVersionedStrict(contract.EventSequenceVectors, eventSequenceVectorsVersion, &file); err != nil {
 		t.Fatal(err)
-	}
-	// The regeneration path marshals sequenceVectorFile back over the file, so
-	// any JSON field the struct does not mirror would be silently deleted on
-	// the next regen. Strict-decode to make that drift a failure now, not a
-	// lost field later.
-	raw, err := contract.Raw(contract.EventSequenceVectors)
-	if err != nil {
-		t.Fatal(err)
-	}
-	strict := json.NewDecoder(bytes.NewReader(raw))
-	strict.DisallowUnknownFields()
-	if err := strict.Decode(&sequenceVectorFile{}); err != nil {
-		t.Fatalf("the vector file carries a field the Go mirror struct does not: %v — add it to the struct (regeneration would silently delete it)", err)
 	}
 
 	seen := map[string]bool{}
@@ -250,7 +240,10 @@ func runSequenceScenario(t *testing.T, sc *sequenceScenario) sequenceExpected {
 	t.Helper()
 	sink := newTelemetrySink(t)
 	if sc.Script.TelemetryHeld {
-		sink.hold()
+		// Held until the batch carrying the session's connection_ended — the
+		// engine-ordered release, so on EVERY interleaving only the terminal
+		// flush can deliver, and it delivers the whole session as one backlog.
+		sink.holdUntilEvent("connection_ended")
 	}
 
 	// The directory: hosts are the driver's business (the file scripts relay
@@ -349,33 +342,15 @@ func runSequenceScenario(t *testing.T, sc *sequenceScenario) sequenceExpected {
 		}
 	}
 
-	// With hold_first_ready, every readiness probe blocks until release_ready;
-	// probes after the release pass immediately (the channel stays closed) —
-	// the semantics the file's format note documents. Only a probe that
-	// actually holds signals readyGate, so an await_ready_hold scheduled after
-	// the release fails its deadline instead of passing on a pass-through
-	// probe's token.
-	readyGate := make(chan struct{}, 1)
-	releaseReady := make(chan struct{})
+	// With hold_readiness, every readiness probe blocks until release_ready;
+	// probes after the release pass immediately — the shared holdReadiness
+	// gate (also used by the network epoch tests), whose held channel only
+	// ever signals for a probe that actually held.
+	var readyGate <-chan struct{}
+	var releaseReady func()
 	readyReleased := false
-	if sc.Script.HoldFirstReady {
-		s.tunnelReady = func(ctx context.Context, _ int) error {
-			select {
-			case <-releaseReady:
-				return nil
-			default:
-			}
-			select {
-			case readyGate <- struct{}{}:
-			default:
-			}
-			select {
-			case <-releaseReady:
-				return nil
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
+	if sc.Script.HoldReadiness {
+		readyGate, releaseReady = holdReadiness(s)
 	}
 
 	for index, step := range sc.Steps {
@@ -424,8 +399,8 @@ func runSequenceScenario(t *testing.T, sc *sequenceScenario) sequenceExpected {
 				fail("no tunnel run consumed the previous crash; is a session live?")
 			}
 		case "await_ready_hold":
-			if !sc.Script.HoldFirstReady {
-				fail("await_ready_hold without script.hold_first_ready")
+			if !sc.Script.HoldReadiness {
+				fail("await_ready_hold without script.hold_readiness")
 			}
 			if readyReleased {
 				fail("await_ready_hold after release_ready: nothing will hold again")
@@ -436,16 +411,14 @@ func runSequenceScenario(t *testing.T, sc *sequenceScenario) sequenceExpected {
 				fail("timed out waiting for the held readiness probe")
 			}
 		case "release_ready":
-			if !sc.Script.HoldFirstReady {
-				fail("release_ready without script.hold_first_ready")
+			if !sc.Script.HoldReadiness {
+				fail("release_ready without script.hold_readiness")
 			}
 			if readyReleased {
 				fail("release_ready scripted twice")
 			}
 			readyReleased = true
-			close(releaseReady)
-		case "release_telemetry":
-			sink.release()
+			releaseReady()
 		case "disconnect":
 			if err := s.Disconnect(); err != nil {
 				fail("disconnect: %v", err)

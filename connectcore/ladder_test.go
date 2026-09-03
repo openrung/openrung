@@ -22,15 +22,17 @@ import (
 
 // telemetrySink is a loopback broker that records every telemetry event the
 // service flushes (loopback endpoints are exempt from the HTTPS requirement,
-// like the relay-list signing exemption). While held (hold/release), it
-// refuses every upload with 503 so recorded events accumulate as a pending
-// backlog — the sequence vectors' shutdown scenario.
+// like the relay-list signing exemption). While held (holdUntilEvent), it
+// refuses every upload with 503 until a batch carries the named event, so a
+// whole session's events accumulate as a pending backlog that only the flush
+// carrying that event can deliver — the sequence vectors' shutdown scenario.
 type telemetrySink struct {
-	mu     sync.Mutex
-	held   bool
-	events []clienttelemetry.Event
-	seen   map[string]bool
-	srv    *httptest.Server
+	mu           sync.Mutex
+	held         bool
+	releaseEvent string
+	events       []clienttelemetry.Event
+	seen         map[string]bool
+	srv          *httptest.Server
 }
 
 func newTelemetrySink(t *testing.T) *telemetrySink {
@@ -48,8 +50,18 @@ func newTelemetrySink(t *testing.T) *telemetrySink {
 		sink.mu.Lock()
 		defer sink.mu.Unlock()
 		if sink.held {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			return
+			releases := false
+			for _, event := range batch.Events {
+				if decodeErr == nil && event.Event == sink.releaseEvent {
+					releases = true
+					break
+				}
+			}
+			if !releases {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			sink.held = false
 		}
 		if decodeErr != nil {
 			// Never acknowledge a batch that was not recorded — and refuse it
@@ -73,15 +85,14 @@ func newTelemetrySink(t *testing.T) *telemetrySink {
 	return sink
 }
 
-func (sink *telemetrySink) hold() {
+// holdUntilEvent refuses every upload until a batch carries the named event;
+// that batch is accepted whole and lifts the hold. Event-triggered rather than
+// step-triggered so the release is ordered by the engine's own flow — a step
+// could race an in-flight earlier flush and release it early on a slow run.
+func (sink *telemetrySink) holdUntilEvent(event string) {
 	sink.mu.Lock()
 	sink.held = true
-	sink.mu.Unlock()
-}
-
-func (sink *telemetrySink) release() {
-	sink.mu.Lock()
-	sink.held = false
+	sink.releaseEvent = event
 	sink.mu.Unlock()
 }
 
@@ -150,6 +161,36 @@ func newLadderService(t *testing.T, relays func() []brokerapi.RelayDescriptor) (
 	// immediately instead of dialing it.
 	s.tunnelReady = func(ctx context.Context, proxyPort int) error { return nil }
 	return s, sink
+}
+
+// holdReadiness replaces s.tunnelReady with a gate: every readiness probe
+// blocks until release is called, and probes reached after the release pass
+// immediately. held receives one token per probe that actually held (never
+// from a post-release pass-through), so a test can wait for a candidate to be
+// parked at readiness before injecting something mid-attempt. release is
+// idempotent. Install before Connect.
+func holdReadiness(s *Engine) (held <-chan struct{}, release func()) {
+	gate := make(chan struct{}, 1)
+	releaseCh := make(chan struct{})
+	s.tunnelReady = func(ctx context.Context, _ int) error {
+		select {
+		case <-releaseCh:
+			return nil
+		default:
+		}
+		select {
+		case gate <- struct{}{}:
+		default:
+		}
+		select {
+		case <-releaseCh:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	var once sync.Once
+	return gate, func() { once.Do(func() { close(releaseCh) }) }
 }
 
 func waitForStatus(t *testing.T, s *Engine, want Status) State {
