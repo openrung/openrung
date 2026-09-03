@@ -40,9 +40,14 @@ upstream file is not picked up by `contract:sync` on its own.
 - **Go** (this repo): `connectcore/contract/relay_decode_test.go`,
   `connectcore/contract/broker_fronts_test.go`,
   `connectcore/clienttelemetry/contract_vectors_test.go`, and
-  `connectcore/sequence_vectors_test.go` — the last inside the engine package,
-  because its scenarios drive the engine's unexported transport seams. They
-  load the files through the `contract` package, which embeds them.
+  `connectcore/sequence_vectors_test.go`. They load the files through the
+  `contract` package, which embeds them. The sequence suite is a thin caller
+  of the exported runner in `connectcore/sequencevectors.go` — the scenario
+  format's one executable implementation, inside the engine package because
+  scripting the transport outcomes needs its unexported seams. The mobile
+  repo's punchbridge Go suite imports the same runner at the pinned tag and
+  drives it with the engine its binding constructs (ADR-003 B1), so the two
+  Go suites can never drift on what a scenario means.
 - **Kotlin, Swift, and Jest** (`openrung-mobile-app`): that repo vendors a copy
   of these files and its check script compares the vendored copy against a
   pinned `openrung` ref, so a drifted copy fails there rather than passing

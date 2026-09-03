@@ -266,24 +266,6 @@ func (c *testSink) Notice(notice Notice) {
 	c.notices = append(c.notices, notice)
 }
 
-// statesSnapshot and noticesSnapshot copy the full ordered streams, for suites
-// (the sequence vectors) that compare whole sequences rather than single points.
-func (c *testSink) statesSnapshot() []State {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	out := make([]State, len(c.states))
-	copy(out, c.states)
-	return out
-}
-
-func (c *testSink) noticesSnapshot() []Notice {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	out := make([]Notice, len(c.notices))
-	copy(out, c.notices)
-	return out
-}
-
 func (c *testSink) noticesOf(kind NoticeKind) []Notice {
 	c.mu.Lock()
 	defer c.mu.Unlock()
