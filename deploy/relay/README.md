@@ -118,7 +118,7 @@ deploy/relay/foundation-up.sh rollback 203.0.113.10
 |----------|---------|---------|
 | `OPENRUNG_FOUNDATION_TOKEN_CMD` | — | Command printing the token (`pass show …`, `aws secretsmanager get-secret-value …`, `op read …`). Preferred. Run via `bash -c`; the first output line is the token. |
 | `OPENRUNG_FOUNDATION_TOKEN` | — | The token itself. Fallback for CI; prefer the command form so the secret is not sitting in your environment. |
-| `OPENRUNG_IMAGE` | `…/openrung-relay:main` | Image to run. Pin a `sha-…` tag (or an `@sha256:…` digest) for reproducible rolls. |
+| `OPENRUNG_IMAGE` | pinned `…/openrung-relay:main@sha256:…` | Image to run. Keep the digest pin when overriding it. |
 | `OPENRUNG_BROKER_URL` | `https://broker-origin.openrung.org` | The broker's **direct TLS origin** (see `deploy/broker/origin-tls.md`), not a CDN front: a front would decrypt the Foundation bearer at every edge POP and collapse per-relay rate limiting onto shared edge IPs. Must be HTTPS; the script fails fast otherwise. |
 | `OPENRUNG_ENV_FILE` | `/etc/openrung/relay.env` | Canonical credential path. `convert` preserves settings from this file or the canonical running container; it never reads, merges, or removes legacy `volunteer.env`. |
 | `OPENRUNG_SSH_KEY` / `OPENRUNG_SSH_USER` | `~/.ssh/id_ed25519_openrung` / `ubuntu` | SSH access to the host. |
@@ -231,7 +231,10 @@ For volunteers with any Linux VPS (public IPv4, inbound TCP 443 open), one
 line brings up a volunteer-class relay from the public image:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/openrung/openrung/main/deploy/relay/volunteer-up.sh | sudo sh
+git clone https://github.com/openrung/openrung.git
+cd openrung
+git checkout --detach <reviewed-commit-or-signed-tag>
+sudo ./deploy/relay/volunteer-up.sh
 ```
 
 [`volunteer-up.sh`](volunteer-up.sh) applies the exact container posture of
@@ -259,7 +262,7 @@ file (and with it the relay identity) is preserved throughout.
 Overrides pass through `sudo env`, e.g.:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/openrung/openrung/main/deploy/relay/volunteer-up.sh | sudo env OPENRUNG_PUBLIC_HOST=203.0.113.7 OPENRUNG_LABEL=my-relay sh
+sudo env OPENRUNG_PUBLIC_HOST=203.0.113.7 OPENRUNG_LABEL=my-relay ./deploy/relay/volunteer-up.sh
 ```
 
 To change settings later, edit `/etc/openrung/relay.env` and re-run the same
@@ -354,7 +357,7 @@ docker run -d --name openrung-relay --restart unless-stopped \
 If you publish via the CI workflow, pull instead of building:
 
 ```sh
-docker pull ghcr.io/openrung/openrung-relay:main
+docker pull ghcr.io/openrung/openrung-relay:main@sha256:9e58bdc0218d726d424a2c83e91ef91431767cd880c5683d45989ee9b8d41c66
 ```
 
 The cloud provisioning helpers pull this public canonical package by default.

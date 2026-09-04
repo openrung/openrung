@@ -59,6 +59,19 @@ func TestProxyPortLifecycle(t *testing.T) {
 	}
 }
 
+func TestTelemetryPreferenceDefaultsOffAndPersists(t *testing.T) {
+	store := NewInDir(t.TempDir())
+	if store.LoadTelemetryEnabled() {
+		t.Fatal("missing privacy preference must default telemetry to off")
+	}
+	if err := store.SaveTelemetryEnabled(true); err != nil {
+		t.Fatalf("save telemetry preference: %v", err)
+	}
+	if !store.LoadTelemetryEnabled() {
+		t.Fatal("saved telemetry preference was not restored")
+	}
+}
+
 func TestLoadOrSaveProxyPortChoosesOneCrossProcessWinner(t *testing.T) {
 	if dir := os.Getenv("OPENRUNG_TEST_PROXY_PORT_DIR"); dir != "" {
 		candidate, err := strconv.Atoi(os.Getenv("OPENRUNG_TEST_PROXY_PORT_CANDIDATE"))

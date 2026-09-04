@@ -5,6 +5,7 @@
 // without a broker. It never touches the network or the OS.
 import type {
   NativeIdentity,
+  NativePrivacySettings,
   NativeProxyInfo,
   NativeVpnState,
   OpenRungVpnModule,
@@ -61,6 +62,7 @@ export class MockOpenRungVpn implements OpenRungVpnModule {
   };
   private readonly listeners = new Set<(s: NativeVpnState) => void>();
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
+  private telemetryEnabled = false;
 
   subscribe(cb: (s: NativeVpnState) => void): () => void {
     this.listeners.add(cb);
@@ -132,7 +134,20 @@ export class MockOpenRungVpn implements OpenRungVpnModule {
   }
 
   async getIdentity(): Promise<NativeIdentity> {
-    return { clientId: 'mock-client-0000', sessionId: null };
+    return this.telemetryEnabled
+      ? { clientId: 'mock-client-0000', sessionId: null }
+      : { clientId: '', sessionId: null };
+  }
+
+  async getPrivacySettings(): Promise<NativePrivacySettings> {
+    return { telemetryEnabled: this.telemetryEnabled };
+  }
+
+  async setTelemetryEnabled(enabled: boolean): Promise<void> {
+    if (this.state.status !== 'disconnected' && this.state.status !== 'failed') {
+      throw new Error('disconnect before changing diagnostic telemetry');
+    }
+    this.telemetryEnabled = enabled;
   }
 
   async getProxyInfo(): Promise<NativeProxyInfo> {

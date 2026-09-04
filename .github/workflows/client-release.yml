@@ -20,7 +20,7 @@ jobs:
     outputs:
       base_version: ${{ steps.version.outputs.base_version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - id: version
         name: Resolve client build version
@@ -53,9 +53,9 @@ jobs:
           echo "revision=$revision" >> "$GITHUB_OUTPUT"
           echo "cmd/client/VERSION -> $base_version (building $build_version, revision $revision)"
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
-          go-version: "1.25"
+          go-version: "1.26.6"
 
       - name: Cross-compile all targets
         shell: bash
@@ -144,7 +144,7 @@ jobs:
           python3 -c 'import sys; a=open(sys.argv[1],"rb").read(4096); e=open(sys.argv[2],"rb").read(); sys.exit("windows binary embeds WinDivert64.sys: the with_external_windivert build tag was lost (see THIRD_PARTY_NOTICES.md section 8)" if a in e else 0)' "$asset" "$exe"
           echo "no WinDivert driver bytes in the windows binary"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: openrung-client-dist
           path: |
@@ -162,7 +162,7 @@ jobs:
     runs-on: macos-14
     steps:
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: openrung-client-dist
           path: dist
@@ -240,7 +240,7 @@ jobs:
           shasum -a 256 openrung-client-*.tar.gz openrung-client-*.zip > SHA256SUMS
           cat SHA256SUMS
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: openrung-client-dist-signed
           path: |
@@ -260,13 +260,13 @@ jobs:
       contents: write # create the tag's GitHub Release + upload assets
     steps:
       - name: Download signed build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: openrung-client-dist-signed
           path: artifacts
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
           name: OpenRung Client CLI v${{ needs.build.outputs.base_version }}
           generate_release_notes: true

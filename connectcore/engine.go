@@ -297,10 +297,16 @@ type Engine struct {
 	SingBoxStopsOnStdinClose bool
 
 	// Platform identifies this host on every broker request the engine makes
-	// (relay-list fetches, WSS session tickets, telemetry). Empty means
-	// PlatformDesktop: the desktop app predates the field and its wire
-	// behavior must stay unchanged.
+	// (relay-list fetches, WSS session tickets, telemetry) when diagnostic
+	// telemetry is enabled. Empty means PlatformDesktop.
 	Platform brokerapi.Platform
+
+	// Telemetry is intentionally opt-in. When disabled (the default), the
+	// engine neither creates a persistent client identifier nor sends platform,
+	// client-id, session-id, geo, or telemetry-event data to a broker. Hosts set
+	// this through SetTelemetryEnabled before connecting.
+	telemetryMu      sync.RWMutex
+	telemetryEnabled bool
 
 	// PunchEnabled attempts a direct NAT-punched path to punch-capable
 	// relays before falling back to the relay hub's data plane. PunchURL
@@ -509,6 +515,9 @@ func (s *Engine) relayFetcher() func(context.Context, string, int, string, strin
 // telemetryPlatform resolves the platform identity for the engine's broker
 // requests. Empty defaults to PlatformDesktop (see the Platform field).
 func (s *Engine) telemetryPlatform() brokerapi.Platform {
+	if !s.TelemetryEnabled() {
+		return brokerapi.PlatformNone
+	}
 	if s.Platform == "" {
 		return brokerapi.PlatformDesktop
 	}
@@ -530,6 +539,34 @@ func New() *Engine {
 		directory:    newDirectoryCache(),
 		PunchEnabled: true,
 	}
+}
+
+// SetTelemetryEnabled changes whether the next connection may send diagnostic
+// telemetry. It refuses to change a live connection so a host cannot surprise
+// a user by changing the privacy boundary halfway through a session.
+func (s *Engine) SetTelemetryEnabled(enabled bool) error {
+	s.connectMu.Lock()
+	defer s.connectMu.Unlock()
+
+	s.mu.Lock()
+	connecting := s.conn != nil
+	s.mu.Unlock()
+	if connecting {
+		return errors.New("disconnect before changing diagnostic telemetry")
+	}
+
+	s.telemetryMu.Lock()
+	s.telemetryEnabled = enabled
+	s.telemetryMu.Unlock()
+	return nil
+}
+
+// TelemetryEnabled reports whether this engine may create diagnostic identity
+// and telemetry traffic. Its default is false.
+func (s *Engine) TelemetryEnabled() bool {
+	s.telemetryMu.RLock()
+	defer s.telemetryMu.RUnlock()
+	return s.telemetryEnabled
 }
 
 // Start runs crash recovery and loads persisted recents. It emits nothing;

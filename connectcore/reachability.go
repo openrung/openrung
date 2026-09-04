@@ -17,6 +17,14 @@ import (
 // A zero timeout uses RelayTCPTimeout, the mobile-matched default; a caller
 // with a different budget passes its own (the CLI keeps its historical 10s).
 func RelayTCPReachable(ctx context.Context, host string, port int, timeout time.Duration) (int64, error) {
+	return relayTCPReachable(ctx, host, port, timeout, func(ctx context.Context, address string, timeout time.Duration) (net.Conn, error) {
+		return (&net.Dialer{Timeout: timeout}).DialContext(ctx, "tcp", address)
+	})
+}
+
+// relayTCPReachable keeps the dial operation injectable for a deterministic
+// timeout-contract test. Production callers always use RelayTCPReachable.
+func relayTCPReachable(ctx context.Context, host string, port int, timeout time.Duration, dial func(context.Context, string, time.Duration) (net.Conn, error)) (int64, error) {
 	if timeout <= 0 {
 		timeout = RelayTCPTimeout
 	}
@@ -29,7 +37,7 @@ func RelayTCPReachable(ctx context.Context, host string, port int, timeout time.
 func relayTCPReachable(ctx context.Context, host string, port int, dialer *net.Dialer) (int64, error) {
 	cleanHost := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(host), "["), "]")
 	started := time.Now()
-	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(cleanHost, strconv.Itoa(port)))
+	conn, err := dial(ctx, net.JoinHostPort(cleanHost, strconv.Itoa(port)), timeout)
 	if err != nil {
 		// Wrap without masking the root cause so ClassifyError still labels the
 		// telemetry (timeout, connection_refused, ...), like the mobile wrapper.

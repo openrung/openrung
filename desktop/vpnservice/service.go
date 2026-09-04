@@ -61,6 +61,12 @@ type NativeIdentity struct {
 	SessionID *string `json:"sessionId"`
 }
 
+// NativePrivacySettings is the persisted, user-controlled diagnostic
+// telemetry choice. New installations default to false.
+type NativePrivacySettings struct {
+	TelemetryEnabled bool `json:"telemetryEnabled"`
+}
+
 // NativeProxyInfo is desktop-specific connection metadata, kept separate from
 // NativeVpnState so that state remains identical to the shared mobile bridge
 // contract. The helper commands are intended to be copied into a POSIX shell.
@@ -117,13 +123,6 @@ type Service struct {
 func New() *Service {
 	s := &Service{ring: newRingBuffer(logRingCapacity)}
 	engine := connectcore.New()
-	// FOR REVIEW (ADR-001 PR A2): the engine's punch-insecure option now
-	// defaults to false; this line preserves the value the desktop app has
-	// shipped with since punching landed. It skips TLS verification of the hub
-	// punch coordination API only (a relay hub on a bare IP cannot get a CA
-	// cert); the punched data path pins the relay's per-session cert either
-	// way. The CLI has always defaulted to verifying it (-punch-insecure).
-	engine.PunchInsecure = true
 	// The engine module owns punch policy; the QUIC punch transport lives in
 	// the root module and is wired in here.
 	engine.PunchEstablisher = enginepunch.Establish
@@ -142,6 +141,9 @@ func (s *Service) Startup(ctx context.Context) {
 	if store, err := clientstate.New(); err == nil {
 		s.store = store
 		s.engine.Persistence = storeAdapter{store: store}
+		if err := s.engine.SetTelemetryEnabled(store.LoadTelemetryEnabled()); err != nil {
+			s.appendLog("could not apply diagnostic telemetry preference: " + err.Error())
+		}
 	}
 	// Crash recovery and persisted recents; the engine's log lines arrive
 	// through the sink.
@@ -195,6 +197,9 @@ func (s *Service) GetState() NativeVpnState {
 }
 
 func (s *Service) GetIdentity() NativeIdentity {
+	if !s.engine.TelemetryEnabled() {
+		return NativeIdentity{}
+	}
 	id, err := clientID()
 	if err != nil {
 		id = ""
@@ -205,6 +210,29 @@ func (s *Service) GetIdentity() NativeIdentity {
 		session = &sessionID
 	}
 	return NativeIdentity{ClientID: id, SessionID: session}
+}
+
+// GetPrivacySettings returns the current diagnostic-telemetry choice without
+// creating a client identifier.
+func (s *Service) GetPrivacySettings() NativePrivacySettings {
+	return NativePrivacySettings{TelemetryEnabled: s.engine.TelemetryEnabled()}
+}
+
+// SetTelemetryEnabled records an explicit opt-in/out. It can only change
+// while disconnected, so the next connect has one clear privacy boundary.
+func (s *Service) SetTelemetryEnabled(enabled bool) error {
+	if err := s.engine.SetTelemetryEnabled(enabled); err != nil {
+		return err
+	}
+	if s.store != nil {
+		if err := s.store.SaveTelemetryEnabled(enabled); err != nil {
+			// Restore the safe default if persistence failed: an opt-in must not
+			// silently survive only until the next launch.
+			_ = s.engine.SetTelemetryEnabled(false)
+			return err
+		}
+	}
+	return nil
 }
 
 // GetProxyInfo returns the stable loopback endpoint and copyable shell helper

@@ -14,6 +14,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 export PATH="${PATH}:$(go env GOPATH)/bin"
+# sing-box's Apple networking transport uses APIs introduced through macOS 12.
+# Keep the compiler target aligned with the bundle metadata.
+export MACOSX_DEPLOYMENT_TARGET=12.0
 
 node scripts/versioned-wails-build.mjs "$@"
 

@@ -43,7 +43,7 @@ capability negotiation.
 
 `lightsail-up.sh` provisions a broker on a `micro_3_0` instance (1 GB RAM /
 2 vCPU): it allocates a static IP, installs Docker, pulls
-`ghcr.io/openrung/openrung-broker:main`, runs it (host networking, read-only
+`ghcr.io/openrung/openrung-broker:main@sha256:d39e6a6e78fc72e846ddcce37f4a34cd97008c0a419704c415080f391e586c91`, runs it (host networking, read-only
 rootfs, persistent telemetry volume), and opens the HTTP port.
 
 Prerequisites: an authenticated `aws` CLI (`aws configure`) with Lightsail
