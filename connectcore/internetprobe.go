@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"time"
@@ -58,7 +59,7 @@ func probeOnce(ctx context.Context, client *http.Client, endpoint string) error 
 	req.Header.Set("Cache-Control", "no-cache")
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return describeProbeError(req, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
@@ -69,6 +70,20 @@ func probeOnce(ctx context.Context, client *http.Client, endpoint string) error 
 	buf := make([]byte, 1)
 	_, _ = resp.Body.Read(buf)
 	return nil
+}
+
+// describeProbeError names a failed name lookup for what it is. Only the TUN
+// probe resolves locally (the proxy probe hands the hostname to the mixed
+// inbound), and there a lookup failure means the OS's DNS did not make it
+// through the tunnel — a DNS problem, not an unreachable relay. Without the
+// distinction the user reads "internet probe failed" and blames the relay
+// (issue #175). Every other error is returned unchanged.
+func describeProbeError(req *http.Request, err error) error {
+	var dnsErr *net.DNSError
+	if !errors.As(err, &dnsErr) {
+		return err
+	}
+	return fmt.Errorf("DNS lookup of %s failed through the VPN: %w", req.URL.Hostname(), err)
 }
 
 // verifyInternetViaProxy gates CONNECTED on end-to-end internet through the

@@ -2,6 +2,7 @@ package connectcore
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -83,5 +84,43 @@ func TestHealthSweepViaProxySingleSweep(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("health sweep made %d requests, want exactly 1 (no retry loop)", calls)
+	}
+}
+
+// dnsFailingTransport fails every request the way Go's resolver does when the
+// OS's DNS never comes back — the TUN-mode symptom of issue #175.
+type dnsFailingTransport struct{}
+
+func (dnsFailingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return nil, &net.DNSError{Err: "i/o timeout", Name: req.URL.Hostname(), IsTimeout: true}
+}
+
+func TestProbeNamesDNSFailures(t *testing.T) {
+	swapProbeURLs(t, "https://probe.example/generate_204")
+	client := &http.Client{Transport: dnsFailingTransport{}}
+
+	err := probeSweep(context.Background(), client)
+	if err == nil {
+		t.Fatal("probe passed with a failing resolver")
+	}
+	if !strings.Contains(err.Error(), "DNS lookup of probe.example failed through the VPN") {
+		t.Fatalf("DNS failure not named: %v", err)
+	}
+	var dnsErr *net.DNSError
+	if !errors.As(err, &dnsErr) {
+		t.Fatalf("original DNS error not wrapped: %v", err)
+	}
+}
+
+func TestProbeLeavesOtherErrorsAlone(t *testing.T) {
+	swapProbeURLs(t, "http://127.0.0.1:1/generate_204")
+	client := &http.Client{Timeout: time.Second}
+
+	err := probeSweep(context.Background(), client)
+	if err == nil {
+		t.Fatal("probe passed against a closed port")
+	}
+	if strings.Contains(err.Error(), "DNS lookup") {
+		t.Fatalf("connection refusal mislabelled as DNS: %v", err)
 	}
 }
