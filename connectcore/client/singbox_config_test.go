@@ -50,6 +50,13 @@ func TestBuildSingBoxConfig(t *testing.T) {
 	if dnsRule["protocol"] != "dns" || dnsRule["action"] != "hijack-dns" {
 		t.Fatalf("expected DNS hijack rule, got %+v", dnsRule)
 	}
+	// DNS the OS sends to a resolver other than the tunnel's own address
+	// (a LAN router, an ISP server) carries no DNS tag; only a port match
+	// keeps it out of the TCP-only proxy outbound (issue #175).
+	portRule := rules[1].(map[string]any)
+	if portRule["port"] != float64(53) || portRule["action"] != "hijack-dns" {
+		t.Fatalf("expected port-53 DNS hijack rule, got %+v", portRule)
+	}
 	if route["final"] != "proxy" {
 		t.Fatalf("expected proxy final route, got %+v", route["final"])
 	}

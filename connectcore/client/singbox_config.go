@@ -54,9 +54,10 @@ const (
 	DefaultTunnelIPv6Address = "fdfe:dcba:9876::1/126"
 
 	// DefaultTunnelDNSAddress is TunnelDNSAddress(DefaultTunnelIPv4Address):
-	// the only in-TUN address whose port-53 traffic sing-box hijacks (see
-	// TunnelDNSAddress), and therefore the address mobile's fresh-DNS probes
-	// must target.
+	// the in-TUN address sing-tun tags as DNS and the platform layers hand
+	// the OS as the tunnel's resolver (see TunnelDNSAddress), and therefore
+	// the address mobile's fresh-DNS probes must target. Port-53 traffic to
+	// any other address is caught by the route-level hijack instead.
 	DefaultTunnelDNSAddress = "172.19.0.2"
 )
 
@@ -528,8 +529,7 @@ func countryDNSRules(country string) []any {
 }
 
 // buildRouteConfig emits the route block. Without split tunneling it is the
-// original emission (a single hijack-dns rule and final proxy), byte-identical
-// for existing callers.
+// two DNS hijack rules, the udp-443 reject and final proxy.
 func buildRouteConfig(input SingBoxConfigInput, probeSuffixes []string) map[string]any {
 	var bypassCountries []string
 	bypassLAN := false
@@ -542,6 +542,21 @@ func buildRouteConfig(input SingBoxConfigInput, probeSuffixes []string) map[stri
 		map[string]any{
 			"protocol": "dns",
 			"action":   "hijack-dns",
+		},
+		// Queries the OS sends to any OTHER resolver — its LAN router, an ISP
+		// server — arrive as plain port-53 traffic with no DNS tag and would
+		// otherwise fall through to the TCP-only proxy outbound, where
+		// sing-box drops every UDP flow ("UDP is not supported by outbound:
+		// proxy"): every name lookup on the machine dies and the internet
+		// probe blames the relay (issue #175). sing-tun repoints system DNS
+		// at the hijack address only on Windows and on Linux hosts running
+		// systemd-resolved, and never on macOS, so this rule is what makes
+		// DNS work — and stay inside the tunnel — everywhere else. It
+		// precedes the LAN bypass on purpose: a bypassed LAN must not become
+		// a plaintext DNS leak.
+		map[string]any{
+			"port":   53,
+			"action": "hijack-dns",
 		},
 	}
 	if len(bypassCountries) > 0 {
@@ -623,8 +638,9 @@ func localRuleSetObject(directory, tag string) map[string]any {
 // tun inbound tags a packet Protocol=DNS only when its destination equals that
 // address — after which the router hijacks it into the DNS module ahead of any
 // route rule. A datagram addressed to a public resolver (1.1.1.1) is NOT
-// tagged, matches no rule, and dies on the TCP-only proxy outbound, so
-// mobile's fresh-DNS probe must target this address.
+// tagged; the route-level port-53 hijack catches it instead. Mobile's
+// fresh-DNS probe targets this address because it is the resolver the
+// platform hands the OS, so the probe exercises the path real apps use.
 //
 // sing-tun only performs that derivation when the successor stays inside the
 // TUN prefix (HasNextAddress: prefix.Contains(addr.Next())); otherwise it

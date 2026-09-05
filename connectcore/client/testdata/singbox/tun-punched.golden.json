@@ -83,6 +83,10 @@
         "protocol": "dns"
       },
       {
+        "action": "hijack-dns",
+        "port": 53
+      },
+      {
         "action": "reject",
         "network": "udp",
         "no_drop": true,

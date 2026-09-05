@@ -173,6 +173,10 @@
         "protocol": "dns"
       },
       {
+        "action": "hijack-dns",
+        "port": 53
+      },
+      {
         "action": "sniff"
       },
       {

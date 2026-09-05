@@ -232,9 +232,19 @@ sudo go run ./cmd/client connect --tun
 The generated config uses:
 
 - `tun` inbound with `auto_route: true` and `strict_route: true`.
-- `dns_mode: hijack`, so sing-box installs tunnel DNS settings and intercepts
-  port 53 DNS requests.
-- DNS servers detoured through the proxy.
+- `dns_mode: hijack`, so DNS queries addressed to the tunnel's own DNS
+  address (172.19.0.2) are answered by sing-box's resolver. sing-box points
+  the system at that address only on Windows and on Linux hosts running
+  systemd-resolved (it shells out to `resolvectl`); other Linux setups and
+  macOS keep their existing resolver.
+- A route rule that hijacks *any* port 53 traffic into the same resolver, so
+  DNS still works, and stays inside the tunnel, when the system resolver was
+  not repointed. Without it those queries reach the TCP-only relay outbound
+  as UDP, sing-box drops them (`UDP is not supported by outbound: proxy`),
+  and every name lookup on the machine fails.
+- DNS servers detoured through the proxy over TCP. The relay outbound carries
+  no UDP at all; UDP 443 (QUIC) is rejected outright so browsers fall back to
+  TCP immediately, and every other UDP flow is dropped.
 - `route_exclude_address` for the literal relay IP (and, on a punched path, the
   relay's reflexive UDP IP), so the client's own connection to the relay stays
   on the real network interface instead of being routed back into the TUN.
