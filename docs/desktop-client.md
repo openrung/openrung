@@ -241,7 +241,14 @@ The generated config uses:
   DNS still works, and stays inside the tunnel, when the system resolver was
   not repointed. Without it those queries reach the TCP-only relay outbound
   as UDP, sing-box drops them (`UDP is not supported by outbound: proxy`),
-  and every name lookup on the machine fails.
+  and every name lookup on the machine fails. This rule runs ahead of the
+  split-tunnel LAN bypass, so a LAN resolver (the router, a Pi-hole, a
+  local AdGuard) is never consulted while connected, even with the LAN
+  bypass on: names only that resolver knows, such as router-served `.lan`
+  hosts, do not resolve, and its blocklists do not apply. That is the
+  behaviour Windows, Android and iOS already had, because they point the
+  system at the tunnel resolver; the rule makes macOS and other Linux
+  setups match, and keeps a bypassed LAN from becoming a plaintext DNS leak.
 - DNS servers detoured through the proxy over TCP. The relay outbound carries
   no UDP at all; UDP 443 (QUIC) is rejected outright so browsers fall back to
   TCP immediately, and every other UDP flow is dropped.
