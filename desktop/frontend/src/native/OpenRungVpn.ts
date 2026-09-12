@@ -32,6 +32,8 @@ const realBridge: OpenRungVpnModule = {
   disconnect: () => wailsService()!.Disconnect(),
   getState: () => wailsService()!.GetState(),
   getIdentity: () => wailsService()!.GetIdentity(),
+  getPrivacySettings: () => wailsService()!.GetPrivacySettings(),
+  setTelemetryEnabled: enabled => wailsService()!.SetTelemetryEnabled(enabled),
   getProxyInfo: () => wailsService()!.GetProxyInfo(),
 };
 

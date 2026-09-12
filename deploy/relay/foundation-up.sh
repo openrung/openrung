@@ -48,7 +48,7 @@ export -n OPENRUNG_FOUNDATION_TOKEN OPENRUNG_FOUNDATION_TOKEN_CMD 2>/dev/null ||
 unset TOKEN
 TOKEN=""   # set once per run; never leaves this process except over SSH stdin
 
-IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-relay:main}"
+IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-relay:main@sha256:9e58bdc0218d726d424a2c83e91ef91431767cd880c5683d45989ee9b8d41c66}"
 BROKER_URL="${OPENRUNG_BROKER_URL:-https://broker-origin.openrung.org}"
 ENV_FILE="${OPENRUNG_ENV_FILE:-/etc/openrung/relay.env}"
 SSH_KEY="${OPENRUNG_SSH_KEY:-$HOME/.ssh/id_ed25519_openrung}"
@@ -137,6 +137,8 @@ require_https_broker() {
 validate_config() {
   assert_matches "$ENV_FILE" '^/[A-Za-z0-9/._-]+$' "OPENRUNG_ENV_FILE"
   assert_matches "$IMAGE" '^[A-Za-z0-9][A-Za-z0-9:/@._-]*$' "OPENRUNG_IMAGE"
+  [[ "$IMAGE" =~ @sha256:[a-f0-9]{64}$ ]] \
+    || die "OPENRUNG_IMAGE must be pinned to an immutable sha256 digest"
   [ "$ENV_FILE" != "$LEGACY_ENV_FILE" ] \
     || die "OPENRUNG_ENV_FILE may not use the legacy path ${LEGACY_ENV_FILE}; migrate it to a canonical path first"
 }

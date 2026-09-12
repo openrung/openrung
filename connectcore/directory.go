@@ -110,6 +110,9 @@ func (s *Engine) RankedDirectory(ctx context.Context, brokerURL string) ([]Direc
 // connect lock. sessionID is empty until a session begins (phase 2+), in which
 // case discovery omits the identity headers.
 func (s *Engine) identityForDirectory() discovery.Options {
+	if !s.TelemetryEnabled() {
+		return discovery.Options{Limit: DirectoryRelayLimit}
+	}
 	s.mu.Lock()
 	sessionID := s.sessionID
 	s.mu.Unlock()

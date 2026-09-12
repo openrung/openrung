@@ -26,7 +26,8 @@ set -euo pipefail
 LOCATION="${OPENRUNG_LOCATION:-hel1}"          # Helsinki (EU: 20TB included traffic)
 SERVER_TYPE="${OPENRUNG_SERVER_TYPE:-cax11}"   # ARM Ampere, 2 vCPU / 4GB / 40GB
 OS_IMAGE="${OPENRUNG_OS_IMAGE:-ubuntu-24.04}"
-IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-relay:main}"  # multi-arch: pulls arm64 on CAX
+IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-relay:main@sha256:9e58bdc0218d726d424a2c83e91ef91431767cd880c5683d45989ee9b8d41c66}"  # multi-arch: pulls arm64 on CAX
+[[ "$IMAGE" =~ @sha256:[a-f0-9]{64}$ ]] || { echo "error: OPENRUNG_IMAGE must be pinned to an immutable sha256 digest" >&2; exit 2; }
 # Register against the broker ORIGIN, not the Cloudflare front (broker.openrung.org).
 # That hostname is a Worker front for *client* discovery; its edge serves a Managed
 # Challenge to datacenter IP ranges (incl. Hetzner), which a relay's HTTP client

@@ -19,13 +19,16 @@ on:
     # after the v keeps this workflow on desktop tags only.
     tags: ["desktop-v[0-9]*"]
 
+permissions:
+  contents: read
+
 jobs:
   version:
     runs-on: ubuntu-latest
     outputs:
       product_version: ${{ steps.version.outputs.product_version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - id: version
         name: Validate desktop version and release tag
@@ -70,13 +73,13 @@ jobs:
             target: windows-amd64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
-          go-version: "1.25"
+          go-version: "1.26.6"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: "22"
 
@@ -115,7 +118,7 @@ jobs:
         shell: pwsh
         run: ./desktop/scripts/package-windows.ps1
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: OpenRung-${{ matrix.target }}
           path: |
@@ -123,12 +126,81 @@ jobs:
             desktop/build/bin/OpenRung-*.tar.gz
           if-no-files-found: error
 
+  # A local package script deliberately ends with an ad-hoc signature so
+  # contributors can validate bundles without release credentials. Tagged
+  # releases are rebuilt here into a Developer ID-signed, notarized, stapled
+  # bundle and Gatekeeper is the final acceptance gate.
+  sign-macos:
+    needs: [version, build]
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    runs-on: macos-14
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: OpenRung-darwin-arm64
+          path: dist
+
+      - name: Sign, notarize, and staple macOS application
+        shell: bash
+        env:
+          MACOS_SIGNING_P12: ${{ secrets.MACOS_SIGNING_P12 }}
+          MACOS_SIGNING_P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          SIGNING_IDENTITY: "Developer ID Application: OpenRung Foundation (9VLV9A7KS9)"
+        run: |
+          set -euo pipefail
+          : "${MACOS_SIGNING_P12:?missing MACOS_SIGNING_P12}"
+          : "${MACOS_SIGNING_P12_PASSWORD:?missing MACOS_SIGNING_P12_PASSWORD}"
+          : "${NOTARY_KEY_P8:?missing NOTARY_KEY_P8}"
+          : "${NOTARY_KEY_ID:?missing NOTARY_KEY_ID}"
+          : "${NOTARY_ISSUER_ID:?missing NOTARY_ISSUER_ID}"
+          cd dist
+
+          keychain="$RUNNER_TEMP/openrung-desktop.keychain-db"
+          keychain_password="$(uuidgen)"
+          trap 'rm -f signing.p12 notary.p8; security delete-keychain "$keychain" >/dev/null 2>&1 || true' EXIT
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          printf '%s' "$MACOS_SIGNING_P12" | base64 -D > signing.p12
+          p12_password="$(printf '%s' "$MACOS_SIGNING_P12_PASSWORD" | tr -d '\r\n')"
+          security import signing.p12 -k "$keychain" -f pkcs12 -P "$p12_password" -T /usr/bin/codesign
+          security set-key-partition-list -S "apple-tool:,apple:" -s -k "$keychain_password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain"
+          printf '%s' "$NOTARY_KEY_P8" > notary.p8
+
+          ditto -x -k OpenRung-macos-arm64.zip .
+          app="OpenRung.app"
+          codesign --force --deep --options runtime --timestamp --sign "$SIGNING_IDENTITY" "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          ditto -c -k --keepParent "$app" OpenRung-notarize.zip
+          xcrun notarytool submit OpenRung-notarize.zip \
+            --key notary.p8 --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" \
+            --wait --output-format json | tee notary-result.json
+          python3 -c 'import json,sys; result=json.load(open(sys.argv[1])); sys.exit(0 if result.get("status")=="Accepted" else f"notarization not accepted: {result}")' notary-result.json
+          xcrun stapler staple "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=4 "$app"
+          rm -f OpenRung-macos-arm64.zip OpenRung-notarize.zip notary-result.json
+          ditto -c -k --keepParent "$app" OpenRung-macos-arm64.zip
+          shasum -a 256 OpenRung-macos-arm64.zip > SHA256SUMS
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: OpenRung-darwin-arm64-signed
+          path: |
+            dist/OpenRung-macos-arm64.zip
+            dist/SHA256SUMS
+          if-no-files-found: error
+
   # Publish a GitHub Release with all three binaries attached. Runs only for
   # `desktop-vX.Y.Z` tag pushes (not manual dispatch, which stays artifact-only
   # for testing). Requires version validation and all three build jobs to
   # succeed — we don't ship a partial release.
   release:
-    needs: [version, build]
+    needs: [version, build, sign-macos]
     if: startsWith(github.ref, 'refs/tags/desktop-v')
     runs-on: ubuntu-latest
     permissions:
@@ -136,16 +208,18 @@ jobs:
     steps:
       # Pulls every artifact from this run into artifacts/<artifact-name>/<file>.
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: artifacts
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
           name: OpenRung Desktop v${{ needs.version.outputs.product_version }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
-            artifacts/**/OpenRung-*.zip
-            artifacts/**/OpenRung-*.tar.gz
+            artifacts/OpenRung-darwin-arm64-signed/OpenRung-macos-arm64.zip
+            artifacts/OpenRung-darwin-arm64-signed/SHA256SUMS
+            artifacts/OpenRung-linux-amd64/OpenRung-*.tar.gz
+            artifacts/OpenRung-windows-amd64/OpenRung-*.zip

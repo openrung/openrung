@@ -16,7 +16,7 @@ ARG BROKER_VERSION=source
 ARG VCS_REVISION=unknown
 
 # --- Stage 1: build the broker binary (cross-compiled, no cgo) ---
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.26.6-alpine@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 # The root go.mod replaces the in-repo nested modules, so their go.mod files
@@ -43,7 +43,7 @@ RUN set -eux; \
       go build -trimpath -ldflags="$ldflags" -o /out/broker ./cmd/broker
 
 # --- Stage 2: minimal runtime ---
-FROM alpine:3.21
+FROM alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
 ARG BROKER_VERSION
 ARG VCS_REVISION
 # Image bundles GPL-2.0-only (busybox/apk-tools/baselayout from Alpine),

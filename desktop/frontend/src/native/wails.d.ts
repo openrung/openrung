@@ -3,7 +3,7 @@
 // the Vite build and vitest do not depend on files that only exist after
 // `wails dev`/`wails build`. When these globals are absent (a plain browser
 // preview or a unit test) the adapter falls back to the scripted mock.
-import type { NativeVpnState, NativeIdentity, NativeProxyInfo } from './types';
+import type { NativeVpnState, NativeIdentity, NativePrivacySettings, NativeProxyInfo } from './types';
 import type { RelayListResponse } from '../core/model/relay';
 
 export interface WailsServiceBindings {
@@ -12,6 +12,8 @@ export interface WailsServiceBindings {
   Disconnect(): Promise<void>;
   GetState(): Promise<NativeVpnState>;
   GetIdentity(): Promise<NativeIdentity>;
+  GetPrivacySettings(): Promise<NativePrivacySettings>;
+  SetTelemetryEnabled(enabled: boolean): Promise<void>;
   GetProxyInfo(): Promise<NativeProxyInfo>;
   ListRelaysForDirectory(): Promise<RelayListResponse>;
 }

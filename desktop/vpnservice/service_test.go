@@ -66,6 +66,12 @@ func TestGetIdentityWithoutSession(t *testing.T) {
 	defer func() { clientID = restore }()
 
 	s := New()
+	if got := s.GetIdentity(); got.ClientID != "" || got.SessionID != nil {
+		t.Fatalf("disabled telemetry identity = %+v, want empty", got)
+	}
+	if err := s.engine.SetTelemetryEnabled(true); err != nil {
+		t.Fatalf("enable telemetry: %v", err)
+	}
 	id := s.GetIdentity()
 	if id.ClientID != "client-xyz" {
 		t.Fatalf("clientID = %q", id.ClientID)

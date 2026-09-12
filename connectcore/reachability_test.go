@@ -59,14 +59,20 @@ func TestRelayTCPReachableWrapsRootCause(t *testing.T) {
 }
 
 func TestRelayTCPReachableHonorsCallerTimeout(t *testing.T) {
-	// A caller's own budget (the CLI passes 10s) bounds the dial instead of
-	// RelayTCPTimeout: a short one against a black-holed address gives up long
-	// before the 5s default would.
-	started := time.Now()
-	if _, err := RelayTCPReachable(context.Background(), "192.0.2.1", 443, 200*time.Millisecond); err == nil {
-		t.Fatal("expected a dial error for a black-holed address")
+	// Test the duration supplied to the dialer rather than relying on a public
+	// TEST-NET address being black-holed: VPNs and corporate routes can make
+	// that supposedly unreachable address connect successfully.
+	const wantTimeout = 200 * time.Millisecond
+	var gotTimeout time.Duration
+	_, err := relayTCPReachable(context.Background(), "192.0.2.1", 443, wantTimeout,
+		func(_ context.Context, _ string, timeout time.Duration) (net.Conn, error) {
+			gotTimeout = timeout
+			return nil, context.DeadlineExceeded
+		})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want wrapped deadline exceeded", err)
 	}
-	if elapsed := time.Since(started); elapsed >= RelayTCPTimeout {
-		t.Fatalf("dial took %v, want the caller's shorter budget", elapsed)
+	if gotTimeout != wantTimeout {
+		t.Fatalf("dial timeout = %v, want caller timeout %v", gotTimeout, wantTimeout)
 	}
 }

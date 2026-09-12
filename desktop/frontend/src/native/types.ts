@@ -31,6 +31,11 @@ export interface NativeIdentity {
   sessionId: string | null; // active telemetry session id, null when idle
 }
 
+/** Explicit opt-in/out for diagnostic telemetry. Defaults to false. */
+export interface NativePrivacySettings {
+  telemetryEnabled: boolean;
+}
+
 /** Desktop-only local proxy metadata, separate from the shared mobile state. */
 export interface NativeProxyInfo {
   host: string; // fixed loopback host
@@ -61,5 +66,7 @@ export interface OpenRungVpnModule {
   disconnect(): Promise<void>;
   getState(): Promise<NativeVpnState>;
   getIdentity(): Promise<NativeIdentity>;
+  getPrivacySettings(): Promise<NativePrivacySettings>;
+  setTelemetryEnabled(enabled: boolean): Promise<void>;
   getProxyInfo(): Promise<NativeProxyInfo>;
 }

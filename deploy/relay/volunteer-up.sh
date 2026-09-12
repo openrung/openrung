@@ -2,7 +2,8 @@
 #
 # One-line bring-up for a volunteer-run OpenRung relay on any Linux VPS:
 #
-#   curl -fsSL https://raw.githubusercontent.com/openrung/openrung/main/deploy/relay/volunteer-up.sh | sudo sh
+# Download a reviewed, immutable revision before running this privileged script;
+# never pipe a floating branch directly into sudo (see deploy/relay/README.md).
 #
 # Runs the public relay image with the exact container posture of the
 # Foundation fleet (see foundation-up.sh / lightsail-up.sh): host networking,
@@ -19,8 +20,8 @@
 # settings, edit /etc/openrung/relay.env and re-run.
 #
 # Overridable via env — pass through sudo, e.g. to name your relay:
-#   curl -fsSL .../volunteer-up.sh | sudo env OPENRUNG_LABEL=my-relay sh
-#   OPENRUNG_IMAGE        image to run (default ghcr.io/openrung/openrung-relay:main)
+#   sudo env OPENRUNG_LABEL=my-relay sh ./deploy/relay/volunteer-up.sh
+#   OPENRUNG_IMAGE        image to run (default is pinned by immutable digest)
 #   OPENRUNG_BROKER_URL   broker to register with (default the broker's direct
 #                         TLS origin — the CDN front challenges datacenter IPs)
 #   OPENRUNG_PUBLIC_HOST  public IP/DNS clients use to reach this relay
@@ -42,9 +43,9 @@
 # distro ships (dash, busybox ash, bash).
 #
 # Everything except helper definitions lives in main(), invoked on the last
-# line: if the curl|sh stream is truncated mid-download, the shell hits EOF
-# inside an unterminated function and parses nothing — a partial download can
-# never execute a destructive prefix (like removing the serving container).
+# line: if a reviewed script file is truncated during download, the shell hits
+# EOF inside an unterminated function and parses nothing — a partial download
+# can never execute a destructive prefix (like removing the serving container).
 set -eu
 
 # A private key (the identity seed) transits this script's variables: keep
@@ -291,7 +292,7 @@ verify_candidate() {
 }
 
 main() {
-    IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-relay:main}"
+    IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-relay:main@sha256:9e58bdc0218d726d424a2c83e91ef91431767cd880c5683d45989ee9b8d41c66}"
     BROKER_URL="${OPENRUNG_BROKER_URL:-https://broker-origin.openrung.org}"
     ENV_FILE=/etc/openrung/relay.env
     CONTAINER=openrung-relay
@@ -303,7 +304,7 @@ main() {
     CANDIDATE_ID=""
 
     [ "$(id -u)" = 0 ] \
-        || die "must run as root — rerun as:  curl -fsSL .../volunteer-up.sh | sudo sh"
+        || die "must run as root — rerun as: sudo sh ./deploy/relay/volunteer-up.sh"
 
     # Operator-set values end up in an env file and in docker arguments; refuse
     # whitespace and control characters (an embedded newline would inject extra
@@ -311,6 +312,8 @@ main() {
     # value containing a newline cannot sneak past a per-line check.
     case "$BROKER_URL" in *[![:graph:]]* | '') die "OPENRUNG_BROKER_URL is empty or contains whitespace/control characters" ;; esac
     case "$IMAGE" in *[!A-Za-z0-9:/@._-]* | '') die "OPENRUNG_IMAGE contains unexpected characters" ;; esac
+    printf '%s' "$IMAGE" | grep -Eq '@sha256:[a-f0-9]{64}$' \
+        || die "OPENRUNG_IMAGE must be pinned to an immutable sha256 digest"
     if [ -n "${OPENRUNG_LABEL:-}" ]; then
         validate_label "$OPENRUNG_LABEL" \
             || die "OPENRUNG_LABEL may use only letters, digits, '.', '_', '-', and at most 63 characters (the relay refuses longer labels at startup)"

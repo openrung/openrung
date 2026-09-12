@@ -136,6 +136,9 @@ func newLadderService(t *testing.T, relays func() []brokerapi.RelayDescriptor) (
 
 	sink := &testSink{}
 	s := New()
+	if err := s.SetTelemetryEnabled(true); err != nil {
+		t.Fatalf("enable test telemetry: %v", err)
+	}
 	s.Sink = sink
 	s.PunchEnabled = false
 	s.OSProxy = &fakeProxyController{supported: false}
