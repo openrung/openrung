@@ -30,6 +30,43 @@ const (
 	DefaultMaxMbps     = 100
 )
 
+// blockOutboundTag routes a matched request into the blackhole outbound;
+// directOutboundTag stays first in "outbounds" because Xray treats the first
+// entry as the default for traffic no routing rule matches.
+const (
+	directOutboundTag = "direct"
+	blockOutboundTag  = "block"
+)
+
+// privateDestinationCIDRs are the blocks a relay must never dial on a client's
+// behalf. Without them the relay is an open door into wherever it happens to be
+// hosted: loopback reaches services bound to the relay itself, RFC1918 reaches
+// the provider's neighbouring machines, and link-local carries
+// 169.254.169.254 -- the cloud metadata endpoint that hands out the instance's
+// credentials to anyone who asks it from the box.
+//
+// Spelled out as literals rather than "geoip:private" on purpose: geoip.dat
+// ships only in the relay container image, while desktop volunteer hosts
+// resolve a bare xray binary that may have no assets beside it, and a geoip
+// reference Xray cannot load makes it refuse to start. Literals need no assets.
+var privateDestinationCIDRs = []string{
+	"0.0.0.0/8",
+	"10.0.0.0/8",
+	"100.64.0.0/10",
+	"127.0.0.0/8",
+	"169.254.0.0/16",
+	"172.16.0.0/12",
+	"192.0.0.0/24",
+	"192.168.0.0/16",
+	"198.18.0.0/15",
+	"224.0.0.0/4",
+	"240.0.0.0/4",
+	"::1/128",
+	"fc00::/7",
+	"fe80::/10",
+	"ff00::/8",
+}
+
 type XrayConfigInput struct {
 	ListenHost        string
 	ListenPort        int
@@ -111,8 +148,36 @@ func BuildXrayConfig(input XrayConfigInput) ([]byte, error) {
 		},
 		"outbounds": []any{
 			map[string]any{
-				"tag":      "direct",
+				"tag":      directOutboundTag,
 				"protocol": "freedom",
+			},
+			map[string]any{
+				"tag":      blockOutboundTag,
+				"protocol": "blackhole",
+			},
+		},
+		// domainStrategy "IPIfNonMatch" resolves a domain destination and
+		// re-checks the IP rules, so a hostname that points at private space
+		// cannot walk past privateDestinationCIDRs. "AsIs" would skip that
+		// second pass and leave the rule trivially bypassable. The cost is a
+		// routing-layer DNS lookup (Xray-cached) per otherwise-unmatched
+		// connection.
+		"routing": map[string]any{
+			"domainStrategy": "IPIfNonMatch",
+			"rules": []any{
+				// Sniffed BitTorrent is matched by handshake, not port: the
+				// classic 6881-6889 range is vestigial on modern clients.
+				// Depends on the inbound keeping "sniffing" enabled.
+				map[string]any{
+					"type":        "field",
+					"protocol":    []string{"bittorrent"},
+					"outboundTag": blockOutboundTag,
+				},
+				map[string]any{
+					"type":        "field",
+					"ip":          privateDestinationCIDRs,
+					"outboundTag": blockOutboundTag,
+				},
 			},
 		},
 	}
