@@ -341,10 +341,10 @@ out of crypto/tls is FIPS chain filtering, so in FIPS 140-3 mode this front is
 refused instead of dialed. Custom broker URLs remain fully standard, and DNS
 resolution of the distribution name still exposes it.
 
-Azure Front Door endpoints (`*.azurefd.net`) take the same suppressed-SNI path
-and the same no-ECH, no-fallback, FIPS-refusing policy, but they cannot make the
-same certificate promise, and the difference is deliberate rather than
-incidental. Without a server name the Azure edge serves a shared default
+Azure Front Door endpoints (`*.azurefd.net`) first use normal SNI and standard
+TLS verification of the exact endpoint hostname. Their separate last-resort
+retry suppresses SNI, uses no ECH, and refuses FIPS mode. That retry cannot make
+the same certificate promise. Without a server name the Azure edge serves a shared default
 certificate whose only SAN is `*.azureedge.net`; that does not cover the
 `*.azurefd.net` endpoint being dialed, and no configuration changes it — a
 custom domain still receives the shared certificate on this path, and the
@@ -365,32 +365,30 @@ WSS session ticket is a short-lived bearer whose confidentiality depends on
 exact endpoint authentication. Ticket requests therefore exclude Azure even
 when Azure served the directory.
 
-Discovery also treats endpoint-unbound fronts as a separate fallback phase. The
-Cloudflare and CloudFront candidates race first; Azure is not contacted merely
-because their stagger elapsed, and starts only after every exact-endpoint front
-has failed. An active censor can still force that fallback by making the stronger
-fronts fail — that is inherent in offering a censored-network fallback — but an
-ordinary slow response cannot silently downgrade the connection. The endpoint
-name gap and this residual exposure are reported explicitly rather than left
-implicit.
+Discovery races three endpoint-bound attempts in order: CloudFront without
+SNI, Azure with normal SNI, then the Cloudflare Worker (`broker.openrung.org`).
+Each starts on its stagger tick unless an earlier success cancels the race.
+Azure's normal-SNI attempt therefore can start while CloudFront is still
+pending, and authenticates the exact Azure endpoint. A fast CloudFront success
+avoids sending Azure's SNI; a later winner cannot undo a ClientHello already sent.
 
-Phasing is bought with latency, and the bill falls in the case the fallback
-exists for. A phase ends only when every candidate in it has failed, and each
-attempt carries the full relay-list timeout, so two blackholed strong fronts —
-what a censor that drops rather than resets produces — take roughly one timeout
-plus one stagger before Azure is contacted at all. Under the previous
-single-phase race Azure started once the stagger elapsed and could answer in a
-few seconds. Discovery is therefore materially slower on a censored network than
-it would be without the invariant, and that is the accepted price of refusing to
-let a merely slow front hand the session to a weaker one. If that cost proves
-too high in the field, the lever is a shorter per-attempt timeout inside the
-first phase — not reordering the phases.
+Only Azure's no-SNI retry belongs to the separate endpoint-unbound phase. It
+starts after every first-phase attempt fails, and uses a separate connection
+pool so a normal-SNI request cannot reuse a shared-edge-only connection. An
+active censor can still force this fallback by making the stronger attempts
+fail, but a merely slow response cannot trigger the authentication downgrade.
+
+Phasing adds latency before the no-SNI retry. With three blackholed first-phase
+attempts and a full relay-list timeout for each, that retry starts after roughly
+one timeout plus two staggers. Azure with normal SNI has already been attempted
+on the first stagger tick. This delay preserves the requirement that every
+endpoint-bound attempt fail before a weaker connection can win.
 
 Because the SNI-less behaviour is undocumented, carries no SLA, and is a
 property of the edge fleet an endpoint lands on rather than of Front Door as a
 product, an endpoint must pass `cmd/frontcheck` before it is advertised. The
 recognizers match name *shapes* rather than this deployment's own endpoints, so
-rotating a front cannot silently return its name to the wire; adding an endpoint
+rotating a front cannot silently enable SNI on its no-SNI retry; adding an endpoint
 to the built-in order is a separate, deliberate step.
 
 Relay registration/heartbeat clients and the relay data path remain outside
