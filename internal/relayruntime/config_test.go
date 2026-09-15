@@ -141,3 +141,139 @@ func TestGenerateUUID(t *testing.T) {
 		t.Fatalf("expected UUID length 36, got %d: %q", len(id), id)
 	}
 }
+
+// buildTestXrayConfig returns a decoded config from valid input.
+func buildTestXrayConfig(t *testing.T) map[string]any {
+	t.Helper()
+	raw, err := BuildXrayConfig(XrayConfigInput{
+		ListenPort:        443,
+		ClientID:          "2c08df10-4ef4-4ab9-95c6-cb1e94cdb2ff",
+		Flow:              "xtls-rprx-vision",
+		Dest:              "www.cloudflare.com:443",
+		ServerName:        "www.cloudflare.com",
+		RealityPrivateKey: "private-key",
+		ShortID:           "5f7a8d9c01ab23cd",
+	})
+	if err != nil {
+		t.Fatalf("build config: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("config should be valid JSON: %v", err)
+	}
+	return decoded
+}
+
+// routingRuleFor returns the first routing rule carrying the given key.
+func routingRuleFor(t *testing.T, cfg map[string]any, key string) map[string]any {
+	t.Helper()
+	routing, ok := cfg["routing"].(map[string]any)
+	if !ok {
+		t.Fatal("config has no routing section: relay egress is unrestricted")
+	}
+	rules, ok := routing["rules"].([]any)
+	if !ok {
+		t.Fatal("routing section has no rules")
+	}
+	for _, entry := range rules {
+		rule, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, present := rule[key]; present {
+			return rule
+		}
+	}
+	t.Fatalf("no routing rule matches on %q", key)
+	return nil
+}
+
+func TestBuildXrayConfigBlocksPrivateDestinations(t *testing.T) {
+	cfg := buildTestXrayConfig(t)
+	rule := routingRuleFor(t, cfg, "ip")
+
+	if rule["outboundTag"] != blockOutboundTag {
+		t.Fatalf("private-IP rule routes to %v, want %q", rule["outboundTag"], blockOutboundTag)
+	}
+
+	got := map[string]bool{}
+	for _, entry := range rule["ip"].([]any) {
+		got[entry.(string)] = true
+	}
+	// 169.254.0.0/16 carries the cloud metadata endpoint (169.254.169.254)
+	// that serves instance credentials; 127.0.0.0/8 reaches the relay itself.
+	for _, want := range []string{"127.0.0.0/8", "169.254.0.0/16", "10.0.0.0/8", "192.168.0.0/16", "172.16.0.0/12", "::1/128", "fc00::/7"} {
+		if !got[want] {
+			t.Errorf("private-IP rule is missing %s", want)
+		}
+	}
+}
+
+func TestBuildXrayConfigBlocksBitTorrent(t *testing.T) {
+	cfg := buildTestXrayConfig(t)
+	rule := routingRuleFor(t, cfg, "protocol")
+
+	if rule["outboundTag"] != blockOutboundTag {
+		t.Fatalf("bittorrent rule routes to %v, want %q", rule["outboundTag"], blockOutboundTag)
+	}
+	protocols, ok := rule["protocol"].([]any)
+	if !ok || len(protocols) == 0 || protocols[0] != "bittorrent" {
+		t.Fatalf("expected a bittorrent protocol rule, got %v", rule["protocol"])
+	}
+}
+
+// The bittorrent rule matches a sniffed protocol, so disabling sniffing would
+// silently stop blocking torrents while leaving the rule in place.
+func TestBuildXrayConfigKeepsSniffingEnabledForProtocolRouting(t *testing.T) {
+	cfg := buildTestXrayConfig(t)
+	inbound := cfg["inbounds"].([]any)[0].(map[string]any)
+	sniffing, ok := inbound["sniffing"].(map[string]any)
+	if !ok {
+		t.Fatal("inbound lost its sniffing block; the bittorrent rule cannot match without it")
+	}
+	if sniffing["enabled"] != true {
+		t.Fatal("sniffing disabled; the bittorrent routing rule would never match")
+	}
+}
+
+func TestBuildXrayConfigKeepsDirectOutboundDefault(t *testing.T) {
+	cfg := buildTestXrayConfig(t)
+	outbounds := cfg["outbounds"].([]any)
+	if len(outbounds) < 2 {
+		t.Fatalf("expected direct and block outbounds, got %d", len(outbounds))
+	}
+	// Xray sends traffic no rule matches to the FIRST outbound, so "direct"
+	// leading is what keeps ordinary browsing working.
+	first := outbounds[0].(map[string]any)
+	if first["tag"] != directOutboundTag || first["protocol"] != "freedom" {
+		t.Fatalf("first outbound must be the direct freedom outbound, got %v", first)
+	}
+	second := outbounds[1].(map[string]any)
+	if second["tag"] != blockOutboundTag || second["protocol"] != "blackhole" {
+		t.Fatalf("second outbound must be the block blackhole outbound, got %v", second)
+	}
+}
+
+// geoip.dat ships only in the relay container image. Desktop volunteer hosts
+// resolve a bare xray binary that may have no assets beside it, and Xray
+// refuses to start on a geoip reference it cannot load, so the shared config
+// must stay asset-free.
+func TestBuildXrayConfigAvoidsGeoAssetReferences(t *testing.T) {
+	raw, err := BuildXrayConfig(XrayConfigInput{
+		ListenPort:        443,
+		ClientID:          "2c08df10-4ef4-4ab9-95c6-cb1e94cdb2ff",
+		Flow:              "xtls-rprx-vision",
+		Dest:              "www.cloudflare.com:443",
+		ServerName:        "www.cloudflare.com",
+		RealityPrivateKey: "private-key",
+		ShortID:           "5f7a8d9c01ab23cd",
+	})
+	if err != nil {
+		t.Fatalf("build config: %v", err)
+	}
+	for _, forbidden := range []string{"geoip:", "geosite:", "ext:"} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Errorf("config references %q, which needs asset files the desktop volunteer host may not have", forbidden)
+		}
+	}
+}
