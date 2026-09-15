@@ -10,14 +10,15 @@ import (
 // brokerFrontsVectorsVersion pins the version of
 // contract/vectors/broker_fronts.json this suite expects; see the note on
 // classificationVectorsVersion in the clienttelemetry package.
-const brokerFrontsVectorsVersion = 2
+const brokerFrontsVectorsVersion = 3
 
 type brokerFrontVectors struct {
 	DefaultOrder []string `json:"default_order"`
 	Phases       []struct {
-		Phase int      `json:"phase"`
-		Name  string   `json:"name"`
-		URLs  []string `json:"urls"`
+		Phase    int      `json:"phase"`
+		AzureSNI bool     `json:"azure_sni"`
+		Name     string   `json:"name"`
+		URLs     []string `json:"urls"`
 	} `json:"phases"`
 	Classification []struct {
 		URL             string `json:"url"`
@@ -30,6 +31,7 @@ type brokerFrontVectors struct {
 		Note                string   `json:"note"`
 		ExpectURLs          []string `json:"expect_urls"`
 		ExpectOverrideFirst bool     `json:"expect_override_first"`
+		ExpectAzureSNIFirst bool     `json:"expect_azure_sni_first"`
 	} `json:"candidates"`
 }
 
@@ -51,24 +53,23 @@ func TestBrokerFrontVectors(t *testing.T) {
 		t.Errorf("DefaultBrokerURLs() = %v, want %v", got, vectors.DefaultOrder)
 	}
 
-	// The phases must partition the default order, in the order they are raced:
-	// every phase-1 front is endpoint-bound, every phase-2 front is not.
+	// Distinct endpoints across both phases must match the default order.
+	// Azure appears in both phases with different authentication modes.
 	partition := make([]string, 0, len(vectors.DefaultOrder))
 	for _, phase := range vectors.Phases {
 		for _, brokerURL := range phase.URLs {
-			partition = append(partition, brokerURL)
-			unbound := brokerapi.EndpointUnboundBrokerFront(brokerURL)
+			if !slices.Contains(partition, brokerURL) {
+				partition = append(partition, brokerURL)
+			}
+			unbound := brokerapi.EndpointUnboundBrokerFront(brokerURL) && !phase.AzureSNI
 			if want := phase.Name == "endpoint_unbound"; unbound != want {
 				t.Errorf("%s is in phase %q (%d) but EndpointUnboundBrokerFront reports %v",
 					brokerURL, phase.Name, phase.Phase, unbound)
 			}
 		}
 	}
-	slices.Sort(partition)
-	defaults := slices.Clone(vectors.DefaultOrder)
-	slices.Sort(defaults)
-	if !slices.Equal(partition, defaults) {
-		t.Errorf("the phases cover %v, want exactly the default order %v", partition, defaults)
+	if !slices.Equal(partition, vectors.DefaultOrder) {
+		t.Errorf("the phases cover %v, want exactly the default order %v", partition, vectors.DefaultOrder)
 	}
 }
 
@@ -101,6 +102,9 @@ func TestBrokerCandidateVectors(t *testing.T) {
 			candidates := brokerapi.BrokerCandidates(row.Primary)
 			if !slices.Equal(candidates.URLs, row.ExpectURLs) {
 				t.Errorf("BrokerCandidates(%q).URLs = %v, want %v (%s)", row.Primary, candidates.URLs, row.ExpectURLs, row.Note)
+			}
+			if candidates.AzureSNIFirst != row.ExpectAzureSNIFirst {
+				t.Errorf("AzureSNIFirst = %v, want %v", candidates.AzureSNIFirst, row.ExpectAzureSNIFirst)
 			}
 			if candidates.OverrideFirst != row.ExpectOverrideFirst {
 				t.Errorf("BrokerCandidates(%q).OverrideFirst = %v, want %v (%s)",

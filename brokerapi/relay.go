@@ -19,6 +19,7 @@ const maxRelayListBytes = 4 << 20
 // returned, never followed, so identity cannot cross origins or escape a
 // loopback cleartext exception.
 func (c *Client) ListRelays(ctx context.Context, brokerURL string, options ListOptions) (RelayList, error) {
+	ctx = WithAzureSNI(ctx, options.AzureSNI)
 	endpoint, err := RelayListURL(brokerURL, options.Limit)
 	if err != nil {
 		return RelayList{}, err
@@ -99,7 +100,7 @@ func (c *Client) FirstReachable(ctx context.Context, candidates Candidates, opti
 	if candidates.OverrideFirst {
 		list, overrideErr := c.ListRelays(ctx, candidates.URLs[0], options)
 		if overrideErr == nil {
-			return Fetch{BrokerURL: candidates.URLs[0], RelayList: list}, nil
+			return Fetch{BrokerURL: candidates.URLs[0], RelayList: list, AzureSNI: options.AzureSNI && EndpointUnboundBrokerFront(candidates.URLs[0])}, nil
 		}
 		if ctx.Err() != nil {
 			return Fetch{}, ctx.Err()
@@ -107,7 +108,7 @@ func (c *Client) FirstReachable(ctx context.Context, candidates Candidates, opti
 		if len(candidates.URLs) == 1 {
 			return Fetch{}, overrideErr
 		}
-		fetch, raceErr := c.race(ctx, candidates.URLs[1:], options)
+		fetch, raceErr := c.race(ctx, candidates.URLs[1:], options, candidates.AzureSNIFirst)
 		if raceErr == nil {
 			return fetch, nil
 		}
@@ -116,10 +117,10 @@ func (c *Client) FirstReachable(ctx context.Context, candidates Candidates, opti
 		}
 		return Fetch{}, overrideErr
 	}
-	return c.race(ctx, candidates.URLs, options)
+	return c.race(ctx, candidates.URLs, options, candidates.AzureSNIFirst)
 }
 
-func (c *Client) race(ctx context.Context, urls []string, options ListOptions) (Fetch, error) {
+func (c *Client) race(ctx context.Context, urls []string, options ListOptions, azureSNIFirst bool) (Fetch, error) {
 	if len(urls) == 0 {
 		return Fetch{}, errors.New("no broker endpoints configured")
 	}
@@ -129,19 +130,25 @@ func (c *Client) race(ctx context.Context, urls []string, options ListOptions) (
 	for _, brokerURL := range urls {
 		if EndpointUnboundBrokerFront(brokerURL) {
 			endpointUnbound = append(endpointUnbound, brokerURL)
+			if azureSNIFirst {
+				endpointBound = append(endpointBound, brokerURL)
+			}
 		} else {
 			endpointBound = append(endpointBound, brokerURL)
 		}
 	}
 
+	boundOptions := options
+	boundOptions.AzureSNI = azureSNIFirst
+	options.AzureSNI = false
 	if len(endpointBound) == 0 {
 		return c.racePhase(ctx, endpointUnbound, options)
 	}
 	if len(endpointUnbound) == 0 {
-		return c.racePhase(ctx, endpointBound, options)
+		return c.racePhase(ctx, endpointBound, boundOptions)
 	}
 
-	fetch, boundErr := c.racePhase(ctx, endpointBound, options)
+	fetch, boundErr := c.racePhase(ctx, endpointBound, boundOptions)
 	if boundErr == nil {
 		return fetch, nil
 	}
@@ -160,7 +167,7 @@ func (c *Client) race(ctx context.Context, urls []string, options ListOptions) (
 	// The old single-phase race returned the error from urls[0] after every
 	// candidate failed. Classification can change execution order, but not the
 	// caller-visible error choice.
-	if EndpointUnboundBrokerFront(urls[0]) {
+	if !azureSNIFirst && EndpointUnboundBrokerFront(urls[0]) {
 		return Fetch{}, unboundErr
 	}
 	return Fetch{}, boundErr
@@ -195,7 +202,7 @@ func (c *Client) racePhase(ctx context.Context, urls []string, options ListOptio
 			}
 			results <- attemptResult{
 				index: index,
-				fetch: Fetch{BrokerURL: brokerURL, RelayList: list},
+				fetch: Fetch{BrokerURL: brokerURL, RelayList: list, AzureSNI: options.AzureSNI && EndpointUnboundBrokerFront(brokerURL)},
 			}
 		}()
 	}

@@ -17,11 +17,12 @@ const (
 	// a cleartext endpoint would hand both to an on-path censor.
 	DefaultBrokerURL = brokerapi.DefaultBrokerURL
 
-	// TelemetryBrokerURL is the endpoint for client telemetry. It must be HTTPS:
+	// TelemetryBrokerURL is the bootstrap endpoint for client telemetry; every
+	// host follows the verified discovery winner after a successful fetch.
+	// It must be HTTPS:
 	// the first events (BeginSession / connection_attempted) fire BEFORE the
 	// tunnel is up, so a cleartext endpoint would expose the persistent client
-	// identity to a network observer. Reuses the HTTPS discovery endpoint; a
-	// pinned bare-IP fallback can be layered on later if CDN quota is a concern.
+	// identity to a network observer. Reuses the HTTPS discovery endpoint.
 	TelemetryBrokerURL = DefaultBrokerURL
 
 	// RelayLimit is the connect-path page size; DirectoryRelayLimit is the
@@ -141,11 +142,12 @@ var InternetProbeURLs = []string{
 // these requests, so a cleartext or bare-IP entry would expose them to an
 // on-path censor. EnforceSecureBrokerURL rejects non-HTTPS hosts.
 //
-// Three independent fronts are deployed. The Cloudflare Worker
-// (broker.openrung.org) and AWS CloudFront distribution both authenticate the
-// exact endpoint and race first. Azure Front Door authenticates only a shared
-// Azure edge, so it is attempted only after both stronger fronts fail. All
-// three proxy the one signing origin and serve signed lists. brokerapi owns both
-// this list and its two-phase trust policy; mobile's native binding consumes the
-// same functions rather than duplicating either in platform AppConfig.
+// Three independent fronts are deployed. AWS CloudFront without SNI gets the
+// first head start, then Azure Front Door with normal SNI joins, followed by the
+// Cloudflare Worker (broker.openrung.org). All three authenticate the exact
+// endpoint. Only Azure's no-SNI retry authenticates a shared Azure edge; it runs
+// in a separate phase after every endpoint-bound attempt fails. All fronts
+// proxy the one signing origin and serve signed lists. brokerapi owns this
+// distinct endpoint list and the two-phase attempt policy; mobile's native
+// binding consumes the same functions rather than duplicating either in AppConfig.
 var DefaultBrokerURLs = brokerapi.DefaultBrokerURLs()

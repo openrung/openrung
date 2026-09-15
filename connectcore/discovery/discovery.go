@@ -21,6 +21,7 @@ import (
 // Fetch is a successful relay fetch together with the endpoint that served it,
 // so the caller can pin later requests (telemetry, connect) to the same broker.
 type Fetch struct {
+	AzureSNI  bool
 	BrokerURL string
 	Response  brokerapi.RelayListResponse
 }
@@ -128,7 +129,7 @@ func FirstReachable(ctx context.Context, candidates brokerapi.Candidates, opts O
 	if err != nil {
 		return Fetch{}, err
 	}
-	return Fetch{BrokerURL: fetch.BrokerURL, Response: response}, nil
+	return Fetch{BrokerURL: fetch.BrokerURL, Response: response, AzureSNI: fetch.AzureSNI}, nil
 }
 
 func decodeRelayList(body []byte) (brokerapi.RelayListResponse, error) {

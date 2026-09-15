@@ -68,9 +68,9 @@ func azureFrontDoorAddress(address string) bool {
 
 // EndpointUnboundBrokerFront reports whether brokerURL names a native Azure
 // Front Door endpoint whose no-SNI TLS connection authenticates the shared
-// Azure edge fleet rather than the requested endpoint. Discovery must defer
-// these fronts until every candidate with endpoint-bound authentication has
-// failed.
+// Azure edge fleet rather than the requested endpoint. This URL-only helper
+// describes the legacy no-SNI mode. Shared discovery also tries these URLs
+// with normal SNI first, deferring only their no-SNI attempts to the last phase.
 //
 // Malformed URLs, non-HTTPS URLs, custom Front Door domains, and native Front
 // Door endpoints on a nonstandard port return false. Those inputs do not use
@@ -98,7 +98,7 @@ func isAzureFrontDoorZone(label string) bool {
 }
 
 // azureFrontDoorVerification pins the shared Azure edge certificate instead of
-// the endpoint hostname, because Azure gives no way to do the latter.
+// the endpoint hostname, which the shared certificate cannot cover without SNI.
 //
 // THE TRADEOFF. Without SNI the edge serves *.azureedge.net, which does not
 // cover the *.azurefd.net endpoint being dialed, so there is no hostname to

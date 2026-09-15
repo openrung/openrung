@@ -508,7 +508,7 @@ func TestMobileIdentityTelemetryOwnershipAndRestart(t *testing.T) {
 			}
 			continue
 		}
-		if e.Attributes["engine"] != "connectcore" || e.Attributes["engine_version"] != "0.6.1" || e.Attributes["platform"] != "android" || e.Attributes["app_version"] != "0.3.9" || e.Attributes["device_model"] != "test" {
+		if e.Attributes["engine"] != "connectcore" || e.Attributes["engine_version"] != "0.6.2" || e.Attributes["platform"] != "android" || e.Attributes["app_version"] != "0.3.9" || e.Attributes["device_model"] != "test" {
 			t.Fatalf("release metadata %+v", e.Attributes)
 		}
 		if e.Event == "connection_ended" {

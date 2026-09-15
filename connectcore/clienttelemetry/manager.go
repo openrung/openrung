@@ -344,6 +344,7 @@ func (m *Manager) Heartbeat(ctx context.Context) error {
 	m.mu.Lock()
 	heartbeat, ok := m.buildHeartbeatLocked(host)
 	poster := m.poster
+	ctx = brokerapi.WithAzureSNI(ctx, poster.AzureSNI)
 	if !ok {
 		m.mu.Unlock()
 		return nil
@@ -388,6 +389,7 @@ func (m *Manager) Flush(ctx context.Context) error {
 	m.mu.Lock()
 	store := m.store
 	poster := m.poster
+	ctx = brokerapi.WithAzureSNI(ctx, poster.AzureSNI)
 	m.mu.Unlock()
 	if store != nil {
 	storeDrain:

@@ -316,7 +316,9 @@ func (s *Engine) supervise(ctx context.Context, conn *connection, cur *candidate
 // the end (never excluded: it may be the only relay there is), then the ladder.
 // The telemetry session survives: no BeginSession, no terminal events here.
 func (s *Engine) reladder(ctx context.Context, conn *connection, port int, target RelayTarget, failedRelayID string) (*candidateResult, int64, string, error) {
-	brokerURL := s.connBrokerURL(conn)
+	// Rebuild candidates from the configured primary, not the previous winner.
+	// A fallback success must not erase a genuine custom override on reconnect.
+	brokerURL := conn.discoveryPrimary
 	fetch, fetchMS, err := s.fetchCandidates(ctx, conn, brokerURL, target)
 	var rateLimited *discovery.RateLimitedError
 	if errors.As(err, &rateLimited) {

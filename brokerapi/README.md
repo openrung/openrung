@@ -6,7 +6,7 @@ and iOS gomobile bindings all use one implementation of:
 
 - opportunistic Encrypted Client Hello for the Cloudflare broker front;
 - verified SNI-less TLS for the CloudFront broker front;
-- provider-bound SNI-less TLS for the Azure Front Door discovery fallback;
+- hostname-verified Azure TLS, with a provider-bound SNI-less last fallback;
 - relay-list signature and freshness verification;
 - secure broker URL enforcement;
 - identity, application, platform, and no-store request headers;
@@ -52,13 +52,25 @@ cannot honor it, and running under a weaker certificate policy than the rest of
 the process is not a trade this module makes. Discovery still reaches the
 Cloudflare front.
 
-Native Azure Front Door endpoints also suppress SNI, but Azure's shared
-no-SNI certificate cannot authenticate the exact `*.azurefd.net` endpoint. The
-transport pins the shared edge SAN and a public trust chain, which proves an
-Azure edge rather than this deployment. `FirstReachable` therefore races all
-endpoint-bound candidates first and starts endpoint-unbound candidates only
-after every stronger candidate has failed. The relay directory remains
-authentic because its signed envelope is verified independently of TLS.
+Shared discovery (`BrokerCandidates`) starts CloudFront without SNI, then Azure
+Front Door with normal SNI and exact endpoint hostname verification, then
+`broker.openrung.org`. These attempts retain the 2.5-second stagger and racing;
+a later success can cancel earlier pending requests. Only after all three fail
+does Azure retry without SNI in a separate final phase. Every non-loopback
+response still requires a valid relay-list signature.
+
+Azure's shared no-SNI certificate cannot authenticate the exact endpoint. In
+that mode the transport pins the shared edge SAN and a public trust chain;
+the signed relay list independently authenticates the broker. The two Azure
+modes have separate connection pools, so a normal-SNI request cannot reuse a
+connection authenticated only as a shared Azure edge.
+
+`Fetch.AzureSNI` records the winning mode. Use
+`WithAzureSNI(ctx, result.AzureSNI)` for subsequent requests to that winner;
+connectcore carries it through telemetry and reconnects automatically.
+URL-only requests and manually constructed `Candidates` retain the legacy
+Azure no-SNI behavior unless explicitly enabled. `BrokerCandidates` enables
+both phases and preserves custom overrides as standalone first attempts.
 
 That signature does not make every broker response safe over a provider-bound
 connection. In particular, a WSS session ticket is a short-lived bearer that an

@@ -33,14 +33,11 @@ const (
 	// distribution.
 	CloudFrontBrokerURL = "https://" + cloudFrontBrokerHost + "/"
 
-	// AzureBrokerURL is the independent Azure Front Door front. Like
-	// CloudFront it receives no ECH config and is dialed without SNI, but it
-	// cannot prove it is THIS endpoint: without a server name the Azure edge
-	// serves a shared certificate that does not cover the endpoint name, so the
-	// connection authenticates an Azure edge and the Ed25519 relay-list
-	// signature does the rest. Discovery therefore tries it only after every
-	// endpoint-bound front has failed — see
-	// azureFrontDoorVerification for the full tradeoff.
+	// AzureBrokerURL is the independent Azure Front Door front. Shared discovery
+	// first uses normal SNI and endpoint hostname verification, then retries
+	// without SNI only after all endpoint-bound attempts fail. The no-SNI mode
+	// authenticates a shared Azure edge; relay-list signatures authenticate the
+	// broker. See azureFrontDoorVerification for that fallback's tradeoff.
 	AzureBrokerURL = "https://" + azureBrokerHost + "/"
 
 	DefaultRelayLimit       = 5
@@ -100,6 +97,10 @@ func (r RelayList) JSON() []byte {
 // Candidates is the ordered set used by FirstReachable. OverrideFirst means
 // URLs[0] is a genuine user override and must finish before defaults are raced.
 type Candidates struct {
+	// AzureSNIFirst adds a hostname-verified Azure attempt to phase one,
+	// retaining the SNI-less attempt in the final phase. Zero preserves legacy
+	// behavior for callers constructing their own candidate sets.
+	AzureSNIFirst bool
 	URLs          []string
 	OverrideFirst bool
 }
@@ -107,12 +108,17 @@ type Candidates struct {
 // Fetch identifies both the verified relay bytes and the broker front that
 // served them, so later control-plane requests can prefer the same front.
 type Fetch struct {
+	// AzureSNI records the winning Azure TLS mode for subsequent requests.
+	AzureSNI  bool
 	BrokerURL string
 	RelayList RelayList
 }
 
 // ListOptions controls a relay-list fetch and the staggered discovery race.
 type ListOptions struct {
+	// AzureSNI selects normal SNI with hostname verification for ListRelays
+	// and a standalone override. Candidates.AzureSNIFirst controls race modes.
+	AzureSNI bool
 	Limit    int
 	Identity Identity
 	Stagger  time.Duration
@@ -193,13 +199,11 @@ func platformHeaderValue(platform Platform, configured string) string {
 	}
 }
 
-// DefaultBrokerURLs returns a fresh copy of the built-in front order.
-//
-// The Azure front is deliberately last as a stable preference order. In
-// addition, FirstReachable classifies it as endpoint-unbound and does not start
-// it until the two fronts with full peer authentication have both failed.
+// DefaultBrokerURLs returns distinct built-in endpoints in discovery order.
+// BrokerCandidates adds Azure's SNI-less retry in a separate final phase.
+// DefaultBrokerURL remains the stable Cloudflare URL for persisted settings.
 func DefaultBrokerURLs() []string {
-	return []string{DefaultBrokerURL, CloudFrontBrokerURL, AzureBrokerURL}
+	return []string{CloudFrontBrokerURL, AzureBrokerURL, DefaultBrokerURL}
 }
 
 // BrokerCandidates returns a de-duplicated discovery order. A genuine custom
@@ -235,5 +239,5 @@ func BrokerCandidates(primary string) Candidates {
 	for _, fallback := range defaults {
 		add(fallback)
 	}
-	return Candidates{URLs: ordered, OverrideFirst: override}
+	return Candidates{URLs: ordered, OverrideFirst: override, AzureSNIFirst: true}
 }

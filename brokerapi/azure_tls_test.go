@@ -268,17 +268,10 @@ func TestBrokerAzureConstantsStayLinked(t *testing.T) {
 	}
 }
 
-// Keep the stable built-in preference order even though FirstReachable also
-// enforces the stronger boundary by putting endpoint-unbound fronts in a
-// separate phase.
-func TestAzureFrontRemainsLastInDefaultOrder(t *testing.T) {
+// Azure appears once in the public endpoint list; discovery adds its weak retry.
+func TestAzureFrontFollowsCloudFrontWithSNIRetryPolicy(t *testing.T) {
 	defaults := DefaultBrokerURLs()
-	if len(defaults) == 0 || defaults[len(defaults)-1] != AzureBrokerURL {
-		t.Fatalf("built-in front order = %v, want the Azure front last", defaults)
-	}
-	for _, candidate := range defaults[:len(defaults)-1] {
-		if EndpointUnboundBrokerFront(candidate) {
-			t.Fatalf("an endpoint-unbound front appears before the end of the order: %q", candidate)
-		}
+	if len(defaults) != 3 || defaults[0] != CloudFrontBrokerURL || defaults[1] != AzureBrokerURL || !BrokerCandidates("").AzureSNIFirst {
+		t.Fatalf("unexpected default discovery policy: %+v", BrokerCandidates(""))
 	}
 }

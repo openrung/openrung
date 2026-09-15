@@ -186,7 +186,7 @@ func TestWSSTicketRequestsExcludeEndpointUnboundAzureFronts(t *testing.T) {
 		"built-in Azure front":                 brokerapi.AzureBrokerURL,
 		"another native Azure Front Door name": "https://ANOTHER-NATIVE-FRONT.z01.AzureFD.net:443/",
 	}
-	wantCalls := []string{brokerapi.DefaultBrokerURL, brokerapi.CloudFrontBrokerURL}
+	wantCalls := []string{brokerapi.CloudFrontBrokerURL, brokerapi.DefaultBrokerURL}
 	request := brokerapi.WSSTicketRequest{RelayID: "relay-a", FrontID: "front-a"}
 
 	for name, servingFront := range tests {
@@ -202,7 +202,7 @@ func TestWSSTicketRequestsExcludeEndpointUnboundAzureFronts(t *testing.T) {
 				if got != request {
 					t.Fatalf("ticket request = %+v, want %+v", got, request)
 				}
-				if brokerURL == brokerapi.DefaultBrokerURL {
+				if brokerURL != brokerapi.DefaultBrokerURL {
 					return brokerapi.WSSTicketResponse{}, errors.New("first strong front unavailable")
 				}
 				return successfulWSSTicket(testWSSFront("front-a", testWSSFrontAURL), "strong-front-ticket"), nil

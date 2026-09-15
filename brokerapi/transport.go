@@ -80,6 +80,7 @@ type echDialer struct {
 	state             *echConfigState
 	echTimeout        time.Duration
 	tlsHandshakeLimit time.Duration
+	azureSNI          bool
 }
 
 func (d *echDialer) dialTLSContext(ctx context.Context, network, address string) (net.Conn, error) {
@@ -95,7 +96,7 @@ func (d *echDialer) dialTLSContext(ctx context.Context, network, address string)
 	if distribution, native := cloudFrontDistributionAddress(address); native {
 		return d.dialNoSNITLS(ctx, network, address, cloudFrontVerification(distribution))
 	}
-	if azureFrontDoorAddress(address) {
+	if azureFrontDoorAddress(address) && !d.azureSNI {
 		return d.dialNoSNITLS(ctx, network, address, azureFrontDoorVerification())
 	}
 	if !isCloudflareBrokerAddress(address) {
@@ -191,9 +192,14 @@ func isCloudflareBrokerAddress(address string) bool {
 	return port == "443" && strings.EqualFold(host, cloudflareBrokerHost)
 }
 
-func newTransport(base *http.Transport, state *echConfigState, echTimeout time.Duration) *http.Transport {
+func newTransport(base *http.Transport, state *echConfigState, echTimeout time.Duration) *azureModeTransport {
+	return &azureModeTransport{legacy: newModeTransport(base, state, echTimeout, false), sni: newModeTransport(base, state, echTimeout, true)}
+}
+
+func newModeTransport(base *http.Transport, state *echConfigState, echTimeout time.Duration, azureSNI bool) *http.Transport {
 	transport := base.Clone()
 	dialer := &echDialer{
+		azureSNI:          azureSNI,
 		networkDial:       transport.DialContext,
 		baseTLSConfig:     transport.TLSClientConfig,
 		state:             state,
@@ -216,8 +222,9 @@ var (
 // NewHTTPClient returns an HTTP client that keeps a built-in front's hostname
 // out of the ClientHello on direct connections: the Cloudflare front
 // opportunistically uses the embedded ECH config and falls back to ordinary
-// TLS, which does send the name, while a native CloudFront distribution and an
-// Azure Front Door endpoint omit SNI unconditionally. Custom brokers, loopback,
+// TLS, which does send the name. Native CloudFront distributions omit SNI;
+// Azure defaults to no-SNI unless WithAzureSNI selects normal verified TLS.
+// The two Azure modes use separate connection pools. Custom brokers, loopback,
 // and proxy CONNECT paths retain standard TLS. Returned clients share
 // connection pools and authenticated retry-config state.
 func NewHTTPClient(timeout time.Duration) *http.Client {

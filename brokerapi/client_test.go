@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -697,7 +698,7 @@ func TestBrokerCandidatesReturnsFreshDefaults(t *testing.T) {
 	first := BrokerCandidates("")
 	first.URLs[0] = "mutated"
 	second := BrokerCandidates(DefaultBrokerURL)
-	if second.OverrideFirst || second.URLs[0] != DefaultBrokerURL {
+	if second.OverrideFirst || second.URLs[0] != CloudFrontBrokerURL {
 		t.Fatalf("defaults mutated or reordered: %+v", second)
 	}
 	custom := BrokerCandidates(" https://custom.example/ ")
@@ -710,5 +711,28 @@ func assertHeader(t *testing.T, header http.Header, name, want string) {
 	t.Helper()
 	if got := header.Get(name); got != want {
 		t.Fatalf("%s = %q, want %q", name, got, want)
+	}
+}
+
+func TestBrokerCandidatesAzureSNIFirst(t *testing.T) {
+	wantDefaults := []string{CloudFrontBrokerURL, AzureBrokerURL, DefaultBrokerURL}
+	for _, primary := range []string{"", "  ", DefaultBrokerURL, CloudFrontBrokerURL, AzureBrokerURL, "  " + DefaultBrokerURL + "  ", "https://custom.example/", strings.TrimSuffix(DefaultBrokerURL, "/")} {
+		t.Run(primary, func(t *testing.T) {
+			got := BrokerCandidates(primary)
+			trimmed := strings.TrimSpace(primary)
+			override := trimmed != "" && !slices.Contains(wantDefaults, trimmed)
+			want := slices.Clone(wantDefaults)
+			if override {
+				want = append([]string{trimmed}, want...)
+			}
+			if !got.AzureSNIFirst || got.OverrideFirst != override || !slices.Equal(got.URLs, want) {
+				t.Fatalf("BrokerCandidates(%q) = %+v, want %v (override %t)", primary, got, want, override)
+			}
+		})
+	}
+	defaults := DefaultBrokerURLs()
+	defaults[0] = "mutated"
+	if !slices.Equal(DefaultBrokerURLs(), wantDefaults) {
+		t.Fatal("default order shares mutable storage")
 	}
 }

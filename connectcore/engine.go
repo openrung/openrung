@@ -140,6 +140,10 @@ type connection struct {
 	// the platform network tracker crosses an epoch boundary; capacity one,
 	// coalesced — the epoch counter carries what the wake cannot.
 	netNotify chan struct{}
+	// discoveryPrimary is the configured primary, retained even if a fallback
+	// wins. Written in connectFlow and read in reladder; touched only by the
+	// runConnect goroutine, not protected by mu.
+	discoveryPrimary string
 	// handledNetEpoch is the network epoch the supervisor has accounted for.
 	// Touched only by the runConnect goroutine.
 	handledNetEpoch uint64
@@ -781,6 +785,7 @@ func (s *Engine) runConnect(ctx context.Context, conn *connection, brokerURL str
 // connectFlow runs the connect phases and returns ("", nil) on a clean end (a
 // user disconnect or shutdown, at any phase) or the terminal (stage, error).
 func (s *Engine) connectFlow(ctx context.Context, conn *connection, brokerURL string, target RelayTarget) (string, error) {
+	conn.discoveryPrimary = brokerURL
 	// OS consent while the state machine is still PREPARING, before a telemetry
 	// session exists: a refused elevation is a local precondition, not a
 	// connection attempt, and nothing has been dialed yet.
@@ -888,10 +893,7 @@ func (s *Engine) connectFlow(ctx context.Context, conn *connection, brokerURL st
 // for targeted connects so the target is present (the default page may miss
 // it), like the mobile client. Returns the fetch duration for broker_fetch_ms.
 func (s *Engine) fetchCandidates(ctx context.Context, conn *connection, brokerURL string, target RelayTarget) (discovery.Fetch, int64, error) {
-	displayURL := strings.TrimSpace(brokerURL)
-	if displayURL == "" {
-		displayURL = DefaultBrokerURL
-	}
+	displayURL := brokerapi.BrokerCandidates(brokerURL).URLs[0]
 	s.appendLog(fmt.Sprintf("fetching relays from %s", displayURL))
 
 	limit := RelayLimit
@@ -903,9 +905,9 @@ func (s *Engine) fetchCandidates(ctx context.Context, conn *connection, brokerUR
 	if err != nil {
 		return discovery.Fetch{}, 0, err
 	}
-	if s.Mobile != nil {
-		_ = conn.mgr.SetBrokerURL(fetch.BrokerURL)
-	}
+	// All hosts follow the verified winner, including queued events and
+	// recovery fetches. In-flight uploads retain their captured endpoint.
+	_ = conn.mgr.SetBrokerFront(fetch.BrokerURL, fetch.AzureSNI)
 	return fetch, time.Since(started).Milliseconds(), nil
 }
 

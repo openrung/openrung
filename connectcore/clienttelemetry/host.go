@@ -112,6 +112,11 @@ func (m *Manager) storeEventLocked(event Event) {
 // on its session-owned manager, so an old connection cannot retarget a successor.
 // In-flight uploads keep their captured endpoint; later uploads use the winner.
 func (m *Manager) SetBrokerURL(brokerURL string) error {
+	return m.SetBrokerFront(brokerURL, false)
+}
+
+// SetBrokerFront updates the endpoint and Azure TLS mode atomically.
+func (m *Manager) SetBrokerFront(brokerURL string, azureSNI bool) error {
 	if m == nil {
 		return nil
 	}
@@ -121,6 +126,7 @@ func (m *Manager) SetBrokerURL(brokerURL string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.poster.BaseURL = brokerURL
+	m.poster.AzureSNI = azureSNI
 	if m.session != nil {
 		m.session.BrokerURL = brokerURL
 	}
