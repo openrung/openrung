@@ -293,6 +293,67 @@ volunteer, foundation, or dashboard token, or either signing seed. Like
 not accept — install it post-boot in `/etc/openrung/broker.env` and recreate
 the container with `--env-file`.
 
+## Relay ranking weights
+
+Every `GET /api/v1/relays` page is ranked from the last 30 minutes of client
+telemetry. A **ranking weight** is the operator's dial on top of that: a
+per-relay multiplier in `[0, 1]`, default `1.0`, applied last to the relay's
+score. Use it to shift load between relays — for example to balance egress
+across providers approaching their transfer allowance — without touching the
+relay itself:
+
+- `1.0` (default) leaves the telemetry ranking untouched.
+- `0.5` halves the relay's score, so it drops below comparable relays and
+  receives proportionally fewer clients.
+- `0` **drains** the relay: it sorts last on every page but stays listed, so a
+  client with no other reachable candidate can still use it.
+
+Weights key on the identity-derived relay ID (the `id` in the inventory), so a
+weight survives the relay's lease expiring, `docker restart`, and
+re-registration from a new endpoint; it is never pruned with descriptors. The
+`legacy` ranking mode ignores weights. The Postgres store keeps them in the
+`relay_ranking_weights` table (created by the idempotent schema on startup);
+the in-memory store loses them on broker restart along with everything else.
+
+The same `OPENRUNG_API_TOKEN` that enables the inventory enables three
+token-gated endpoints beside it, sharing its rate limit and `no-store` posture:
+
+```http
+GET    /admin/api/relays/weights          # every stored override, relay-ID order
+PUT    /admin/api/relays/{id}/weight      # body {"weight": 0.5}; 400 outside [0, 1]
+DELETE /admin/api/relays/{id}/weight      # restore the default (idempotent)
+```
+
+Halve a relay's share of new clients, then check the fleet-wide overrides:
+
+```sh
+curl -fsS -X PUT \
+  -H "Authorization: Bearer $OPENRUNG_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"weight": 0.5}' \
+  https://broker-origin.openrung.org/admin/api/relays/relay_0123456789abcdef0123456789abcdef/weight
+# {"relay_id":"relay_0123…","weight":0.5,"previous_weight":1}
+
+curl -fsS -H "Authorization: Bearer $OPENRUNG_API_TOKEN" \
+  https://broker-origin.openrung.org/admin/api/relays/weights
+```
+
+Restore the default with `-X DELETE` on the same path. Each inventory
+descriptor also carries its effective `ranking_weight`, so a fleet audit shows
+where load has been shifted. As with the inventory, call the **origin**, not
+the public front.
+
+The telemetry dashboard's relays page (`/admin/telemetry/relays`) exposes the
+same dial as a **Weight** column with an inline Save/Reset control per relay,
+behind the dashboard session cookie rather than the API token; relays weighted
+below `1` are marked amber (red at `0`) so shifted load is visible at a glance.
+Every change through either door is logged at info level with the relay ID,
+old and new value, and the caller's IP:
+
+```
+INFO relay ranking weight changed relay_id=relay_0123… old_weight=1 new_weight=0.5 restored_default=false client_ip=203.0.113.9 via="operational api"
+```
+
 ## Shared PostgreSQL state (optional)
 
 For safer restarts or multiple brokers behind a load balancer, use Postgres
@@ -377,7 +438,7 @@ docker inspect openrung-broker \
 | `OPENRUNG_RELAY_SIGNING_KEY`         | yes      | —                                   | Std-base64 32-byte Ed25519 seed; signs every relay-list response |
 | `OPENRUNG_WSS_TICKET_SIGNING_SEED`   | no       | —                                   | Dedicated std-base64 32-byte Ed25519 seed; enables relay/front-bound WSS tickets |
 | `OPENRUNG_DASHBOARD_TOKEN`           | no       | —                                   | Enables the protected `/admin/telemetry` dashboard             |
-| `OPENRUNG_API_TOKEN`                 | no       | —                                   | Enables `GET /admin/api/relays/inventory`; must differ from every other credential |
+| `OPENRUNG_API_TOKEN`                 | no       | —                                   | Enables `/admin/api/relays/inventory` and the ranking-weight endpoints; must differ from every other credential |
 | `OPENRUNG_ADDR`                      | no       | `:8080`                             | HTTP listen address                                            |
 | `OPENRUNG_TRUSTED_PROXY_CIDRS`       | no       | Cloudflare ranges                   | Extra trusted proxy CIDRs for forwarded client IPs             |
 | `OPENRUNG_RELAY_STORE`               | no       | `memory`                            | Relay state backend: `memory` or `postgres`                    |

@@ -1,9 +1,12 @@
 package broker
 
 import (
+	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"sort"
+	"strconv"
 	"time"
 
 	"openrung/internal/relay"
@@ -81,18 +84,82 @@ func relayInventoryHandler(store RelayStore, apiToken string, s signer) http.Han
 			writeError(w, http.StatusServiceUnavailable, "could not list relays")
 			return
 		}
-		inventory := sortInventoryByRelayID(relays)
-		s.writeSigned(w, relay.ListResponse{
-			Count:      len(inventory),
+		weights, err := store.RelayRankingWeights(r.Context())
+		if err != nil {
+			slog.Error("could not read relay ranking weights for inventory", "error", err)
+			writeError(w, http.StatusServiceUnavailable, "could not list relays")
+			return
+		}
+		normalized := normalizeSignedRelayListTimes(relay.ListResponse{
+			Count:      len(relays),
 			ServerTime: now,
 			NotAfter:   now.Add(inventoryNotAfterWindow),
 			KeyID:      s.keyID,
 			Channel:    relay.ChannelInventory,
+			Relays:     sortInventoryByRelayID(relays),
+		})
+		s.writeSignedJSON(w, inventoryResponse{
+			Count:      normalized.Count,
+			ServerTime: normalized.ServerTime,
+			NotAfter:   normalized.NotAfter,
+			KeyID:      normalized.KeyID,
+			Channel:    normalized.Channel,
 			// No limit field: the inventory is not request-shaped and is never
 			// truncated, so there is nothing to echo.
-			Relays: inventory,
+			Relays: decorateInventory(normalized.Relays, weights),
 		})
 	}
+}
+
+// inventoryResponse is the inventory channel's signed envelope: the public
+// relay.ListResponse shape (minus limit, which the inventory never carries)
+// with each descriptor decorated by operator-only state. It is a separate type
+// rather than extra fields on relay.Descriptor so the public directory's wire
+// shape — which every client pins by schema — stays untouched.
+type inventoryResponse struct {
+	Count      int                   `json:"count"`
+	ServerTime time.Time             `json:"server_time"`
+	NotAfter   time.Time             `json:"not_after"`
+	KeyID      string                `json:"key_id"`
+	Channel    string                `json:"channel"`
+	Relays     []inventoryDescriptor `json:"relays"`
+}
+
+// inventoryDescriptor is a public descriptor plus the effective operator
+// ranking weight the broker is applying to it right now (defaultRankingWeight
+// when no override is stored). The weight is operational state — it exists so
+// fleet tooling can see where an operator has shifted load — and never appears
+// in the client-facing channels.
+type inventoryDescriptor struct {
+	relay.Descriptor
+	RankingWeight float64 `json:"ranking_weight"`
+}
+
+// MarshalJSON emits the descriptor exactly as the public channels do (through
+// relay.Descriptor's own marshaler, deprecated aliases included) and appends
+// ranking_weight as one trailing key. Embedding alone would not do: the
+// embedded type's MarshalJSON is promoted and would silently drop every field
+// declared beside it.
+func (d inventoryDescriptor) MarshalJSON() ([]byte, error) {
+	body, err := json.Marshal(d.Descriptor)
+	if err != nil {
+		return nil, err
+	}
+	if len(body) < 2 || body[len(body)-1] != '}' {
+		return nil, errors.New("relay descriptor did not marshal to a JSON object")
+	}
+	body = append(body[:len(body)-1], `,"ranking_weight":`...)
+	body = strconv.AppendFloat(body, d.RankingWeight, 'g', -1, 64)
+	return append(body, '}'), nil
+}
+
+func decorateInventory(relays []relay.Descriptor, weights map[string]float64) []inventoryDescriptor {
+	// Keep the wire shape an array for an empty fleet, like every signed channel.
+	decorated := make([]inventoryDescriptor, len(relays))
+	for i, desc := range relays {
+		decorated[i] = inventoryDescriptor{Descriptor: desc, RankingWeight: rankingWeightFor(weights, desc.ID)}
+	}
+	return decorated
 }
 
 // sortInventoryByRelayID returns the descriptors ordered by relay ID, leaving

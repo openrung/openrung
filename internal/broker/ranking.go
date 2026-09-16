@@ -27,6 +27,10 @@ const (
 	// margin by which a 75%-reliable full relay beats a 25%-reliable idle one
 	// when their latency and speed signals are equal.
 	rankingMaxOverCapacityPenalty = 0.04
+
+	// defaultRankingWeight is the operator multiplier every relay carries until
+	// an override is stored: the telemetry-driven score is used as-is.
+	defaultRankingWeight = 1.0
 )
 
 type metricValue struct {
@@ -87,7 +91,11 @@ func ParseRankingMode(raw string) (RankingMode, error) {
 	}
 }
 
-func sortRelayCandidates(relays []relay.Descriptor, snapshots map[string]RelayMetricsSnapshot, mode RankingMode) {
+// sortRelayCandidates orders relays best-first. snapshots is the 30-minute
+// telemetry view per relay ID; weights is the operator's per-relay ranking
+// multiplier keyed the same way, with absent entries meaning
+// defaultRankingWeight (see rankingWeightFor). Legacy mode ignores both.
+func sortRelayCandidates(relays []relay.Descriptor, snapshots map[string]RelayMetricsSnapshot, weights map[string]float64, mode RankingMode) {
 	if mode == RankingModeLegacy {
 		sortLegacyRelays(relays)
 		return
@@ -95,7 +103,7 @@ func sortRelayCandidates(relays []relay.Descriptor, snapshots map[string]RelayMe
 
 	scores := make(map[string]float64, len(relays))
 	for _, desc := range relays {
-		scores[desc.ID] = relayScore(desc, snapshots[desc.ID])
+		scores[desc.ID] = relayScore(desc, snapshots[desc.ID], rankingWeightFor(weights, desc.ID))
 	}
 
 	sort.SliceStable(relays, func(i, j int) bool {
@@ -127,7 +135,25 @@ func sortLegacyRelays(relays []relay.Descriptor) {
 	})
 }
 
-func relayScore(desc relay.Descriptor, snapshot RelayMetricsSnapshot) float64 {
+// rankingWeightFor resolves a relay's effective operator weight: the stored
+// override when one exists, otherwise defaultRankingWeight. Stored values are
+// already validated into [0, 1] by the store's setter, so an out-of-range entry
+// can only mean a corrupted backend; clamp rather than let it inflate a score.
+func rankingWeightFor(weights map[string]float64, relayID string) float64 {
+	weight, ok := weights[relayID]
+	if !ok {
+		return defaultRankingWeight
+	}
+	return clamp01(weight)
+}
+
+// relayScore is the telemetry-driven candidate score in [0, 1], scaled last by
+// the operator's ranking weight. The weight multiplies the whole score (after
+// the over-capacity penalty, before the clamp) rather than adding a term, so
+// it is a pure dial on top of the telemetry signals: weight 1 leaves the
+// ranking untouched, weight 0 pins the relay to the bottom of the list without
+// delisting it, and any value between shifts load away in proportion.
+func relayScore(desc relay.Descriptor, snapshot RelayMetricsSnapshot, weight float64) float64 {
 	headroom := 0.5
 	if desc.MaxSessions > 0 {
 		headroom = clamp01(float64(desc.MaxSessions-snapshot.ActiveSessions) / float64(desc.MaxSessions))
@@ -144,7 +170,7 @@ func relayScore(desc relay.Descriptor, snapshot RelayMetricsSnapshot) float64 {
 		rankingHeadroomWeight*headroom +
 		rankingLatencyWeight*latencyScore +
 		rankingSpeedWeight*speedScore
-	return clamp01(score - overCapacityPenalty(desc, snapshot))
+	return clamp01((score - overCapacityPenalty(desc, snapshot)) * clamp01(weight))
 }
 
 func overCapacityPenalty(desc relay.Descriptor, snapshot RelayMetricsSnapshot) float64 {

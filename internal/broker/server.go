@@ -124,15 +124,23 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 	if wssIssuer != nil {
 		mux.HandleFunc("POST /api/v1/wss/tickets", rateLimitedBy(wssTicketLimiter, wssTicketRateKey(clientIP), 10, wssTicketHandler(store, wssIssuer)))
 	}
-	// The operational inventory exists only when its dedicated token does, so
-	// an unconfigured broker runs no handler, holds no limiter state, and can
-	// answer nothing but 404 on the path — the same posture as the dashboard
-	// routes. The pattern deliberately carries no method: the handler screens
-	// the method itself, after the credential check, so ServeMux cannot answer
-	// ahead of it (see relayInventoryHandler).
+	// The operational API exists only when its dedicated token does, so an
+	// unconfigured broker runs no handler, holds no limiter state, and can
+	// answer nothing but 404 on these paths — the same posture as the
+	// dashboard routes. The patterns deliberately carry no method: each
+	// handler screens the method itself, after the credential check, so
+	// ServeMux cannot answer ahead of it (see relayInventoryHandler). One
+	// limiter spans the whole operational surface: it is one credential
+	// driven by one operator's tooling, and the budget is per token holder,
+	// not per route.
 	if cfg.APIToken != "" {
-		inventoryLimiter := newIPRateLimiter(inventoryRatePerSecond, inventoryBurst, rateLimiterMaxTrackedIPs)
-		mux.HandleFunc("/admin/api/relays/inventory", rateLimited(inventoryLimiter, clientIP, inventoryRetryAfterSeconds, relayInventoryHandler(store, cfg.APIToken, relaySigner)))
+		operationalLimiter := newIPRateLimiter(inventoryRatePerSecond, inventoryBurst, rateLimiterMaxTrackedIPs)
+		operational := func(next http.HandlerFunc) http.HandlerFunc {
+			return rateLimited(operationalLimiter, clientIP, inventoryRetryAfterSeconds, next)
+		}
+		mux.HandleFunc("/admin/api/relays/inventory", operational(relayInventoryHandler(store, cfg.APIToken, relaySigner)))
+		mux.HandleFunc("/admin/api/relays/weights", operational(relayWeightsListHandler(store, cfg.APIToken)))
+		mux.HandleFunc("/admin/api/relays/{id}/weight", operational(relayWeightHandler(store, cfg.APIToken, clientIP.clientIP)))
 	}
 	mux.HandleFunc("POST /api/v1/telemetry/events", rateLimited(telemetryLimiter, clientIP, 10, telemetryHandler(cfg.TelemetrySink, store, clientIP, relayLedger)))
 	mux.HandleFunc("GET /api/v1/speed-test", rateLimited(speedTestLimiter, clientIP, 30, speedTestHandler(speedTestMaxConcurrent)))
@@ -144,6 +152,8 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 		dashboard := newDashboardServer(cfg.DashboardToken, querier)
 		dashboard.relayDisplays = relayDisplayResolver(store)
 		dashboard.relayDirectory = store
+		dashboard.relayWeights = store
+		dashboard.clientIP = clientIP.clientIP
 		dashboard.register(mux)
 	}
 

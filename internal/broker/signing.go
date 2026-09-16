@@ -94,7 +94,14 @@ func SigningKeyID(seed []byte) string {
 // appends a trailing newline that Marshal does not (an invisible one-byte
 // verification killer), and headers could not be set after its first write.
 func (s signer) writeSigned(w http.ResponseWriter, resp relay.ListResponse) {
-	resp = normalizeSignedRelayListTimes(resp)
+	s.writeSignedJSON(w, normalizeSignedRelayListTimes(resp))
+}
+
+// writeSignedJSON is the shape-agnostic half of writeSigned, for signed
+// channels whose envelope is not exactly relay.ListResponse (the operational
+// inventory decorates each descriptor). Callers normalize timestamps
+// themselves; the sign-what-you-send discipline is identical.
+func (s signer) writeSignedJSON(w http.ResponseWriter, resp any) {
 	body, err := json.Marshal(resp) // NOT Encode; no trailing newline
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not encode relay list")

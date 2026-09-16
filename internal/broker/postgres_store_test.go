@@ -310,7 +310,7 @@ func newTestPostgresStoreWithoutCleanup(t *testing.T, rankingMode RankingMode) *
 
 func cleanupPostgresStore(t *testing.T, store *PostgresStore) {
 	t.Helper()
-	if _, err := store.pool.Exec(context.Background(), `TRUNCATE relay_metrics, relay_sessions, relay_descriptors`); err != nil {
+	if _, err := store.pool.Exec(context.Background(), `TRUNCATE relay_metrics, relay_sessions, relay_descriptors, relay_ranking_weights`); err != nil {
 		t.Fatalf("cleanup postgres store: %v", err)
 	}
 }

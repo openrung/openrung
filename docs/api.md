@@ -406,10 +406,12 @@ replayed into a client's API or mirror slot. `not_after` is `server_time` + 5
 minutes, far tighter than the API channel's 30: a relay lease lives about three
 minutes, so a stale inventory describes a fleet that no longer exists.
 
-The relay objects are byte-for-byte the public directory descriptors. Lease
-tokens, stable-identity keys and proofs, hub-observed exit addresses, telemetry,
-and signing seeds never appear here; the endpoint exposes fleet membership, not
-credentials.
+The relay objects are the public directory descriptors plus one operator-only
+key, `ranking_weight` — the effective ranking weight the broker is applying to
+that relay right now (`1` unless an override is stored; see
+[Relay ranking weights](#relay-ranking-weights)). Lease tokens, stable-identity
+keys and proofs, hub-observed exit addresses, telemetry, and signing seeds never
+appear here; the endpoint exposes fleet membership, not credentials.
 
 Response:
 
@@ -421,10 +423,78 @@ Response:
   "key_id": "3097e2dee2cb4a34",
   "channel": "inventory",
   "relays": [
-    { "id": "relay_0a1b...", "public_host": "203.0.113.7", "public_port": 443, "node_class": "foundation", "...": "..." }
+    { "id": "relay_0a1b...", "public_host": "203.0.113.7", "public_port": 443, "node_class": "foundation", "...": "...", "ranking_weight": 1 }
   ]
 }
 ```
+
+## Relay ranking weights
+
+```http
+GET    /admin/api/relays/weights
+PUT    /admin/api/relays/{id}/weight
+DELETE /admin/api/relays/{id}/weight
+Authorization: Bearer <OPENRUNG_API_TOKEN>
+```
+
+An operator-set per-relay multiplier on the candidate ranking behind
+`GET /api/v1/relays`: a number in `[0, 1]`, default `1`, applied last to the
+relay's telemetry-derived score. `1` leaves the ranking untouched, values below
+`1` demote the relay in proportion, and `0` pins it to the bottom of every page
+without delisting it. Weights key on the relay ID, so they survive lease
+expiry and re-registration, and are never pruned with descriptors. The `legacy`
+ranking mode ignores them.
+
+These routes share the inventory's credential, per-IP rate limit, and
+`no-store` posture, and answer like it: `401` for a missing or invalid bearer
+before anything else (so an anonymous caller cannot tell the routes exist),
+`405` with `Allow` for a wrong method once the bearer is accepted, `429` with
+`Retry-After` over budget, `503` on a storage failure. The `{id}` must be a
+well-formed relay ID (`relay_` plus 32 lowercase hex characters); anything else
+is `400`. The relay need not be currently registered — an override may be set
+on a relay that is between leases and applies when it returns.
+
+`GET /admin/api/relays/weights` lists every stored override in relay-ID order:
+
+```json
+{
+  "generated_at": "2026-09-16T07:00:00Z",
+  "default_weight": 1,
+  "count": 1,
+  "weights": [ { "relay_id": "relay_0a1b...", "weight": 0.5 } ]
+}
+```
+
+`PUT /admin/api/relays/{id}/weight` stores one. The body must be exactly one
+JSON object with a numeric `weight` and no other keys; a missing body, a
+non-JSON body, extra keys, trailing data, or a value outside `[0, 1]` is `400`.
+`DELETE` restores the default and is idempotent. Both answer with the new
+effective weight and the effective weight it replaced:
+
+```json
+{ "relay_id": "relay_0a1b...", "weight": 0.5, "previous_weight": 1 }
+```
+
+Every change through this API or the dashboard is logged at info level with
+the relay ID, old and new weight, and the caller's IP.
+
+### Dashboard weight endpoints
+
+The relays page (`/admin/telemetry/relays`) edits the same weights through the
+dashboard session cookie rather than the operational token:
+
+```http
+PUT    /admin/api/telemetry/relays/{id}/weight
+DELETE /admin/api/telemetry/relays/{id}/weight
+```
+
+Validation and responses match the operational routes. Because the session is
+a cookie, both mutations additionally require `Content-Type: application/json`
+(`415` otherwise — an HTML form cannot send it) and, when the browser attaches
+an `Origin` header, that origin must be the broker itself (`403` otherwise);
+together with the cookie's `SameSite=Strict` this keeps a visited page from
+moving the dial. Each row of `GET /admin/api/telemetry/relays` carries the
+relay's effective `ranking_weight`, offline rows included.
 
 ## Health
 

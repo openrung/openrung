@@ -46,15 +46,23 @@ type dashboardServer struct {
 	// set; nil (only in tests that never exercise that page) renders every
 	// relay as offline.
 	relayDirectory relayDirectoryLister
-	now            func() time.Time
-	mu             sync.Mutex
-	sessions       map[string]time.Time
+	// relayWeights backs the relays page's ranking-weight column and its
+	// mutation endpoints; nil (only in tests that never touch them) renders
+	// every relay at the default weight and answers mutations with 503.
+	relayWeights relayRankingWeightStore
+	// clientIP resolves the caller's address for the weight-change audit log;
+	// NewServer installs the broker's proxy-aware resolver.
+	clientIP func(*http.Request) string
+	now      func() time.Time
+	mu       sync.Mutex
+	sessions map[string]time.Time
 }
 
 func newDashboardServer(token string, querier TelemetryQuerier) *dashboardServer {
 	return &dashboardServer{
 		tokenHash: sha256.Sum256([]byte(token)),
 		querier:   querier,
+		clientIP:  func(r *http.Request) string { return r.RemoteAddr },
 		now:       time.Now,
 		sessions:  make(map[string]time.Time),
 	}
@@ -69,6 +77,8 @@ func (d *dashboardServer) register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/api/telemetry/overview", d.requireAuth(d.overview))
 	mux.HandleFunc("GET /admin/api/telemetry/sessions", d.requireAuth(d.listSessions))
 	mux.HandleFunc("GET /admin/api/telemetry/relays", d.requireAuth(d.relaysPanel))
+	mux.HandleFunc("PUT /admin/api/telemetry/relays/{id}/weight", d.requireAuth(d.setRelayWeight))
+	mux.HandleFunc("DELETE /admin/api/telemetry/relays/{id}/weight", d.requireAuth(d.deleteRelayWeight))
 }
 
 func (d *dashboardServer) loginPage(w http.ResponseWriter, r *http.Request) {

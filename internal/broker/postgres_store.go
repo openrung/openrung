@@ -172,6 +172,12 @@ ALTER TABLE relay_metrics
 
 CREATE INDEX IF NOT EXISTS relay_metrics_recent_by_relay_idx
 	ON relay_metrics (relay_id, observed_at DESC);
+
+CREATE TABLE IF NOT EXISTS relay_ranking_weights (
+	relay_id text PRIMARY KEY,
+	weight double precision NOT NULL CHECK (weight >= 0 AND weight <= 1),
+	updated_at timestamptz NOT NULL
+);
 `
 
 type PostgresStore struct {
@@ -511,11 +517,11 @@ func (s *PostgresStore) List(now time.Time, limit int) ([]relay.Descriptor, erro
 		return nil, err
 	}
 
-	snapshots, err := s.metricSnapshots(ctx, now)
+	snapshots, weights, err := s.metricSnapshots(ctx, now)
 	if err != nil {
 		return nil, err
 	}
-	sortRelayCandidates(relays, snapshots, s.rankingMode)
+	sortRelayCandidates(relays, snapshots, weights, s.rankingMode)
 	if limit > 0 && len(relays) > limit {
 		return relays[:limit], nil
 	}
@@ -577,6 +583,9 @@ func (s *PostgresStore) Stats(now time.Time) (StoreStats, error) {
 	return StoreStats{ActiveRelays: active, AdvertisedSessionCapacity: int(capacity.Int64)}, nil
 }
 
+// Prune drops expired descriptors and out-of-window metrics. relay_ranking_weights
+// is deliberately untouched: weights are operator intent about a relay
+// identity, not lease state, and must still apply when the relay returns.
 func (s *PostgresStore) Prune(now time.Time) ([]relay.Descriptor, error) {
 	ctx, cancel := postgresOperationContext()
 	defer cancel()
@@ -624,6 +633,75 @@ func (s *PostgresStore) RecordRelayTelemetry(ctx context.Context, records []Tele
 	return tx.Commit(ctx)
 }
 
+func (s *PostgresStore) RelayRankingWeights(parent context.Context) (map[string]float64, error) {
+	ctx, cancel := context.WithTimeout(parent, postgresOperationTimeout)
+	defer cancel()
+	return s.rankingWeights(ctx)
+}
+
+func (s *PostgresStore) SetRelayRankingWeight(parent context.Context, id string, weight float64) (float64, error) {
+	if err := validateRankingWeight(weight); err != nil {
+		return 0, err
+	}
+	ctx, cancel := context.WithTimeout(parent, postgresOperationTimeout)
+	defer cancel()
+	// Every part of one statement reads the same snapshot, so the "previous"
+	// CTE observes the row as it was before this statement's upsert — one
+	// round trip yields both the replaced value and the write, and two
+	// concurrent setters cannot both report the same predecessor.
+	var previous float64
+	err := s.pool.QueryRow(ctx, `
+		WITH previous AS (
+			SELECT weight FROM relay_ranking_weights WHERE relay_id = $1
+		), upsert AS (
+			INSERT INTO relay_ranking_weights (relay_id, weight, updated_at)
+			VALUES ($1, $2, $3)
+			ON CONFLICT (relay_id) DO UPDATE SET
+				weight = EXCLUDED.weight,
+				updated_at = EXCLUDED.updated_at
+		)
+		SELECT COALESCE((SELECT weight FROM previous), $4::double precision)
+	`, id, weight, time.Now().UTC(), defaultRankingWeight).Scan(&previous)
+	if err != nil {
+		return 0, fmt.Errorf("set relay ranking weight: %w", err)
+	}
+	return previous, nil
+}
+
+func (s *PostgresStore) DeleteRelayRankingWeight(parent context.Context, id string) (float64, error) {
+	ctx, cancel := context.WithTimeout(parent, postgresOperationTimeout)
+	defer cancel()
+	var previous float64
+	err := s.pool.QueryRow(ctx, `
+		WITH removed AS (
+			DELETE FROM relay_ranking_weights WHERE relay_id = $1 RETURNING weight
+		)
+		SELECT COALESCE((SELECT weight FROM removed), $2::double precision)
+	`, id, defaultRankingWeight).Scan(&previous)
+	if err != nil {
+		return 0, fmt.Errorf("delete relay ranking weight: %w", err)
+	}
+	return previous, nil
+}
+
+func (s *PostgresStore) rankingWeights(ctx context.Context) (map[string]float64, error) {
+	rows, err := s.pool.Query(ctx, `SELECT relay_id, weight FROM relay_ranking_weights`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	weights := make(map[string]float64)
+	for rows.Next() {
+		var relayID string
+		var weight float64
+		if err := rows.Scan(&relayID, &weight); err != nil {
+			return nil, err
+		}
+		weights[relayID] = weight
+	}
+	return weights, rows.Err()
+}
+
 func (s *PostgresStore) Ping(ctx context.Context) error {
 	if err := s.pool.Ping(ctx); err != nil {
 		return fmt.Errorf("ping relay database: %w", err)
@@ -643,7 +721,15 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 	return nil
 }
 
-func (s *PostgresStore) metricSnapshots(ctx context.Context, now time.Time) (map[string]RelayMetricsSnapshot, error) {
+// metricSnapshots builds the ranking inputs: the 30-minute telemetry snapshot
+// per relay plus, as a parallel map, the operator ranking-weight overrides (a
+// relay without telemetry has no snapshot entry, so the weight cannot ride
+// inside it without its zero value reading as weight 0).
+func (s *PostgresStore) metricSnapshots(ctx context.Context, now time.Time) (map[string]RelayMetricsSnapshot, map[string]float64, error) {
+	weights, err := s.rankingWeights(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
 	snapshots := make(map[string]RelayMetricsSnapshot)
 	activeRows, err := s.pool.Query(ctx, `
 		SELECT relay_id, COUNT(*)::bigint
@@ -652,14 +738,14 @@ func (s *PostgresStore) metricSnapshots(ctx context.Context, now time.Time) (map
 		GROUP BY relay_id
 	`, now.Add(-activeSessionTimeout))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for activeRows.Next() {
 		var relayID string
 		var active int64
 		if err := activeRows.Scan(&relayID, &active); err != nil {
 			activeRows.Close()
-			return nil, err
+			return nil, nil, err
 		}
 		snapshot := snapshots[relayID]
 		snapshot.ActiveSessions = int(active)
@@ -667,7 +753,7 @@ func (s *PostgresStore) metricSnapshots(ctx context.Context, now time.Time) (map
 	}
 	if err := activeRows.Err(); err != nil {
 		activeRows.Close()
-		return nil, err
+		return nil, nil, err
 	}
 	activeRows.Close()
 
@@ -691,7 +777,7 @@ func (s *PostgresStore) metricSnapshots(ctx context.Context, now time.Time) (map
 		GROUP BY relay_id
 	`, now.Add(-rankingWindow), now)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer metricRows.Close()
 	for metricRows.Next() {
@@ -715,7 +801,7 @@ func (s *PostgresStore) metricSnapshots(ctx context.Context, now time.Time) (map
 			&speedTests,
 			&speedTotal,
 		); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		snapshot := snapshots[relayID]
 		snapshot.Successes = int(successes)
@@ -728,7 +814,7 @@ func (s *PostgresStore) metricSnapshots(ctx context.Context, now time.Time) (map
 		snapshot.DownloadMbpsTotal = float64(speedTotal) / 1000
 		snapshots[relayID] = snapshot
 	}
-	return snapshots, metricRows.Err()
+	return snapshots, weights, metricRows.Err()
 }
 
 func (s *PostgresStore) recordRelayTelemetry(ctx context.Context, tx pgx.Tx, record TelemetryRecord, now time.Time) error {

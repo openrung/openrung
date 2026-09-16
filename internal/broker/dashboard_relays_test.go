@@ -161,7 +161,7 @@ func TestBuildRelaysPanelMergesRegistryAndTelemetry(t *testing.T) {
 		},
 	}
 
-	panel := buildRelaysPanel(descriptors, stats, now, 24*time.Hour)
+	panel := buildRelaysPanel(descriptors, stats, nil, now, 24*time.Hour)
 
 	totals := panel.Totals
 	if totals.OnlineRelays != 2 || totals.FoundationRelays != 1 || totals.VolunteerRelays != 1 || totals.OfflineRelays != 1 {
@@ -243,7 +243,7 @@ func TestBuildRelaysPanelCapsOfflineRows(t *testing.T) {
 		})
 	}
 
-	panel := buildRelaysPanel(descriptors, stats, now, 24*time.Hour)
+	panel := buildRelaysPanel(descriptors, stats, nil, now, 24*time.Hour)
 
 	if panel.Totals.OfflineRelays != overflow {
 		t.Fatalf("offline total = %d, want %d (totals must not be capped)", panel.Totals.OfflineRelays, overflow)
