@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"sync"
 	"testing"
 	"time"
 
@@ -175,4 +176,65 @@ func relayIDs(relays []relay.Descriptor) []string {
 		ids = append(ids, desc.ID)
 	}
 	return ids
+}
+
+// Concurrent setters on one relay must each report the exact value they
+// replaced: the previous values, taken together, are the default plus every
+// written value except the one that ended up stored — a perfect chain. A
+// snapshot-read implementation lets two writers report the same predecessor.
+func TestStoreRankingWeightConcurrentSettersReportExactPrevious(t *testing.T) {
+	runIdentityStoreTest(t, func(t *testing.T, store RelayStore) {
+		ctx := context.Background()
+		const id = "relay_fedcba9876543210fedcba9876543210"
+		const writers = 16
+		values := make([]float64, writers)
+		for i := range values {
+			values[i] = float64(i+1) / float64(writers+1)
+		}
+		previous := make([]float64, writers)
+		errs := make([]error, writers)
+		var start, done sync.WaitGroup
+		start.Add(1)
+		for i := 0; i < writers; i++ {
+			done.Add(1)
+			go func(i int) {
+				defer done.Done()
+				start.Wait()
+				previous[i], errs[i] = store.SetRelayRankingWeight(ctx, id, values[i])
+			}(i)
+		}
+		start.Done()
+		done.Wait()
+		for i, err := range errs {
+			if err != nil {
+				t.Fatalf("writer %d: %v", i, err)
+			}
+		}
+		weights, err := store.RelayRankingWeights(ctx)
+		if err != nil {
+			t.Fatalf("list weights: %v", err)
+		}
+		final := weights[id]
+
+		// Expected multiset: the default once, then every written value
+		// except the final one, each exactly once.
+		expected := map[float64]int{defaultRankingWeight: 1}
+		for _, value := range values {
+			if value != final {
+				expected[value]++
+			}
+		}
+		got := map[float64]int{}
+		for _, value := range previous {
+			got[value]++
+		}
+		if len(got) != len(expected) {
+			t.Fatalf("previous values %v do not chain from %v to %v", previous, defaultRankingWeight, final)
+		}
+		for value, count := range expected {
+			if got[value] != count {
+				t.Fatalf("previous value %v reported %d times, want %d (previous=%v, final=%v)", value, got[value], count, previous, final)
+			}
+		}
+	})
 }

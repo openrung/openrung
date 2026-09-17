@@ -306,7 +306,10 @@ relay itself:
 - `0.5` halves the relay's score, so it drops below comparable relays and
   receives proportionally fewer clients.
 - `0` **drains** the relay: it sorts last on every page but stays listed, so a
-  client with no other reachable candidate can still use it.
+  client with no other reachable candidate can still use it. A drained
+  WSS-capable relay is also never pulled back into a short page by the WSS
+  candidate reservation; any weight above `0` keeps that reservation, since the
+  WSS slot is a functional need rather than a share of load.
 
 Weights key on the identity-derived relay ID (the `id` in the inventory), so a
 weight survives the relay's lease expiring, `docker restart`, and

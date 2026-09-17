@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -371,5 +372,53 @@ func TestBuildRelaysPanelCarriesRankingWeights(t *testing.T) {
 		if got[id] != weight {
 			t.Errorf("row %s ranking_weight = %v, want %v", id, got[id], weight)
 		}
+	}
+}
+
+// End to end: a WSS-capable relay drained to 0 ranks last and is not pulled
+// back into a short page by the WSS reservation — with limit=1 the client
+// sees the top-ranked plain relay, not the drained one.
+func TestDrainedWSSRelayIsNotReservedIntoThePage(t *testing.T) {
+	now := time.Now().UTC()
+	store := NewStore()
+	wss := registerWSSRelayForTest(t, store, now, time.Hour)
+	for i := 0; i < 2; i++ {
+		req := validRegisterRequest()
+		req.PublicHost = "203.0.113." + string(rune('1'+i))
+		if _, err := store.Register(req, now, time.Hour); err != nil {
+			t.Fatalf("register plain relay %d: %v", i, err)
+		}
+	}
+	server := NewServer(store, Config{SigningSeed: testSigningSeed(), WSSTicketSigningSeed: bytes.Repeat([]byte{0x33}, 32), APIToken: testAPIToken})
+	page := func() []string {
+		request := httptest.NewRequest(http.MethodGet, "/api/v1/relays?limit=1", nil)
+		recorder := httptest.NewRecorder()
+		server.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("list = %d: %s", recorder.Code, recorder.Body.String())
+		}
+		var list relay.ListResponse
+		if err := json.Unmarshal(recorder.Body.Bytes(), &list); err != nil {
+			t.Fatalf("decode list: %v", err)
+		}
+		return relayIDs(list.Relays)
+	}
+
+	// Baseline: the reservation pulls the WSS relay into the one-slot page.
+	if got := page(); len(got) != 1 || got[0] != wss.ID {
+		t.Fatalf("without weights the WSS relay should be reserved into the page, got %v", got)
+	}
+	if response := operationalRequest(t, server, http.MethodPut, "/admin/api/relays/"+wss.ID+"/weight", `{"weight": 0}`); response.Code != http.StatusOK {
+		t.Fatalf("drain = %d: %s", response.Code, response.Body.String())
+	}
+	if got := page(); len(got) != 1 || got[0] == wss.ID {
+		t.Fatalf("drained WSS relay must not be reserved into the page, got %v", got)
+	}
+	// A partial weight keeps the functional reservation.
+	if response := operationalRequest(t, server, http.MethodPut, "/admin/api/relays/"+wss.ID+"/weight", `{"weight": 0.1}`); response.Code != http.StatusOK {
+		t.Fatalf("down-weight = %d: %s", response.Code, response.Body.String())
+	}
+	if got := page(); len(got) != 1 || got[0] != wss.ID {
+		t.Fatalf("down-weighted WSS relay should still be reserved, got %v", got)
 	}
 }

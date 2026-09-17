@@ -441,7 +441,10 @@ An operator-set per-relay multiplier on the candidate ranking behind
 `GET /api/v1/relays`: a number in `[0, 1]`, default `1`, applied last to the
 relay's telemetry-derived score. `1` leaves the ranking untouched, values below
 `1` demote the relay in proportion, and `0` pins it to the bottom of every page
-without delisting it. Weights key on the relay ID, so they survive lease
+without delisting it — and excludes the relay from the WSS-candidate
+reservation that can otherwise promote a WSS-capable Foundation relay into a
+short page's last slot (weights above `0` keep that eligibility). Weights key on
+the relay ID, so they survive lease
 expiry and re-registration, and are never pruned with descriptors. The `legacy`
 ranking mode ignores them.
 

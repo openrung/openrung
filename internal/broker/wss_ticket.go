@@ -181,7 +181,16 @@ func findWSSFront(fronts []relay.WSSFrontDescriptor, id string) (relay.WSSFrontD
 	return relay.WSSFrontDescriptor{}, false
 }
 
-func reserveWSSCandidate(relays []relay.Descriptor, limit int) []relay.Descriptor {
+// reserveWSSCandidate keeps one WSS-capable Foundation relay on a short page
+// by swapping the page's last slot for the best-ranked eligible relay below
+// the cut. weights is the operator ranking-weight map (see rankingWeightFor):
+// a relay drained to weight 0 is never promoted this way. The reservation
+// exists so a client that can only reach the fleet through a CDN front still
+// finds a candidate, but promoting a drained relay would advertise it above
+// its rank — and with limit=1 make it the sole result — defeating the drain
+// the operator asked for. Weights above 0 leave eligibility untouched: they
+// express "less load", not "none", and the WSS slot is a functional need.
+func reserveWSSCandidate(relays []relay.Descriptor, limit int, weights map[string]float64) []relay.Descriptor {
 	// Keep the public relay-list wire shape stable when a store (notably the
 	// Postgres implementation with zero rows) returns a nil slice. Clients
 	// require an array and deliberately reject "relays":null.
@@ -198,7 +207,7 @@ func reserveWSSCandidate(relays []relay.Descriptor, limit int) []relay.Descripto
 		}
 	}
 	for _, desc := range relays[limit:] {
-		if !wssRelayEligible(desc) {
+		if !wssRelayEligible(desc) || rankingWeightFor(weights, desc.ID) <= 0 {
 			continue
 		}
 		out := append([]relay.Descriptor(nil), page...)

@@ -400,13 +400,13 @@ func listRelaysHandler(store RelayStore, telemetrySink TelemetrySink, clientIP *
 		// Ask both stores for the ranked set, then reserve one already-advertised
 		// per-relay WSS-capable Foundation descriptor in a short page. This never
 		// attaches a shared URL or changes ordering when the page already has one.
-		relays, err := store.List(now, 0)
+		relays, weights, err := rankedRelays(r.Context(), store, now)
 		if err != nil {
 			slog.Error("could not list relays", "error", err)
 			writeError(w, http.StatusServiceUnavailable, "could not list relays")
 			return
 		}
-		relays = reserveWSSCandidate(relays, limit)
+		relays = reserveWSSCandidate(relays, limit, weights)
 		s.writeSigned(w, relay.ListResponse{
 			Count:      len(relays),
 			ServerTime: now,
@@ -437,13 +437,13 @@ func listRelaysMirrorHandler(store RelayStore, s signer) http.HandlerFunc {
 		// Same caching rule as the API list: errors must not be cached either.
 		w.Header().Set("Cache-Control", "no-store")
 		now := time.Now().UTC()
-		relays, err := store.List(now, 0)
+		relays, weights, err := rankedRelays(r.Context(), store, now)
 		if err != nil {
 			slog.Error("could not list relays for mirror", "error", err)
 			writeError(w, http.StatusServiceUnavailable, "could not list relays")
 			return
 		}
-		relays = reserveWSSCandidate(relays, mirrorRelayLimit)
+		relays = reserveWSSCandidate(relays, mirrorRelayLimit, weights)
 		s.writeSigned(w, relay.ListResponse{
 			Count:      len(relays),
 			ServerTime: now,
@@ -453,6 +453,21 @@ func listRelaysMirrorHandler(store RelayStore, s signer) http.HandlerFunc {
 			Relays:     relays,
 		})
 	}
+}
+
+// rankedRelays reads the store's full ranked candidate set together with the
+// operator ranking weights the ranking applied, so the page-shaping steps that
+// follow List (the WSS reservation) can honour the same weights the sort did.
+func rankedRelays(ctx context.Context, store RelayStore, now time.Time) ([]relay.Descriptor, map[string]float64, error) {
+	relays, err := store.List(now, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	weights, err := store.RelayRankingWeights(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	return relays, weights, nil
 }
 
 // seedRelayLedger pre-populates the ledger with the store's active relays so a

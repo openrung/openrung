@@ -117,16 +117,44 @@ func TestReserveWSSCandidateUsesOnlyRelayOwnedFronts(t *testing.T) {
 		ExitMode: relay.ExitModeDirect, PublicPort: 443, IdentityPublicKey: "identity",
 		WSSFronts: []relay.WSSFrontDescriptor{{ID: "front-a", ProtocolVersion: relay.WSSProtocolVersion}},
 	}
-	page := reserveWSSCandidate([]relay.Descriptor{plain("a"), plain("b"), plain("c"), wss}, 3)
+	page := reserveWSSCandidate([]relay.Descriptor{plain("a"), plain("b"), plain("c"), wss}, 3, nil)
 	if len(page) != 3 || page[0].ID != "a" || page[1].ID != "b" || page[2].ID != "wss" {
 		t.Fatalf("reserved page = %+v", page)
 	}
 	if page[2].WSSFronts[0].ID != "front-a" {
 		t.Fatal("reservation did not preserve the relay's own front")
 	}
-	already := reserveWSSCandidate([]relay.Descriptor{wss, plain("a"), plain("b"), plain("c")}, 3)
+	already := reserveWSSCandidate([]relay.Descriptor{wss, plain("a"), plain("b"), plain("c")}, 3, nil)
 	if already[0].ID != "wss" || already[2].ID != "b" {
 		t.Fatalf("page with WSS candidate was reordered: %+v", already)
+	}
+}
+
+// A relay drained to weight 0 must never be promoted into the page by the WSS
+// reservation: the page keeps its ranked last slot. A merely down-weighted WSS
+// relay (weight above 0) is still promoted — the slot is a functional need.
+func TestReserveWSSCandidateSkipsDrainedRelays(t *testing.T) {
+	plain := func(id string) relay.Descriptor { return relay.Descriptor{ID: id} }
+	wss := func(id string) relay.Descriptor {
+		return relay.Descriptor{
+			ID: id, NodeClass: relay.NodeClassFoundation, Transport: relay.TransportDirect,
+			ExitMode: relay.ExitModeDirect, PublicPort: 443, IdentityPublicKey: "identity",
+			WSSFronts: []relay.WSSFrontDescriptor{{ID: "front-a", ProtocolVersion: relay.WSSProtocolVersion}},
+		}
+	}
+	relays := []relay.Descriptor{plain("a"), plain("b"), wss("drained"), wss("light")}
+
+	page := reserveWSSCandidate(relays, 1, map[string]float64{"drained": 0, "light": 0.25})
+	if len(page) != 1 || page[0].ID != "light" {
+		t.Fatalf("limit 1 should promote the down-weighted relay past the drained one, got %+v", page)
+	}
+	page = reserveWSSCandidate(relays, 2, map[string]float64{"drained": 0, "light": 0})
+	if len(page) != 2 || page[0].ID != "a" || page[1].ID != "b" {
+		t.Fatalf("with every WSS relay drained the page must keep its ranked slots, got %+v", page)
+	}
+	page = reserveWSSCandidate(relays, 2, nil)
+	if page[1].ID != "drained" {
+		t.Fatalf("without weights the best-ranked WSS relay is promoted, got %+v", page)
 	}
 }
 

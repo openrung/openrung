@@ -643,43 +643,58 @@ func (s *PostgresStore) SetRelayRankingWeight(parent context.Context, id string,
 	if err := validateRankingWeight(weight); err != nil {
 		return 0, err
 	}
-	ctx, cancel := context.WithTimeout(parent, postgresOperationTimeout)
-	defer cancel()
-	// Every part of one statement reads the same snapshot, so the "previous"
-	// CTE observes the row as it was before this statement's upsert — one
-	// round trip yields both the replaced value and the write, and two
-	// concurrent setters cannot both report the same predecessor.
-	var previous float64
-	err := s.pool.QueryRow(ctx, `
-		WITH previous AS (
-			SELECT weight FROM relay_ranking_weights WHERE relay_id = $1
-		), upsert AS (
+	return s.updateRankingWeight(parent, id, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
 			INSERT INTO relay_ranking_weights (relay_id, weight, updated_at)
 			VALUES ($1, $2, $3)
 			ON CONFLICT (relay_id) DO UPDATE SET
 				weight = EXCLUDED.weight,
 				updated_at = EXCLUDED.updated_at
-		)
-		SELECT COALESCE((SELECT weight FROM previous), $4::double precision)
-	`, id, weight, time.Now().UTC(), defaultRankingWeight).Scan(&previous)
-	if err != nil {
-		return 0, fmt.Errorf("set relay ranking weight: %w", err)
-	}
-	return previous, nil
+		`, id, weight, time.Now().UTC())
+		return err
+	})
 }
 
 func (s *PostgresStore) DeleteRelayRankingWeight(parent context.Context, id string) (float64, error) {
+	return s.updateRankingWeight(parent, id, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `DELETE FROM relay_ranking_weights WHERE relay_id = $1`, id)
+		return err
+	})
+}
+
+// updateRankingWeight runs one weight mutation as read-previous-then-write
+// inside a transaction that first takes a per-relay advisory lock. The lock is
+// what makes the returned previous value truthful under concurrency: two
+// setters racing on the same relay each see the other's write as their
+// predecessor (or as their successor), never the same stale snapshot — a
+// single-statement CTE cannot promise that, because the reading CTE observes
+// the statement's snapshot while the upsert waits for and then overwrites the
+// concurrent row. The audit log and the response depend on the chain of
+// previous values being exact, so this pays the round trips.
+func (s *PostgresStore) updateRankingWeight(parent context.Context, id string, mutate func(context.Context, pgx.Tx) error) (float64, error) {
 	ctx, cancel := context.WithTimeout(parent, postgresOperationTimeout)
 	defer cancel()
-	var previous float64
-	err := s.pool.QueryRow(ctx, `
-		WITH removed AS (
-			DELETE FROM relay_ranking_weights WHERE relay_id = $1 RETURNING weight
-		)
-		SELECT COALESCE((SELECT weight FROM removed), $2::double precision)
-	`, id, defaultRankingWeight).Scan(&previous)
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("delete relay ranking weight: %w", err)
+		return 0, fmt.Errorf("begin relay ranking weight update: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	// Two-key form: the first key namespaces this lock class so it cannot
+	// collide with any other advisory lock a future feature hashes an ID into.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('relay_ranking_weights'), hashtext($1))`, id); err != nil {
+		return 0, fmt.Errorf("lock relay ranking weight: %w", err)
+	}
+	var previous float64
+	if err := tx.QueryRow(ctx, `
+		SELECT COALESCE((SELECT weight FROM relay_ranking_weights WHERE relay_id = $1), $2::double precision)
+	`, id, defaultRankingWeight).Scan(&previous); err != nil {
+		return 0, fmt.Errorf("read relay ranking weight: %w", err)
+	}
+	if err := mutate(ctx, tx); err != nil {
+		return 0, fmt.Errorf("update relay ranking weight: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit relay ranking weight update: %w", err)
 	}
 	return previous, nil
 }
