@@ -1401,22 +1401,21 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 		clientID := ""
 		if credentials != nil {
 			clientID = credentials.announce(ctx, now)
+			// Retirement runs on every exit — success, failed heartbeat, or a
+			// re-registration that did not go through — so stale buckets never
+			// accumulate and the last confirmed credential cannot outlive
+			// brokerSilenceGrace through any failure path.
+			defer func() { credentials.retire(ctx, now) }()
 		}
 		resp, err := broker.Heartbeat(ctx, desc.ID, desc.LeaseToken, clientID)
 		if err == nil {
 			if credentials != nil {
 				credentials.confirm(now, resp.ClientID)
-				credentials.retire(ctx, now)
 			}
 			return
 		}
 		if !relayruntime.IsRelayNotFound(err) {
 			e.logf("heartbeat failed: %v", err)
-			if credentials != nil {
-				// No contact: still retire stale buckets, and past the grace
-				// the last confirmed credential too.
-				credentials.retire(ctx, now)
-			}
 			return
 		}
 		if clientID != "" {
@@ -1445,7 +1444,6 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 		e.logf("re-registered with the broker as %q (%s)", desc.Label, desc.ID)
 		if credentials != nil {
 			credentials.confirm(now, desc.ClientID)
-			credentials.retire(ctx, now)
 		}
 		// The ID is derived from the identity key and so is unchanged
 		// here; the counter is what tells a caller this happened.

@@ -334,3 +334,46 @@ func TestDirectSessionServesStaticCredentialWhenXrayIsNotRun(t *testing.T) {
 		t.Fatalf("heartbeat announced %q with no managed xray", last.ClientID)
 	}
 }
+
+// The broker answering 404 (lease gone) and then refusing every
+// re-registration is the other outage shape: the re-register failure exits
+// must retire like any failed heartbeat, so the confirmed credential still
+// dies at the grace and the accepted set stays bounded.
+func TestDirectSessionRetiresThroughFailingReRegistration(t *testing.T) {
+	shortRotation(t, time.Second)
+	previousGrace := brokerSilenceGrace
+	brokerSilenceGrace = 1500 * time.Millisecond
+	t.Cleanup(func() { brokerSilenceGrace = previousGrace })
+
+	broker := &fakeBroker{}
+	users := newRecordingUsers()
+	eng, _ := startRotatingSession(t, broker, users)
+	eventually(t, 5*time.Second, "online", func() bool { return eng.Status().Phase == PhaseOnline })
+	_, _, registered := broker.stats()
+
+	// Every heartbeat from here on is a 404 and every re-registration fails.
+	broker.mu.Lock()
+	broker.failRegisters = true
+	broker.mu.Unlock()
+	go func() {
+		for {
+			broker.mu.Lock()
+			broker.notFoundOnce = true
+			broker.mu.Unlock()
+			time.Sleep(10 * time.Millisecond)
+			if eng.Status().Phase == PhaseIdle {
+				return
+			}
+		}
+	}()
+
+	eventually(t, 8*time.Second, "registration credential retired after the grace", func() bool {
+		return !users.has(registered.ClientID)
+	})
+	eventually(t, 3*time.Second, "accepted set bounded to current + previous", func() bool {
+		return len(users.acceptedIDs()) == 2
+	})
+	if regs, _, _ := broker.stats(); regs != 1 {
+		t.Fatalf("registers = %d, want the initial one only (every re-registration failed)", regs)
+	}
+}

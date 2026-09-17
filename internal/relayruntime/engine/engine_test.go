@@ -57,14 +57,22 @@ type fakeBroker struct {
 	servedClientID  string
 	legacyHeartbeat bool
 	lastHeartbeat   relay.HeartbeatRequest
-	// failHeartbeats answers every heartbeat 503 (broker outage).
+	// failHeartbeats answers every heartbeat 503 (broker outage);
+	// failRegisters answers every registration 503.
 	failHeartbeats bool
+	failRegisters  bool
 }
 
 func (f *fakeBroker) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/relays/register", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
+		if f.failRegisters {
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"broker unavailable"}`))
+			return
+		}
 		f.registers++
 		f.nextRelayID++
 		id := fmt.Sprintf("relay_%d", f.nextRelayID)
