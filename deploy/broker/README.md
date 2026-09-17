@@ -100,8 +100,8 @@ broker refuses to extend the lease otherwise. At the origin store, an unattended
 foundation row therefore disappears after one lease TTL. That is not an instant
 client-visible revocation guarantee: an ordinary API directory has a 30-minute
 signed freshness window, the Worker may serve its last healthy response for up
-to 15 minutes (still bounded by that response's `not_after`), and a mirror has a
-24-hour signed freshness window. Clients and their local caches must enforce each
+to 15 minutes (still bounded by that response's `not_after`). Clients and their
+local caches must enforce each
 snapshot's `not_after` with only the protocol's bounded clock-skew allowance;
 operators should treat `node_class` as provenance captured when it was signed.
 
@@ -162,10 +162,10 @@ not reload a changed env file). `lightsail-up.sh` intentionally rejects
 
 ## Relay-list signing
 
-Every 2xx relay-list response (`/api/v1/relays`, `/api/v1/relays.mirror`, and
-the operational `/admin/api/relays/inventory`) is signed with an Ed25519 key — a detached signature over the exact body bytes in
+Every 2xx relay-list response (`/api/v1/relays` and the operational
+`/admin/api/relays/inventory`) is signed with an Ed25519 key — a detached signature over the exact body bytes in
 the `X-OpenRung-Relays-Signature` header — so clients can verify the directory
-over non-TLS channels (the direct-IP fallback, static mirrors). The broker
+over non-TLS channels (the direct-IP fallback). The broker
 **refuses to start** without `OPENRUNG_RELAY_SIGNING_KEY` (standard base64 of
 the 32-byte seed): serving unsigned lists would keep healthz green while every
 verifying client rejected discovery. Generate a seed with

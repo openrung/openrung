@@ -398,11 +398,11 @@ each time, so those rows do move between snapshots.
 
 Successful responses are signed exactly like the relay list — the same
 `X-OpenRung-Relays-Signature` header and the same Ed25519 key — but carry
-`channel` `"inventory"` and, like the mirror channel, no `limit` field: an
+`channel` `"inventory"` and no `limit` field: an
 inventory body is not request-shaped and is never truncated, so there is
 nothing to echo. The distinct channel is what stops an operator snapshot — an
 untruncated superset of any client page, in a different order — from being
-replayed into a client's API or mirror slot. `not_after` is `server_time` + 5
+replayed into a client's API slot. `not_after` is `server_time` + 5
 minutes, far tighter than the API channel's 30: a relay lease lives about three
 minutes, so a stale inventory describes a fleet that no longer exists.
 
@@ -862,9 +862,9 @@ must not be logged or copied into relay-list data.
 The one-TTL bound applies to the live origin row, not to copies already signed.
 An ordinary API snapshot has a 30-minute `not_after` window. On an origin
 failure, the edge Worker can serve its last healthy API response for up to 15
-minutes, but that response retains its original `not_after`; a signed
-static-mirror response has a 24-hour window. Clients and local fallback caches
-must stop using snapshots once `not_after` plus the protocol's bounded clock-skew
+minutes, but that response retains its original `not_after`. Clients and local
+fallback caches must stop using snapshots once `not_after` plus the protocol's
+bounded clock-skew
 allowance has elapsed. Until then a snapshot can still show the earlier
 `foundation` provenance, so removing the origin row is not an instant
 client-visible revocation mechanism.
@@ -903,7 +903,7 @@ X-OpenRung-Relays-Signature: ed25519;<key_id>;<base64 signature>
 
 carries a detached Ed25519 signature over the exact raw body bytes, so clients
 can authenticate the directory even on non-TLS channels (the direct-IP
-fallback, static mirrors). Signing covers channel integrity only — a censor can
+fallback). Signing covers channel integrity only — a censor can
 still block or inject errors, which clients treat as a failed candidate. Error
 responses are never signed. The signed body carries its own freshness and
 shape: `not_after` (`server_time` + 30 minutes on this channel), `key_id`
@@ -1052,19 +1052,3 @@ exchange comes from the independently tagged
 relay-health policy remain application concerns. Mobile releases pin reviewed
 module tags and ship independently; publishing a shared-module tag alone does
 not update an installed app.
-
-## Mirror Relay List
-
-```http
-GET /api/v1/relays.mirror
-```
-
-The mirror-channel relay list: the full directory page (the API's maximum page
-size) signed exactly like `GET /api/v1/relays`, but with `channel` set to
-`"mirror"`, `not_after` set to `server_time` + 24 hours, and no `limit` field —
-the mirror body is not request-shaped, so there is nothing to echo. An hourly
-cron on the broker host fetches this endpoint and publishes the exact body
-bytes (`relays.json`) plus the signature header value (`relays.json.sig`) to
-static mirrors; clients try mirrors only after every API candidate fails and
-check `channel` so a long-lived mirror artifact can never be replayed into an
-API slot.

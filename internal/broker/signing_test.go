@@ -433,50 +433,6 @@ func TestListRelaysBodyFields(t *testing.T) {
 	}
 }
 
-func TestMirrorRelayListFields(t *testing.T) {
-	vectors := loadSigningVectors(t)
-	store := NewStore()
-	if _, err := store.Register(validRegisterRequest(), time.Now().UTC(), time.Minute); err != nil {
-		t.Fatalf("register: %v", err)
-	}
-	server := httptest.NewServer(NewServer(store, Config{SigningSeed: testSigningSeed()}))
-	defer server.Close()
-
-	resp, err := http.Get(server.URL + "/api/v1/relays.mirror")
-	if err != nil {
-		t.Fatalf("get mirror relays: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read raw body: %v", err)
-	}
-	assertRelayListUsesWholeSecondUTCTimestamps(t, body)
-
-	verifyRelayListSignature(t, resp.Header.Get("X-OpenRung-Relays-Signature"), body, vectors.SpecVector.PubkeyHex)
-	var out relay.ListResponse
-	if err := json.Unmarshal(body, &out); err != nil {
-		t.Fatalf("decode mirror list: %v", err)
-	}
-	if out.Channel != relay.ChannelMirror {
-		t.Fatalf("channel = %q, want %q", out.Channel, relay.ChannelMirror)
-	}
-	if got := out.NotAfter.Sub(out.ServerTime); got != mirrorNotAfterWindow {
-		t.Fatalf("not_after - server_time = %s, want %s", got, mirrorNotAfterWindow)
-	}
-	if out.Count != 1 || len(out.Relays) != 1 {
-		t.Fatalf("expected the full directory in the mirror body, got count=%d len=%d", out.Count, len(out.Relays))
-	}
-	// The mirror body is not request-shaped: it must carry no limit field at
-	// all, so clients skip the echo check on this channel.
-	if strings.Contains(string(body), `"limit"`) {
-		t.Fatalf("mirror body must not carry a limit field: %s", body)
-	}
-}
-
 func TestRelayListErrorsCarryNoSignature(t *testing.T) {
 	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed()})
 	recorder := httptest.NewRecorder()
@@ -489,15 +445,13 @@ func TestRelayListErrorsCarryNoSignature(t *testing.T) {
 	}
 
 	failing := NewServer(failingStore{Store: NewStore(), listErr: errors.New("database down")}, Config{SigningSeed: testSigningSeed()})
-	for _, path := range []string{"/api/v1/relays", "/api/v1/relays.mirror"} {
-		errRecorder := httptest.NewRecorder()
-		failing.ServeHTTP(errRecorder, httptest.NewRequest(http.MethodGet, path, nil))
-		if errRecorder.Code != http.StatusServiceUnavailable {
-			t.Fatalf("expected 503 from %s, got %d: %s", path, errRecorder.Code, errRecorder.Body.String())
-		}
-		if got := errRecorder.Header().Get(signatureHeader); got != "" {
-			t.Fatalf("503 response from %s must not be signed, got header %q", path, got)
-		}
+	errRecorder := httptest.NewRecorder()
+	failing.ServeHTTP(errRecorder, httptest.NewRequest(http.MethodGet, "/api/v1/relays", nil))
+	if errRecorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d: %s", errRecorder.Code, errRecorder.Body.String())
+	}
+	if got := errRecorder.Header().Get(signatureHeader); got != "" {
+		t.Fatalf("503 response must not be signed, got header %q", got)
 	}
 }
 

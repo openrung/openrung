@@ -133,8 +133,8 @@ Logs: `wrangler tail openrung-broker-proxy`.
   domain fronting is dead). Two of the planned mitigations have shipped: the independent
   CloudFront second front means a single SNI rule no longer takes discovery offline, and the
   relay list is now Ed25519-signed, so a fetched directory is trustworthy regardless of the
-  channel that carried it — which unlocks future non-TLS / out-of-band channels (signed static
-  mirrors, a pinned direct-IP fallback). Hiding the name itself has since shipped too, per front:
+  channel that carried it — which unlocks future non-TLS / out-of-band channels (a pinned
+  direct-IP fallback). Hiding the name itself has since shipped too, per front:
   `brokerapi` attempts Encrypted Client Hello on this front with a compiled-in config, and dials
   the CloudFront front without SNI at all. ECH is opportunistic, so a network that drops it still
   sees `broker.openrung.org` on the ordinary-TLS fallback; the CloudFront front is the one that

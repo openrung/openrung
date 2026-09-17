@@ -120,7 +120,6 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 	mux.HandleFunc("POST /api/v1/relays/register", registerRelay)
 	mux.HandleFunc("POST /api/v1/relays/", heartbeatRelay)
 	mux.HandleFunc("GET /api/v1/relays", rateLimited(relayListLimiter, clientIP, 10, listRelaysHandler(store, cfg.TelemetrySink, clientIP, clientSeen, relaySigner)))
-	mux.HandleFunc("GET /api/v1/relays.mirror", rateLimited(relayListLimiter, clientIP, 10, listRelaysMirrorHandler(store, relaySigner)))
 	if wssIssuer != nil {
 		mux.HandleFunc("POST /api/v1/wss/tickets", rateLimitedBy(wssTicketLimiter, wssTicketRateKey(clientIP), 10, wssTicketHandler(store, wssIssuer)))
 	}
@@ -417,40 +416,6 @@ func listRelaysHandler(store RelayStore, telemetrySink TelemetrySink, clientIP *
 			// replayed from a differently-shaped request.
 			Limit:  limit,
 			Relays: relays,
-		})
-	}
-}
-
-// mirrorRelayLimit is the mirror channel's page size: the API's maximum page
-// (the desktop directory's full-list fetch), so a mirror artifact carries
-// every relay a client could see through the API.
-const mirrorRelayLimit = 20
-
-// listRelaysMirrorHandler serves the mirror-channel relay list: the full
-// directory page with a 24 h validity window, signed exactly like the API
-// channel. An hourly cron on the broker host fetches it and publishes the
-// exact body bytes plus the signature header value to static mirrors, which
-// clients try only after every API candidate fails. The body carries no limit
-// field — the mirror is not request-shaped, so there is nothing to echo.
-func listRelaysMirrorHandler(store RelayStore, s signer) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Same caching rule as the API list: errors must not be cached either.
-		w.Header().Set("Cache-Control", "no-store")
-		now := time.Now().UTC()
-		relays, weights, err := store.ListRanked(now, 0)
-		if err != nil {
-			slog.Error("could not list relays for mirror", "error", err)
-			writeError(w, http.StatusServiceUnavailable, "could not list relays")
-			return
-		}
-		relays = reserveWSSCandidate(relays, mirrorRelayLimit, weights)
-		s.writeSigned(w, relay.ListResponse{
-			Count:      len(relays),
-			ServerTime: now,
-			NotAfter:   now.Add(mirrorNotAfterWindow),
-			KeyID:      s.keyID,
-			Channel:    relay.ChannelMirror,
-			Relays:     relays,
 		})
 	}
 }
