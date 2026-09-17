@@ -833,7 +833,8 @@ Authorization: Bearer <registration-token>
 
 {
   "ok": true,
-  "lease_token": "lease_<token from registration>"
+  "lease_token": "lease_<token from registration>",
+  "client_id": "<optional replacement VLESS credential>"
 }
 ```
 
@@ -842,9 +843,20 @@ Response:
 ```json
 {
   "ok": true,
-  "expires_at": "2026-06-09T07:03:30Z"
+  "expires_at": "2026-06-09T07:03:30Z",
+  "client_id": "<the credential the directory now serves>"
 }
 ```
+
+`client_id` is optional on the request. When present it replaces the VLESS
+credential the relay list serves for this relay, in the same authorized write
+that renews the lease (at most 128 characters, opaque to the broker exactly as
+at registration). A relay that rotates its credential announces each new value
+this way and keeps the previous one accepted until the response echoes the
+successor, so a directory snapshot fetched just before a rotation stays
+usable for its whole `not_after` window. A heartbeat without `client_id`
+leaves the served credential unchanged, which is what relays and hubs that
+predate rotation send.
 
 Any registration credential (volunteer token, anonymous on an open broker, or
 the foundation token) may heartbeat a volunteer-class relay. Extending a

@@ -243,6 +243,12 @@ func (r *RegisterResponse) UnmarshalJSON(data []byte) error {
 type HeartbeatRequest struct {
 	OK         bool   `json:"ok,omitempty"`
 	LeaseToken string `json:"lease_token,omitempty"`
+	// ClientID, when present, replaces the VLESS credential the directory
+	// serves for this relay. A relay that rotates its credential announces
+	// each new value here; the broker stores it and echoes the value it now
+	// serves in HeartbeatResponse. Empty leaves the stored credential as is,
+	// so relays and hubs that predate rotation are unaffected.
+	ClientID string `json:"client_id,omitempty"`
 }
 
 // MarshalJSON keeps volunteer_version as a deprecated v1 response alias while
@@ -312,6 +318,12 @@ type ListResponse struct {
 type HeartbeatResponse struct {
 	OK        bool      `json:"ok"`
 	ExpiresAt time.Time `json:"expires_at"`
+	// ClientID is the VLESS credential the directory serves for this relay
+	// after the heartbeat. A rotating relay keeps a credential registered
+	// with xray until the broker has acknowledged its successor here, so a
+	// broker that predates the field (and so never echoes it) leaves the
+	// relay serving the credential it registered with.
+	ClientID string `json:"client_id,omitempty"`
 }
 
 // WSSSessionTicketRequest asks for one short-lived, single-use ticket bound to

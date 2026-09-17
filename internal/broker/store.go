@@ -46,8 +46,11 @@ type RelayStore interface {
 	// otherwise), so a foundation label that lost its authorized registrant —
 	// e.g. an endpoint takeover through a rolled-back broker binary whose
 	// upsert predates node_class — expires within one TTL instead of being
-	// kept alive indefinitely by whoever now heartbeats the ID.
-	Heartbeat(id, leaseToken, maxClass string, now time.Time, ttl time.Duration) (relay.Descriptor, error)
+	// kept alive indefinitely by whoever now heartbeats the ID. A non-empty
+	// clientID replaces the served VLESS credential in the same write, so a
+	// rotating relay's directory entry and its lease renewal are one
+	// authorized update; empty keeps the stored credential.
+	Heartbeat(id, leaseToken, maxClass, clientID string, now time.Time, ttl time.Duration) (relay.Descriptor, error)
 	UpdateGeo(id, leaseToken string, geo relay.GeoLocation) error
 	List(time.Time, int) ([]relay.Descriptor, error)
 	// ListRanked is List plus the operator ranking weights the ranking applied,
@@ -209,7 +212,7 @@ func (s *Store) Register(req relay.RegisterRequest, now time.Time, ttl time.Dura
 	return cloneRelayDescriptor(desc), nil
 }
 
-func (s *Store) Heartbeat(id, leaseToken, maxClass string, now time.Time, ttl time.Duration) (relay.Descriptor, error) {
+func (s *Store) Heartbeat(id, leaseToken, maxClass, clientID string, now time.Time, ttl time.Duration) (relay.Descriptor, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -231,6 +234,9 @@ func (s *Store) Heartbeat(id, leaseToken, maxClass string, now time.Time, ttl ti
 
 	desc.LastHeartbeatAt = now
 	desc.ExpiresAt = now.Add(ttl)
+	if clientID != "" {
+		desc.ClientID = clientID
+	}
 	s.relays[id] = desc
 
 	return cloneRelayDescriptor(desc), nil

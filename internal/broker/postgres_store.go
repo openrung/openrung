@@ -429,15 +429,17 @@ type pgxQuerier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-func (s *PostgresStore) Heartbeat(id, leaseToken, maxClass string, now time.Time, ttl time.Duration) (relay.Descriptor, error) {
+func (s *PostgresStore) Heartbeat(id, leaseToken, maxClass, clientID string, now time.Time, ttl time.Duration) (relay.Descriptor, error) {
 	ctx, cancel := postgresOperationContext()
 	defer cancel()
 
 	// The class guard lives inside the UPDATE's WHERE so an unauthorized
-	// heartbeat never extends the lease, not even transiently.
+	// heartbeat never extends the lease, not even transiently. The credential
+	// rides the same guarded UPDATE: an empty $7 keeps the stored value.
 	desc, err := scanDescriptor(s.pool.QueryRow(ctx, `
 		UPDATE relay_descriptors
-		SET last_heartbeat_at = $3, expires_at = $4
+		SET last_heartbeat_at = $3, expires_at = $4,
+			client_id = CASE WHEN $7 = '' THEN client_id ELSE $7 END
 		WHERE id = $1
 			AND (identity_public_key = '' OR (lease_token <> '' AND lease_token = $2))
 			AND (node_class <> $5 OR $6)
@@ -448,6 +450,7 @@ func (s *PostgresStore) Heartbeat(id, leaseToken, maxClass string, now time.Time
 		now.Add(ttl),
 		relay.NodeClassFoundation,
 		maxClass == relay.NodeClassFoundation,
+		clientID,
 	))
 	if errors.Is(err, pgx.ErrNoRows) {
 		// No row updated: either the relay is gone or the guard blocked a

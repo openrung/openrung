@@ -80,7 +80,7 @@ func TestStoreIdentityRegistrationKeepsRelayIDAcrossReRegistration(t *testing.T)
 		}
 
 		// Heartbeat works against the derived ID like any other.
-		if _, err := store.Heartbeat(first.ID, second.LeaseToken, relay.NodeClassVolunteer, later.Add(time.Minute), 3*time.Minute); err != nil {
+		if _, err := store.Heartbeat(first.ID, second.LeaseToken, relay.NodeClassVolunteer, "", later.Add(time.Minute), 3*time.Minute); err != nil {
 			t.Fatalf("heartbeat derived ID: %v", err)
 		}
 	})
@@ -152,7 +152,7 @@ func TestStoreIdentityHeartbeatCannotRenewDifferentRegistration(t *testing.T) {
 
 		// The displaced session must receive not-found and must not extend the
 		// endpoint written by the replay. That response drives re-registration.
-		if _, err := store.Heartbeat(legitimate.ID, legitimate.LeaseToken, relay.NodeClassVolunteer, now.Add(2*time.Minute), 3*time.Minute); !errors.Is(err, ErrRelayNotFound) {
+		if _, err := store.Heartbeat(legitimate.ID, legitimate.LeaseToken, relay.NodeClassVolunteer, "", now.Add(2*time.Minute), 3*time.Minute); !errors.Is(err, ErrRelayNotFound) {
 			t.Fatalf("displaced heartbeat error = %v, want ErrRelayNotFound", err)
 		}
 		listed, err := store.List(now.Add(2*time.Minute), 20)
@@ -170,10 +170,10 @@ func TestStoreIdentityHeartbeatCannotRenewDifferentRegistration(t *testing.T) {
 		if recovered.LeaseToken == replayed.LeaseToken {
 			t.Fatal("legitimate re-registration reused replay's lease token")
 		}
-		if _, err := store.Heartbeat(replayed.ID, replayed.LeaseToken, relay.NodeClassVolunteer, now.Add(3*time.Minute), 3*time.Minute); !errors.Is(err, ErrRelayNotFound) {
+		if _, err := store.Heartbeat(replayed.ID, replayed.LeaseToken, relay.NodeClassVolunteer, "", now.Add(3*time.Minute), 3*time.Minute); !errors.Is(err, ErrRelayNotFound) {
 			t.Fatalf("stale replay heartbeat error = %v, want ErrRelayNotFound", err)
 		}
-		if _, err := store.Heartbeat(recovered.ID, recovered.LeaseToken, relay.NodeClassVolunteer, now.Add(3*time.Minute), 3*time.Minute); err != nil {
+		if _, err := store.Heartbeat(recovered.ID, recovered.LeaseToken, relay.NodeClassVolunteer, "", now.Add(3*time.Minute), 3*time.Minute); err != nil {
 			t.Fatalf("recovered registration heartbeat: %v", err)
 		}
 
@@ -197,10 +197,10 @@ func TestStoreStableFoundationHeartbeatChecksClassBeforeLease(t *testing.T) {
 		if err != nil {
 			t.Fatalf("register stable foundation relay: %v", err)
 		}
-		if _, err := store.Heartbeat(desc.ID, "wrong-token", relay.NodeClassVolunteer, now.Add(time.Minute), 3*time.Minute); !errors.Is(err, ErrNodeClassForbidden) {
+		if _, err := store.Heartbeat(desc.ID, "wrong-token", relay.NodeClassVolunteer, "", now.Add(time.Minute), 3*time.Minute); !errors.Is(err, ErrNodeClassForbidden) {
 			t.Fatalf("unprivileged wrong-token heartbeat = %v, want ErrNodeClassForbidden", err)
 		}
-		if _, err := store.Heartbeat(desc.ID, "wrong-token", relay.NodeClassFoundation, now.Add(time.Minute), 3*time.Minute); !errors.Is(err, ErrRelayNotFound) {
+		if _, err := store.Heartbeat(desc.ID, "wrong-token", relay.NodeClassFoundation, "", now.Add(time.Minute), 3*time.Minute); !errors.Is(err, ErrRelayNotFound) {
 			t.Fatalf("authorized wrong-token heartbeat = %v, want ErrRelayNotFound", err)
 		}
 	})
@@ -271,7 +271,7 @@ func TestStoreIdentityCannotSeizeLiveFoundationEndpoint(t *testing.T) {
 		if !errors.Is(err, ErrNodeClassForbidden) {
 			t.Fatalf("expected ErrNodeClassForbidden, got %v", err)
 		}
-		if _, err := store.Heartbeat(foundation.ID, foundation.LeaseToken, relay.NodeClassFoundation, now.Add(time.Minute), 3*time.Minute); err != nil {
+		if _, err := store.Heartbeat(foundation.ID, foundation.LeaseToken, relay.NodeClassFoundation, "", now.Add(time.Minute), 3*time.Minute); err != nil {
 			t.Fatalf("foundation relay lost its row to a refused registration: %v", err)
 		}
 	})
@@ -304,7 +304,7 @@ func TestStoreIdentitySeizureRollbackKeepsOldRow(t *testing.T) {
 		if !errors.Is(err, ErrNodeClassForbidden) {
 			t.Fatalf("expected ErrNodeClassForbidden, got %v", err)
 		}
-		if _, err := store.Heartbeat(first.ID, first.LeaseToken, relay.NodeClassVolunteer, now.Add(time.Minute), 3*time.Minute); err != nil {
+		if _, err := store.Heartbeat(first.ID, first.LeaseToken, relay.NodeClassVolunteer, "", now.Add(time.Minute), 3*time.Minute); err != nil {
 			t.Fatalf("refused move evicted the identity's own row: %v", err)
 		}
 	})

@@ -311,8 +311,15 @@ func heartbeatHandler(store RelayStore, cfg Config, ledger *relayIDLedger) http.
 			return
 		}
 
+		// A rotated credential is bounded like the registration-time one; the
+		// value itself is opaque to the broker, exactly as at registration.
+		if len(heartbeat.ClientID) > maxRegisterFieldBytes {
+			writeError(w, http.StatusBadRequest, "client_id must be at most 128 characters")
+			return
+		}
+
 		now := time.Now().UTC()
-		desc, err := store.Heartbeat(id, heartbeat.LeaseToken, maxClass, now, cfg.RelayLeaseTTL)
+		desc, err := store.Heartbeat(id, heartbeat.LeaseToken, maxClass, heartbeat.ClientID, now, cfg.RelayLeaseTTL)
 		if errors.Is(err, ErrRelayNotFound) {
 			writeError(w, http.StatusNotFound, "relay not found")
 			return
@@ -335,7 +342,9 @@ func heartbeatHandler(store RelayStore, cfg Config, ledger *relayIDLedger) http.
 		// registered before the broker resolved locations at all).
 		resolveRelayGeo(r.Context(), store, cfg.GeoIP, &desc)
 
-		writeJSON(w, http.StatusOK, relay.HeartbeatResponse{OK: true, ExpiresAt: desc.ExpiresAt})
+		// Echo the credential now being served so a rotating relay can retire
+		// its predecessor only once the directory has moved on.
+		writeJSON(w, http.StatusOK, relay.HeartbeatResponse{OK: true, ExpiresAt: desc.ExpiresAt, ClientID: desc.ClientID})
 	}
 }
 
