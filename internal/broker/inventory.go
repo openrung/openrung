@@ -78,15 +78,9 @@ func relayInventoryHandler(store RelayStore, apiToken string, s signer) http.Han
 		// limit 0 is the store's unbounded read. Operators need the whole
 		// fleet; a page would make "relay missing from the inventory" and
 		// "relay ranked below the cut" indistinguishable.
-		relays, err := store.List(now, 0)
+		relays, weights, err := store.ListRanked(now, 0)
 		if err != nil {
 			slog.Error("could not list relays for inventory", "error", err)
-			writeError(w, http.StatusServiceUnavailable, "could not list relays")
-			return
-		}
-		weights, err := store.RelayRankingWeights(r.Context())
-		if err != nil {
-			slog.Error("could not read relay ranking weights for inventory", "error", err)
 			writeError(w, http.StatusServiceUnavailable, "could not list relays")
 			return
 		}

@@ -25,9 +25,10 @@ var relaysHTML []byte
 const maxOfflineRelayRows = 200
 
 // relayDirectoryLister is the one slice of RelayStore the relays panel reads:
-// the currently registered descriptor set. Narrow so tests can fake it.
+// the currently registered descriptor set with the ranking weights applied to
+// it. Narrow so tests can fake it.
 type relayDirectoryLister interface {
-	List(time.Time, int) ([]relay.Descriptor, error)
+	ListRanked(time.Time, int) ([]relay.Descriptor, map[string]float64, error)
 }
 
 // relayTelemetryStats is the telemetry half of the admin relays page: one row
@@ -475,9 +476,10 @@ func (d *dashboardServer) relaysPanel(w http.ResponseWriter, r *http.Request) {
 	// same descriptor set both vouches for gap-stamped rows and drives the
 	// merge — a relay cannot be trusted by one and missed by the other.
 	var descriptors []relay.Descriptor
+	var weights map[string]float64
 	if d.relayDirectory != nil {
 		var err error
-		descriptors, err = d.relayDirectory.List(now, 0)
+		descriptors, weights, err = d.relayDirectory.ListRanked(now, 0)
 		if err != nil {
 			slog.Error("could not list relays for dashboard", "error", err)
 			writeError(w, http.StatusInternalServerError, "could not list relays")
@@ -493,15 +495,6 @@ func (d *dashboardServer) relaysPanel(w http.ResponseWriter, r *http.Request) {
 		slog.Error("could not build relay telemetry stats", "error", err)
 		writeError(w, http.StatusInternalServerError, "could not build relay stats")
 		return
-	}
-	var weights map[string]float64
-	if d.relayWeights != nil {
-		weights, err = d.relayWeights.RelayRankingWeights(r.Context())
-		if err != nil {
-			slog.Error("could not read relay ranking weights for dashboard", "error", err)
-			writeError(w, http.StatusInternalServerError, "could not read relay ranking weights")
-			return
-		}
 	}
 	writeJSON(w, http.StatusOK, buildRelaysPanel(descriptors, stats, weights, now, window))
 }

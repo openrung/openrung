@@ -46,9 +46,9 @@ type dashboardServer struct {
 	// set; nil (only in tests that never exercise that page) renders every
 	// relay as offline.
 	relayDirectory relayDirectoryLister
-	// relayWeights backs the relays page's ranking-weight column and its
-	// mutation endpoints; nil (only in tests that never touch them) renders
-	// every relay at the default weight and answers mutations with 503.
+	// relayWeights backs the relays page's weight mutation endpoints; nil
+	// (only in tests that never touch them) answers them with 503. The
+	// column itself is fed by relayDirectory's ListRanked.
 	relayWeights relayRankingWeightStore
 	// clientIP resolves the caller's address for the weight-change audit log;
 	// NewServer installs the broker's proxy-aware resolver.

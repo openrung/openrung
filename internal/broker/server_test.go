@@ -557,13 +557,22 @@ func (s nilListStore) List(time.Time, int) ([]relay.Descriptor, error) {
 	return nil, nil
 }
 
+func (s nilListStore) ListRanked(time.Time, int) ([]relay.Descriptor, map[string]float64, error) {
+	return nil, nil, nil
+}
+
 func (s failingStore) Ping(context.Context) error {
 	return s.pingErr
 }
 
 func (s failingStore) List(now time.Time, limit int) ([]relay.Descriptor, error) {
+	relays, _, err := s.ListRanked(now, limit)
+	return relays, err
+}
+
+func (s failingStore) ListRanked(now time.Time, limit int) ([]relay.Descriptor, map[string]float64, error) {
 	if s.listErr != nil {
-		return nil, s.listErr
+		return nil, nil, s.listErr
 	}
-	return s.Store.List(now, limit)
+	return s.Store.ListRanked(now, limit)
 }

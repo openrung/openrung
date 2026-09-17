@@ -57,6 +57,10 @@ type RelayStore interface {
 	Heartbeat(id, leaseToken, maxClass string, now time.Time, ttl time.Duration) (relay.Descriptor, error)
 	UpdateGeo(id, leaseToken string, geo relay.GeoLocation) error
 	List(time.Time, int) ([]relay.Descriptor, error)
+	// ListRanked is List plus the operator ranking weights the ranking applied,
+	// so page-shaping steps after the sort (the WSS reservation) and the
+	// operator views can honour the same weights without a second read.
+	ListRanked(time.Time, int) ([]relay.Descriptor, map[string]float64, error)
 	// RelayByID resolves one currently active descriptor for relay-bound ticket
 	// issuance. It must never return an expired row.
 	RelayByID(string, time.Time) (relay.Descriptor, error)
@@ -266,6 +270,11 @@ func (s *Store) UpdateGeo(id, leaseToken string, geo relay.GeoLocation) error {
 }
 
 func (s *Store) List(now time.Time, limit int) ([]relay.Descriptor, error) {
+	relays, _, err := s.ListRanked(now, limit)
+	return relays, err
+}
+
+func (s *Store) ListRanked(now time.Time, limit int) ([]relay.Descriptor, map[string]float64, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -280,10 +289,10 @@ func (s *Store) List(now time.Time, limit int) ([]relay.Descriptor, error) {
 	sortRelayCandidates(relays, snapshots, weights, s.rankingMode)
 
 	if limit > 0 && len(relays) > limit {
-		return relays[:limit], nil
+		return relays[:limit], weights, nil
 	}
 
-	return relays, nil
+	return relays, weights, nil
 }
 
 func (s *Store) RelayByID(id string, now time.Time) (relay.Descriptor, error) {

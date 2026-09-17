@@ -97,6 +97,12 @@ func TestRelayScoreRankingWeightIsAFinalMultiplier(t *testing.T) {
 	if got := relayScore(desc, overloaded, 4); got != base {
 		t.Errorf("weight above 1 = %v, want it clamped to the unweighted %v", got, base)
 	}
+	// Only direct database corruption can store NaN, but a NaN weight would
+	// otherwise reach the inventory's hand-built JSON as an unparseable
+	// literal; the resolver maps it to the default instead.
+	if got := rankingWeightFor(map[string]float64{"relay_x": math.NaN()}, "relay_x"); got != defaultRankingWeight {
+		t.Errorf("NaN weight resolved to %v, want the default", got)
+	}
 }
 
 // TestSortRelayCandidatesRankingWeightZeroSortsLast: a drained relay stays in

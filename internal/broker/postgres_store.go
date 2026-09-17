@@ -496,12 +496,17 @@ func (s *PostgresStore) UpdateGeo(id, leaseToken string, geo relay.GeoLocation) 
 }
 
 func (s *PostgresStore) List(now time.Time, limit int) ([]relay.Descriptor, error) {
+	relays, _, err := s.ListRanked(now, limit)
+	return relays, err
+}
+
+func (s *PostgresStore) ListRanked(now time.Time, limit int) ([]relay.Descriptor, map[string]float64, error) {
 	ctx, cancel := postgresOperationContext()
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx, `SELECT `+descriptorColumns+` FROM relay_descriptors WHERE expires_at > $1`, now)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 
@@ -509,23 +514,23 @@ func (s *PostgresStore) List(now time.Time, limit int) ([]relay.Descriptor, erro
 	for rows.Next() {
 		desc, err := scanDescriptor(rows)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		relays = append(relays, desc)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	snapshots, weights, err := s.metricSnapshots(ctx, now)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	sortRelayCandidates(relays, snapshots, weights, s.rankingMode)
 	if limit > 0 && len(relays) > limit {
-		return relays[:limit], nil
+		return relays[:limit], weights, nil
 	}
-	return relays, nil
+	return relays, weights, nil
 }
 
 func (s *PostgresStore) RelayByID(id string, now time.Time) (relay.Descriptor, error) {

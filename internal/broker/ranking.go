@@ -138,10 +138,12 @@ func sortLegacyRelays(relays []relay.Descriptor) {
 // rankingWeightFor resolves a relay's effective operator weight: the stored
 // override when one exists, otherwise defaultRankingWeight. Stored values are
 // already validated into [0, 1] by the store's setter, so an out-of-range entry
-// can only mean a corrupted backend; clamp rather than let it inflate a score.
+// can only mean a corrupted backend; clamp rather than let it inflate a score,
+// and treat NaN (which clamp01 would pass through, and which the inventory's
+// hand-built JSON would then emit as an unparseable literal) as the default.
 func rankingWeightFor(weights map[string]float64, relayID string) float64 {
 	weight, ok := weights[relayID]
-	if !ok {
+	if !ok || math.IsNaN(weight) {
 		return defaultRankingWeight
 	}
 	return clamp01(weight)
