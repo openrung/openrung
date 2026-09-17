@@ -30,10 +30,26 @@ const (
 	DefaultMaxMbps     = 100
 )
 
+// XrayInboundTag names the relay's public VLESS+Reality inbound. Runtime user
+// management (XrayAPI) addresses that inbound by this tag, so it is fixed.
+const XrayInboundTag = "vless-reality-in"
+
+// xrayAPIInboundTag names the loopback dokodemo inbound that carries xray's
+// own gRPC management API when XrayConfigInput.APIPort is set.
+const xrayAPIInboundTag = "api-in"
+
 type XrayConfigInput struct {
-	ListenHost        string
-	ListenPort        int
-	ClientID          string
+	ListenHost string
+	ListenPort int
+	// ClientID is the static VLESS credential baked into the config. It may
+	// be empty only when APIPort is set: the relay then admits nobody until
+	// it adds credentials at runtime through the management API.
+	ClientID string
+	// APIPort, when non-zero, enables xray's management API (HandlerService
+	// for runtime user changes, StatsService for per-user counters) on a
+	// loopback inbound at 127.0.0.1:APIPort. Zero renders today's static
+	// single-client config with no API surface at all.
+	APIPort           int
 	Flow              string
 	Dest              string
 	ServerName        string
@@ -53,8 +69,14 @@ func BuildXrayConfig(input XrayConfigInput) ([]byte, error) {
 	if input.ListenPort < 1 || input.ListenPort > 65535 {
 		return nil, errors.New("listen port must be between 1 and 65535")
 	}
-	if input.ClientID == "" {
+	if input.ClientID == "" && input.APIPort == 0 {
 		return nil, errors.New("client ID is required")
+	}
+	if input.APIPort < 0 || input.APIPort > 65535 {
+		return nil, errors.New("api port must be between 0 and 65535")
+	}
+	if input.APIPort != 0 && input.APIPort == input.ListenPort {
+		return nil, errors.New("api port must differ from the listen port")
 	}
 	if input.Flow == "" {
 		return nil, errors.New("flow is required")
@@ -72,23 +94,27 @@ func BuildXrayConfig(input XrayConfigInput) ([]byte, error) {
 		return nil, errors.New("short ID is required")
 	}
 
+	// An empty list (not null) keeps xray's VLESS validator well-formed while
+	// every credential arrives through the management API.
+	clients := []any{}
+	if input.ClientID != "" {
+		clients = append(clients, map[string]any{
+			"id":   input.ClientID,
+			"flow": input.Flow,
+		})
+	}
 	cfg := map[string]any{
 		"log": map[string]any{
 			"loglevel": "warning",
 		},
 		"inbounds": []any{
 			map[string]any{
-				"tag":      "vless-reality-in",
+				"tag":      XrayInboundTag,
 				"listen":   input.ListenHost,
 				"port":     input.ListenPort,
 				"protocol": "vless",
 				"settings": map[string]any{
-					"clients": []any{
-						map[string]any{
-							"id":   input.ClientID,
-							"flow": input.Flow,
-						},
-					},
+					"clients":    clients,
 					"decryption": "none",
 				},
 				"streamSettings": map[string]any{
@@ -115,6 +141,44 @@ func BuildXrayConfig(input XrayConfigInput) ([]byte, error) {
 				"protocol": "freedom",
 			},
 		},
+	}
+	if input.APIPort != 0 {
+		// The standard xray management layout: the "api" object registers the
+		// gRPC services and implicitly creates an outbound handler tagged
+		// "api"; a loopback dokodemo inbound accepts the client connections and
+		// a routing rule steers exactly that inbound to it. User-level stats
+		// need the policy switches or the per-user counters never appear.
+		cfg["api"] = map[string]any{
+			"tag":      "api",
+			"services": []string{"HandlerService", "StatsService"},
+		}
+		cfg["stats"] = map[string]any{}
+		cfg["policy"] = map[string]any{
+			"levels": map[string]any{
+				"0": map[string]any{
+					"statsUserUplink":   true,
+					"statsUserDownlink": true,
+				},
+			},
+		}
+		cfg["inbounds"] = append(cfg["inbounds"].([]any), map[string]any{
+			"tag":      xrayAPIInboundTag,
+			"listen":   "127.0.0.1",
+			"port":     input.APIPort,
+			"protocol": "dokodemo-door",
+			"settings": map[string]any{
+				"address": "127.0.0.1",
+			},
+		})
+		cfg["routing"] = map[string]any{
+			"rules": []any{
+				map[string]any{
+					"type":        "field",
+					"inboundTag":  []string{xrayAPIInboundTag},
+					"outboundTag": "api",
+				},
+			},
+		}
 	}
 
 	return json.MarshalIndent(cfg, "", "  ")
