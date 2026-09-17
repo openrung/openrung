@@ -337,3 +337,41 @@ func TestStoreIdentityInvalidProofRejected(t *testing.T) {
 		}
 	})
 }
+
+// A heartbeat carrying a credential replaces the served client_id in the same
+// lease renewal — only with the registration's own lease token — and one
+// without leaves the rotated value in place.
+func TestStoreIdentityHeartbeatRotatesClientID(t *testing.T) {
+	runIdentityStoreTest(t, func(t *testing.T, store RelayStore) {
+		now := time.Date(2026, 6, 9, 7, 0, 0, 0, time.UTC)
+		desc, err := store.Register(signedIdentityRequest(t, identityStoreSeedA, nil, now), now, time.Minute)
+		if err != nil {
+			t.Fatalf("register: %v", err)
+		}
+		const rotated = "0f5c2f58-5d1e-4f1a-9a52-4e8a5d2b7c11"
+		if _, err := store.Heartbeat(desc.ID, "wrong-token", relay.NodeClassVolunteer, rotated, now.Add(10*time.Second), time.Minute); !errors.Is(err, ErrRelayNotFound) {
+			t.Fatalf("heartbeat with a wrong lease token and a credential: err = %v, want not found", err)
+		}
+		updated, err := store.Heartbeat(desc.ID, desc.LeaseToken, relay.NodeClassVolunteer, rotated, now.Add(30*time.Second), time.Minute)
+		if err != nil {
+			t.Fatalf("heartbeat with credential: %v", err)
+		}
+		if updated.ClientID != rotated {
+			t.Fatalf("client_id = %q, want the rotated credential", updated.ClientID)
+		}
+		kept, err := store.Heartbeat(desc.ID, desc.LeaseToken, relay.NodeClassVolunteer, "", now.Add(time.Minute), time.Minute)
+		if err != nil {
+			t.Fatalf("heartbeat without credential: %v", err)
+		}
+		if kept.ClientID != rotated {
+			t.Fatalf("client_id = %q after an empty heartbeat, want %q kept", kept.ClientID, rotated)
+		}
+		listed, err := store.List(now.Add(time.Minute), 10)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		if len(listed) != 1 || listed[0].ClientID != rotated {
+			t.Fatalf("directory serves %+v, want the rotated credential", listed)
+		}
+	})
+}

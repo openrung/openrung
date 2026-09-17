@@ -71,15 +71,20 @@ relay therefore derives a fresh UUID every hour from its identity seed
 previous hour's credentials, and announces the current one to the broker in
 its heartbeat `client_id`; the broker serves it from that heartbeat on and
 echoes what it now serves, and only then does the relay retire older
-credentials — never one the broker still reports serving, so a broker that
-predates the field simply keeps the registration-time credential. Xray's
+credentials — never one the broker still reports serving while the broker is
+reachable, so a broker that predates the field simply keeps the
+registration-time credential. After an hour without any successful broker
+contact (the lease and every directory snapshot have long expired by then) the
+relay retires that one too and serves only its current and previous hour, so
+an outage cannot extend a copied credential's life. Xray's
 management API (HandlerService on a loopback inbound) applies each change to
 the running process through the bundled binary's `xray api adu`/`rmu`, so no
 session is interrupted and no restart is needed; an already-authenticated
 connection survives its credential's retirement because VLESS checks the
 credential once, at the handshake. A copied directory entry stops admitting
-within two hours, while a legitimate snapshot (bounded by the list's 30-minute
-`not_after`) never holds a credential the relay has already retired. The wire
+within two hours of the last heartbeat the broker answered, while a
+legitimate snapshot (bounded by the list's 30-minute `not_after`) never holds
+a credential the relay has already retired. The wire
 is unchanged: same Reality parameters, same server name, only the UUID inside
 the encrypted request rotates. `-credential-rotation=false`
 (`OPENRUNG_CREDENTIAL_ROTATION=off`) keeps one static `-client-id`, which is
@@ -602,7 +607,8 @@ The broker should treat relay registrations as untrusted input:
   endpoint protections are enforced exactly as for anonymous registrations.
 
 Direct-mode relays rotate their VLESS credential hourly (see the Relay CLI
-section), so a copied directory entry stops admitting within two hours. The
+section), so a copied directory entry stops admitting within two hours of the
+last broker-confirmed rotation. The
 credential is still shared by every client of a relay; per-client credentials
 that could be revoked individually remain future work, to be built if abuse
 persists across rotations.

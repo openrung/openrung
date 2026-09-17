@@ -57,6 +57,8 @@ type fakeBroker struct {
 	servedClientID  string
 	legacyHeartbeat bool
 	lastHeartbeat   relay.HeartbeatRequest
+	// failHeartbeats answers every heartbeat 503 (broker outage).
+	failHeartbeats bool
 }
 
 func (f *fakeBroker) handler() http.Handler {
@@ -82,7 +84,8 @@ func (f *fakeBroker) handler() http.Handler {
 		f.lastHeartbeat = hb
 		notFound := f.notFoundOnce
 		f.notFoundOnce = false
-		if !notFound && hb.ClientID != "" {
+		failing := f.failHeartbeats
+		if !notFound && !failing && hb.ClientID != "" {
 			f.servedClientID = hb.ClientID
 		}
 		resp := relay.HeartbeatResponse{OK: true}
@@ -90,6 +93,11 @@ func (f *fakeBroker) handler() http.Handler {
 			resp.ClientID = f.servedClientID
 		}
 		f.mu.Unlock()
+		if failing {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"broker unavailable"}`))
+			return
+		}
 		if notFound {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"error":"relay not found"}`))

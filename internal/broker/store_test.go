@@ -91,9 +91,10 @@ func TestHeartbeatExtendsRelayLease(t *testing.T) {
 	}
 }
 
-// A heartbeat carrying a credential replaces the served client_id in the same
-// lease renewal; one without leaves the rotated value in place.
-func TestHeartbeatRotatesClientID(t *testing.T) {
+// A legacy identityless row renews without a lease token, so a credential on
+// its heartbeat must be ignored: relay IDs are public, and honouring it would
+// let any lease-renewing caller replace the relay's UUID.
+func TestHeartbeatIgnoresClientIDForLegacyRow(t *testing.T) {
 	store := NewStore()
 	now := time.Date(2026, 6, 9, 7, 0, 0, 0, time.UTC)
 
@@ -101,26 +102,15 @@ func TestHeartbeatRotatesClientID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("register relay: %v", err)
 	}
-	rotated, err := store.Heartbeat(desc.ID, desc.LeaseToken, relay.NodeClassVolunteer, "0f5c2f58-5d1e-4f1a-9a52-4e8a5d2b7c11", now.Add(30*time.Second), time.Minute)
+	renewed, err := store.Heartbeat(desc.ID, "", relay.NodeClassVolunteer, "0f5c2f58-5d1e-4f1a-9a52-4e8a5d2b7c11", now.Add(30*time.Second), time.Minute)
 	if err != nil {
-		t.Fatalf("heartbeat with credential: %v", err)
+		t.Fatalf("legacy heartbeat: %v", err)
 	}
-	if rotated.ClientID != "0f5c2f58-5d1e-4f1a-9a52-4e8a5d2b7c11" {
-		t.Fatalf("client_id = %q, want the rotated credential", rotated.ClientID)
+	if renewed.ClientID != desc.ClientID {
+		t.Fatalf("a tokenless legacy heartbeat changed client_id to %q", renewed.ClientID)
 	}
-	kept, err := store.Heartbeat(desc.ID, desc.LeaseToken, relay.NodeClassVolunteer, "", now.Add(time.Minute), time.Minute)
-	if err != nil {
-		t.Fatalf("heartbeat without credential: %v", err)
-	}
-	if kept.ClientID != rotated.ClientID {
-		t.Fatalf("client_id = %q after an empty heartbeat, want %q kept", kept.ClientID, rotated.ClientID)
-	}
-	listed, err := store.List(now.Add(time.Minute), 10)
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(listed) != 1 || listed[0].ClientID != rotated.ClientID {
-		t.Fatalf("directory serves %+v, want the rotated credential", listed)
+	if !renewed.ExpiresAt.Equal(now.Add(90 * time.Second)) {
+		t.Fatalf("legacy lease was not renewed: %s", renewed.ExpiresAt)
 	}
 }
 

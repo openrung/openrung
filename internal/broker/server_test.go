@@ -532,7 +532,8 @@ func TestHeartbeatRouteRejectsMissingOrMalformedRelays(t *testing.T) {
 // like an oversized registration field.
 func TestHeartbeatRotatesServedClientID(t *testing.T) {
 	store := NewStore()
-	desc, err := store.Register(validRegisterRequest(), time.Now().UTC(), time.Minute)
+	now := time.Now().UTC()
+	desc, err := store.Register(signedIdentityRequest(t, identityStoreSeedA, nil, now), now, time.Minute)
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -604,6 +605,39 @@ func TestHeartbeatRotatesServedClientID(t *testing.T) {
 	}
 	if got := servedClientID(t); got != rotated {
 		t.Fatalf("a refused heartbeat changed the served credential to %q", got)
+	}
+}
+
+// A legacy identityless relay renews without a lease token, which anyone
+// authorized to heartbeat could send for its public ID: a credential on such
+// a heartbeat is ignored and the response reports the unchanged one.
+func TestHeartbeatCannotRotateLegacyRelayCredential(t *testing.T) {
+	store := NewStore()
+	desc, err := store.Register(validRegisterRequest(), time.Now().UTC(), time.Minute)
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	server := NewServer(store, Config{SigningSeed: testSigningSeed()})
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/relays/"+desc.ID+"/heartbeat", strings.NewReader(`{"ok":true,"client_id":"0f5c2f58-5d1e-4f1a-9a52-4e8a5d2b7c11"}`)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("legacy heartbeat: %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var resp relay.HeartbeatResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.ClientID != desc.ClientID {
+		t.Fatalf("response client_id = %q, want the unchanged %q", resp.ClientID, desc.ClientID)
+	}
+	listRecorder := httptest.NewRecorder()
+	server.ServeHTTP(listRecorder, httptest.NewRequest(http.MethodGet, "/api/v1/relays", nil))
+	var out relay.ListResponse
+	if err := json.Unmarshal(listRecorder.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(out.Relays) != 1 || out.Relays[0].ClientID != desc.ClientID {
+		t.Fatalf("directory serves %+v, want the registered credential", out.Relays)
 	}
 }
 

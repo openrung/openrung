@@ -49,7 +49,12 @@ type RelayStore interface {
 	// kept alive indefinitely by whoever now heartbeats the ID. A non-empty
 	// clientID replaces the served VLESS credential in the same write, so a
 	// rotating relay's directory entry and its lease renewal are one
-	// authorized update; empty keeps the stored credential.
+	// authorized update; empty keeps the stored credential. Only a
+	// registration whose lease token was validated (an identity-bearing row)
+	// may change it: legacy identityless rows renew without a token for
+	// rolling compatibility, and relay IDs are public, so honouring a
+	// credential from such a heartbeat would let any caller authorized to
+	// renew leases replace a legacy relay's UUID with one nobody accepts.
 	Heartbeat(id, leaseToken, maxClass, clientID string, now time.Time, ttl time.Duration) (relay.Descriptor, error)
 	UpdateGeo(id, leaseToken string, geo relay.GeoLocation) error
 	List(time.Time, int) ([]relay.Descriptor, error)
@@ -234,7 +239,7 @@ func (s *Store) Heartbeat(id, leaseToken, maxClass, clientID string, now time.Ti
 
 	desc.LastHeartbeatAt = now
 	desc.ExpiresAt = now.Add(ttl)
-	if clientID != "" {
+	if clientID != "" && desc.IdentityPublicKey != "" {
 		desc.ClientID = clientID
 	}
 	s.relays[id] = desc

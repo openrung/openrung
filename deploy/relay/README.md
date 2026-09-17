@@ -227,8 +227,11 @@ UUID for the client id, or let the first run generate them and copy from the log
 serve `OPENRUNG_CLIENT_ID`: it derives a fresh VLESS credential every hour from
 its identity seed, applies it to the running xray through the management API
 (no restart, no dropped sessions), and announces it to the broker on its
-heartbeat, so a copied directory entry stops admitting within two hours. A
-pinned `OPENRUNG_CLIENT_ID` is then ignored (the relay logs this once).
+heartbeat, so a copied directory entry stops admitting within two hours (a
+credential the broker last confirmed is kept through a broker outage of up to
+an hour, then retired too). A pinned `OPENRUNG_CLIENT_ID` is then ignored (the
+relay logs this once). `-skip-xray-run` always serves the static credential:
+an xray this relay does not run cannot be rotated.
 `OPENRUNG_CREDENTIAL_ROTATION=off` restores the single static credential;
 `OPENRUNG_CREDENTIAL_EPOCH=<any string>` re-keys every derived credential at
 once without changing the relay identity. Rotation needs a broker that

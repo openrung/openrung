@@ -435,11 +435,13 @@ func (s *PostgresStore) Heartbeat(id, leaseToken, maxClass, clientID string, now
 
 	// The class guard lives inside the UPDATE's WHERE so an unauthorized
 	// heartbeat never extends the lease, not even transiently. The credential
-	// rides the same guarded UPDATE: an empty $7 keeps the stored value.
+	// rides the same guarded UPDATE: an empty $7 keeps the stored value, and so
+	// does a legacy identityless row, whose tokenless renewal must not be able
+	// to change what the directory serves.
 	desc, err := scanDescriptor(s.pool.QueryRow(ctx, `
 		UPDATE relay_descriptors
 		SET last_heartbeat_at = $3, expires_at = $4,
-			client_id = CASE WHEN $7 = '' THEN client_id ELSE $7 END
+			client_id = CASE WHEN $7 = '' OR identity_public_key = '' THEN client_id ELSE $7 END
 		WHERE id = $1
 			AND (identity_public_key = '' OR (lease_token <> '' AND lease_token = $2))
 			AND (node_class <> $5 OR $6)

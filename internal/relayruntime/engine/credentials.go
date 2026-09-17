@@ -23,6 +23,15 @@ var xrayAPIStartupTimeout = 15 * time.Second
 // credentials accepted before registering.
 var errCredentialInstall = errors.New("install rotating credentials")
 
+// brokerSilenceGrace bounds how long a credential the broker last confirmed
+// serving stays accepted without any successful broker contact. Past it the
+// relay's lease (3 min) has long expired and every directory snapshot that
+// could carry the credential (30 min not_after plus skew) is unusable, so
+// nobody legitimate can still hold it and keeping it would only extend a
+// copied credential's life for as long as the outage lasts. A variable so
+// tests can shorten it.
+var brokerSilenceGrace = time.Hour
+
 // credentialRotation drives the relay's rotating VLESS credentials for one
 // direct session: which derived credentials xray currently accepts, and which
 // one the broker has confirmed it serves.
@@ -30,15 +39,18 @@ var errCredentialInstall = errors.New("install rotating credentials")
 // Invariants the session loop maintains through this type:
 //   - the current and previous bucket credentials are registered with xray;
 //   - the credential announced to the broker is always one xray accepts;
-//   - a credential the broker last confirmed serving is never removed, so a
-//     broker that has not (or cannot — it predates the field) moved on keeps
-//     working, and anything the directory may still hand out stays valid.
+//   - a credential the broker last confirmed serving is kept while the broker
+//     is reachable, so a broker that has not (or cannot — it predates the
+//     field) moved on keeps working, and anything the directory may still hand
+//     out stays valid; after brokerSilenceGrace without contact it goes too.
 type credentialRotation struct {
 	schedule   relayruntime.CredentialSchedule
 	users      relayruntime.XrayUserManager
 	registered map[string]relayruntime.Credential // by email
 	confirmed  string
-	logf       func(string, ...any)
+	// lastContact is the last successful registration or heartbeat.
+	lastContact time.Time
+	logf        func(string, ...any)
 }
 
 func newCredentialRotation(identity Identity, epoch string, users relayruntime.XrayUserManager, logf func(string, ...any)) (*credentialRotation, error) {
@@ -128,20 +140,26 @@ func (c *credentialRotation) announce(ctx context.Context, now time.Time) string
 	return ""
 }
 
-// confirm records the credential the broker reports serving. Empty (a broker
-// that predates the field) keeps the last confirmation.
-func (c *credentialRotation) confirm(clientID string) {
+// confirm records a successful broker exchange at now and the credential the
+// broker reports serving. Empty (a broker that predates the field) keeps the
+// last confirmation.
+func (c *credentialRotation) confirm(now time.Time, clientID string) {
+	c.lastContact = now
 	if clientID != "" {
 		c.confirmed = clientID
 	}
 }
 
 // retire removes every registered credential that is neither the current nor
-// the previous bucket's nor the one the broker last confirmed serving.
+// the previous bucket's nor — while the broker has been reachable within
+// brokerSilenceGrace — the one it last confirmed serving. It runs after every
+// heartbeat attempt, successful or not, so an outage never lets credentials
+// accumulate or outlive the directory snapshots that could carry them.
 func (c *credentialRotation) retire(ctx context.Context, now time.Time) {
 	current, previous := c.schedule.Current(now), c.schedule.Previous(now)
+	keepConfirmed := !c.lastContact.IsZero() && now.Sub(c.lastContact) <= brokerSilenceGrace
 	for email, credential := range c.registered {
-		if email == current.Email || email == previous.Email || credential.ID == c.confirmed {
+		if email == current.Email || email == previous.Email || (keepConfirmed && credential.ID == c.confirmed) {
 			continue
 		}
 		if err := c.users.RemoveUser(ctx, email); err != nil {
@@ -186,22 +204,11 @@ func reserveIPv4LoopbackPort() (int, error) {
 }
 
 // defaultXrayUsers is the production XrayUserManager: the bundled binary's
-// `xray api` against the session's management inbound. With xray disabled
-// (tests, -skip-xray-run) there is no process to manage, so the schedule runs
-// against a manager that accepts everything.
+// `xray api` against the session's management inbound.
 func defaultXrayUsers(cfg Config, apiAddr string) relayruntime.XrayUserManager {
-	if cfg.DisableXray {
-		return noXrayUsers{}
-	}
 	dir := cfg.ConfigDir
 	if cfg.ConfigPath != "" {
 		dir = ""
 	}
 	return &relayruntime.XrayAPI{Path: cfg.XrayPath, Addr: apiAddr, Flow: relayFlow, Dir: dir}
 }
-
-// noXrayUsers is the user manager of a session that runs no xray.
-type noXrayUsers struct{}
-
-func (noXrayUsers) AddUser(context.Context, relayruntime.Credential) error { return nil }
-func (noXrayUsers) RemoveUser(context.Context, string) error               { return nil }

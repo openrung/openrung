@@ -343,7 +343,8 @@ func heartbeatHandler(store RelayStore, cfg Config, ledger *relayIDLedger) http.
 		resolveRelayGeo(r.Context(), store, cfg.GeoIP, &desc)
 
 		// Echo the credential now being served so a rotating relay can retire
-		// its predecessor only once the directory has moved on.
+		// its predecessor only once the directory has moved on (a legacy
+		// identityless registration sees its credential unchanged here).
 		writeJSON(w, http.StatusOK, relay.HeartbeatResponse{OK: true, ExpiresAt: desc.ExpiresAt, ClientID: desc.ClientID})
 	}
 }

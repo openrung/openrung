@@ -851,7 +851,10 @@ Response:
 `client_id` is optional on the request. When present it replaces the VLESS
 credential the relay list serves for this relay, in the same authorized write
 that renews the lease (at most 128 characters, opaque to the broker exactly as
-at registration). A relay that rotates its credential announces each new value
+at registration). Only an identity-bearing registration presenting its valid
+`lease_token` can change it: a legacy identityless relay renews without a
+token, and relay IDs are public, so a credential on such a heartbeat is
+ignored (the response reports the unchanged one). A relay that rotates its credential announces each new value
 this way and keeps the previous one accepted until the response echoes the
 successor, so a directory snapshot fetched just before a rotation stays
 usable for its whole `not_after` window. A heartbeat without `client_id`

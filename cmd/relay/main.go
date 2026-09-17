@@ -176,7 +176,7 @@ func (f *cliFlags) register(fs *flag.FlagSet, identitySeed string) {
 	fs.BoolVar(&f.hubTLS, "hub-tls", true, "dial the relay hub over TLS in tunnel mode")
 	fs.BoolVar(&f.hubInsecure, "hub-insecure", false, "skip TLS certificate verification when dialing the relay hub (testing only)")
 	fs.BoolVar(&f.punch, "punch", !boolEnv("OPENRUNG_PUNCH_DISABLE"), "offer NAT hole punching so clients can connect directly (tunnel mode; requires a punch-capable hub)")
-	fs.BoolVar(&f.credentialRotation, "credential-rotation", !offEnv("OPENRUNG_CREDENTIAL_ROTATION"), "rotate the VLESS credential hourly in direct mode (derived from the identity seed, announced to the broker on heartbeat); false keeps one static -client-id for the whole run. OPENRUNG_CREDENTIAL_ROTATION=off disables it")
+	fs.BoolVar(&f.credentialRotation, "credential-rotation", !offEnv("OPENRUNG_CREDENTIAL_ROTATION"), "rotate the VLESS credential hourly in direct mode (derived from the identity seed, applied to the managed xray at runtime, announced to the broker on heartbeat); false keeps one static -client-id for the whole run, as does -skip-xray-run (an xray this relay does not run cannot be rotated). OPENRUNG_CREDENTIAL_ROTATION=off disables it")
 	fs.StringVar(&f.credentialEpoch, "credential-epoch", os.Getenv("OPENRUNG_CREDENTIAL_EPOCH"), "salt for the rotating-credential derivation; change it to invalidate every derived credential at once without changing the relay identity")
 }
 

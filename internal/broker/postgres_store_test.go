@@ -104,19 +104,21 @@ func TestPostgresStoreSharesRelayStateAcrossInstances(t *testing.T) {
 		t.Fatalf("an empty heartbeat credential changed client_id to %q", updated.ClientID)
 	}
 
-	rotated, err := storeB.Heartbeat(desc.ID, desc.LeaseToken, relay.NodeClassVolunteer, "0f5c2f58-5d1e-4f1a-9a52-4e8a5d2b7c11", now.Add(time.Minute), time.Minute)
+	// This is a legacy identityless row: its tokenless heartbeat must not be
+	// able to change the served credential.
+	legacy, err := storeB.Heartbeat(desc.ID, "", relay.NodeClassVolunteer, "0f5c2f58-5d1e-4f1a-9a52-4e8a5d2b7c11", now.Add(time.Minute), time.Minute)
 	if err != nil {
-		t.Fatalf("heartbeat with rotated credential: %v", err)
+		t.Fatalf("legacy heartbeat with credential: %v", err)
 	}
-	if rotated.ClientID != "0f5c2f58-5d1e-4f1a-9a52-4e8a5d2b7c11" {
-		t.Fatalf("client_id = %q, want the rotated credential", rotated.ClientID)
+	if legacy.ClientID != desc.ClientID {
+		t.Fatalf("a legacy heartbeat changed client_id to %q", legacy.ClientID)
 	}
 	served, err := storeA.List(now.Add(time.Minute), 10)
 	if err != nil {
 		t.Fatalf("list relays from first store: %v", err)
 	}
-	if len(served) != 1 || served[0].ClientID != rotated.ClientID {
-		t.Fatalf("first store serves %+v, want the rotated credential", served)
+	if len(served) != 1 || served[0].ClientID != desc.ClientID {
+		t.Fatalf("first store serves %+v, want the registered credential", served)
 	}
 }
 

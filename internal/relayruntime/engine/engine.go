@@ -518,7 +518,9 @@ type Engine struct {
 
 	probeDirect func(context.Context, string, string, string, int, *http.Client) relayruntime.DirectProbeResult
 	// newXrayUsers builds the runtime user manager for a session's xray
-	// management inbound; tests substitute a recorder.
+	// management inbound; nil means the bundled binary's `xray api`. Tests
+	// substitute a recorder, which is also what lets a session with xray
+	// disabled rotate at all.
 	newXrayUsers func(cfg Config, apiAddr string) relayruntime.XrayUserManager
 }
 
@@ -527,11 +529,10 @@ func New(cfg Config, events Events) *Engine {
 		events.Log = io.Discard
 	}
 	return &Engine{
-		cfg:          cfg.withDefaults(),
-		events:       events,
-		phase:        PhaseIdle,
-		probeDirect:  relayruntime.ProbeDirectReachability,
-		newXrayUsers: defaultXrayUsers,
+		cfg:         cfg.withDefaults(),
+		events:      events,
+		phase:       PhaseIdle,
+		probeDirect: relayruntime.ProbeDirectReachability,
 	}
 }
 
@@ -1208,13 +1209,25 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 	var credentials *credentialRotation
 	var err error
 	apiPort := 0
-	if !cfg.DisableCredentialRotation {
+	rotate := !cfg.DisableCredentialRotation
+	if rotate && cfg.DisableXray && e.newXrayUsers == nil {
+		// Nothing here manages the xray that will serve this relay, so a
+		// derived credential would be advertised without anything accepting
+		// it. Serve the static one, which -print-config-only renders.
+		rotate = false
+		e.logf("xray is not run by this relay: serving the static client ID (rotating credentials need the managed xray)")
+	}
+	if rotate {
 		apiPort, err = reserveIPv4LoopbackPort()
 		if err != nil {
 			return err
 		}
 		apiAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(apiPort))
-		credentials, err = newCredentialRotation(identity, cfg.CredentialEpoch, e.newXrayUsers(cfg, apiAddr), e.logf)
+		newUsers := e.newXrayUsers
+		if newUsers == nil {
+			newUsers = defaultXrayUsers
+		}
+		credentials, err = newCredentialRotation(identity, cfg.CredentialEpoch, newUsers(cfg, apiAddr), e.logf)
 		if err != nil {
 			return fmt.Errorf("credential rotation: %w", err)
 		}
@@ -1342,7 +1355,7 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 	e.logf("registered with the broker as %q (%s) at %s", desc.Label, desc.ID,
 		net.JoinHostPort(desc.PublicHost, strconv.Itoa(desc.PublicPort)))
 	if credentials != nil {
-		credentials.confirm(desc.ClientID)
+		credentials.confirm(time.Now(), desc.ClientID)
 	}
 	e.registrations.Add(1)
 	e.setStatus(func() {
@@ -1392,13 +1405,18 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 		resp, err := broker.Heartbeat(ctx, desc.ID, desc.LeaseToken, clientID)
 		if err == nil {
 			if credentials != nil {
-				credentials.confirm(resp.ClientID)
+				credentials.confirm(now, resp.ClientID)
 				credentials.retire(ctx, now)
 			}
 			return
 		}
 		if !relayruntime.IsRelayNotFound(err) {
 			e.logf("heartbeat failed: %v", err)
+			if credentials != nil {
+				// No contact: still retire stale buckets, and past the grace
+				// the last confirmed credential too.
+				credentials.retire(ctx, now)
+			}
 			return
 		}
 		if clientID != "" {
@@ -1426,7 +1444,7 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 		desc = updated
 		e.logf("re-registered with the broker as %q (%s)", desc.Label, desc.ID)
 		if credentials != nil {
-			credentials.confirm(desc.ClientID)
+			credentials.confirm(now, desc.ClientID)
 			credentials.retire(ctx, now)
 		}
 		// The ID is derived from the identity key and so is unchanged

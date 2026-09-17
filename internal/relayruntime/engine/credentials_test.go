@@ -268,3 +268,69 @@ func TestDirectSessionFailsWhenCredentialsCannotBeInstalled(t *testing.T) {
 		t.Fatalf("registered %d times with no usable credential", regs)
 	}
 }
+
+// While the broker is unreachable no retirement can be confirmed, so the last
+// confirmed credential is kept — but only for brokerSilenceGrace. Past it the
+// lease and every directory snapshot are long expired, and the relay retires
+// it like any stale bucket, so an outage cannot extend a copied credential's
+// life or let accepted credentials pile up.
+func TestDirectSessionRetiresConfirmedCredentialAfterBrokerSilence(t *testing.T) {
+	shortRotation(t, time.Second)
+	previousGrace := brokerSilenceGrace
+	brokerSilenceGrace = 1500 * time.Millisecond
+	t.Cleanup(func() { brokerSilenceGrace = previousGrace })
+
+	broker := &fakeBroker{}
+	users := newRecordingUsers()
+	eng, _ := startRotatingSession(t, broker, users)
+	eventually(t, 5*time.Second, "online", func() bool { return eng.Status().Phase == PhaseOnline })
+	_, _, registered := broker.stats()
+
+	broker.mu.Lock()
+	broker.failHeartbeats = true
+	broker.mu.Unlock()
+
+	eventually(t, 8*time.Second, "registration credential retired after the grace", func() bool {
+		return !users.has(registered.ClientID)
+	})
+	eventually(t, 3*time.Second, "accepted set bounded to current + previous", func() bool {
+		return len(users.acceptedIDs()) == 2
+	})
+}
+
+// -skip-xray-run means an xray this relay does not manage will serve it, so a
+// derived credential would be advertised with nothing accepting it: such a
+// session serves the static client ID that -print-config-only renders.
+func TestDirectSessionServesStaticCredentialWhenXrayIsNotRun(t *testing.T) {
+	broker := &fakeBroker{}
+	ts := httptest.NewServer(broker.handler())
+	defer ts.Close()
+	eng := New(Config{
+		BrokerURL:   ts.URL,
+		Mode:        ModeDirect,
+		ListenPort:  freePort(t),
+		Identity:    testIdentity,
+		DisableXray: true,
+		ConfigDir:   t.TempDir(),
+	}, Events{})
+	eng.cfg.HeartbeatInterval = 50 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = eng.runDirectSession(ctx, &relayruntime.BrokerClient{BaseURL: ts.URL}, eng.cfg, "external-xray", testIdentity, "127.0.0.1", directOnlyListenHost)
+	}()
+	eventually(t, 5*time.Second, "online and heartbeating", func() bool {
+		_, hb, _ := broker.stats()
+		return eng.Status().Phase == PhaseOnline && hb >= 1
+	})
+	_, _, registered := broker.stats()
+	if registered.ClientID != testIdentity.ClientID {
+		t.Fatalf("registered client_id = %q, want the static %q", registered.ClientID, testIdentity.ClientID)
+	}
+	broker.mu.Lock()
+	last := broker.lastHeartbeat
+	broker.mu.Unlock()
+	if last.ClientID != "" {
+		t.Fatalf("heartbeat announced %q with no managed xray", last.ClientID)
+	}
+}
