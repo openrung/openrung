@@ -82,7 +82,7 @@ func TestBrokerClientUsesCanonicalRoutes(t *testing.T) {
 	if !reflect.DeepEqual(desc, want) {
 		t.Fatalf("Register() = %+v, want %+v", desc, want)
 	}
-	if err := client.Heartbeat(context.Background(), desc.ID, desc.LeaseToken); err != nil {
+	if _, err := client.Heartbeat(context.Background(), desc.ID, desc.LeaseToken, ""); err != nil {
 		t.Fatalf("Heartbeat() error = %v", err)
 	}
 
@@ -122,7 +122,7 @@ func TestBrokerClientRelayNotFoundUsesCanonicalRoute(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	client := &BrokerClient{BaseURL: server.URL, HTTPClient: server.Client()}
-	err := client.Heartbeat(context.Background(), "relay_missing", "")
+	_, err := client.Heartbeat(context.Background(), "relay_missing", "", "")
 	if !IsRelayNotFound(err) {
 		t.Fatalf("Heartbeat() error = %v, want relay-not-found API error", err)
 	}
@@ -382,7 +382,7 @@ func TestBrokerClientSecureTransportAllowsLoopbackHTTP(t *testing.T) {
 	if desc.ID != "relay_foundation" {
 		t.Fatalf("Register() ID = %q, want relay_foundation", desc.ID)
 	}
-	if err := client.Heartbeat(context.Background(), desc.ID, desc.LeaseToken); err != nil {
+	if _, err := client.Heartbeat(context.Background(), desc.ID, desc.LeaseToken, ""); err != nil {
 		t.Fatalf("Heartbeat() over loopback HTTP: %v", err)
 	}
 }
@@ -402,7 +402,8 @@ func TestBrokerClientSecureTransportRejectsRedirectsBeforeCredentialLeak(t *test
 		{
 			name: "heartbeat",
 			do: func(client *BrokerClient) error {
-				return client.Heartbeat(context.Background(), "relay_foundation", "")
+				_, err := client.Heartbeat(context.Background(), "relay_foundation", "", "")
+				return err
 			},
 		},
 	}
@@ -451,7 +452,7 @@ func TestBrokerClientSecureTransportRejectsRemotePlaintextBeforeSending(t *testi
 		RequireSecureTransport: true,
 	}
 
-	if err := client.Heartbeat(context.Background(), "relay_foundation", ""); err == nil {
+	if _, err := client.Heartbeat(context.Background(), "relay_foundation", "", ""); err == nil {
 		t.Fatal("Heartbeat() error = nil, want plaintext rejection")
 	}
 	if requests.Load() != 0 {

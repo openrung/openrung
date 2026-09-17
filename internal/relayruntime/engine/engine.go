@@ -173,6 +173,19 @@ type Config struct {
 	ConnectionLogOutput io.Writer
 	// Identity seeds the relay identity; missing parts are generated.
 	Identity Identity
+	// DisableCredentialRotation keeps one static VLESS credential
+	// (Identity.ClientID) for the whole session, as relays did before rotation
+	// existed. By default a direct-mode relay derives a fresh credential every
+	// rotation period from its identity seed, accepts the current and previous
+	// one, and announces the current one to the broker on its heartbeat, so a
+	// copied directory entry stops admitting within two periods. Tunnel mode
+	// always serves the static credential: its endpoint is published through
+	// the hub, which has no rotation channel.
+	DisableCredentialRotation bool
+	// CredentialEpoch salts the credential derivation. Changing it changes
+	// every derived credential at once without touching the relay identity —
+	// the response to a suspected derivation-key leak.
+	CredentialEpoch string
 	// ConfigDir is where the generated xray config (which contains the Reality
 	// private key) is written, 0600. Defaults to os.TempDir().
 	ConfigDir string
@@ -504,6 +517,9 @@ type Engine struct {
 	registrations atomic.Uint64
 
 	probeDirect func(context.Context, string, string, string, int, *http.Client) relayruntime.DirectProbeResult
+	// newXrayUsers builds the runtime user manager for a session's xray
+	// management inbound; tests substitute a recorder.
+	newXrayUsers func(cfg Config, apiAddr string) relayruntime.XrayUserManager
 }
 
 func New(cfg Config, events Events) *Engine {
@@ -511,12 +527,16 @@ func New(cfg Config, events Events) *Engine {
 		events.Log = io.Discard
 	}
 	return &Engine{
-		cfg:         cfg.withDefaults(),
-		events:      events,
-		phase:       PhaseIdle,
-		probeDirect: relayruntime.ProbeDirectReachability,
+		cfg:          cfg.withDefaults(),
+		events:       events,
+		phase:        PhaseIdle,
+		probeDirect:  relayruntime.ProbeDirectReachability,
+		newXrayUsers: defaultXrayUsers,
 	}
 }
+
+// relayFlow is the VLESS flow every relay credential carries.
+const relayFlow = relay.FlowVision
 
 // Start launches the supervised relay loop. It returns a config validation
 // error immediately; runtime failures surface through status (PhaseRetrying
@@ -1040,12 +1060,20 @@ func (e *Engine) probeClient(cfg Config) *http.Client {
 
 // startXray writes the generated config (0600) and launches xray bound to
 // listenHost:listenPort, returning the process handle and its exit channel.
-func (e *Engine) startXray(ctx context.Context, cfg Config, identity Identity, listenHost string, listenPort int) (*exec.Cmd, <-chan error, error) {
+// apiPort > 0 renders the loopback management inbound; staticClient bakes the
+// identity's ClientID into the config (a rotating session leaves it out and
+// installs every credential at runtime instead).
+func (e *Engine) startXray(ctx context.Context, cfg Config, identity Identity, listenHost string, listenPort int, apiPort int, staticClient bool) (*exec.Cmd, <-chan error, error) {
+	clientID := ""
+	if staticClient {
+		clientID = identity.ClientID
+	}
 	xrayConfig, err := relayruntime.BuildXrayConfig(relayruntime.XrayConfigInput{
 		ListenHost:        listenHost,
 		ListenPort:        listenPort,
-		ClientID:          identity.ClientID,
-		Flow:              relay.FlowVision,
+		ClientID:          clientID,
+		APIPort:           apiPort,
+		Flow:              relayFlow,
 		Dest:              cfg.RealityDest,
 		ServerName:        cfg.ServerName,
 		RealityPrivateKey: identity.RealityPrivateKey,
@@ -1090,7 +1118,8 @@ func (e *Engine) startXray(ctx context.Context, cfg Config, identity Identity, l
 // session actually rebinds xray to a reserved loopback port behind the
 // observer, which is resolved at runtime and not knowable at render time.
 // Tunnel mode renders a freshly reserved loopback binding for the same reason
-// cmd/relay does.
+// cmd/relay does. The render always carries the static client and no
+// management inbound: a rotating session's credentials exist only at runtime.
 func (e *Engine) RenderXrayConfig() ([]byte, error) {
 	// Refuse while running. Identity forking is prevented structurally by
 	// prepareIdentity's serialization, but a live direct session binds xray to
@@ -1174,11 +1203,40 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 		xrayListenHost, xrayListenPort = targetHost, targetPort
 	}
 
-	xrayCmd, xrayErr, err := e.startXray(ctx, cfg, identity, xrayListenHost, xrayListenPort)
+	// Rotating credentials need xray's management inbound; a static session
+	// bakes the identity's client ID into the config exactly as before.
+	var credentials *credentialRotation
+	var err error
+	apiPort := 0
+	if !cfg.DisableCredentialRotation {
+		apiPort, err = reserveIPv4LoopbackPort()
+		if err != nil {
+			return err
+		}
+		apiAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(apiPort))
+		credentials, err = newCredentialRotation(identity, cfg.CredentialEpoch, e.newXrayUsers(cfg, apiAddr), e.logf)
+		if err != nil {
+			return fmt.Errorf("credential rotation: %w", err)
+		}
+		if cfg.Identity.ClientID != "" {
+			e.logf("credential rotation is on: the configured static client ID is not served (set OPENRUNG_CREDENTIAL_ROTATION=off to keep it)")
+		}
+	}
+
+	xrayCmd, xrayErr, err := e.startXray(ctx, cfg, identity, xrayListenHost, xrayListenPort, apiPort, credentials == nil)
 	if err != nil {
 		return err
 	}
 	defer stopProcess(xrayCmd, xrayErr)
+
+	registerClientID := identity.ClientID
+	if credentials != nil {
+		if err := credentials.install(ctx, time.Now()); err != nil {
+			return fmt.Errorf("%w: %w", errCredentialInstall, err)
+		}
+		registerClientID = credentials.announce(ctx, time.Now())
+		e.logf("credential rotation is on (period %s)", credentials.schedule.Period())
+	}
 
 	var observerErr <-chan error
 	if !wss {
@@ -1237,7 +1295,7 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 		PublicHost:       publicHost,
 		PublicPort:       cfg.publicPort(),
 		Protocol:         relay.ProtocolVLESSRealityVision,
-		ClientID:         identity.ClientID,
+		ClientID:         registerClientID,
 		RealityPublicKey: identity.RealityPublicKey,
 		ShortID:          identity.ShortID,
 		ServerName:       cfg.ServerName,
@@ -1283,6 +1341,9 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 	}
 	e.logf("registered with the broker as %q (%s) at %s", desc.Label, desc.ID,
 		net.JoinHostPort(desc.PublicHost, strconv.Itoa(desc.PublicPort)))
+	if credentials != nil {
+		credentials.confirm(desc.ClientID)
+	}
 	e.registrations.Add(1)
 	e.setStatus(func() {
 		e.phase = PhaseOnline
@@ -1296,6 +1357,9 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 
 	heartbeat := time.NewTicker(cfg.HeartbeatInterval)
 	defer heartbeat.Stop()
+	// reRegisterErr carries a fail-closed re-registration verdict out of the
+	// heartbeat closure to end the session.
+	var reRegisterErr error
 	// Home IPv6 prefixes rotate; re-detect periodically and restart the session
 	// (fresh registration) when the address moves, because heartbeats never
 	// update public_host broker-side. The comparison must be like-against-like:
@@ -1315,10 +1379,83 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 	ipRecheck := time.NewTicker(ipRecheckInterval)
 	defer ipRecheck.Stop()
 
+	// One heartbeat, shared by the ticker and the rotation boundary. A rotating
+	// session announces the newest accepted credential, learns which one the
+	// broker now serves, and only then retires the rest — so a credential the
+	// directory may still hand out is never dropped first.
+	sendHeartbeat := func() {
+		now := time.Now()
+		clientID := ""
+		if credentials != nil {
+			clientID = credentials.announce(ctx, now)
+		}
+		resp, err := broker.Heartbeat(ctx, desc.ID, desc.LeaseToken, clientID)
+		if err == nil {
+			if credentials != nil {
+				credentials.confirm(resp.ClientID)
+				credentials.retire(ctx, now)
+			}
+			return
+		}
+		if !relayruntime.IsRelayNotFound(err) {
+			e.logf("heartbeat failed: %v", err)
+			return
+		}
+		if clientID != "" {
+			req.ClientID = clientID
+		}
+		reSigned, signErr := signedReq()
+		if signErr != nil {
+			e.logf("re-register after expired lease failed: %v", signErr)
+			return
+		}
+		updated, regErr := broker.Register(ctx, reSigned)
+		if regErr != nil {
+			e.logf("re-register after expired lease failed: %v", regErr)
+			return
+		}
+		if verifyErr := verifyRegisteredDescriptor(reSigned, updated, identityKey); verifyErr != nil {
+			// Fail closed like the initial registration: the broker-side
+			// lease now exists in a state this relay refuses to serve in
+			// (unattested class, tampered fronts), so end the session and
+			// surface the error instead of staying online mislabeled and
+			// re-registering at heartbeat cadence forever.
+			reRegisterErr = fmt.Errorf("re-register after expired lease: %w", verifyErr)
+			return
+		}
+		desc = updated
+		e.logf("re-registered with the broker as %q (%s)", desc.Label, desc.ID)
+		if credentials != nil {
+			credentials.confirm(desc.ClientID)
+			credentials.retire(ctx, now)
+		}
+		// The ID is derived from the identity key and so is unchanged
+		// here; the counter is what tells a caller this happened.
+		e.registrations.Add(1)
+		e.setStatus(func() { e.relayID = desc.ID })
+	}
+
+	// The rotation timer fires at each bucket boundary and heartbeats at once,
+	// so the broker serves the new credential within seconds rather than at
+	// the next tick. A static session never arms it (nil channel).
+	var rotation *time.Timer
+	var rotationC <-chan time.Time
+	if credentials != nil {
+		rotation = time.NewTimer(time.Until(credentials.nextRotation(time.Now())))
+		defer rotation.Stop()
+		rotationC = rotation.C
+	}
+
 	for {
+		if reRegisterErr != nil {
+			return reRegisterErr
+		}
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-rotationC:
+			sendHeartbeat()
+			rotation.Reset(time.Until(credentials.nextRotation(time.Now())))
 		case err := <-xrayErr:
 			if err == nil {
 				return errors.New("xray exited")
@@ -1339,36 +1476,7 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 				return errPublicIPChanged
 			}
 		case <-heartbeat.C:
-			if err := broker.Heartbeat(ctx, desc.ID, desc.LeaseToken); err != nil {
-				if !relayruntime.IsRelayNotFound(err) {
-					e.logf("heartbeat failed: %v", err)
-					continue
-				}
-				reSigned, signErr := signedReq()
-				if signErr != nil {
-					e.logf("re-register after expired lease failed: %v", signErr)
-					continue
-				}
-				updated, regErr := broker.Register(ctx, reSigned)
-				if regErr != nil {
-					e.logf("re-register after expired lease failed: %v", regErr)
-					continue
-				}
-				if verifyErr := verifyRegisteredDescriptor(reSigned, updated, identityKey); verifyErr != nil {
-					// Fail closed like the initial registration: the broker-side
-					// lease now exists in a state this relay refuses to serve in
-					// (unattested class, tampered fronts), so end the session and
-					// surface the error instead of staying online mislabeled and
-					// re-registering at heartbeat cadence forever.
-					return fmt.Errorf("re-register after expired lease: %w", verifyErr)
-				}
-				desc = updated
-				e.logf("re-registered with the broker as %q (%s)", desc.Label, desc.ID)
-				// The ID is derived from the identity key and so is unchanged
-				// here; the counter is what tells a caller this happened.
-				e.registrations.Add(1)
-				e.setStatus(func() { e.relayID = desc.ID })
-			}
+			sendHeartbeat()
 		}
 	}
 }
@@ -1436,7 +1544,7 @@ func (e *Engine) runTunnelSession(ctx context.Context, cfg Config, label string,
 		return err
 	}
 
-	xrayCmd, xrayErr, err := e.startXray(sessionCtx, cfg, identity, loopHost, loopPort)
+	xrayCmd, xrayErr, err := e.startXray(sessionCtx, cfg, identity, loopHost, loopPort, 0, true)
 	if err != nil {
 		return err
 	}

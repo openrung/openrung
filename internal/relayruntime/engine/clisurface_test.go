@@ -261,7 +261,7 @@ func TestConfigPathOverridesConfigDir(t *testing.T) {
 		ConfigPath:  configPath,
 	}, Events{})
 
-	if _, _, err := eng.startXray(context.Background(), eng.currentConfig(), testIdentity, "127.0.0.1", 1080); err != nil {
+	if _, _, err := eng.startXray(context.Background(), eng.currentConfig(), testIdentity, "127.0.0.1", 1080, 0, true); err != nil {
 		t.Fatalf("startXray: %v", err)
 	}
 	info, err := os.Stat(configPath)

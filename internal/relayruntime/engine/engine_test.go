@@ -50,6 +50,13 @@ type fakeBroker struct {
 	// notFoundOnce makes the next heartbeat return the broker's pruned-relay
 	// 404, then clears.
 	notFoundOnce bool
+	// servedClientID is the credential the fake directory currently serves:
+	// the last registered or heartbeat-announced client_id. Heartbeat
+	// responses echo it unless legacyHeartbeat is set, which mimics a broker
+	// that predates credential rotation (no client_id in the response).
+	servedClientID  string
+	legacyHeartbeat bool
+	lastHeartbeat   relay.HeartbeatRequest
 }
 
 func (f *fakeBroker) handler() http.Handler {
@@ -62,22 +69,33 @@ func (f *fakeBroker) handler() http.Handler {
 		var req relay.RegisterRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		f.lastRegister = req
+		f.servedClientID = req.ClientID
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(relay.Descriptor{ID: id, Label: req.Label, PublicHost: req.PublicHost, PublicPort: req.PublicPort})
+		_ = json.NewEncoder(w).Encode(relay.Descriptor{ID: id, Label: req.Label, PublicHost: req.PublicHost, PublicPort: req.PublicPort, ClientID: req.ClientID})
 	})
 	mux.HandleFunc("/api/v1/relays/", func(w http.ResponseWriter, r *http.Request) {
+		var hb relay.HeartbeatRequest
+		_ = json.NewDecoder(r.Body).Decode(&hb)
 		f.mu.Lock()
 		f.heartbeats++
+		f.lastHeartbeat = hb
 		notFound := f.notFoundOnce
 		f.notFoundOnce = false
+		if !notFound && hb.ClientID != "" {
+			f.servedClientID = hb.ClientID
+		}
+		resp := relay.HeartbeatResponse{OK: true}
+		if !f.legacyHeartbeat {
+			resp.ClientID = f.servedClientID
+		}
 		f.mu.Unlock()
 		if notFound {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"error":"relay not found"}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"ok":true}`))
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 	return mux
 }

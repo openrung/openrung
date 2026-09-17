@@ -37,6 +37,8 @@ var relayEnvironmentVariables = []string{
 	"OPENRUNG_HUB_HTTP_URL",
 	"OPENRUNG_HUB_CERT_FINGERPRINT",
 	"OPENRUNG_PUNCH_DISABLE",
+	"OPENRUNG_CREDENTIAL_ROTATION",
+	"OPENRUNG_CREDENTIAL_EPOCH",
 }
 
 // parseFlags runs the real registration and parsing path, so what these tests
@@ -101,6 +103,8 @@ func TestFlagSurfaceAndDefaultsAreStable(t *testing.T) {
 		"hub-tls":              "true",
 		"hub-insecure":         "false",
 		"punch":                "true",
+		"credential-rotation":  "true",
+		"credential-epoch":     "",
 	}
 
 	fs := flag.NewFlagSet("relay", flag.ContinueOnError)
@@ -714,6 +718,52 @@ func TestRelayDeploymentCoLocatesHardenedWSSSidecar(t *testing.T) {
 	} {
 		if !strings.Contains(readme, required) {
 			t.Errorf("relay deployment README is missing WSS coordination guidance %q", required)
+		}
+	}
+}
+
+// Rotation is on unless the operator turns it off: only an explicit "off"
+// value in the environment (or the flag) disables it, and the epoch salt is
+// passed through verbatim.
+func TestCredentialRotationFlagsMapOntoEngineConfig(t *testing.T) {
+	cfg, err := parseFlags(t, "-mode", "direct").engineConfig()
+	if err != nil {
+		t.Fatalf("engineConfig: %v", err)
+	}
+	if cfg.DisableCredentialRotation || cfg.CredentialEpoch != "" {
+		t.Fatalf("default config = rotation disabled %v, epoch %q; want rotation on with no epoch", cfg.DisableCredentialRotation, cfg.CredentialEpoch)
+	}
+
+	cfg, err = parseFlags(t, "-mode", "direct", "-credential-rotation=false", "-credential-epoch", "2").engineConfig()
+	if err != nil {
+		t.Fatalf("engineConfig: %v", err)
+	}
+	if !cfg.DisableCredentialRotation || cfg.CredentialEpoch != "2" {
+		t.Fatalf("flags mapped to rotation disabled %v, epoch %q", cfg.DisableCredentialRotation, cfg.CredentialEpoch)
+	}
+
+	for _, name := range relayEnvironmentVariables {
+		t.Setenv(name, "")
+	}
+	for value, wantDisabled := range map[string]bool{"off": true, "false": true, "0": true, "no": true, "on": false, "": false, "yes": false, "nonsense": false} {
+		t.Setenv("OPENRUNG_CREDENTIAL_ROTATION", value)
+		t.Setenv("OPENRUNG_CREDENTIAL_EPOCH", "epoch-"+value)
+		flags := &cliFlags{}
+		fs := flag.NewFlagSet("relay", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		flags.register(fs, "")
+		if err := fs.Parse([]string{"-mode", "direct"}); err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		cfg, err := flags.engineConfig()
+		if err != nil {
+			t.Fatalf("engineConfig: %v", err)
+		}
+		if cfg.DisableCredentialRotation != wantDisabled {
+			t.Errorf("OPENRUNG_CREDENTIAL_ROTATION=%q: rotation disabled = %v, want %v", value, cfg.DisableCredentialRotation, wantDisabled)
+		}
+		if cfg.CredentialEpoch != "epoch-"+value {
+			t.Errorf("OPENRUNG_CREDENTIAL_EPOCH not passed through: %q", cfg.CredentialEpoch)
 		}
 	}
 }

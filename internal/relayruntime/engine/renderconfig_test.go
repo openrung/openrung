@@ -157,7 +157,10 @@ func TestConcurrentRendersConvergeOnOneIdentity(t *testing.T) {
 	winner := persisted[0]
 	mu.Unlock()
 
-	// The identity a subsequent Start registers with is the rendered one.
+	// The identity a subsequent Start registers with is the rendered one. The
+	// registered client_id is a derived rotating credential rather than the
+	// identity's static one, so the Reality key and short ID are what tie the
+	// registration to the rendered identity.
 	if err := eng.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -166,9 +169,9 @@ func TestConcurrentRendersConvergeOnOneIdentity(t *testing.T) {
 		return eng.Status().Phase == PhaseOnline
 	})
 	_, _, last := broker.stats()
-	if last.ClientID != winner.ClientID || last.ShortID != winner.ShortID {
+	if last.RealityPublicKey != winner.RealityPublicKey || last.ShortID != winner.ShortID {
 		t.Fatalf("registered identity (%s/%s) does not match the rendered one (%s/%s)",
-			last.ClientID, last.ShortID, winner.ClientID, winner.ShortID)
+			last.RealityPublicKey, last.ShortID, winner.RealityPublicKey, winner.ShortID)
 	}
 }
 

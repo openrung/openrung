@@ -139,7 +139,7 @@ func TestFoundationRefusesPlaintextBroker(t *testing.T) {
 	if _, err := broker.Register(context.Background(), relay.RegisterRequest{}); err == nil {
 		t.Fatal("Register() error = nil, want a cleartext-broker refusal")
 	}
-	if err := broker.Heartbeat(context.Background(), "relay_x", ""); err == nil {
+	if _, err := broker.Heartbeat(context.Background(), "relay_x", "", ""); err == nil {
 		t.Fatal("Heartbeat() error = nil, want a cleartext-broker refusal")
 	}
 	if sent.Load() != 0 {
@@ -174,7 +174,7 @@ func TestEngineBrokerUsesCanonicalRoutesAndRefusesRedirects(t *testing.T) {
 	if _, err := broker.Register(context.Background(), relay.RegisterRequest{}); err == nil || !strings.Contains(err.Error(), "refused redirect") {
 		t.Fatalf("Register() error = %v, want a refused-redirect error", err)
 	}
-	if err := broker.Heartbeat(context.Background(), "relay_1", "lease"); err == nil || !strings.Contains(err.Error(), "refused redirect") {
+	if _, err := broker.Heartbeat(context.Background(), "relay_1", "lease", ""); err == nil || !strings.Contains(err.Error(), "refused redirect") {
 		t.Fatalf("Heartbeat() error = %v, want a refused-redirect error", err)
 	}
 	if redirected.Load() != 0 {

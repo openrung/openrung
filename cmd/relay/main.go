@@ -136,6 +136,8 @@ type cliFlags struct {
 	hubTLS             bool
 	hubInsecure        bool
 	punch              bool
+	credentialRotation bool
+	credentialEpoch    string
 }
 
 func (f *cliFlags) register(fs *flag.FlagSet, identitySeed string) {
@@ -174,6 +176,8 @@ func (f *cliFlags) register(fs *flag.FlagSet, identitySeed string) {
 	fs.BoolVar(&f.hubTLS, "hub-tls", true, "dial the relay hub over TLS in tunnel mode")
 	fs.BoolVar(&f.hubInsecure, "hub-insecure", false, "skip TLS certificate verification when dialing the relay hub (testing only)")
 	fs.BoolVar(&f.punch, "punch", !boolEnv("OPENRUNG_PUNCH_DISABLE"), "offer NAT hole punching so clients can connect directly (tunnel mode; requires a punch-capable hub)")
+	fs.BoolVar(&f.credentialRotation, "credential-rotation", !offEnv("OPENRUNG_CREDENTIAL_ROTATION"), "rotate the VLESS credential hourly in direct mode (derived from the identity seed, announced to the broker on heartbeat); false keeps one static -client-id for the whole run. OPENRUNG_CREDENTIAL_ROTATION=off disables it")
+	fs.StringVar(&f.credentialEpoch, "credential-epoch", os.Getenv("OPENRUNG_CREDENTIAL_EPOCH"), "salt for the rotating-credential derivation; change it to invalidate every derived credential at once without changing the relay identity")
 }
 
 // engineConfig maps the parsed flags onto the engine. Everything it rejects is
@@ -234,10 +238,12 @@ func (f *cliFlags) engineConfig() (engine.Config, error) {
 			ShortID:           f.shortID,
 			IdentitySeed:      f.identitySeed,
 		},
-		ConfigPath:   configPath,
-		Version:      reportedRelayVersion(),
-		PunchCapable: f.punch,
-		DisableXray:  f.skipXrayRun,
+		ConfigPath:                configPath,
+		Version:                   reportedRelayVersion(),
+		PunchCapable:              f.punch,
+		DisableXray:               f.skipXrayRun,
+		DisableCredentialRotation: !f.credentialRotation,
+		CredentialEpoch:           f.credentialEpoch,
 	}
 
 	// Two rules the engine deliberately does not apply, kept per-mode exactly
@@ -316,6 +322,17 @@ func parseWSSFrontsFlag(raw string) ([]relay.WSSFrontDescriptor, error) {
 func boolEnv(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
 	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+// offEnv reports whether an on-by-default switch was explicitly turned off;
+// unset or any other value keeps the default.
+func offEnv(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "0", "false", "no", "off":
 		return true
 	default:
 		return false

@@ -44,11 +44,15 @@ func (b *BrokerClient) Register(ctx context.Context, req relay.RegisterRequest) 
 	return registration.Descriptor, nil
 }
 
-// Heartbeat renews the relay's lease. A pruned relay yields an APIError with
-// status 404 that IsRelayNotFound recognizes.
-func (b *BrokerClient) Heartbeat(ctx context.Context, id, leaseToken string) error {
+// Heartbeat renews the relay's lease. A non-empty clientID asks the broker to
+// serve that VLESS credential from now on; the response reports the
+// credential the directory serves after the call (empty from a broker that
+// predates rotation). A pruned relay yields an APIError with status 404 that
+// IsRelayNotFound recognizes.
+func (b *BrokerClient) Heartbeat(ctx context.Context, id, leaseToken, clientID string) (relay.HeartbeatResponse, error) {
 	var resp relay.HeartbeatResponse
-	return b.postJSON(ctx, relayHeartbeatPathBase+id+"/heartbeat", relay.HeartbeatRequest{OK: true, LeaseToken: leaseToken}, &resp)
+	err := b.postJSON(ctx, relayHeartbeatPathBase+id+"/heartbeat", relay.HeartbeatRequest{OK: true, LeaseToken: leaseToken, ClientID: clientID}, &resp)
+	return resp, err
 }
 
 func (b *BrokerClient) postJSON(ctx context.Context, path string, body any, out any) error {
