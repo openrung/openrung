@@ -215,16 +215,32 @@ func decodeRankingWeightBody(w http.ResponseWriter, r *http.Request) (float64, e
 
 // dashboardMutationAllowed vets a state-changing dashboard request: it must
 // declare a JSON body (an HTML form cannot send application/json, so a
-// cross-site form post is refused on content type alone) and, when the browser
-// attaches an Origin header, that origin must be this broker. A request with
-// no Origin at all is tolerated: same-origin fetches from older browsers omit
-// it, and the cookie's SameSite=Strict still fences the session. Rejections
-// name the reason so an operator debugging a proxy misconfiguration is not
-// left guessing.
+// cross-site form post is refused on content type alone) and it must come from
+// the dashboard's own origin.
+//
+// Same-origin is judged from Sec-Fetch-Site first. The browser computes that
+// header itself, pages cannot set it (it is a forbidden header name), and no
+// proxy hop rewrites it — unlike Host, which the CDN front in production
+// replaces with the origin hostname, so an Origin-vs-Host comparison there
+// refuses every legitimate request. Only when the header is absent (older
+// browsers) does the check fall back to comparing the Origin header's host
+// with Host; a request with neither header is tolerated, since the cookie's
+// SameSite=Strict still fences the session. Rejections name the reason so an
+// operator debugging a proxy misconfiguration is not left guessing.
 func dashboardMutationAllowed(r *http.Request) (int, string) {
 	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || mediaType != "application/json" {
 		return http.StatusUnsupportedMediaType, "Content-Type must be application/json"
+	}
+	switch strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site"))) {
+	case "same-origin":
+		return 0, ""
+	case "":
+		// No fetch metadata: fall back to the Origin header below.
+	default:
+		// cross-site, same-site (a sibling subdomain), or none (a navigation,
+		// which never carries a JSON PUT from this page).
+		return http.StatusForbidden, "cross-origin dashboard requests are not allowed"
 	}
 	origin := r.Header.Get("Origin")
 	if origin == "" {

@@ -493,10 +493,14 @@ DELETE /admin/api/telemetry/relays/{id}/weight
 
 Validation and responses match the operational routes. Because the session is
 a cookie, both mutations additionally require `Content-Type: application/json`
-(`415` otherwise — an HTML form cannot send it) and, when the browser attaches
-an `Origin` header, that origin must be the broker itself (`403` otherwise);
-together with the cookie's `SameSite=Strict` this keeps a visited page from
-moving the dial. Each row of `GET /admin/api/telemetry/relays` carries the
+(`415` otherwise — an HTML form cannot send it) and must be same-origin
+(`403` otherwise): the browser's `Sec-Fetch-Site` header decides when present
+(`same-origin` passes; `cross-site`, `same-site`, and `none` are refused), and
+only in its absence is the `Origin` header's host compared with `Host`. Fetch
+metadata is used first because a CDN front rewrites `Host` to the origin
+hostname, which would make the `Origin` comparison refuse every legitimate
+request through the front. Together with the cookie's `SameSite=Strict` this
+keeps a visited page from moving the dial. Each row of `GET /admin/api/telemetry/relays` carries the
 relay's effective `ranking_weight`, offline rows included.
 
 ## Health

@@ -348,8 +348,10 @@ the public front.
 
 The telemetry dashboard's relays page (`/admin/telemetry/relays`) exposes the
 same dial as a **Weight** column with an inline Save/Reset control per relay,
-behind the dashboard session cookie rather than the API token; relays weighted
-below `1` are marked amber (red at `0`) so shifted load is visible at a glance.
+behind the dashboard session cookie rather than the API token (mutations must be
+same-origin, judged from the browser's `Sec-Fetch-Site` so the check also holds
+through a CDN front that rewrites `Host`); relays weighted below `1` are marked
+amber (red at `0`) so shifted load is visible at a glance.
 Every change through either door is logged at info level with the relay ID,
 old and new value, and the caller's IP:
 

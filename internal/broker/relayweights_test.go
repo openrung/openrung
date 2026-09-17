@@ -284,6 +284,13 @@ func TestDashboardRelayWeightEndpoints(t *testing.T) {
 
 	// Guards: a form content type (what a cross-site form could send) is
 	// refused, as is any Origin that is not this broker — on DELETE too.
+	// Fetch metadata wins over the Origin/Host comparison in both directions.
+	if response := do(http.MethodPut, path, `{"weight":0.5}`, map[string]string{"Content-Type": "application/json", "Origin": "https://broker.example", "Sec-Fetch-Site": "cross-site"}); response.Code != http.StatusForbidden {
+		t.Errorf("Sec-Fetch-Site cross-site with a matching Origin = %d, want 403", response.Code)
+	}
+	if response := do(http.MethodPut, path, `{"weight":0.5}`, map[string]string{"Content-Type": "application/json", "Origin": "https://sub.broker.example", "Sec-Fetch-Site": "same-site"}); response.Code != http.StatusForbidden {
+		t.Errorf("Sec-Fetch-Site same-site = %d, want 403", response.Code)
+	}
 	if response := do(http.MethodPut, path, `{"weight":0.5}`, map[string]string{"Content-Type": "application/x-www-form-urlencoded"}); response.Code != http.StatusUnsupportedMediaType {
 		t.Errorf("form content type = %d, want 415", response.Code)
 	}
@@ -329,6 +336,20 @@ func TestDashboardRelayWeightEndpoints(t *testing.T) {
 	}
 	if !strings.Contains(panelResponse.Body.String(), `"ranking_weight":0.5`) {
 		t.Errorf("panel JSON lacks ranking_weight: %s", panelResponse.Body.String())
+	}
+
+	// The production shape: the CDN front rewrites Host to the origin
+	// hostname, so Origin and Host disagree, yet the browser's own
+	// Sec-Fetch-Site says same-origin and must win.
+	fronted := do(http.MethodPut, path, `{"weight":0.75}`, map[string]string{"Content-Type": "application/json", "Origin": "https://broker.public.example", "Sec-Fetch-Site": "same-origin"})
+	if fronted.Code != http.StatusOK {
+		t.Fatalf("fronted same-origin PUT (Origin host != Host) = %d, want 200: %s", fronted.Code, fronted.Body.String())
+	}
+	if got := decodeWeightResponse(t, fronted.Body.Bytes()); got.Weight != 0.75 || got.PreviousWeight != 0.5 {
+		t.Errorf("fronted PUT response = %+v", got)
+	}
+	if response := do(http.MethodPut, path, `{"weight":0.5}`, jsonHeaders); response.Code != http.StatusOK {
+		t.Fatalf("restore 0.5 = %d", response.Code)
 	}
 
 	// No Origin header at all is tolerated (older same-origin fetches).
