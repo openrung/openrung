@@ -1,10 +1,8 @@
 package broker
 
 import (
-	"errors"
 	"math"
 	"sort"
-	"strings"
 	"time"
 
 	"openrung/internal/relay"
@@ -71,36 +69,11 @@ type relayMetricObservation struct {
 	IncludesSpeedTest bool
 }
 
-func normalizeRankingMode(mode RankingMode) RankingMode {
-	switch RankingMode(strings.ToLower(strings.TrimSpace(string(mode)))) {
-	case RankingModeLegacy:
-		return RankingModeLegacy
-	default:
-		return RankingModeGlobal
-	}
-}
-
-func ParseRankingMode(raw string) (RankingMode, error) {
-	switch RankingMode(strings.ToLower(strings.TrimSpace(raw))) {
-	case "", RankingModeGlobal:
-		return RankingModeGlobal, nil
-	case RankingModeLegacy:
-		return RankingModeLegacy, nil
-	default:
-		return "", errors.New("relay-ranking must be global or legacy")
-	}
-}
-
 // sortRelayCandidates orders relays best-first. snapshots is the 30-minute
 // telemetry view per relay ID; weights is the operator's per-relay ranking
 // multiplier keyed the same way, with absent entries meaning
-// defaultRankingWeight (see rankingWeightFor). Legacy mode ignores both.
-func sortRelayCandidates(relays []relay.Descriptor, snapshots map[string]RelayMetricsSnapshot, weights map[string]float64, mode RankingMode) {
-	if mode == RankingModeLegacy {
-		sortLegacyRelays(relays)
-		return
-	}
-
+// defaultRankingWeight (see rankingWeightFor).
+func sortRelayCandidates(relays []relay.Descriptor, snapshots map[string]RelayMetricsSnapshot, weights map[string]float64) {
 	scores := make(map[string]float64, len(relays))
 	for _, desc := range relays {
 		scores[desc.ID] = relayScore(desc, snapshots[desc.ID], rankingWeightFor(weights, desc.ID))
@@ -121,17 +94,6 @@ func sortRelayCandidates(relays []relay.Descriptor, snapshots map[string]RelayMe
 			return leftIPv6
 		}
 		return left.ID < right.ID
-	})
-}
-
-func sortLegacyRelays(relays []relay.Descriptor) {
-	sort.Slice(relays, func(i, j int) bool {
-		iIPv6 := relay.IsIPv6Host(relays[i].PublicHost)
-		jIPv6 := relay.IsIPv6Host(relays[j].PublicHost)
-		if iIPv6 != jIPv6 {
-			return iIPv6
-		}
-		return relays[i].LastHeartbeatAt.After(relays[j].LastHeartbeatAt)
 	})
 }
 

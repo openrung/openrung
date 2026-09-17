@@ -444,9 +444,8 @@ relay's telemetry-derived score. `1` leaves the ranking untouched, values below
 without delisting it — and excludes the relay from the WSS-candidate
 reservation that can otherwise promote a WSS-capable Foundation relay into a
 short page's last slot (weights above `0` keep that eligibility). Weights key on
-the relay ID, so they survive lease
-expiry and re-registration, and are never pruned with descriptors. The `legacy`
-ranking mode ignores them.
+the relay ID, so they survive lease expiry and re-registration, and are never
+pruned with descriptors.
 
 These routes share the inventory's credential, per-IP rate limit, and
 `no-store` posture, and answer like it: `401` for a missing or invalid bearer
@@ -876,13 +875,13 @@ client-visible revocation mechanism.
 GET /api/v1/relays?limit=5
 ```
 
-The order of `relays` is the broker's candidate ranking. In global ranking mode,
-the broker uses recent connection successes/failures, active sessions, observed
-client latency, and speed-test telemetry. The latency it scores is aggregated
-across all clients, so it cannot describe any one client's path. IPv6 is only a
-final tie-breaker after score and heartbeat recency. `limit` truncates *after*
-ranking, so membership of the returned set — unlike the order within it — is
-decided entirely by the broker.
+The order of `relays` is the broker's candidate ranking. The broker uses recent
+connection successes/failures, active sessions, observed client latency, and
+speed-test telemetry. The latency it scores is aggregated across all clients,
+so it cannot describe any one client's path. IPv6 is only a final tie-breaker
+after score and heartbeat recency. `limit` truncates *after* ranking, so
+membership of the returned set — unlike the order within it — is decided
+entirely by the broker.
 
 Clients should filter unusable descriptors without reordering the broker-ranked
 list. A client may reorder on a signal the broker cannot observe — notably the

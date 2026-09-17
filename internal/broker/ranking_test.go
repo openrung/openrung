@@ -119,28 +119,20 @@ func TestSortRelayCandidatesRankingWeightZeroSortsLast(t *testing.T) {
 	}
 
 	relays := []relay.Descriptor{weak, strong}
-	sortRelayCandidates(relays, snapshots, nil, RankingModeGlobal)
+	sortRelayCandidates(relays, snapshots, nil)
 	if relays[0].ID != "relay_strong" {
 		t.Fatalf("unweighted: strong relay should lead, got %q", relays[0].ID)
 	}
 
 	relays = []relay.Descriptor{strong, weak}
-	sortRelayCandidates(relays, snapshots, map[string]float64{"relay_strong": 0}, RankingModeGlobal)
+	sortRelayCandidates(relays, snapshots, map[string]float64{"relay_strong": 0})
 	if relays[len(relays)-1].ID != "relay_strong" {
 		t.Fatalf("weight 0 must sort the strong relay last, got order %q, %q", relays[0].ID, relays[1].ID)
 	}
 
 	relays = []relay.Descriptor{strong, weak}
-	sortRelayCandidates(relays, snapshots, map[string]float64{"relay_strong": 0.2}, RankingModeGlobal)
+	sortRelayCandidates(relays, snapshots, map[string]float64{"relay_strong": 0.2})
 	if relays[0].ID != "relay_weak" {
 		t.Fatalf("weight 0.2 on the strong relay should demote it below the weak one, got %q first", relays[0].ID)
-	}
-
-	// Legacy ranking ignores weights entirely: heartbeat order stands.
-	relays = []relay.Descriptor{weak, strong}
-	relays[1].LastHeartbeatAt = now.Add(time.Second)
-	sortRelayCandidates(relays, snapshots, map[string]float64{"relay_strong": 0}, RankingModeLegacy)
-	if relays[0].ID != "relay_strong" {
-		t.Fatalf("legacy mode must ignore weights, got %q first", relays[0].ID)
 	}
 }

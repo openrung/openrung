@@ -78,8 +78,8 @@ func TestHeartbeatMissError(t *testing.T) {
 
 func TestPostgresStoreSharesRelayStateAcrossInstances(t *testing.T) {
 	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
-	storeA := newTestPostgresStore(t, RankingModeGlobal)
-	storeB := newTestPostgresStore(t, RankingModeGlobal)
+	storeA := newTestPostgresStore(t)
+	storeB := newTestPostgresStore(t)
 
 	desc, err := storeA.Register(validRegisterRequest(), now, time.Minute)
 	if err != nil {
@@ -104,7 +104,7 @@ func TestPostgresStoreSharesRelayStateAcrossInstances(t *testing.T) {
 
 func TestPostgresStorePreservesActiveRelaysAcrossRestart(t *testing.T) {
 	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
-	store := newTestPostgresStoreWithoutCleanup(t, RankingModeGlobal)
+	store := newTestPostgresStoreWithoutCleanup(t)
 	cleanupPostgresStore(t, store)
 	desc, err := store.Register(validRegisterRequest(), now, time.Minute)
 	if err != nil {
@@ -112,7 +112,7 @@ func TestPostgresStorePreservesActiveRelaysAcrossRestart(t *testing.T) {
 	}
 	store.Close()
 
-	reopened := newTestPostgresStoreWithoutCleanup(t, RankingModeGlobal)
+	reopened := newTestPostgresStoreWithoutCleanup(t)
 	t.Cleanup(func() { cleanupPostgresStore(t, reopened) })
 	listed, err := reopened.List(now.Add(time.Second), 10)
 	if err != nil {
@@ -125,8 +125,8 @@ func TestPostgresStorePreservesActiveRelaysAcrossRestart(t *testing.T) {
 
 func TestPostgresStorePruneIsShared(t *testing.T) {
 	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
-	storeA := newTestPostgresStore(t, RankingModeGlobal)
-	storeB := newTestPostgresStore(t, RankingModeGlobal)
+	storeA := newTestPostgresStore(t)
+	storeB := newTestPostgresStore(t)
 
 	desc, err := storeA.Register(validRegisterRequest(), now, time.Minute)
 	if err != nil {
@@ -150,7 +150,7 @@ func TestPostgresStorePruneIsShared(t *testing.T) {
 
 func TestPostgresStoreDuplicateEndpointReplacesOldDescriptor(t *testing.T) {
 	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
-	store := newTestPostgresStore(t, RankingModeGlobal)
+	store := newTestPostgresStore(t)
 
 	first, err := store.Register(validRegisterRequest(), now, time.Minute)
 	if err != nil {
@@ -177,10 +177,10 @@ func TestPostgresStoreDuplicateEndpointReplacesOldDescriptor(t *testing.T) {
 	}
 }
 
-func TestPostgresStoreGlobalRankingUsesSharedMetrics(t *testing.T) {
+func TestPostgresStoreRankingUsesSharedMetrics(t *testing.T) {
 	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
-	storeA := newTestPostgresStore(t, RankingModeGlobal)
-	storeB := newTestPostgresStore(t, RankingModeGlobal)
+	storeA := newTestPostgresStore(t)
+	storeB := newTestPostgresStore(t)
 	crowded := registerPostgresRelayForRanking(t, storeA, now, "crowded.example.com", 1, 20)
 	open := registerPostgresRelayForRanking(t, storeA, now.Add(time.Second), "open.example.com", 8, 20)
 
@@ -208,7 +208,7 @@ func TestPostgresStoreGlobalRankingUsesSharedMetrics(t *testing.T) {
 
 func TestPostgresStoreGeoSurvivesReRegistration(t *testing.T) {
 	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
-	store := newTestPostgresStore(t, RankingModeGlobal)
+	store := newTestPostgresStore(t)
 
 	desc, err := store.Register(validRegisterRequest(), now, time.Minute)
 	if err != nil {
@@ -242,7 +242,7 @@ func TestPostgresStoreGeoSurvivesReRegistration(t *testing.T) {
 
 func TestPostgresStoreExitHostChangeClearsGeo(t *testing.T) {
 	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
-	store := newTestPostgresStore(t, RankingModeGlobal)
+	store := newTestPostgresStore(t)
 
 	req := validRegisterRequest()
 	req.Transport = relay.TransportTunnel
@@ -282,9 +282,9 @@ func TestPostgresStoreExitHostChangeClearsGeo(t *testing.T) {
 	}
 }
 
-func newTestPostgresStore(t *testing.T, rankingMode RankingMode) *PostgresStore {
+func newTestPostgresStore(t *testing.T) *PostgresStore {
 	t.Helper()
-	store := newTestPostgresStoreWithoutCleanup(t, rankingMode)
+	store := newTestPostgresStoreWithoutCleanup(t)
 	cleanupPostgresStore(t, store)
 	t.Cleanup(func() {
 		cleanupPostgresStore(t, store)
@@ -293,7 +293,7 @@ func newTestPostgresStore(t *testing.T, rankingMode RankingMode) *PostgresStore 
 	return store
 }
 
-func newTestPostgresStoreWithoutCleanup(t *testing.T, rankingMode RankingMode) *PostgresStore {
+func newTestPostgresStoreWithoutCleanup(t *testing.T) *PostgresStore {
 	t.Helper()
 	databaseURL := os.Getenv("OPENRUNG_TEST_POSTGRES_URL")
 	if databaseURL == "" {
@@ -301,7 +301,7 @@ func newTestPostgresStoreWithoutCleanup(t *testing.T, rankingMode RankingMode) *
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	store, err := NewPostgresStore(ctx, databaseURL, rankingMode)
+	store, err := NewPostgresStore(ctx, databaseURL)
 	if err != nil {
 		t.Fatalf("open postgres store: %v", err)
 	}
@@ -330,7 +330,7 @@ func registerPostgresRelayForRanking(t *testing.T, store *PostgresStore, now tim
 
 func TestPostgresStoreRoundTripsNodeClass(t *testing.T) {
 	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
-	store := newTestPostgresStore(t, RankingModeGlobal)
+	store := newTestPostgresStore(t)
 
 	req := validRegisterRequest()
 	req.NodeClass = relay.NodeClassFoundation
@@ -380,7 +380,7 @@ func TestPostgresStoreRoundTripsNodeClass(t *testing.T) {
 
 func TestPostgresStoreHeartbeatGuardsFoundationLease(t *testing.T) {
 	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
-	store := newTestPostgresStore(t, RankingModeGlobal)
+	store := newTestPostgresStore(t)
 
 	req := validRegisterRequest()
 	req.NodeClass = relay.NodeClassFoundation
@@ -413,7 +413,7 @@ func TestPostgresStoreHeartbeatGuardsFoundationLease(t *testing.T) {
 
 func TestPostgresStoreRegisterGuardsFoundationEndpoint(t *testing.T) {
 	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
-	store := newTestPostgresStore(t, RankingModeGlobal)
+	store := newTestPostgresStore(t)
 
 	foundation := validRegisterRequest()
 	foundation.NodeClass = relay.NodeClassFoundation
@@ -459,7 +459,7 @@ func TestPostgresStoreRegisterGuardsFoundationEndpoint(t *testing.T) {
 // in-memory store (parity for the "live foundation endpoint" contract).
 func TestPostgresStoreExpiredFoundationEndpointIsReclaimable(t *testing.T) {
 	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
-	store := newTestPostgresStore(t, RankingModeGlobal)
+	store := newTestPostgresStore(t)
 
 	foundation := validRegisterRequest()
 	foundation.NodeClass = relay.NodeClassFoundation

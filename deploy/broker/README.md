@@ -314,9 +314,9 @@ relay itself:
 Weights key on the identity-derived relay ID (the `id` in the inventory), so a
 weight survives the relay's lease expiring, `docker restart`, and
 re-registration from a new endpoint; it is never pruned with descriptors. The
-`legacy` ranking mode ignores weights. The Postgres store keeps them in the
-`relay_ranking_weights` table (created by the idempotent schema on startup);
-the in-memory store loses them on broker restart along with everything else.
+Postgres store keeps them in the `relay_ranking_weights` table (created by the
+idempotent schema on startup); the in-memory store loses them on broker restart
+along with everything else.
 
 The same `OPENRUNG_API_TOKEN` that enables the inventory enables three
 token-gated endpoints beside it, sharing its rate limit and `no-store` posture:
@@ -446,7 +446,6 @@ docker inspect openrung-broker \
 | `OPENRUNG_TRUSTED_PROXY_CIDRS`       | no       | Cloudflare ranges                   | Extra trusted proxy CIDRs for forwarded client IPs             |
 | `OPENRUNG_RELAY_STORE`               | no       | `memory`                            | Relay state backend: `memory` or `postgres`                    |
 | `OPENRUNG_RELAY_DATABASE_URL`        | if pg    | —                                   | PostgreSQL URL when `OPENRUNG_RELAY_STORE=postgres`            |
-| `OPENRUNG_RELAY_RANKING`             | no       | `global`                            | Relay ranking mode: `global` or `legacy`                       |
 | `OPENRUNG_GEOIP_ENDPOINT`            | no       | ipwho.is                            | IP-geolocation endpoint for relay city/country; `off` disables |
 | `OPENRUNG_TELEMETRY_STORE`           | no       | `jsonl`                             | Telemetry backend: `jsonl` or `postgres`                       |
 | `OPENRUNG_TELEMETRY_DATABASE_URL`    | no       | relay database URL                  | PostgreSQL URL when `OPENRUNG_TELEMETRY_STORE=postgres`        |

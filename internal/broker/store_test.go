@@ -149,7 +149,7 @@ func TestStoreUpdateGeo(t *testing.T) {
 	}
 }
 
-func TestStoreGlobalRankingUsesFreshHeartbeatBeforeIPv6TieBreak(t *testing.T) {
+func TestStoreRankingUsesFreshHeartbeatBeforeIPv6TieBreak(t *testing.T) {
 	store := NewStore()
 	now := time.Date(2026, 6, 9, 7, 0, 0, 0, time.UTC)
 
@@ -177,35 +177,7 @@ func TestStoreGlobalRankingUsesFreshHeartbeatBeforeIPv6TieBreak(t *testing.T) {
 	}
 }
 
-func TestStoreLegacyRankingListsIPv6RelaysFirst(t *testing.T) {
-	store := NewStoreWithRanking(RankingModeLegacy)
-	now := time.Date(2026, 6, 9, 7, 0, 0, 0, time.UTC)
-
-	ipv4Req := validRegisterRequest()
-	ipv4Req.PublicHost = "203.0.113.10"
-	if _, err := store.Register(ipv4Req, now.Add(time.Second), time.Minute); err != nil {
-		t.Fatalf("register ipv4 relay: %v", err)
-	}
-
-	ipv6Req := validRegisterRequest()
-	ipv6Req.PublicHost = "2001:db8::443"
-	if _, err := store.Register(ipv6Req, now, time.Minute); err != nil {
-		t.Fatalf("register ipv6 relay: %v", err)
-	}
-
-	got, err := store.List(now.Add(2*time.Second), 10)
-	if err != nil {
-		t.Fatalf("list relays: %v", err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("expected 2 relays, got %d", len(got))
-	}
-	if got[0].PublicHost != "2001:db8::443" {
-		t.Fatalf("expected legacy IPv6 relay first, got %q", got[0].PublicHost)
-	}
-}
-
-func TestStoreGlobalRankingPrefersLowerActiveLoad(t *testing.T) {
+func TestStoreRankingPrefersLowerActiveLoad(t *testing.T) {
 	store := NewStore()
 	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
 	crowded := registerRelayForRanking(t, store, now, "crowded.example.com", 1, 20)
@@ -226,7 +198,7 @@ func TestStoreGlobalRankingPrefersLowerActiveLoad(t *testing.T) {
 	}
 }
 
-func TestStoreGlobalRankingDemotesRecentFailures(t *testing.T) {
+func TestStoreRankingDemotesRecentFailures(t *testing.T) {
 	store := NewStore()
 	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
 	reliable := registerRelayForRanking(t, store, now, "reliable.example.com", 8, 20)
@@ -255,7 +227,7 @@ func TestStoreGlobalRankingDemotesRecentFailures(t *testing.T) {
 	}
 }
 
-func TestStoreGlobalRankingPrefersLowerLatency(t *testing.T) {
+func TestStoreRankingPrefersLowerLatency(t *testing.T) {
 	store := NewStore()
 	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
 	fast := registerRelayForRanking(t, store, now, "fast.example.com", 8, 20)
@@ -286,7 +258,7 @@ func TestStoreGlobalRankingPrefersLowerLatency(t *testing.T) {
 	}
 }
 
-func TestStoreGlobalRankingUsesSpeedTests(t *testing.T) {
+func TestStoreRankingUsesSpeedTests(t *testing.T) {
 	store := NewStore()
 	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
 	fast := registerRelayForRanking(t, store, now, "fast-download.example.com", 8, 20)
