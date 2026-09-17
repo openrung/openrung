@@ -18,7 +18,7 @@ func runIdentityStoreTest(t *testing.T, test func(t *testing.T, store RelayStore
 		test(t, NewStore())
 	})
 	t.Run("postgres", func(t *testing.T) {
-		test(t, newTestPostgresStore(t, RankingModeGlobal))
+		test(t, newTestPostgresStore(t))
 	})
 }
 

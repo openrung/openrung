@@ -110,21 +110,19 @@ const (
 	TransportDirect = "direct"
 	TransportTunnel = "tunnel"
 
-	// ChannelAPI, ChannelMirror, and ChannelInventory name the signed
-	// relay-list channels. The value lives inside the signed body so a
-	// long-lived mirror artifact can never be replayed into an API slot (or
-	// vice versa): consumers check it against the channel they actually
-	// fetched from.
+	// ChannelAPI and ChannelInventory name the signed relay-list channels. The
+	// value lives inside the signed body so a body signed for one channel can
+	// never be replayed into the other: consumers check it against the channel
+	// they actually fetched from.
 	//
 	// ChannelInventory is the credentialed operational snapshot served by
 	// GET /admin/api/relays/inventory: the complete active relay set in stable
 	// relay-ID order, never the client-facing candidate ranking. It is a
 	// distinct channel precisely so an operator snapshot — untruncated, and so
 	// a superset of any client page — can never be replayed into a client's
-	// API or mirror slot, where the differing ordering and page contract would
-	// otherwise go unnoticed.
+	// API slot, where the differing ordering and page contract would otherwise
+	// go unnoticed.
 	ChannelAPI       = "api"
-	ChannelMirror    = "mirror"
 	ChannelInventory = "inventory"
 
 	// NodeClassFoundation marks a relay operated by the OpenRung Foundation
@@ -249,19 +247,18 @@ type RelayListResponse struct {
 	Count      int       `json:"count"`
 	ServerTime time.Time `json:"server_time"`
 	// NotAfter bounds replay of a validly signed body: ServerTime + 30 min on
-	// the API channel, publish time + 24 h on the mirror channel. Clients
-	// reject responses past it (with a small clock-skew allowance).
+	// the API channel, + 5 min on the inventory channel. Clients reject
+	// responses past it (with a small clock-skew allowance).
 	NotAfter time.Time `json:"not_after"`
 	// KeyID is lowercase hex of the first 8 bytes of SHA-256 over the raw
 	// 32-byte Ed25519 signing public key. Advisory routing only: clients fall
 	// back to trying every pinned key when it matches none of them.
 	KeyID string `json:"key_id"`
-	// Channel is ChannelAPI, ChannelMirror, or ChannelInventory (see the
-	// constants above).
+	// Channel is ChannelAPI or ChannelInventory (see the constants above).
 	Channel string `json:"channel"`
 	// Limit echoes the effective request limit on the API channel so clients
 	// can reject a signed body replayed from a differently-shaped request.
-	// Absent on the mirror channel, which is not request-shaped.
+	// Absent on the inventory channel, which is not request-shaped.
 	Limit  int               `json:"limit,omitempty"`
 	Relays []RelayDescriptor `json:"relays"`
 }

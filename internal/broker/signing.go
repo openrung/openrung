@@ -16,8 +16,8 @@ import (
 )
 
 // Relay-list signing detaches directory authenticity from the transport, so
-// discovery can safely use non-TLS channels (the direct-IP fallback, static
-// mirrors). It defends channel integrity only: a compromised broker signs
+// discovery can safely use non-TLS channels (the direct-IP fallback). It
+// defends channel integrity only: a compromised broker signs
 // whatever it serves, and a censor can still block or inject errors — clients
 // treat all of that as "candidate failed", never as forged data accepted.
 
@@ -29,11 +29,7 @@ const (
 	signatureHeader = "X-OpenRung-Relays-Signature"
 
 	// apiNotAfterWindow bounds replay of an API-channel response.
-	// mirrorNotAfterWindow bounds the long-lived mirror artifacts, which a
-	// cron republishes hourly, so 24 h is a safety margin rather than a
-	// staleness budget.
-	apiNotAfterWindow    = 30 * time.Minute
-	mirrorNotAfterWindow = 24 * time.Hour
+	apiNotAfterWindow = 30 * time.Minute
 )
 
 // signer signs relay-list response bodies with the broker's online Ed25519

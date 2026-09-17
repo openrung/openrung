@@ -489,23 +489,19 @@ func TestListRelaysIsNeverCacheable(t *testing.T) {
 
 func TestEmptyRelayListsEncodeAsJSONArray(t *testing.T) {
 	server := NewServer(nilListStore{Store: NewStore()}, Config{SigningSeed: testSigningSeed()})
-	for _, path := range []string{"/api/v1/relays", "/api/v1/relays.mirror"} {
-		t.Run(path, func(t *testing.T) {
-			recorder := httptest.NewRecorder()
-			server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
-			if recorder.Code != http.StatusOK {
-				t.Fatalf("status = %d: %s", recorder.Code, recorder.Body.String())
-			}
-			var body struct {
-				Relays json.RawMessage `json:"relays"`
-			}
-			if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
-				t.Fatalf("decode response: %v", err)
-			}
-			if string(body.Relays) != "[]" {
-				t.Fatalf("relays = %s, want []", body.Relays)
-			}
-		})
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/relays", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var body struct {
+		Relays json.RawMessage `json:"relays"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if string(body.Relays) != "[]" {
+		t.Fatalf("relays = %s, want []", body.Relays)
 	}
 }
 

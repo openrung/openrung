@@ -181,11 +181,10 @@ CREATE TABLE IF NOT EXISTS relay_ranking_weights (
 `
 
 type PostgresStore struct {
-	pool        *pgxpool.Pool
-	rankingMode RankingMode
+	pool *pgxpool.Pool
 }
 
-func NewPostgresStore(ctx context.Context, databaseURL string, rankingMode RankingMode) (*PostgresStore, error) {
+func NewPostgresStore(ctx context.Context, databaseURL string) (*PostgresStore, error) {
 	if strings.TrimSpace(databaseURL) == "" {
 		return nil, errors.New("relay database URL is required")
 	}
@@ -193,7 +192,7 @@ func NewPostgresStore(ctx context.Context, databaseURL string, rankingMode Ranki
 	if err != nil {
 		return nil, fmt.Errorf("open relay database: %w", err)
 	}
-	store := &PostgresStore{pool: pool, rankingMode: normalizeRankingMode(rankingMode)}
+	store := &PostgresStore{pool: pool}
 	if err := store.Ping(ctx); err != nil {
 		pool.Close()
 		return nil, err
@@ -526,7 +525,7 @@ func (s *PostgresStore) ListRanked(now time.Time, limit int) ([]relay.Descriptor
 	if err != nil {
 		return nil, nil, err
 	}
-	sortRelayCandidates(relays, snapshots, weights, s.rankingMode)
+	sortRelayCandidates(relays, snapshots, weights)
 	if limit > 0 && len(relays) > limit {
 		return relays[:limit], weights, nil
 	}

@@ -332,8 +332,8 @@ func TestRelayInventoryIsSignedOnTheInventoryChannel(t *testing.T) {
 	if inventory.Channel != relay.ChannelInventory {
 		t.Errorf("channel = %q, want %q", inventory.Channel, relay.ChannelInventory)
 	}
-	if inventory.Channel == relay.ChannelAPI || inventory.Channel == relay.ChannelMirror {
-		t.Fatal("the inventory channel must be distinct from the client channels")
+	if inventory.Channel == relay.ChannelAPI {
+		t.Fatal("the inventory channel must be distinct from the client channel")
 	}
 	if inventory.KeyID != vectors.SpecVector.KeyID {
 		t.Errorf("body key_id = %q, want %q", inventory.KeyID, vectors.SpecVector.KeyID)

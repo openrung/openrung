@@ -100,8 +100,8 @@ broker refuses to extend the lease otherwise. At the origin store, an unattended
 foundation row therefore disappears after one lease TTL. That is not an instant
 client-visible revocation guarantee: an ordinary API directory has a 30-minute
 signed freshness window, the Worker may serve its last healthy response for up
-to 15 minutes (still bounded by that response's `not_after`), and a mirror has a
-24-hour signed freshness window. Clients and their local caches must enforce each
+to 15 minutes (still bounded by that response's `not_after`). Clients and their
+local caches must enforce each
 snapshot's `not_after` with only the protocol's bounded clock-skew allowance;
 operators should treat `node_class` as provenance captured when it was signed.
 
@@ -162,10 +162,10 @@ not reload a changed env file). `lightsail-up.sh` intentionally rejects
 
 ## Relay-list signing
 
-Every 2xx relay-list response (`/api/v1/relays`, `/api/v1/relays.mirror`, and
-the operational `/admin/api/relays/inventory`) is signed with an Ed25519 key — a detached signature over the exact body bytes in
+Every 2xx relay-list response (`/api/v1/relays` and the operational
+`/admin/api/relays/inventory`) is signed with an Ed25519 key — a detached signature over the exact body bytes in
 the `X-OpenRung-Relays-Signature` header — so clients can verify the directory
-over non-TLS channels (the direct-IP fallback, static mirrors). The broker
+over non-TLS channels (the direct-IP fallback). The broker
 **refuses to start** without `OPENRUNG_RELAY_SIGNING_KEY` (standard base64 of
 the 32-byte seed): serving unsigned lists would keep healthz green while every
 verifying client rejected discovery. Generate a seed with
@@ -314,9 +314,9 @@ relay itself:
 Weights key on the identity-derived relay ID (the `id` in the inventory), so a
 weight survives the relay's lease expiring, `docker restart`, and
 re-registration from a new endpoint; it is never pruned with descriptors. The
-`legacy` ranking mode ignores weights. The Postgres store keeps them in the
-`relay_ranking_weights` table (created by the idempotent schema on startup);
-the in-memory store loses them on broker restart along with everything else.
+Postgres store keeps them in the `relay_ranking_weights` table (created by the
+idempotent schema on startup); the in-memory store loses them on broker restart
+along with everything else.
 
 The same `OPENRUNG_API_TOKEN` that enables the inventory enables three
 token-gated endpoints beside it, sharing its rate limit and `no-store` posture:
@@ -448,7 +448,6 @@ docker inspect openrung-broker \
 | `OPENRUNG_TRUSTED_PROXY_CIDRS`       | no       | Cloudflare ranges                   | Extra trusted proxy CIDRs for forwarded client IPs             |
 | `OPENRUNG_RELAY_STORE`               | no       | `memory`                            | Relay state backend: `memory` or `postgres`                    |
 | `OPENRUNG_RELAY_DATABASE_URL`        | if pg    | —                                   | PostgreSQL URL when `OPENRUNG_RELAY_STORE=postgres`            |
-| `OPENRUNG_RELAY_RANKING`             | no       | `global`                            | Relay ranking mode: `global` or `legacy`                       |
 | `OPENRUNG_GEOIP_ENDPOINT`            | no       | ipwho.is                            | IP-geolocation endpoint for relay city/country; `off` disables |
 | `OPENRUNG_TELEMETRY_STORE`           | no       | `jsonl`                             | Telemetry backend: `jsonl` or `postgres`                       |
 | `OPENRUNG_TELEMETRY_DATABASE_URL`    | no       | relay database URL                  | PostgreSQL URL when `OPENRUNG_TELEMETRY_STORE=postgres`        |

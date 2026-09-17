@@ -196,8 +196,8 @@ OPENRUNG_RELAY_DATABASE_URL='postgres://openrung:change-me@localhost:5432/openru
   go run ./cmd/broker -addr :8080
 ```
 
-Relay ranking uses live metrics by default; pass `-relay-ranking=legacy` only
-as a rollback path for the old IPv6-first ordering.
+Relay ranking uses recent connection telemetry, capacity, and operator-set
+weights, with heartbeat recency and IPv6 used as tie-breakers.
 
 To enable the protected telemetry dashboard, set a separate administrator token
 before starting the broker, then open `/admin/telemetry`:

@@ -43,7 +43,6 @@ func run() error {
 	statusInterval := flag.Duration("status-interval", time.Minute, "interval for broker network status logs; 0 disables")
 	relayStore := flag.String("relay-store", envDefault("OPENRUNG_RELAY_STORE", "memory"), "relay state backend: memory or postgres")
 	relayDatabaseURL := flag.String("relay-database-url", os.Getenv("OPENRUNG_RELAY_DATABASE_URL"), "PostgreSQL database URL for relay state")
-	relayRanking := flag.String("relay-ranking", envDefault("OPENRUNG_RELAY_RANKING", "global"), "relay ranking mode: global or legacy")
 	geoIPEndpoint := flag.String("geoip-endpoint", envDefault("OPENRUNG_GEOIP_ENDPOINT", broker.DefaultGeoIPEndpoint), "IP geolocation HTTP endpoint for relay city/country lookups (relay host is appended); 'off' disables")
 	flag.Parse()
 	if *showVersion {
@@ -61,11 +60,6 @@ func run() error {
 		publicKey := ed25519.NewKeyFromSeed(wssTicketSeed).Public().(ed25519.PublicKey)
 		fmt.Printf("%s=%s\n", wssbridge.TicketKeyID(publicKey), base64.StdEncoding.EncodeToString(publicKey))
 		return nil
-	}
-
-	rankingMode, err := broker.ParseRankingMode(*relayRanking)
-	if err != nil {
-		return err
 	}
 
 	// Fail closed: with no registration token, anyone can register a relay and
@@ -113,7 +107,7 @@ func run() error {
 		return err
 	}
 	geoResolver := newGeoIPResolver(*geoIPEndpoint)
-	store, err := newRelayStore(*relayStore, *relayDatabaseURL, rankingMode)
+	store, err := newRelayStore(*relayStore, *relayDatabaseURL)
 	if err != nil {
 		return err
 	}
@@ -189,7 +183,7 @@ func run() error {
 		close(shutdownDone)
 	}()
 
-	slog.Info("starting broker", "version", buildinfo.Version(baseVersion), "revision", buildinfo.Revision(), "addr", *addr, "lease_ttl", leaseTTL.String(), "telemetry_store", *telemetryStore, "telemetry_file", *telemetryFile, "relay_store", *relayStore, "relay_ranking", rankingMode, "dashboard_enabled", dashboardToken != "", "operational_api_enabled", apiToken != "", "foundation_registration_enabled", foundationToken != "", "wss_ticket_issuance_enabled", len(wssTicketSeed) != 0, "status_interval", statusInterval.String(), "geoip_enabled", geoResolver != nil)
+	slog.Info("starting broker", "version", buildinfo.Version(baseVersion), "revision", buildinfo.Revision(), "addr", *addr, "lease_ttl", leaseTTL.String(), "telemetry_store", *telemetryStore, "telemetry_file", *telemetryFile, "relay_store", *relayStore, "dashboard_enabled", dashboardToken != "", "operational_api_enabled", apiToken != "", "foundation_registration_enabled", foundationToken != "", "wss_ticket_issuance_enabled", len(wssTicketSeed) != 0, "status_interval", statusInterval.String(), "geoip_enabled", geoResolver != nil)
 	err = server.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {
 		<-shutdownDone
@@ -229,14 +223,14 @@ func newTelemetrySink(storeMode, filePath, databaseURL string) (telemetryStorage
 	}
 }
 
-func newRelayStore(storeMode, databaseURL string, rankingMode broker.RankingMode) (broker.RelayStore, error) {
+func newRelayStore(storeMode, databaseURL string) (broker.RelayStore, error) {
 	switch strings.ToLower(strings.TrimSpace(storeMode)) {
 	case "", "memory":
-		return broker.NewStoreWithRanking(rankingMode), nil
+		return broker.NewStore(), nil
 	case "postgres":
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		return broker.NewPostgresStore(ctx, databaseURL, rankingMode)
+		return broker.NewPostgresStore(ctx, databaseURL)
 	default:
 		return nil, errors.New("relay-store must be memory or postgres")
 	}

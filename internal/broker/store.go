@@ -38,13 +38,6 @@ func validateRankingWeight(weight float64) error {
 	return nil
 }
 
-type RankingMode string
-
-const (
-	RankingModeGlobal RankingMode = "global"
-	RankingModeLegacy RankingMode = "legacy"
-)
-
 type RelayStore interface {
 	Register(relay.RegisterRequest, time.Time, time.Duration) (relay.Descriptor, error)
 	// Heartbeat extends a relay's lease. maxClass is the highest node class
@@ -99,7 +92,6 @@ type Store struct {
 	observations []relayMetricObservation
 	// rankingWeights holds operator overrides only; see RelayRankingWeights.
 	rankingWeights map[string]float64
-	rankingMode    RankingMode
 }
 
 type StoreStats struct {
@@ -109,15 +101,10 @@ type StoreStats struct {
 }
 
 func NewStore() *Store {
-	return NewStoreWithRanking(RankingModeGlobal)
-}
-
-func NewStoreWithRanking(rankingMode RankingMode) *Store {
 	return &Store{
 		relays:         make(map[string]relay.Descriptor),
 		sessions:       make(map[string]relaySessionState),
 		rankingWeights: make(map[string]float64),
-		rankingMode:    normalizeRankingMode(rankingMode),
 	}
 }
 
@@ -286,7 +273,7 @@ func (s *Store) ListRanked(now time.Time, limit int) ([]relay.Descriptor, map[st
 	}
 
 	snapshots, weights := s.metricSnapshotsLocked(now)
-	sortRelayCandidates(relays, snapshots, weights, s.rankingMode)
+	sortRelayCandidates(relays, snapshots, weights)
 
 	if limit > 0 && len(relays) > limit {
 		return relays[:limit], weights, nil

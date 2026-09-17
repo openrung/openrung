@@ -35,7 +35,6 @@ const (
 	WSSProtocolVersion = wsscore.ProtocolVersion
 
 	ChannelAPI       = brokerapi.ChannelAPI
-	ChannelMirror    = brokerapi.ChannelMirror
 	ChannelInventory = brokerapi.ChannelInventory
 
 	NodeClassFoundation = brokerapi.NodeClassFoundation
@@ -294,19 +293,18 @@ type ListResponse struct {
 	Count      int       `json:"count"`
 	ServerTime time.Time `json:"server_time"`
 	// NotAfter bounds replay of a validly signed body: ServerTime + 30 min on
-	// the API channel, publish time + 24 h on the mirror channel. Clients
-	// reject responses past it (with a small clock-skew allowance).
+	// the API channel, + 5 min on the inventory channel. Clients reject
+	// responses past it (with a small clock-skew allowance).
 	NotAfter time.Time `json:"not_after"`
 	// KeyID is lowercase hex of the first 8 bytes of SHA-256 over the raw
 	// 32-byte Ed25519 signing public key. Advisory routing only: clients fall
 	// back to trying every pinned key when it matches none of them.
 	KeyID string `json:"key_id"`
-	// Channel is ChannelAPI, ChannelMirror, or ChannelInventory (see the
-	// constants above).
+	// Channel is ChannelAPI or ChannelInventory (see the constants above).
 	Channel string `json:"channel"`
 	// Limit echoes the effective request limit on the API channel so clients
 	// can reject a signed body replayed from a differently-shaped request.
-	// Absent on the mirror channel, which is not request-shaped.
+	// Absent on the inventory channel, which is not request-shaped.
 	Limit  int          `json:"limit,omitempty"`
 	Relays []Descriptor `json:"relays"`
 }
