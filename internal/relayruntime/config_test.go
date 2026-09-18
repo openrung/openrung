@@ -174,6 +174,7 @@ func TestBuildXrayConfigWithManagementAPI(t *testing.T) {
 			t.Fatalf("config lacks %q: %s", key, raw)
 		}
 	}
+	assertEgressGuard(t, cfg, 10085)
 	inbounds := cfg["inbounds"].([]any)
 	if len(inbounds) != 2 {
 		t.Fatalf("inbounds = %d, want the relay inbound plus the API inbound", len(inbounds))
@@ -187,9 +188,10 @@ func TestBuildXrayConfigWithManagementAPI(t *testing.T) {
 	if apiInbound["tag"] != "api-in" || apiInbound["listen"] != "127.0.0.1" || apiInbound["port"] != float64(10085) || apiInbound["protocol"] != "dokodemo-door" {
 		t.Fatalf("api inbound = %v", apiInbound)
 	}
-	rule := cfg["routing"].(map[string]any)["rules"].([]any)[0].(map[string]any)
+	rules := cfg["routing"].(map[string]any)["rules"].([]any)
+	rule := rules[len(rules)-1].(map[string]any)
 	if rule["outboundTag"] != "api" || rule["inboundTag"].([]any)[0] != "api-in" {
-		t.Fatalf("routing rule = %v", rule)
+		t.Fatalf("api routing rule = %v", rule)
 	}
 
 	withBoth := withAPI
@@ -208,13 +210,64 @@ func TestBuildXrayConfigWithManagementAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build static: %v", err)
 	}
-	for _, key := range []string{`"api"`, `"stats"`, `"policy"`, `"routing"`, `"api-in"`} {
+	for _, key := range []string{`"api"`, `"stats"`, `"policy"`, `"api-in"`} {
 		if strings.Contains(string(raw), key) {
 			t.Fatalf("static config must not carry %s: %s", key, raw)
 		}
 	}
+	var staticCfg map[string]any
+	if err := json.Unmarshal(raw, &staticCfg); err != nil {
+		t.Fatalf("static config is not JSON: %v", err)
+	}
+	assertEgressGuard(t, staticCfg, 0)
 	withAPI.APIPort = withAPI.ListenPort
 	if _, err := BuildXrayConfig(withAPI); err == nil {
 		t.Fatal("an API port equal to the listen port must be rejected")
+	}
+}
+
+// assertEgressGuard checks the routing that keeps a client from dialing the
+// relay host itself: domains resolved for IP matching, the loopback/private
+// IP rule, and — when the management API is on — the port rule that refuses
+// the API port on every address.
+func assertEgressGuard(t *testing.T, cfg map[string]any, apiPort int) {
+	t.Helper()
+	routing, ok := cfg["routing"].(map[string]any)
+	if !ok {
+		t.Fatalf("config has no routing: %v", cfg)
+	}
+	if routing["domainStrategy"] != "IPIfNonMatch" {
+		t.Fatalf("routing domainStrategy = %v, want IPIfNonMatch so domain destinations meet the IP rule", routing["domainStrategy"])
+	}
+	rules := routing["rules"].([]any)
+	ipRule := rules[0].(map[string]any)
+	if ipRule["inboundTag"].([]any)[0] != XrayInboundTag || ipRule["outboundTag"] != xrayBlockOutboundTag {
+		t.Fatalf("first rule must block the relay inbound's private egress: %v", ipRule)
+	}
+	cidrs := ipRule["ip"].([]any)
+	for _, want := range []string{"127.0.0.0/8", "::1/128", "0.0.0.0/8", "169.254.0.0/16", "10.0.0.0/8", "fc00::/7"} {
+		found := false
+		for _, got := range cidrs {
+			if got == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("egress guard lacks %s: %v", want, cidrs)
+		}
+	}
+	outbounds := cfg["outbounds"].([]any)
+	if len(outbounds) != 2 || outbounds[1].(map[string]any)["tag"] != xrayBlockOutboundTag || outbounds[1].(map[string]any)["protocol"] != "blackhole" {
+		t.Fatalf("outbounds = %v, want direct + a blackhole tagged %q", outbounds, xrayBlockOutboundTag)
+	}
+	if apiPort == 0 {
+		if len(rules) != 1 {
+			t.Fatalf("static config has %d routing rules, want the IP guard only: %v", len(rules), rules)
+		}
+		return
+	}
+	portRule := rules[1].(map[string]any)
+	if portRule["inboundTag"].([]any)[0] != XrayInboundTag || portRule["port"] != float64(apiPort) || portRule["outboundTag"] != xrayBlockOutboundTag {
+		t.Fatalf("second rule must refuse the API port %d from the relay inbound: %v", apiPort, portRule)
 	}
 }

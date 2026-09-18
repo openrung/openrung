@@ -226,7 +226,9 @@ UUID for the client id, or let the first run generate them and copy from the log
 **Rotating credentials (default in direct mode).** A direct-mode relay does not
 serve `OPENRUNG_CLIENT_ID`: it derives a fresh VLESS credential every hour from
 its identity seed, applies it to the running xray through the management API
-(no restart, no dropped sessions), and announces it to the broker on its
+(loopback-only, and unreachable from client traffic: the relay's routing
+refuses client connections to its own host, private ranges, and the
+management port), and announces it to the broker on its
 heartbeat, so a copied directory entry stops admitting within two hours (a
 credential the broker last confirmed is kept through a broker outage of up to
 an hour, then retired too). A pinned `OPENRUNG_CLIENT_ID` is then ignored (the

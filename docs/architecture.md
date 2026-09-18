@@ -62,6 +62,14 @@ The CLI produces an Xray server config with:
 - Reality transport.
 - Vision flow: `xtls-rprx-vision`.
 - Freedom outbound, meaning the relay is the direct exit.
+- An egress guard: routing rules send any client connection aimed at the
+  relay host's own loopback, the unspecified addresses, or private,
+  link-local and CGNAT ranges to a blackhole outbound (domain destinations
+  are resolved first so the rule sees the address that would be dialed), and
+  refuse the management port below on every address by number. A public
+  relay's clients have no legitimate business on its host or its network,
+  and the port rule is what keeps xray's management API off the data plane
+  regardless of name resolution.
 
 **Rotating credentials.** The VLESS UUID in a relay's directory entry is the
 credential that admits a client, and the directory is public, so a copied
@@ -77,8 +85,9 @@ registration-time credential. After an hour without any successful broker
 contact (the lease and every directory snapshot have long expired by then) the
 relay retires that one too and serves only its current and previous hour, so
 an outage cannot extend a copied credential's life. Xray's
-management API (HandlerService on a loopback inbound) applies each change to
-the running process through the bundled binary's `xray api adu`/`rmu`, so no
+management API (HandlerService on a loopback inbound that the egress guard
+above makes unreachable from client traffic) applies each change to the
+running process through the bundled binary's `xray api adu`/`rmu`, so no
 session is interrupted and no restart is needed; an already-authenticated
 connection survives its credential's retirement because VLESS checks the
 credential once, at the handshake. A copied directory entry stops admitting

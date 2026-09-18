@@ -38,6 +38,32 @@ const XrayInboundTag = "vless-reality-in"
 // own gRPC management API when XrayConfigInput.APIPort is set.
 const xrayAPIInboundTag = "api-in"
 
+// xrayBlockOutboundTag names the blackhole outbound the egress guard routes
+// refused destinations to.
+const xrayBlockOutboundTag = "block"
+
+// egressGuardCIDRs are destinations a relay never dials on a client's behalf:
+// its own loopback (where the management API listens), the unspecified
+// addresses (which the kernel treats as loopback), and the private,
+// link-local and CGNAT ranges of whatever network the relay host sits in
+// (cloud metadata services live in link-local space). Clients of a public
+// relay have no legitimate reason to reach any of these through it. xray
+// matches IPv4-mapped IPv6 destinations as their IPv4 address (and rejects a
+// mapped CIDR outright), so the IPv4 entries cover that spelling too.
+var egressGuardCIDRs = []string{
+	"127.0.0.0/8",
+	"::1/128",
+	"0.0.0.0/8",
+	"::/128",
+	"10.0.0.0/8",
+	"172.16.0.0/12",
+	"192.168.0.0/16",
+	"100.64.0.0/10",
+	"169.254.0.0/16",
+	"fe80::/10",
+	"fc00::/7",
+}
+
 type XrayConfigInput struct {
 	ListenHost string
 	ListenPort int
@@ -49,12 +75,18 @@ type XrayConfigInput struct {
 	// for runtime user changes, StatsService for per-user counters) on a
 	// loopback inbound at 127.0.0.1:APIPort. Zero renders today's static
 	// single-client config with no API surface at all.
-	APIPort           int
-	Flow              string
-	Dest              string
-	ServerName        string
-	RealityPrivateKey string
-	ShortID           string
+	APIPort int
+	// disableEgressGuard drops the routing rules that stop a client from
+	// reaching the relay host's own loopback, private and link-local
+	// destinations — and, with APIPort set, the management port on any
+	// address. Test-only: it exists so the end-to-end test can prove both
+	// that the tunnel works and that the guard is what blocks the attack.
+	disableEgressGuard bool
+	Flow               string
+	Dest               string
+	ServerName         string
+	RealityPrivateKey  string
+	ShortID            string
 }
 
 type RealityKeyPair struct {
@@ -140,7 +172,34 @@ func BuildXrayConfig(input XrayConfigInput) ([]byte, error) {
 				"tag":      "direct",
 				"protocol": "freedom",
 			},
+			map[string]any{
+				"tag":      xrayBlockOutboundTag,
+				"protocol": "blackhole",
+			},
 		},
+	}
+	// The egress guard. A relay's only outbound is freedom, which dials
+	// whatever a client asks for — including the relay host itself. Domain
+	// destinations are resolved so the IP rule sees the address that will be
+	// dialed (IPIfNonMatch), and the management port is refused on every
+	// address by number, which no name resolution can route around: that rule
+	// alone makes the API unreachable from the data plane.
+	var rules []any
+	if !input.disableEgressGuard {
+		rules = append(rules, map[string]any{
+			"type":        "field",
+			"inboundTag":  []string{XrayInboundTag},
+			"ip":          egressGuardCIDRs,
+			"outboundTag": xrayBlockOutboundTag,
+		})
+		if input.APIPort != 0 {
+			rules = append(rules, map[string]any{
+				"type":        "field",
+				"inboundTag":  []string{XrayInboundTag},
+				"port":        input.APIPort,
+				"outboundTag": xrayBlockOutboundTag,
+			})
+		}
 	}
 	if input.APIPort != 0 {
 		// The standard xray management layout: the "api" object registers the
@@ -170,14 +229,16 @@ func BuildXrayConfig(input XrayConfigInput) ([]byte, error) {
 				"address": "127.0.0.1",
 			},
 		})
+		rules = append(rules, map[string]any{
+			"type":        "field",
+			"inboundTag":  []string{xrayAPIInboundTag},
+			"outboundTag": "api",
+		})
+	}
+	if len(rules) > 0 {
 		cfg["routing"] = map[string]any{
-			"rules": []any{
-				map[string]any{
-					"type":        "field",
-					"inboundTag":  []string{xrayAPIInboundTag},
-					"outboundTag": "api",
-				},
-			},
+			"domainStrategy": "IPIfNonMatch",
+			"rules":          rules,
 		}
 	}
 
