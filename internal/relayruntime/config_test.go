@@ -142,10 +142,11 @@ func TestGenerateUUID(t *testing.T) {
 	}
 }
 
-// With APIPort set the config gains xray's management layout — api services,
-// stats/policy counters, a loopback dokodemo inbound and the routing rule to
-// it — and may omit the static client entirely, leaving an empty (not null)
-// client list for runtime credentials. Without it the config is untouched.
+// With APIPort set the config gains xray's management layout — the api
+// object with HandlerService only, a loopback dokodemo inbound and the
+// routing rule to it — and may omit the static client entirely, leaving an
+// empty (not null) client list for runtime credentials. Without it the config
+// carries no API surface.
 func TestBuildXrayConfigWithManagementAPI(t *testing.T) {
 	base := XrayConfigInput{
 		ListenHost:        "127.0.0.1",
@@ -169,10 +170,18 @@ func TestBuildXrayConfigWithManagementAPI(t *testing.T) {
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		t.Fatalf("config is not JSON: %v", err)
 	}
-	for _, key := range []string{"api", "stats", "policy", "routing"} {
+	for _, key := range []string{"api", "routing"} {
 		if _, ok := cfg[key]; !ok {
 			t.Fatalf("config lacks %q: %s", key, raw)
 		}
+	}
+	for _, key := range []string{"stats", "policy"} {
+		if _, ok := cfg[key]; ok {
+			t.Fatalf("config carries %q, which nothing reads: %s", key, raw)
+		}
+	}
+	if services := cfg["api"].(map[string]any)["services"].([]any); len(services) != 1 || services[0] != "HandlerService" {
+		t.Fatalf("api services = %v, want HandlerService only", services)
 	}
 	assertEgressGuard(t, cfg, 10085)
 	inbounds := cfg["inbounds"].([]any)

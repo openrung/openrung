@@ -40,9 +40,9 @@ const (
 )
 
 // Credential is one derived VLESS user: the UUID clients present and the
-// xray email label that names it for runtime add/remove and per-user stats.
-// The label encodes the bucket start, so a relay's per-user counters (and any
-// abuse report that quotes a credential) attribute to an epoch.
+// xray email label that names it for runtime add/remove. The label encodes
+// the bucket start, so any abuse report that quotes a credential attributes
+// to an epoch.
 type Credential struct {
 	ID    string
 	Email string

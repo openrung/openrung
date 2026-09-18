@@ -599,12 +599,21 @@ func TestHeartbeatRotatesServedClientID(t *testing.T) {
 		t.Fatalf("directory serves %q after an empty heartbeat, want %q kept", got, rotated)
 	}
 
-	code, _, body = heartbeat(t, `{"ok":true,"lease_token":"`+desc.LeaseToken+`","client_id":"`+strings.Repeat("a", maxRegisterFieldBytes+1)+`"}`)
-	if code != http.StatusBadRequest {
-		t.Fatalf("oversized client_id: %d: %s, want 400", code, body)
-	}
-	if got := servedClientID(t); got != rotated {
-		t.Fatalf("a refused heartbeat changed the served credential to %q", got)
+	// The JSON escapes below decode to a NUL and an ESC character, so the
+	// handler (not the decoder) is what refuses them. Invalid UTF-8 cannot be
+	// tested here: the decoder has already replaced it with U+FFFD.
+	for name, bad := range map[string]string{
+		"oversized":    strings.Repeat("a", maxRegisterFieldBytes+1),
+		"NUL byte":     "0f5c2f58\\u0000dead",
+		"control char": "0f5c2f58\\u001bdead",
+	} {
+		code, _, body = heartbeat(t, `{"ok":true,"lease_token":"`+desc.LeaseToken+`","client_id":"`+bad+`"}`)
+		if code != http.StatusBadRequest {
+			t.Fatalf("%s client_id: %d: %s, want 400", name, code, body)
+		}
+		if got := servedClientID(t); got != rotated {
+			t.Fatalf("a refused heartbeat (%s) changed the served credential to %q", name, got)
+		}
 	}
 }
 

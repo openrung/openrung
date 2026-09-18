@@ -85,8 +85,8 @@ registration-time credential. After an hour without any successful broker
 contact (the lease and every directory snapshot have long expired by then) the
 relay retires that one too and serves only its current and previous hour, so
 an outage cannot extend a copied credential's life. Xray's
-management API (HandlerService on a loopback inbound that the egress guard
-above makes unreachable from client traffic) applies each change to the
+management API (HandlerService alone, on a loopback inbound that the egress
+guard above makes unreachable from client traffic) applies each change to the
 running process through the bundled binary's `xray api adu`/`rmu`, so no
 session is interrupted and no restart is needed; an already-authenticated
 connection survives its credential's retirement because VLESS checks the

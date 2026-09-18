@@ -71,10 +71,10 @@ type XrayConfigInput struct {
 	// be empty only when APIPort is set: the relay then admits nobody until
 	// it adds credentials at runtime through the management API.
 	ClientID string
-	// APIPort, when non-zero, enables xray's management API (HandlerService
-	// for runtime user changes, StatsService for per-user counters) on a
-	// loopback inbound at 127.0.0.1:APIPort. Zero renders today's static
-	// single-client config with no API surface at all.
+	// APIPort, when non-zero, enables xray's management API (HandlerService,
+	// for runtime user changes — nothing more is exposed) on a loopback
+	// inbound at 127.0.0.1:APIPort. Zero renders today's static single-client
+	// config with no API surface at all.
 	APIPort int
 	// disableEgressGuard drops the routing rules that stop a client from
 	// reaching the relay host's own loopback, private and link-local
@@ -203,22 +203,14 @@ func BuildXrayConfig(input XrayConfigInput) ([]byte, error) {
 	}
 	if input.APIPort != 0 {
 		// The standard xray management layout: the "api" object registers the
-		// gRPC services and implicitly creates an outbound handler tagged
+		// gRPC service and implicitly creates an outbound handler tagged
 		// "api"; a loopback dokodemo inbound accepts the client connections and
-		// a routing rule steers exactly that inbound to it. User-level stats
-		// need the policy switches or the per-user counters never appear.
+		// a routing rule steers exactly that inbound to it. Only HandlerService
+		// is registered — rotation needs nothing else, and per-user statistics
+		// would be a counter per retired credential that nothing reads.
 		cfg["api"] = map[string]any{
 			"tag":      "api",
-			"services": []string{"HandlerService", "StatsService"},
-		}
-		cfg["stats"] = map[string]any{}
-		cfg["policy"] = map[string]any{
-			"levels": map[string]any{
-				"0": map[string]any{
-					"statsUserUplink":   true,
-					"statsUserDownlink": true,
-				},
-			},
+			"services": []string{"HandlerService"},
 		}
 		cfg["inbounds"] = append(cfg["inbounds"].([]any), map[string]any{
 			"tag":      xrayAPIInboundTag,

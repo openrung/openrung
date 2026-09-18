@@ -21,7 +21,8 @@ type XrayUserManager interface {
 
 // XrayAPI manages the users of the relay's VLESS inbound through the bundled
 // xray binary's own `xray api` subcommands (HandlerService over the loopback
-// management inbound BuildXrayConfig renders when APIPort is set). Shelling
+// management inbound BuildXrayConfig renders when APIPort is set; it is the
+// only service exposed there). Shelling
 // out to the binary the relay already ships keeps the relay free of xray's
 // protobuf and gRPC dependencies, the same way Reality key generation shells
 // out to `xray x25519`.

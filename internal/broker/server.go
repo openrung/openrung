@@ -311,10 +311,11 @@ func heartbeatHandler(store RelayStore, cfg Config, ledger *relayIDLedger) http.
 			return
 		}
 
-		// A rotated credential is bounded like the registration-time one; the
-		// value itself is opaque to the broker, exactly as at registration.
-		if len(heartbeat.ClientID) > maxRegisterFieldBytes {
-			writeError(w, http.StatusBadRequest, "client_id must be at most 128 characters")
+		// A rotated credential is bounded and checked exactly like the
+		// registration-time one (it lands in the same column and the same
+		// signed directory): opaque to the broker, but storable printable text.
+		if len(heartbeat.ClientID) > maxRegisterFieldBytes || !storableField(heartbeat.ClientID) {
+			writeError(w, http.StatusBadRequest, "client_id must be at most 128 characters of printable text")
 			return
 		}
 
@@ -532,13 +533,23 @@ func validEndpointHost(host string) bool {
 // CSI) included, not just C0 and DEL.
 func registerTextValid(req relay.RegisterRequest) bool {
 	for _, value := range []string{req.ClientID, req.RealityPublicKey, req.ShortID, req.RelayVersion, req.PunchEndpoint} {
-		if !storableText(value) {
+		if !storableField(value) {
 			return false
 		}
-		for _, r := range value {
-			if unicode.IsControl(r) {
-				return false
-			}
+	}
+	return true
+}
+
+// storableField reports whether a relay-supplied text field can be stored
+// and served: valid UTF-8 without NUL (Postgres text/jsonb refuse it) and
+// without control characters. Registration and heartbeat share it.
+func storableField(value string) bool {
+	if !storableText(value) {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return false
 		}
 	}
 	return true
