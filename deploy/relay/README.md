@@ -237,7 +237,7 @@ an xray this relay does not run cannot be rotated.
 `OPENRUNG_CREDENTIAL_ROTATION=off` restores the single static credential;
 `OPENRUNG_CREDENTIAL_EPOCH=<any string>` re-keys every derived credential at
 once without changing the relay identity. Rotation needs a broker that
-accepts `client_id` on heartbeat (broker 0.3.0 or later); against an older
+accepts `client_id` on heartbeat (broker 0.4.0 or later); against an older
 broker the relay keeps its registration-time credential accepted and
 otherwise behaves as before.
 
