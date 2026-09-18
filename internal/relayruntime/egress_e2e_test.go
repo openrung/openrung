@@ -11,7 +11,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -203,10 +202,7 @@ func grpcReachableThrough(proxy, hostPort string) bool {
 }
 
 func TestEgressGuardKeepsClientsOffTheManagementAPI(t *testing.T) {
-	xrayPath, err := exec.LookPath("xray")
-	if err != nil {
-		t.Skip("xray is not installed")
-	}
+	xrayPath := requireXray(t)
 	victim := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "victim") }))
 	defer victim.Close()
 	credential := Credential{ID: "11111111-2222-4333-8444-555555555555", Email: "cred-20260917T140000Z"}

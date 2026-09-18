@@ -149,10 +149,7 @@ func TestXrayAPIRemoveUserArgv(t *testing.T) {
 // added user is listed, adds and removes are idempotent, and a removed user
 // is gone. Runs only where xray is installed (CI hosts skip).
 func TestXrayAPIManagesUsersOnRunningXray(t *testing.T) {
-	xrayPath, err := exec.LookPath("xray")
-	if err != nil {
-		t.Skip("xray is not installed")
-	}
+	xrayPath := requireXray(t)
 	keys, err := GenerateRealityKeyPair(xrayPath)
 	if err != nil {
 		t.Fatalf("generate Reality keys: %v", err)
@@ -229,6 +226,23 @@ func TestXrayAPIManagesUsersOnRunningXray(t *testing.T) {
 	if len(users) != 0 {
 		t.Fatalf("users after remove = %+v", users)
 	}
+}
+
+// requireXray locates the xray binary the integration tests drive. A
+// developer machine without it skips; CI must have it (go-checks installs
+// the release the relay image pins), so there a missing binary is a failure
+// rather than a silently skipped security test.
+func requireXray(t *testing.T) string {
+	t.Helper()
+	xrayPath, err := exec.LookPath("xray")
+	if err == nil {
+		return xrayPath
+	}
+	if os.Getenv("CI") != "" {
+		t.Fatalf("xray is not installed in CI; the relay integration tests must run there: %v", err)
+	}
+	t.Skip("xray is not installed")
+	return ""
 }
 
 func freeLoopbackPort(t *testing.T) int {

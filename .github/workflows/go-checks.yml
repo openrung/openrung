@@ -123,6 +123,31 @@ jobs:
       # the LGPLv3 WinDivert64.sys driver out of the binary (it serves
       # Windows bridge/tlsspoof backends the client never uses, and shipping
       # it would carry license-text obligations — THIRD_PARTY_NOTICES.md §8).
+      # The relay's runtime credential management and its egress guard are
+      # proven against the real xray (internal/relayruntime's *_e2e_test and
+      # xrayctl tests), which fail — not skip — when xray is missing in CI.
+      # Install the exact release the relay image pins, verified against the
+      # upstream .dgst checksum exactly as deploy/relay/Dockerfile does.
+      - name: Install pinned Xray-core for relay integration tests
+        run: |
+          set -eu
+          version="$(sed -n 's/^ARG XRAY_VERSION=//p' deploy/relay/Dockerfile | head -n1)"
+          test -n "$version"
+          asset="Xray-linux-64.zip"
+          base="https://github.com/XTLS/Xray-core/releases/download/${version}"
+          curl -fsSL -o /tmp/xray.zip "${base}/${asset}"
+          curl -fsSL -o /tmp/xray.dgst "${base}/${asset}.dgst"
+          expected="$(awk '/^SHA2-256=/ {print $2}' /tmp/xray.dgst)"
+          actual="$(sha256sum /tmp/xray.zip | awk '{print $1}')"
+          echo "xray ${version} ${asset} expected=${expected} actual=${actual}"
+          test -n "$expected"
+          test "$expected" = "$actual"
+          mkdir -p "$HOME/xray"
+          unzip -o /tmp/xray.zip xray -d "$HOME/xray"
+          chmod +x "$HOME/xray/xray"
+          echo "$HOME/xray" >> "$GITHUB_PATH"
+          "$HOME/xray/xray" version | head -n1
+
       # The extra untagged vet keeps a plain `go build` compiling for
       # contributors, whose binary refuses Reality configs with upstream's
       # rebuild hint.
