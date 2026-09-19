@@ -47,6 +47,14 @@ set `OPENRUNG_TRUSTED_PROXY_CIDRS` (comma-separated CIDRs) to add more. Forwarde
 headers from any other peer are ignored, so a direct connection to the origin cannot
 spoof the source IP.
 
+An operator can refuse a source outright with `OPENRUNG_CLIENT_DENY_CIDRS`
+(comma-separated CIDRs): a matching request is answered `403` with
+`{"error":"forbidden"}` before any handler runs, so it consumes no rate-limit
+budget, records no telemetry and receives no relay list. The match uses the same
+resolved client IP as the limits above — which means a prefix that covers a CDN
+edge or a carrier-grade NAT pool would deny every client sharing it, so only
+prefixes known to be a single caller belong in the list.
+
 ```http
 POST /api/v1/telemetry/events
 Content-Type: application/json

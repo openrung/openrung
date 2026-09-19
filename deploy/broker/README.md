@@ -446,6 +446,7 @@ docker inspect openrung-broker \
 | `OPENRUNG_API_TOKEN`                 | no       | —                                   | Enables `/admin/api/relays/inventory` and the ranking-weight endpoints; must differ from every other credential |
 | `OPENRUNG_ADDR`                      | no       | `:8080`                             | HTTP listen address                                            |
 | `OPENRUNG_TRUSTED_PROXY_CIDRS`       | no       | Cloudflare ranges                   | Extra trusted proxy CIDRs for forwarded client IPs             |
+| `OPENRUNG_CLIENT_DENY_CIDRS`         | no       | —                                   | Source CIDRs refused on the public API with 403; single-caller prefixes only |
 | `OPENRUNG_RELAY_STORE`               | no       | `memory`                            | Relay state backend: `memory` or `postgres`                    |
 | `OPENRUNG_RELAY_DATABASE_URL`        | if pg    | —                                   | PostgreSQL URL when `OPENRUNG_RELAY_STORE=postgres`            |
 | `OPENRUNG_GEOIP_ENDPOINT`            | no       | ipwho.is                            | IP-geolocation endpoint for relay city/country; `off` disables |
