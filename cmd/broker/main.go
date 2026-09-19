@@ -134,7 +134,10 @@ func run() error {
 		DashboardToken:    dashboardToken,
 		APIToken:          apiToken,
 		// Cloudflare's published ranges are trusted by default; add more (e.g. an upstream LB) here.
-		TrustedProxyCIDRs:          splitAndTrim(os.Getenv("OPENRUNG_TRUSTED_PROXY_CIDRS")),
+		TrustedProxyCIDRs: splitAndTrim(os.Getenv("OPENRUNG_TRUSTED_PROXY_CIDRS")),
+		// Source prefixes refused on the public API; only ever prefixes known
+		// to be a single caller, never a shared edge or NAT address.
+		ClientDenyCIDRs:            splitAndTrim(os.Getenv("OPENRUNG_CLIENT_DENY_CIDRS")),
 		MaxNewRelayIDsPerIPPerDay:  maxNewRelayIDs,
 		RegistrationCapExemptCIDRs: splitAndTrim(os.Getenv("OPENRUNG_REGISTRATION_CAP_EXEMPT_CIDRS")),
 		GeoIP:                      geoResolver,

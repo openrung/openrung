@@ -53,6 +53,11 @@ type Config struct {
 	// TrustedProxyCIDRs are additional CIDRs (beyond Cloudflare's published ranges) whose forwarded
 	// CF-Connecting-IP / X-Forwarded-For headers the broker will trust for the real client IP.
 	TrustedProxyCIDRs []string
+	// ClientDenyCIDRs are source prefixes refused on the public API. The match
+	// runs against the resolved client IP, so only prefixes known to be a
+	// single caller belong here — never a CDN edge or other shared address,
+	// which would deny everyone behind it.
+	ClientDenyCIDRs []string
 	// MaxNewRelayIDsPerIPPerDay caps how many NEW relay identities one source
 	// IP (IPv6: one /64) may successfully register per rolling 24 h, so an
 	// anonymous-registration broker cannot be used to mint attested telemetry
@@ -90,6 +95,11 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 	relaySigner := newSigner(cfg.SigningSeed)
 	wssIssuer := newWSSTicketIssuer(cfg)
 	clientIP := newClientIPResolver(cfg.TrustedProxyCIDRs)
+	denyList := newClientDenyList(cfg.ClientDenyCIDRs)
+	// guarded screens the source before the per-IP budget, so a denied caller
+	// costs the broker a prefix comparison and nothing else. The admin,
+	// dashboard and health routes stay unguarded: they are the operator's own.
+	guarded := func(next http.HandlerFunc) http.HandlerFunc { return denyList.guard(clientIP, next) }
 	clientSeen := newClientSeenDeduper(clientSeenDedupWindow, clientSeenDedupMaxEntries)
 	relayListLimiter := newIPRateLimiter(relayListRatePerSecond, relayListBurst, rateLimiterMaxTrackedIPs)
 	telemetryLimiter := newIPRateLimiter(telemetryRatePerSecond, telemetryBurst, rateLimiterMaxTrackedIPs)
@@ -99,8 +109,8 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 	relayLedger := newRelayIDLedger(relayLedgerTTL, relayLedgerMaxEntries)
 	seedRelayLedger(relayLedger, store)
 	newIDCap := newNewRelayCap(cfg.MaxNewRelayIDsPerIPPerDay, newRelayCapWindow, cfg.RegistrationCapExemptCIDRs)
-	registerRelay := rateLimited(relayRegistrationLimiter, clientIP, 10, registerHandler(store, cfg, clientIP, relayLedger, newIDCap))
-	heartbeatRelay := rateLimited(relayRegistrationLimiter, clientIP, 10, heartbeatHandler(store, cfg, relayLedger))
+	registerRelay := guarded(rateLimited(relayRegistrationLimiter, clientIP, 10, registerHandler(store, cfg, clientIP, relayLedger, newIDCap)))
+	heartbeatRelay := guarded(rateLimited(relayRegistrationLimiter, clientIP, 10, heartbeatHandler(store, cfg, relayLedger)))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -119,9 +129,9 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 	})
 	mux.HandleFunc("POST /api/v1/relays/register", registerRelay)
 	mux.HandleFunc("POST /api/v1/relays/", heartbeatRelay)
-	mux.HandleFunc("GET /api/v1/relays", rateLimited(relayListLimiter, clientIP, 10, listRelaysHandler(store, cfg.TelemetrySink, clientIP, clientSeen, relaySigner)))
+	mux.HandleFunc("GET /api/v1/relays", guarded(rateLimited(relayListLimiter, clientIP, 10, listRelaysHandler(store, cfg.TelemetrySink, clientIP, clientSeen, relaySigner))))
 	if wssIssuer != nil {
-		mux.HandleFunc("POST /api/v1/wss/tickets", rateLimitedBy(wssTicketLimiter, wssTicketRateKey(clientIP), 10, wssTicketHandler(store, wssIssuer)))
+		mux.HandleFunc("POST /api/v1/wss/tickets", guarded(rateLimitedBy(wssTicketLimiter, wssTicketRateKey(clientIP), 10, wssTicketHandler(store, wssIssuer))))
 	}
 	// The operational API exists only when its dedicated token does, so an
 	// unconfigured broker runs no handler, holds no limiter state, and can
@@ -141,8 +151,8 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 		mux.HandleFunc("/admin/api/relays/weights", operational(relayWeightsListHandler(store, cfg.APIToken)))
 		mux.HandleFunc("/admin/api/relays/{id}/weight", operational(relayWeightHandler(store, cfg.APIToken, clientIP.clientIP)))
 	}
-	mux.HandleFunc("POST /api/v1/telemetry/events", rateLimited(telemetryLimiter, clientIP, 10, telemetryHandler(cfg.TelemetrySink, store, clientIP, relayLedger)))
-	mux.HandleFunc("GET /api/v1/speed-test", rateLimited(speedTestLimiter, clientIP, 30, speedTestHandler(speedTestMaxConcurrent)))
+	mux.HandleFunc("POST /api/v1/telemetry/events", guarded(rateLimited(telemetryLimiter, clientIP, 10, telemetryHandler(cfg.TelemetrySink, store, clientIP, relayLedger))))
+	mux.HandleFunc("GET /api/v1/speed-test", guarded(rateLimited(speedTestLimiter, clientIP, 30, speedTestHandler(speedTestMaxConcurrent))))
 	querier := cfg.TelemetryQuerier
 	if querier == nil && cfg.TelemetryReader != nil {
 		querier = newTelemetryReaderQuerier(cfg.TelemetryReader)
