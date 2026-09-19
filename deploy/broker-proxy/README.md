@@ -113,6 +113,30 @@ curl -s -o /dev/null -w '%{http_code}\n' "https://broker.openrung.org/healthz"
 
 Logs: `wrangler tail openrung-broker-proxy`.
 
+## Source deny list (`DENY_CIDRS`)
+
+An optional binding holding comma-separated CIDRs (IPv4 or IPv6, blank and unparseable entries
+skipped). A request whose `CF-Connecting-IP` falls inside one is answered `403
+{"error":"forbidden"}` with `Cache-Control: no-store` **at the edge** — it never reaches the
+origin, the stale-on-error cache, or any timeout path. `CF-Connecting-IP` is set by Cloudflare
+and overwrites any client-supplied copy, so it is the one client address this Worker can trust.
+
+Set it as a secret so the list itself does not live in the repository:
+
+```bash
+wrangler secret put DENY_CIDRS   # then paste the comma-separated prefixes
+```
+
+Unset means no list and no per-request work. The broker has the same facility one hop further
+in (`OPENRUNG_CLIENT_DENY_CIDRS`); this one additionally spares the origin leg, and the broker's
+covers the other fronts.
+
+**The constraint that governs both:** each matches ONE address per request, so only prefixes
+known to be a single caller belong in the list — a prefix covering a CDN edge, a carrier-grade
+NAT pool or any other shared address would refuse every client behind it. A caller that moves to
+a front which presents its own edge address to the origin is not reachable by an address-based
+list at all.
+
 ## Known limitations / follow-ups
 
 - **Origin leg uses HTTPS.** This Worker defaults to the same Caddy Let's
