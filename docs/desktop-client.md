@@ -154,14 +154,14 @@ view layer holds no connection logic.
 ### Launch
 
 ```sh
-go run ./cmd/client
+go run -tags with_utls,with_external_windivert ./cmd/client
 ```
 
 A bare invocation and `connect` are the same thing; flags seed the initial
 settings. To work against a local broker:
 
 ```sh
-go run ./cmd/client connect -broker http://localhost:8080
+go run -tags with_utls,with_external_windivert ./cmd/client connect -broker http://localhost:8080
 ```
 
 Connecting is a keypress, not a flag: the client starts disconnected, and
@@ -226,7 +226,7 @@ Linux, and Windows (with two Windows-specific requirements; see
 while disconnected:
 
 ```sh
-sudo go run ./cmd/client connect --tun
+sudo go run -tags with_utls,with_external_windivert ./cmd/client connect --tun
 ```
 
 The generated config uses:
@@ -326,13 +326,13 @@ historical flags:
 
 ```sh
 # Connect and stream engine logs until interrupted (SIGINT or SIGTERM).
-go run ./cmd/client connect -headless -broker http://localhost:8080
+go run -tags with_utls,with_external_windivert ./cmd/client connect -headless -broker http://localhost:8080
 
 # Fetch relay candidates and print the selected usable relay.
-go run ./cmd/client check -broker http://localhost:8080
+go run -tags with_utls,with_external_windivert ./cmd/client check -broker http://localhost:8080
 
 # Write a sing-box TUN config for the selected relay without connecting.
-go run ./cmd/client config \
+go run -tags with_utls,with_external_windivert ./cmd/client config \
   -broker http://localhost:8080 \
   -out openrung-sing-box.json
 ```
@@ -350,7 +350,7 @@ country — a country target keeps mid-session failover within that country
 Relays list and warns if they are passed), `-relay-family` for
 `check`/`config`,
 `-mtu` for the TUN device, and `-sing-box` to substitute an external sing-box
-binary for the bundled engine. Run `go run ./cmd/client help` for the full
+binary for the bundled engine. Run `go run -tags with_utls,with_external_windivert ./cmd/client help` for the full
 list.
 
 Some pre-rewrite flags are still parsed but no longer honored, and say so on

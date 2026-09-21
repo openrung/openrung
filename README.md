@@ -284,13 +284,13 @@ can select a usable relay:
 
 ```sh
 curl http://localhost:8080/api/v1/relays
-go run ./cmd/client check -broker http://localhost:8080
+go run -tags with_utls,with_external_windivert ./cmd/client check -broker http://localhost:8080
 ```
 
-Then connect with the interactive client (`c` connects, `q` quits):
+Then connect with the interactive client (`enter` connects from the Relays list, `q` quits):
 
 ```sh
-go run ./cmd/client connect -broker http://localhost:8080
+go run -tags with_utls,with_external_windivert ./cmd/client connect -broker http://localhost:8080
 ```
 
 For the zero-privilege desktop proxy app, and for the terminal client's views,
@@ -368,6 +368,18 @@ Have an opinion on what should come first?
 is welcome.
 
 ## Testing and feedback
+
+Run `make test` for the root module, all shared Go modules, and both desktop
+apps' service packages; run `make fmt` to format Go code across those modules.
+The test target also checks the volunteer app's version metadata. Relay
+integration tests use the Xray version pinned in `deploy/relay/Dockerfile`.
+Run `npm ci`, `npm test`, and `npm run build` separately in each app's
+`frontend/` directory. Full Wails builds additionally require the platform's
+native dependencies.
+
+`make broker` starts a loopback development broker with a temporary signing
+seed unless `OPENRUNG_RELAY_SIGNING_KEY` is already set. Set that variable to
+reuse a signing identity across restarts.
 
 OpenRung is under active development, and reports from real networks are the
 most valuable contribution:

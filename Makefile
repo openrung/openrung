@@ -5,7 +5,7 @@ RELAYHUB_IMAGE ?= openrung-relayhub:latest
 BROKER_IMAGE ?= openrung-broker:latest
 
 fmt:
-	gofmt -w brokerapi cmd internal punchcore wsscore
+	gofmt -w brokerapi cmd connectcore desktop desktop-volunteer internal punchcore wsscore
 
 # The bundled sing-box runtime's build tags (internal/singboxruntime): every
 # cmd/client build and root-module test run wants them, and the release
@@ -14,14 +14,22 @@ fmt:
 #   with_external_windivert  keep sing-box's embedded WinDivert64.sys driver
 #                            (LGPLv3; unused Windows bridge/tlsspoof backends)
 #                            OUT of the binary and the release archives
+# Root ./... excludes nested Go modules. Test the Wails service packages
+# without requiring frontend assets or native webview dependencies.
 test:
 	go test -tags with_utls,with_external_windivert ./...
 	cd brokerapi && go test ./...
+	cd connectcore && go test ./...
 	cd punchcore && go test ./...
 	cd wsscore && go test ./...
+	cd desktop && go test ./vpnservice/...
+	cd desktop-volunteer && go test ./persist/... ./directsetup/... ./volunteerservice/...
+	cd desktop-volunteer && go test version.go version_test.go
 
 broker:
-	OPENRUNG_ALLOW_ANONYMOUS_REGISTRATION=true go run ./cmd/broker -addr :8080
+	OPENRUNG_ALLOW_ANONYMOUS_REGISTRATION=true \
+		OPENRUNG_RELAY_SIGNING_KEY="$${OPENRUNG_RELAY_SIGNING_KEY:-$$(openssl rand -base64 32)}" \
+		go run ./cmd/broker -addr 127.0.0.1:8080
 
 relay:
 	go run ./cmd/relay \
