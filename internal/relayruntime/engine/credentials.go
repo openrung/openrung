@@ -176,15 +176,6 @@ func (c *credentialRotation) nextRotation(now time.Time) time.Time {
 	return c.schedule.NextRotation(now)
 }
 
-// accepted lists the credentials xray currently accepts (tests).
-func (c *credentialRotation) accepted() []relayruntime.Credential {
-	out := make([]relayruntime.Credential, 0, len(c.registered))
-	for _, credential := range c.registered {
-		out = append(out, credential)
-	}
-	return out
-}
-
 // reserveIPv4LoopbackPort reserves a port on 127.0.0.1 for xray's management
 // inbound, which BuildXrayConfig binds there regardless of the relay's own
 // loopback family.

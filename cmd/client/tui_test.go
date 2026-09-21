@@ -387,8 +387,8 @@ func TestModeFieldTogglesCaptureModeThroughTheEngine(t *testing.T) {
 	m := newTestModel(driver)
 	m.view = viewSettings
 
-	m, msg := update(t, m, keyMsg("down")) // onto the mode field
-	m, msg = update(t, m, keyMsg("enter"))
+	m, _ = update(t, m, keyMsg("down")) // onto the mode field
+	m, msg := update(t, m, keyMsg("enter"))
 	if m.settings.editing {
 		t.Fatal("mode field must not open a text editor")
 	}
