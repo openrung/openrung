@@ -72,7 +72,9 @@ func (s *Store) LoadSettings() Settings {
 	if err != nil {
 		return out
 	}
-	_ = json.Unmarshal(data, &out)
+	if err := json.Unmarshal(data, &out); err != nil {
+		return Settings{}
+	}
 	return out
 }
 
@@ -88,7 +90,9 @@ func (s *Store) LoadIdentity() engine.Identity {
 	if err != nil {
 		return out
 	}
-	_ = json.Unmarshal(data, &out)
+	if err := json.Unmarshal(data, &out); err != nil {
+		return engine.Identity{}
+	}
 	return out
 }
 
