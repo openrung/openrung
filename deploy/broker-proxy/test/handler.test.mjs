@@ -4,7 +4,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { createHandler, DEFAULT_ORIGIN, STALE_TTL_SECONDS } from "../src/handler.js";
+import {
+  createHandler,
+  DEFAULT_ORIGIN,
+  STALE_TTL_SECONDS,
+  isDeniedSource,
+  parseDenyCIDRs,
+} from "../src/handler.js";
 
 const EDGE = "https://broker.openrung.org";
 const RELAYS_URL = `${EDGE}/api/v1/relays?limit=1`;
@@ -433,4 +439,86 @@ test("non-GET on /api/v1/relays: passthrough, no timeout, cache never touched", 
   assert.equal(cache.matchCalls, 0);
   assert.equal(cache.putCalls.length, 0);
   assert.equal(ctx.pending.length, 0);
+});
+
+// Source deny list ---------------------------------------------------------------------------
+
+test("deny list: prefixes are parsed, canonicalized, and garbage is skipped", () => {
+  const prefixes = parseDenyCIDRs(" 2001:db8:1:2::/64 , 198.51.100.7/24 , , not-a-cidr , 10.0.0.0/99 ");
+  assert.equal(prefixes.length, 2, "blank, unparseable and over-long-mask entries are skipped");
+
+  // The sloppy /24 was masked down to its network, so it matches the whole prefix.
+  assert.equal(isDeniedSource("198.51.100.200", prefixes), true);
+  assert.equal(isDeniedSource("198.51.101.7", prefixes), false);
+
+  assert.equal(isDeniedSource("2001:db8:1:2::aa", prefixes), true);
+  assert.equal(isDeniedSource("2001:db8:1:3::aa", prefixes), false);
+});
+
+test("deny list: address forms, family separation, and conservative failures", () => {
+  const v6 = parseDenyCIDRs("2001:db8:1:2::/64");
+  const v4 = parseDenyCIDRs("198.51.100.0/24");
+  const single = parseDenyCIDRs("2001:db8::1");
+
+  // An IPv4-mapped IPv6 address is matched by the IPv4 prefix it really is.
+  assert.equal(isDeniedSource("::ffff:198.51.100.7", v4), true);
+  // Families never cross-match.
+  assert.equal(isDeniedSource("198.51.100.7", v6), false);
+  assert.equal(isDeniedSource("2001:db8:1:2::aa", v4), false);
+  // A bare address denies exactly itself.
+  assert.equal(isDeniedSource("2001:db8::1", single), true);
+  assert.equal(isDeniedSource("2001:db8::2", single), false);
+  // Absent, malformed and empty sources are never denied.
+  for (const bad of [null, undefined, "", "   ", "not-an-ip", "2001:db8::1::2", "10.0.0.256", "010.1.1.1"]) {
+    assert.equal(isDeniedSource(bad, v6), false, `${bad} must not be denied`);
+    assert.equal(isDeniedSource(bad, v4), false, `${bad} must not be denied`);
+  }
+  // An empty list denies nothing at all.
+  assert.equal(isDeniedSource("2001:db8:1:2::aa", parseDenyCIDRs("")), false);
+});
+
+test("denied source: 403 at the edge, origin and cache never touched", async () => {
+  const { handler, cache, ctx, fetchImpl } = setup(() => new Response("{}", { status: 200 }));
+
+  const request = new Request(RELAYS_URL, { headers: { "CF-Connecting-IP": "2001:db8:1:2::aa" } });
+  const response = await handler(request, { DENY_CIDRS: "2001:db8:1:2::/64" }, ctx);
+
+  assert.equal(response.status, 403);
+  assert.deepEqual(await response.json(), { error: "forbidden" });
+  // Per-client state: an edge cache must never replay it to everyone behind it.
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  assert.equal(fetchImpl.calls.length, 0, "the origin must not see a denied request");
+  assert.equal(cache.matchCalls, 0);
+  assert.equal(cache.putCalls.length, 0);
+});
+
+test("denied source: every path is refused, not just relay discovery", async () => {
+  const { handler, ctx, fetchImpl } = setup(() => new Response("{}", { status: 200 }));
+  const env = { DENY_CIDRS: "2001:db8:1:2::/64" };
+  const headers = { "CF-Connecting-IP": "2001:db8:1:2::aa" };
+
+  for (const [method, url] of [
+    ["GET", `${EDGE}/api/v1/relays`],
+    ["POST", `${EDGE}/api/v1/wss/tickets`],
+    ["POST", `${EDGE}/api/v1/telemetry/events`],
+    ["GET", `${EDGE}/api/v1/speed-test`],
+  ]) {
+    const response = await handler(new Request(url, { method, headers }), env, ctx);
+    assert.equal(response.status, 403, `${method} ${url}`);
+  }
+  assert.equal(fetchImpl.calls.length, 0);
+});
+
+test("allowed source and unset binding: proxied exactly as before", async () => {
+  const { handler, ctx, fetchImpl } = setup(() => new Response("{}", { status: 200 }));
+
+  const allowed = new Request(RELAYS_URL, { headers: { "CF-Connecting-IP": "203.0.113.7" } });
+  assert.equal((await handler(allowed, { DENY_CIDRS: "2001:db8:1:2::/64" }, ctx)).status, 200);
+
+  // A denied-looking address with no list configured still passes: no binding, no deny list.
+  const unset = new Request(RELAYS_URL, { headers: { "CF-Connecting-IP": "2001:db8:1:2::aa" } });
+  assert.equal((await handler(unset, {}, ctx)).status, 200);
+  assert.equal((await handler(unset, undefined, ctx)).status, 200);
+
+  assert.equal(fetchImpl.calls.length, 3);
 });

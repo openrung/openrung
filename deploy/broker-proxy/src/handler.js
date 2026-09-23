@@ -41,10 +41,180 @@ const CACHE_KEY_VERSION = "1";
 // origin.
 const NO_FETCH_CACHE = { cacheTtl: 0, cacheEverything: false };
 
+// Source deny list ---------------------------------------------------------------------------
+// Cloudflare sets CF-Connecting-IP at the edge and overwrites any client-supplied copy, so it is
+// the one client address this Worker can trust. Prefixes come from the DENY_CIDRS binding
+// (comma-separated CIDRs, IPv4 or IPv6; blank and unparseable entries are skipped). A denied
+// request is answered here, so the origin never sees it and it consumes no origin budget.
+//
+// The same constraint as the broker's own list applies: this matches ONE address per request, so
+// only prefixes known to be a single caller belong in it — a prefix covering a shared address
+// would refuse every client behind it.
+
+// Parsed prefixes are memoized against the raw binding string: the binding is fixed for the
+// lifetime of an isolate, so this parses once rather than per request.
+let denyCache = { raw: null, prefixes: [] };
+
+export function denyPrefixes(env) {
+  const raw = env && typeof env.DENY_CIDRS === "string" ? env.DENY_CIDRS : "";
+  if (raw !== denyCache.raw) {
+    denyCache = { raw, prefixes: parseDenyCIDRs(raw) };
+  }
+  return denyCache.prefixes;
+}
+
+// parseDenyCIDRs turns the binding string into {bytes, bits} prefixes, canonicalized by masking
+// off the host bits so a sloppy entry ("198.51.100.7/24") still matches its whole network.
+export function parseDenyCIDRs(raw) {
+  const prefixes = [];
+  for (const entry of String(raw || "").split(",")) {
+    const text = entry.trim();
+    if (text === "") continue;
+    const slash = text.lastIndexOf("/");
+    const addrText = slash === -1 ? text : text.slice(0, slash);
+    const bytes = ipToBytes(addrText);
+    if (!bytes) continue;
+    const maxBits = bytes.length * 8;
+    let bits = maxBits;
+    if (slash !== -1) {
+      const bitsText = text.slice(slash + 1);
+      if (!/^\d{1,3}$/.test(bitsText)) continue;
+      bits = Number(bitsText);
+      if (bits > maxBits) continue;
+    }
+    prefixes.push({ bytes: maskBytes(bytes, bits), bits });
+  }
+  return prefixes;
+}
+
+// isDeniedSource reports whether ip falls inside any prefix. An absent or unparseable address is
+// never denied: the conservative direction, since a wrong match cuts off a real client.
+export function isDeniedSource(ip, prefixes) {
+  if (!prefixes || prefixes.length === 0) return false;
+  const addr = ipToBytes(ip);
+  if (!addr) return false;
+  return prefixes.some((prefix) => containsAddress(prefix, addr));
+}
+
+function containsAddress(prefix, addr) {
+  // Families never mix: an IPv4 prefix cannot contain an IPv6 address or vice versa.
+  if (prefix.bytes.length !== addr.length) return false;
+  const whole = prefix.bits >> 3;
+  for (let i = 0; i < whole; i++) {
+    if (prefix.bytes[i] !== addr[i]) return false;
+  }
+  const remainder = prefix.bits & 7;
+  if (remainder === 0) return true;
+  const mask = 0xff << (8 - remainder);
+  return (prefix.bytes[whole] & mask) === (addr[whole] & mask);
+}
+
+function maskBytes(bytes, bits) {
+  const masked = new Uint8Array(bytes);
+  for (let i = 0; i < masked.length; i++) {
+    const bitsBefore = i * 8;
+    if (bitsBefore >= bits) {
+      masked[i] = 0;
+    } else if (bits - bitsBefore < 8) {
+      masked[i] &= 0xff << (8 - (bits - bitsBefore));
+    }
+  }
+  return masked;
+}
+
+// ipToBytes returns 4 bytes for IPv4 and 16 for IPv6, or null. An IPv4-mapped IPv6 address
+// (::ffff:a.b.c.d) collapses to its 4 IPv4 bytes so an IPv4 prefix matches it either way.
+function ipToBytes(ip) {
+  if (typeof ip !== "string") return null;
+  const text = ip.trim();
+  if (text === "") return null;
+  return text.includes(":") ? ipv6ToBytes(text) : ipv4ToBytes(text);
+}
+
+function ipv4ToBytes(text) {
+  const parts = text.split(".");
+  if (parts.length !== 4) return null;
+  const bytes = new Uint8Array(4);
+  for (let i = 0; i < 4; i++) {
+    const part = parts[i];
+    // No leading zeros: "010" is ambiguous (octal in some parsers) and never canonical.
+    if (!/^\d{1,3}$/.test(part) || (part.length > 1 && part[0] === "0")) return null;
+    const value = Number(part);
+    if (value > 255) return null;
+    bytes[i] = value;
+  }
+  return bytes;
+}
+
+function ipv6ToBytes(text) {
+  const halves = text.split("::");
+  if (halves.length > 2) return null;
+  const head = parseGroups(halves[0], halves.length === 1);
+  const tail = halves.length === 2 ? parseGroups(halves[1], true) : [];
+  if (head === null || tail === null) return null;
+
+  let groups;
+  if (halves.length === 2) {
+    const fill = 8 - head.length - tail.length;
+    if (fill < 1) return null; // "::" must stand for at least one zero group
+    groups = [...head, ...new Array(fill).fill(0), ...tail];
+  } else {
+    groups = head;
+  }
+  if (groups.length !== 8) return null;
+
+  const bytes = new Uint8Array(16);
+  for (let i = 0; i < 8; i++) {
+    bytes[i * 2] = (groups[i] >> 8) & 0xff;
+    bytes[i * 2 + 1] = groups[i] & 0xff;
+  }
+  return isV4Mapped(bytes) ? bytes.slice(12) : bytes;
+}
+
+// parseGroups reads one side of a "::" into 16-bit groups. A trailing dotted-quad (the
+// ::ffff:a.b.c.d form) is allowed only in the last position, where it contributes two groups.
+function parseGroups(chunk, allowEmbeddedV4) {
+  if (chunk === "") return [];
+  const pieces = chunk.split(":");
+  const groups = [];
+  for (let i = 0; i < pieces.length; i++) {
+    const piece = pieces[i];
+    if (piece.includes(".")) {
+      if (!allowEmbeddedV4 || i !== pieces.length - 1) return null;
+      const v4 = ipv4ToBytes(piece);
+      if (!v4) return null;
+      groups.push((v4[0] << 8) | v4[1], (v4[2] << 8) | v4[3]);
+      continue;
+    }
+    if (!/^[0-9a-fA-F]{1,4}$/.test(piece)) return null;
+    groups.push(parseInt(piece, 16));
+  }
+  return groups;
+}
+
+function isV4Mapped(bytes) {
+  for (let i = 0; i < 10; i++) {
+    if (bytes[i] !== 0) return false;
+  }
+  return bytes[10] === 0xff && bytes[11] === 0xff;
+}
+
+function forbidden() {
+  return new Response(JSON.stringify({ error: "forbidden" }), {
+    status: 403,
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  });
+}
+
 // Factory so tests can inject a fake fetch and cache. `fetchImpl(request, init)` must behave
 // like global fetch; `cache` must expose the Cache API's put/match.
 export function createHandler({ fetchImpl, cache }) {
   return async function handle(request, env, ctx) {
+    // Screened first: a denied source must not reach the origin, the cache, or the timeout paths.
+    if (isDeniedSource(request.headers.get("CF-Connecting-IP"), denyPrefixes(env))) {
+      return forbidden();
+    }
+
     const originBase = env && env.ORIGIN ? env.ORIGIN : DEFAULT_ORIGIN;
     const url = new URL(request.url);
     const proxied = buildProxiedRequest(request, url, originBase);
