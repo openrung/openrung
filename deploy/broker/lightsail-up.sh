@@ -11,11 +11,10 @@
 # from GHCR, runs it with host networking + a persistent telemetry volume, and
 # opens the HTTP port.
 #
-# Front the broker with Cloudflare (TLS + DDoS). The raw origin port stays open
-# as the app's direct-IP fallback; the broker only trusts forwarded client-IP
-# headers from Cloudflare's ranges, so a direct hit cannot spoof its source. If
-# you do not need the direct-IP fallback, restrict the origin port to
-# Cloudflare's ranges at the firewall.
+# Front the broker with the CDN fronts through the local TLS terminator
+# (deploy/broker/origin-tls.md). The broker trusts forwarded client-IP headers
+# only from loopback (OPENRUNG_TRUSTED_PROXY_CIDRS below), where that terminator
+# runs, so a direct hit on the raw origin port cannot spoof its source.
 #
 # Prerequisites: an authenticated `aws` CLI (aws configure) with Lightsail
 # permissions, and the GHCR image published and PUBLIC (see deploy/broker/README.md).
@@ -150,6 +149,7 @@ systemctl enable --now docker
 mkdir -p /etc/openrung
 cat > /etc/openrung/broker.env <<ENVEOF
 OPENRUNG_ADDR=:${PORT}
+OPENRUNG_TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
 ${TOKEN_ENV}
 ${ANON_ENV}
 ${DASHBOARD_ENV}

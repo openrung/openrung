@@ -372,15 +372,14 @@ OPENRUNG_RELAY_DATABASE_URL=postgres://openrung:change-me@db:5432/openrung?sslmo
 ## Fronting with Cloudflare
 
 Put the broker behind Cloudflare (or another proxy) for TLS and DDoS absorption.
-The broker trusts Cloudflare's published ranges for `CF-Connecting-IP` /
-`X-Forwarded-For` automatically; add any additional proxy CIDRs with
-`OPENRUNG_TRUSTED_PROXY_CIDRS`. The container uses **host networking** so the
-broker sees the real Cloudflare edge IP as the peer — do not switch it to bridge
+The broker trusts `CF-Connecting-IP` / `X-Forwarded-For` only from the CIDRs in
+`OPENRUNG_TRUSTED_PROXY_CIDRS` (none by default). Production fronts reach the
+broker through the local Caddy terminator, which decides the forwarded client IP
+(see [origin TLS](origin-tls.md)), so production trusts only loopback:
+`OPENRUNG_TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128`. The container uses **host
+networking** so the broker sees the real peer — do not switch it to bridge
 networking without reading the note in `docker-compose.yml`, or per-IP rate
 limiting and telemetry source IPs will all collapse onto the docker gateway.
-
-Firewall the raw origin `:8080` to Cloudflare's ranges so clients cannot bypass
-the edge and spoof forwarded headers.
 
 ### End-to-end TLS to the origin
 
@@ -445,7 +444,7 @@ docker inspect openrung-broker \
 | `OPENRUNG_DASHBOARD_TOKEN`           | no       | —                                   | Enables the protected `/admin/telemetry` dashboard             |
 | `OPENRUNG_API_TOKEN`                 | no       | —                                   | Enables `/admin/api/relays/inventory` and the ranking-weight endpoints; must differ from every other credential |
 | `OPENRUNG_ADDR`                      | no       | `:8080`                             | HTTP listen address                                            |
-| `OPENRUNG_TRUSTED_PROXY_CIDRS`       | no       | Cloudflare ranges                   | Extra trusted proxy CIDRs for forwarded client IPs             |
+| `OPENRUNG_TRUSTED_PROXY_CIDRS`       | no       | none                                | Proxy CIDRs trusted for forwarded client IPs                   |
 | `OPENRUNG_RELAY_STORE`               | no       | `memory`                            | Relay state backend: `memory` or `postgres`                    |
 | `OPENRUNG_RELAY_DATABASE_URL`        | if pg    | —                                   | PostgreSQL URL when `OPENRUNG_RELAY_STORE=postgres`            |
 | `OPENRUNG_GEOIP_ENDPOINT`            | no       | ipwho.is                            | IP-geolocation endpoint for relay city/country; `off` disables |

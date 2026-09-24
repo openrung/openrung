@@ -42,8 +42,8 @@ usage stays bounded.
 When the request arrives through a trusted proxy, the source IP is taken from the
 `CF-Connecting-IP` header (falling back to the left-most `X-Forwarded-For` entry)
 rather than the immediate peer, so requests fronted by `broker.openrung.org` still
-record the real client IP. Trusted proxies default to Cloudflare's published ranges;
-set `OPENRUNG_TRUSTED_PROXY_CIDRS` (comma-separated CIDRs) to add more. Forwarded
+record the real client IP. Trusted proxies are exactly the CIDRs in
+`OPENRUNG_TRUSTED_PROXY_CIDRS` (comma-separated; none by default). Forwarded
 headers from any other peer are ignored, so a direct connection to the origin cannot
 spoof the source IP.
 

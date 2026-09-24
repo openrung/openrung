@@ -50,8 +50,8 @@ type Config struct {
 	// so an unconfigured broker 404s instead of running the endpoint open;
 	// cmd/broker refuses to start when it equals any other broker credential.
 	APIToken string
-	// TrustedProxyCIDRs are additional CIDRs (beyond Cloudflare's published ranges) whose forwarded
-	// CF-Connecting-IP / X-Forwarded-For headers the broker will trust for the real client IP.
+	// TrustedProxyCIDRs are the only CIDRs whose forwarded CF-Connecting-IP / X-Forwarded-For
+	// headers the broker will trust for the real client IP. Empty trusts no proxy.
 	TrustedProxyCIDRs []string
 	// MaxNewRelayIDsPerIPPerDay caps how many NEW relay identities one source
 	// IP (IPv6: one /64) may successfully register per rolling 24 h, so an

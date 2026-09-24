@@ -269,8 +269,8 @@ depend on it.
 ## Follow-ups
 
 - **Loopback-wide rate-limit / telemetry collapse — RESOLVED 2026-07-13; now keyed per-CloudFront-edge.**
-  The broker trusts only Cloudflare ranges for forwarded client IPs
-  (`internal/broker/clientip.go`) and did not trust the new loopback hop, so it
+  The broker did not trust the new loopback hop for forwarded client IPs
+  (`internal/broker/clientip.go`), so it
   recorded `127.0.0.1` as the client for *every* CloudFront-fronted request — the
   whole front collapsed onto one relay-list rate-limit bucket (2 req/s, burst 30)
   and one telemetry client IP. Fixed by adding
