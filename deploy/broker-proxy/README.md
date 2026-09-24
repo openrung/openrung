@@ -95,9 +95,12 @@ paths with injected fetch/cache fakes.
 
 ## Deploy
 
-From this directory, with wrangler authenticated against the `openrung.org` Cloudflare account:
+From this directory, with wrangler authenticated against the `openrung.org` Cloudflare account.
+The origin must already hold the matching secret (see `deploy/broker/origin-tls.md`); set the
+Worker side once, then deploy:
 
 ```bash
+wrangler secret put ORIGIN_AUTH   # same value as the origin's OPENRUNG_WORKER_ORIGIN_AUTH
 wrangler deploy
 ```
 
@@ -122,13 +125,10 @@ Logs: `wrangler tail openrung-broker-proxy`.
   `http://broker-origin.openrung.org:8080` endpoint must not be configured in
   production because successful ticket responses contain short-lived bearer
   credentials.
-- **Client IP recovery (done).** The Worker forwards the real client IP as `X-Forwarded-For`, and
-  the broker now honors `CF-Connecting-IP` / `X-Forwarded-For` **only when the request arrives from a
-  trusted proxy** (Cloudflare's published ranges by default; extend via `OPENRUNG_TRUSTED_PROXY_CIDRS`).
-  A direct hit on the raw origin port is not trusted, so it cannot spoof the source IP. Residual: a
-  request routed through *any* Cloudflare Worker could still forge the header, since the origin port
-  is open — low stakes for `client_seen` analytics; close it off with Authenticated Origin Pulls or a
-  shared-secret header if that ever matters.
+- **Client IP recovery (done).** The Worker forwards the real client IP as `X-Forwarded-For` and
+  authenticates to the origin with the `ORIGIN_AUTH` secret (`X-OpenRung-Origin-Auth`). The origin
+  Caddy passes that `X-Forwarded-For` to the broker only for authenticated requests from
+  Cloudflare's published ranges; see `deploy/broker/origin-tls.md`.
 - **SNI blocking.** A determined censor can SNI-block `broker.openrung.org` specifically (classic
   domain fronting is dead). Two of the planned mitigations have shipped: the independent
   CloudFront second front means a single SNI rule no longer takes discovery offline, and the

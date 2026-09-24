@@ -4,7 +4,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { createHandler, DEFAULT_ORIGIN, STALE_TTL_SECONDS } from "../src/handler.js";
+import {
+  createHandler,
+  DEFAULT_ORIGIN,
+  ORIGIN_AUTH_HEADER,
+  STALE_TTL_SECONDS,
+} from "../src/handler.js";
 
 const EDGE = "https://broker.openrung.org";
 const RELAYS_URL = `${EDGE}/api/v1/relays?limit=1`;
@@ -161,6 +166,33 @@ test("ORIGIN env var overrides the proxy target", async () => {
   assert.equal(proxiedUrl.protocol, "http:");
   assert.equal(proxiedUrl.host, "127.0.0.1:19999");
   assert.equal(proxiedUrl.pathname, "/api/v1/relays");
+});
+
+test("ORIGIN_AUTH is attached on every path and replaces a client-supplied value", async () => {
+  const { handler, ctx, fetchImpl } = setup(() => new Response("{}", { status: 200 }));
+  const headers = { [ORIGIN_AUTH_HEADER]: "forged", "CF-Connecting-IP": "198.51.100.7" };
+
+  await handler(new Request(RELAYS_URL, { headers }), { ORIGIN_AUTH: "secret" }, ctx);
+  await handler(new Request(`${EDGE}/healthz`, { headers }), { ORIGIN_AUTH: "secret" }, ctx);
+  await handler(
+    new Request(`${EDGE}/api/v1/wss/tickets`, { method: "POST", headers, body: "{}" }),
+    { ORIGIN_AUTH: "secret" },
+    ctx,
+  );
+
+  assert.equal(fetchImpl.calls.length, 3);
+  for (const { request } of fetchImpl.calls) {
+    assert.equal(request.headers.get(ORIGIN_AUTH_HEADER), "secret");
+    assert.equal(request.headers.get("X-Forwarded-For"), "198.51.100.7");
+  }
+});
+
+test("without ORIGIN_AUTH a client-supplied origin credential is stripped", async () => {
+  const { handler, ctx, fetchImpl } = setup(() => new Response("{}", { status: 200 }));
+
+  await handler(new Request(RELAYS_URL, { headers: { [ORIGIN_AUTH_HEADER]: "forged" } }), {}, ctx);
+
+  assert.equal(fetchImpl.calls[0].request.headers.get(ORIGIN_AUTH_HEADER), null);
 });
 
 test("origin 500 with warm cache: 200 + X-OpenRung-Stale, Content-Type preserved", async () => {

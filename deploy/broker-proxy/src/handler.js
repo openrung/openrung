@@ -18,6 +18,11 @@
 // override; it must never be the production default.
 export const DEFAULT_ORIGIN = "https://broker-origin.openrung.org";
 
+// Shared secret proving to the origin's Caddy that a request came from this Worker; only then does
+// Caddy pass the Worker's X-Forwarded-For through to the broker. Set via `wrangler secret put
+// ORIGIN_AUTH`; see deploy/broker/origin-tls.md.
+export const ORIGIN_AUTH_HEADER = "X-OpenRung-Origin-Auth";
+
 const RELAYS_PATH = "/api/v1/relays";
 const WSS_TICKETS_PATH = "/api/v1/wss/tickets";
 const ORIGIN_TIMEOUT_MS = 10_000;
@@ -47,7 +52,7 @@ export function createHandler({ fetchImpl, cache }) {
   return async function handle(request, env, ctx) {
     const originBase = env && env.ORIGIN ? env.ORIGIN : DEFAULT_ORIGIN;
     const url = new URL(request.url);
-    const proxied = buildProxiedRequest(request, url, originBase);
+    const proxied = buildProxiedRequest(request, url, originBase, env && env.ORIGIN_AUTH);
 
     if (request.method === "GET" && url.pathname === RELAYS_PATH) {
       return relaysWithStaleFallback(proxied, request.url, ctx, fetchImpl, cache);
@@ -85,7 +90,7 @@ async function wssTicketPassthrough(proxied, fetchImpl) {
   }
 }
 
-function buildProxiedRequest(request, url, originBase) {
+function buildProxiedRequest(request, url, originBase, originAuth) {
   const origin = new URL(originBase);
   const target = new URL(url);
 
@@ -96,14 +101,19 @@ function buildProxiedRequest(request, url, originBase) {
 
   const proxied = new Request(target, request);
 
-  // Surface the real client IP to the origin. The broker honors X-Forwarded-For only when the
-  // request arrives from a trusted proxy (Cloudflare egress ranges), so this cannot be spoofed
-  // by direct origin hits.
+  // Surface the real client IP to the origin. The origin's Caddy passes X-Forwarded-For through
+  // to the broker only for requests carrying ORIGIN_AUTH_HEADER (see below).
   const clientIp = request.headers.get("CF-Connecting-IP");
   if (clientIp) {
     proxied.headers.set("X-Forwarded-For", clientIp);
   }
   proxied.headers.set("X-Forwarded-Proto", "https");
+
+  // Never relay a client-supplied origin credential; attach ours when configured.
+  proxied.headers.delete(ORIGIN_AUTH_HEADER);
+  if (originAuth) {
+    proxied.headers.set(ORIGIN_AUTH_HEADER, originAuth);
+  }
 
   return proxied;
 }

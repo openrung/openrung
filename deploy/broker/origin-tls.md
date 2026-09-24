@@ -15,8 +15,8 @@ relay ──HTTPS──► CloudFront edge ──HTTPS(:443)──► Caddy ─�
 ```
 
 The broker container is **not touched** — the proxy is purely additive, and the
-plaintext `:8080` path stays open for volunteer-run relays and for the
-Cloudflare Worker front. Set up 2026-07-13.
+plaintext `:8080` path stays open for volunteer-run relays. Set up 2026-07-13;
+the Cloudflare Worker front also uses this leg.
 
 ## What must not be undone
 
@@ -26,9 +26,8 @@ Cloudflare Worker front. Set up 2026-07-13.
   Cloudflare Worker's subrequest back into the edge. Both CDN fronts depend on
   this record resolving straight to the broker IP, and so does every relay and
   relay hub — the provisioning helpers now register against this hostname.
-- **Keep `:8080` open.** The Cloudflare Worker front still fetches the origin on
-  `:8080`. Relays and hubs provisioned before the helpers switched their default
-  to `https://broker-origin.openrung.org` also keep the baked-in
+- **Keep `:8080` open.** Relays and hubs provisioned before the helpers switched
+  their default to `https://broker-origin.openrung.org` keep the baked-in
   `http://54.238.185.205:8080` in their container environment until each one is
   recreated, so closing the port would strand them. Do not firewall it off as
   part of this change.
@@ -60,29 +59,24 @@ sudo apt-get update && sudo apt-get install -y caddy   # installs the systemd se
 
 ### Config
 
-`/etc/caddy/Caddyfile` (also committed as `deploy/broker/Caddyfile` for
-reference):
+`/etc/caddy/Caddyfile` is [`deploy/broker/Caddyfile`](Caddyfile), installed
+verbatim. It reads the Worker origin-auth secret from Caddy's environment, which
+a systemd drop-in loads from a root-only file:
 
-```caddyfile
-{
-	# no global options needed — Caddy's default ECDSA (P-256) leaf works with
-	# CloudFront's origin connection; do not force RSA.
-}
+`/etc/systemd/system/caddy.service.d/origin-auth.conf`
 
-broker-origin.openrung.org {
-	reverse_proxy 127.0.0.1:8080 {
-		header_up -CF-Connecting-IP
-		header_up X-Forwarded-For {remote_host}
-	}
-	log {
-		output file /var/log/caddy/broker-origin.access.log {
-			roll_size 20MiB
-			roll_keep 5
-		}
-		format json
-	}
-}
+```ini
+[Service]
+EnvironmentFile=/etc/caddy/origin-auth.env
 ```
+
+`/etc/caddy/origin-auth.env` (`root:root`, mode `0600`) holds
+`OPENRUNG_WORKER_ORIGIN_AUTH=<value>`: at least 32 characters, the same value as
+the Worker's `ORIGIN_AUTH` secret (`wrangler secret put ORIGIN_AUTH` in
+`deploy/broker-proxy`). Install the env file and drop-in, run
+`sudo systemctl daemon-reload`, and only then install a Caddyfile that
+references the variable. Without it, Caddy treats every request as a
+non-Worker request.
 
 The log directory is provided by a systemd drop-in (the packaged unit sandboxes
 the service, so a plain `mkdir` is not enough — systemd must own the path):
@@ -99,7 +93,7 @@ Apply changes as the `caddy` user (never `sudo caddy validate`/`fmt` as root —
 creates a root-owned log file that the service then can't open):
 
 ```sh
-sudo -u caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+sudo bash -c 'set -a; . /etc/caddy/origin-auth.env; set +a; runuser -u caddy -- caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile'
 sudo systemctl reload caddy
 ```
 
@@ -304,8 +298,9 @@ depend on it.
   custom origin header CloudFront injects, or restricting `:443` ingress to
   CloudFront's origin-facing IP ranges — otherwise per-viewer keying would be
   *more* spoofable than the current edge-IP key, not less.
-- **Cloudflare Worker front origin leg is still plaintext.**
-  `broker.openrung.org` (the Worker) still fetches `http://broker-origin…:8080`.
-  Now that `:443` origin TLS exists, the Worker could be pointed at
-  `https://broker-origin.openrung.org` to close its leg too — a separate change
-  to the higher-traffic primary front, deliberately out of scope here.
+- **Cloudflare Worker front origin leg — done.** `broker.openrung.org` fetches
+  `https://broker-origin.openrung.org` through this Caddy and authenticates with
+  the `X-OpenRung-Origin-Auth` shared secret. Caddy forwards the Worker's
+  `X-Forwarded-For` only for requests from Cloudflare's published ranges that
+  carry that secret; every other request is keyed on its immediate peer. Deploy
+  the secret and the Caddyfile before a Worker build that targets `:443`.
