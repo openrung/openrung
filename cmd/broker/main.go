@@ -133,7 +133,7 @@ func run() error {
 		TelemetrySink:     telemetrySink,
 		DashboardToken:    dashboardToken,
 		APIToken:          apiToken,
-		// Cloudflare's published ranges are trusted by default; add more (e.g. an upstream LB) here.
+		// The only proxies trusted for forwarded client IPs; empty trusts none (prod: loopback Caddy).
 		TrustedProxyCIDRs:          splitAndTrim(os.Getenv("OPENRUNG_TRUSTED_PROXY_CIDRS")),
 		MaxNewRelayIDsPerIPPerDay:  maxNewRelayIDs,
 		RegistrationCapExemptCIDRs: splitAndTrim(os.Getenv("OPENRUNG_REGISTRATION_CAP_EXEMPT_CIDRS")),
