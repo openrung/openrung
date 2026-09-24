@@ -102,18 +102,19 @@ function buildProxiedRequest(request, url, originBase, originAuth) {
   const proxied = new Request(target, request);
 
   // Surface the real client IP to the origin. The origin's Caddy passes X-Forwarded-For through
-  // to the broker only for requests carrying ORIGIN_AUTH_HEADER (see below).
+  // to the broker only for requests carrying ORIGIN_AUTH_HEADER, so a client-supplied value is
+  // always dropped and the credential is attached only alongside Cloudflare's own client IP.
+  // Without one, the request goes unauthenticated and the origin keys it on its immediate peer.
+  proxied.headers.delete("X-Forwarded-For");
+  proxied.headers.delete(ORIGIN_AUTH_HEADER);
   const clientIp = request.headers.get("CF-Connecting-IP");
   if (clientIp) {
     proxied.headers.set("X-Forwarded-For", clientIp);
+    if (originAuth) {
+      proxied.headers.set(ORIGIN_AUTH_HEADER, originAuth);
+    }
   }
   proxied.headers.set("X-Forwarded-Proto", "https");
-
-  // Never relay a client-supplied origin credential; attach ours when configured.
-  proxied.headers.delete(ORIGIN_AUTH_HEADER);
-  if (originAuth) {
-    proxied.headers.set(ORIGIN_AUTH_HEADER, originAuth);
-  }
 
   return proxied;
 }

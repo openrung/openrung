@@ -62,6 +62,10 @@ broker-origin.openrung.org {
 			roll_size 20MiB
 			roll_keep 5
 		}
-		format json
+		# Caddy redacts only its built-in credential headers; the origin-auth
+		# secret must be deleted explicitly (Go canonicalizes the header name).
+		format filter {
+			request>headers>X-Openrung-Origin-Auth delete
+		}
 	}
 }

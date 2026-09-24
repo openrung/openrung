@@ -170,7 +170,11 @@ test("ORIGIN env var overrides the proxy target", async () => {
 
 test("ORIGIN_AUTH is attached on every path and replaces a client-supplied value", async () => {
   const { handler, ctx, fetchImpl } = setup(() => new Response("{}", { status: 200 }));
-  const headers = { [ORIGIN_AUTH_HEADER]: "forged", "CF-Connecting-IP": "198.51.100.7" };
+  const headers = {
+    [ORIGIN_AUTH_HEADER]: "forged",
+    "CF-Connecting-IP": "198.51.100.7",
+    "X-Forwarded-For": "203.0.113.66",
+  };
 
   await handler(new Request(RELAYS_URL, { headers }), { ORIGIN_AUTH: "secret" }, ctx);
   await handler(new Request(`${EDGE}/healthz`, { headers }), { ORIGIN_AUTH: "secret" }, ctx);
@@ -184,6 +188,19 @@ test("ORIGIN_AUTH is attached on every path and replaces a client-supplied value
   for (const { request } of fetchImpl.calls) {
     assert.equal(request.headers.get(ORIGIN_AUTH_HEADER), "secret");
     assert.equal(request.headers.get("X-Forwarded-For"), "198.51.100.7");
+  }
+});
+
+test("without CF-Connecting-IP the client X-Forwarded-For is dropped and no credential is sent", async () => {
+  const { handler, ctx, fetchImpl } = setup(() => new Response("{}", { status: 200 }));
+  const headers = { "X-Forwarded-For": "203.0.113.66", [ORIGIN_AUTH_HEADER]: "forged" };
+
+  await handler(new Request(`${EDGE}/healthz`, { headers }), { ORIGIN_AUTH: "secret" }, ctx);
+  await handler(new Request(RELAYS_URL, { headers }), { ORIGIN_AUTH: "secret" }, ctx);
+
+  for (const { request } of fetchImpl.calls) {
+    assert.equal(request.headers.get("X-Forwarded-For"), null);
+    assert.equal(request.headers.get(ORIGIN_AUTH_HEADER), null);
   }
 });
 

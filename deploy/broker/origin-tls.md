@@ -100,7 +100,9 @@ sudo systemctl reload caddy
 The JSON access log redacts sensitive request headers by default — Caddy replaces
 `Authorization`, `Cookie`, `Set-Cookie`, and `Proxy-Authorization` with `REDACTED`
 — so the Foundation bearer token is never written to
-`/var/log/caddy/broker-origin.access.log`.
+`/var/log/caddy/broker-origin.access.log`. That default does not cover custom
+headers, so the Caddyfile's log `format filter` deletes `X-OpenRung-Origin-Auth`
+explicitly.
 
 ### Firewall
 
