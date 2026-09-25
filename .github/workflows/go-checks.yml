@@ -65,6 +65,13 @@ jobs:
           bash -n deploy/relay/foundation-wss-host.sh
           bash -n deploy/relay/foundation-wss-host_test.sh
           bash deploy/relay/foundation-wss-host_test.sh
+          sh -n deploy/relay/egress-limit.sh
+          bash -n deploy/relay/egress-limit_test.sh
+          command -v nft >/dev/null || sudo apt-get install -y nftables
+          sudo bash deploy/relay/egress-limit_test.sh
+          bash -n deploy/relay/lightsail-up.sh
+          bash -n deploy/relay/linode-up.sh
+          bash -n deploy/relay/hetzner-up.sh
           bash -n deploy/relay/foundation-up.sh
           bash -n deploy/relay/foundation-up_test.sh
           bash deploy/relay/foundation-up_test.sh

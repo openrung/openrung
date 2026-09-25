@@ -16,7 +16,7 @@
 #
 # Overridable via env: OPENRUNG_REGION, OPENRUNG_TYPE, OPENRUNG_OS_IMAGE,
 # OPENRUNG_IMAGE, OPENRUNG_BROKER_URL, OPENRUNG_FIREWALL_NAME,
-# OPENRUNG_SSH_PUBKEY_FILE, OPENRUNG_SHAPE_RATE.
+# OPENRUNG_SSH_PUBKEY_FILE, OPENRUNG_SHAPE_RATE, OPENRUNG_NEW_DEST_RATE.
 #
 # This helper provisions anonymous volunteer-class relays only. It cannot safely
 # accept any registration bearer: Linode retains cloud-init user-data in the
@@ -43,6 +43,11 @@ FIREWALL_NAME="${OPENRUNG_FIREWALL_NAME:-openrung-relay}"
 # at or below true deliverable egress so the queue forms on the box, where
 # CAKE manages it, not in the provider's switch.
 SHAPE_RATE="${OPENRUNG_SHAPE_RATE:-1000mbit}"
+# New-destination rate limit ('off' disables): how many previously unseen
+# destination addresses per second the host may open connections to. See
+# deploy/relay/egress-limit.sh, which is embedded in the user-data below.
+NEW_DEST_RATE="${OPENRUNG_NEW_DEST_RATE:-10}"
+EGRESS_LIMIT_SCRIPT="$(cat "$(dirname -- "${BASH_SOURCE[0]}")/egress-limit.sh")"
 
 if [ "${OPENRUNG_VOLUNTEER_TOKEN+x}" = x ] || [ "${OPENRUNG_FOUNDATION_TOKEN+x}" = x ]; then
   echo "error: this helper provisions anonymous volunteer-class relays only; OPENRUNG_VOLUNTEER_TOKEN / OPENRUNG_FOUNDATION_TOKEN must be unset because Linode retains cloud-init user-data. A Foundation relay also needs a TLS broker, which this plaintext-origin helper does not use — install its credential post-boot over an authenticated channel instead." >&2
@@ -121,7 +126,7 @@ printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n' > /etc/ssh
 systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
 # DPkg::Lock::Timeout waits for cloud-init's own apt activity to release the lock.
 apt-get -o DPkg::Lock::Timeout=300 update
-apt-get -o DPkg::Lock::Timeout=300 install -y docker.io curl jq
+apt-get -o DPkg::Lock::Timeout=300 install -y docker.io curl jq nftables
 systemctl enable --now docker
 # Per-client fairness + bufferbloat control: shape egress with CAKE in
 # dual-dsthost mode, so under contention every destination host (= client IP)
@@ -155,6 +160,15 @@ WantedBy=multi-user.target
 SHAPEUNIT
 systemctl daemon-reload
 systemctl enable --now openrung-shape.service || echo "warning: egress shaping unit failed; relay continues unshaped" >&2
+# Bound how fast the relay opens connections to destinations it has not
+# contacted recently (deploy/relay/egress-limit.sh, embedded verbatim). Kept
+# as a local command so the rate can be changed later by re-running it.
+# Best-effort like shaping: a failure must never block relay bring-up.
+cat > /usr/local/sbin/openrung-egress-limit <<'EGRESSLIMIT'
+${EGRESS_LIMIT_SCRIPT}
+EGRESSLIMIT
+chmod 0755 /usr/local/sbin/openrung-egress-limit
+/usr/local/sbin/openrung-egress-limit ${NEW_DEST_RATE} || echo "warning: new-destination limit failed; relay continues unlimited" >&2
 # Public IPv4 from the Linode Metadata service; clients reach the relay here.
 MDTOKEN="\$(curl -fsS -X PUT -H 'Metadata-Token-Expiry-Seconds: 300' http://169.254.169.254/v1/token || true)"
 PUBLIC_IP=""

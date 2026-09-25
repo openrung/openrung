@@ -416,6 +416,14 @@ not need to match.
   capabilities instead, use a public port ≥ 1024 (`OPENRUNG_PUBLIC_PORT` /
   `OPENRUNG_LISTEN_PORT`).
 
+- **New-destination rate limit:** the Lightsail, Linode and Hetzner helpers
+  install [`egress-limit.sh`](egress-limit.sh), an nftables rule that lets the
+  host open connections to at most 10 new destination addresses per second
+  (burst 300), where "new" means not contacted in the last 10 minutes.
+  `OPENRUNG_NEW_DEST_RATE` sets the rate; `off` disables it. Addresses already
+  contacted are never limited. Apply or change it on an existing host with
+  `ssh root@HOST 'sh -s 10' < deploy/relay/egress-limit.sh` (`off` removes it).
+
 ## Operations
 
 ```sh
