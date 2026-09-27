@@ -14,8 +14,9 @@
 # connection attempts are dropped, so TCP retransmits them once the budget
 # refills instead of failing outright. Loopback is exempt.
 #
-# Installs /etc/openrung/egress-limit.nft and a boot unit that loads it, then
-# applies it now. Re-running replaces the ruleset atomically; 'off' removes it.
+# Applies the ruleset now, then installs it as /etc/openrung/egress-limit.nft
+# with a boot unit that restores it. Re-running replaces the ruleset
+# atomically (a failed load keeps the previous one); 'off' removes it.
 # The bring-up helpers embed this script in cloud-init user-data, and an
 # existing relay can be updated with:
 #
@@ -48,9 +49,12 @@ if ! command -v nft >/dev/null 2>&1; then
 fi
 
 mkdir -p /etc/openrung
+NEXT="$RULES.new"
+trap 'rm -f "$NEXT"' EXIT
 # The leading "table" + "delete table" pair makes the load an atomic replace
-# whether or not the table already exists.
-cat > "$RULES" <<RULESET
+# whether or not the table already exists. The replace also empties the
+# destination history; live connections repopulate it on their next packet.
+cat > "$NEXT" <<RULESET
 table inet openrung_egress
 delete table inet openrung_egress
 table inet openrung_egress {
@@ -69,8 +73,17 @@ table inet openrung_egress {
   chain output {
     type filter hook output priority filter; policy accept;
     oif "lo" accept
-    ct state != new accept
+    # Replies on connections clients opened to the relay carry no new
+    # destination; skipping them keeps the set work off the bulk path.
+    ct direction reply accept
     meta l4proto != { tcp, udp } accept
+    # Every packet the relay sends on an existing connection records its
+    # destination as recently contacted, so an address in continuous use never
+    # ages out. These packets are never limited; the plain accept covers a
+    # full set, where update cannot add.
+    ct state != new meta nfproto ipv4 update @known_v4 { ip daddr } accept
+    ct state != new meta nfproto ipv6 update @known_v6 { ip6 daddr } accept
+    ct state != new accept
     ip daddr @known_v4 update @known_v4 { ip daddr } accept
     ip6 daddr @known_v6 update @known_v6 { ip6 daddr } accept
     limit rate over ${RATE}/second burst ${BURST} packets counter drop
@@ -80,6 +93,14 @@ table inet openrung_egress {
 }
 RULESET
 
+# Load before installing: nft -f applies the file as one transaction, so a
+# failed load leaves the running ruleset and the installed file untouched.
+nft -f "$NEXT"
+mv "$NEXT" "$RULES"
+
+# The unit only restores the ruleset at boot. Never restart it: restart runs
+# ExecStop, which removes the limit before ExecStart reloads it.
+# ExecReload is the in-place, atomic path for operators.
 cat > "$UNIT" <<UNITFILE
 [Unit]
 Description=OpenRung relay new-destination rate limit (nftables)
@@ -90,6 +111,7 @@ Wants=network-online.target
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/sbin/nft -f $RULES
+ExecReload=/usr/sbin/nft -f $RULES
 ExecStop=/usr/sbin/nft delete table inet openrung_egress
 
 [Install]
@@ -97,8 +119,7 @@ WantedBy=multi-user.target
 UNITFILE
 
 systemctl daemon-reload
-systemctl enable openrung-egress-limit.service
-# restart, not start: a re-run must load the rewritten ruleset even when the
-# oneshot unit is already active.
-systemctl restart openrung-egress-limit.service
+# A no-op when the unit is already active; on first install it runs
+# ExecStart, which reloads the file just loaded.
+systemctl enable --now openrung-egress-limit.service
 echo "openrung-egress-limit: ${RATE}/s new destinations, burst ${BURST}"
