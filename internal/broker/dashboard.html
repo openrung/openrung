@@ -53,7 +53,7 @@
   <script>
     const bytes=value=>{if(!value)return '—';const units=['B','KB','MB','GB','TB'];let n=value,i=0;while(n>=1024&&i<units.length-1){n/=1024;i++}return (i?n.toFixed(1):String(n))+' '+units[i]};
     // The overview's rankings arrive capped at the broker's top 10.
-    const PAGE_SIZE=25,RANK_LIMIT=10;let loading=false,sessionOffset=0;
+    const PAGE_SIZE=25,RANK_LIMIT=10;let loading=false,sessionOffset=0,lastTrend=null;
     function empty(cols){return `<tr><td colspan="${cols}" class="empty">No telemetry in this window</td></tr>`}
     function failureCell(x){const label=[x.failure_stage,x.failure_reason].filter(Boolean).join(' · ')||'—';return `<td${x.failure_detail?` title="${esc(x.failure_detail)}"`:''}>${esc(label)}</td>`}
     // One badge per session: live sessions read "active", finished successful
@@ -62,14 +62,20 @@
     function locationCell(x){const place=[x.city,x.country].filter(Boolean).join(', ')||'Unknown',network=[x.organization,x.asn].filter(Boolean).join(' · ');return `<td class="location" title="${esc(network)}"><div>${esc(place)}</div>${x.isp?`<div class="isp">${esc(x.isp)}</div>`:''}</td>`}
     // Failures merge the stage and reason rankings: one slice per stage, with
     // its reasons (keyed "stage · reason" by the broker) listed beneath it.
-    function failureReasons(reasons){return stage=>reasons.filter(x=>x.name.startsWith(stage.name+' · ')).map(x=>({name:x.name.slice(stage.name.length+3),count:x.count}))}
+    // Stages folded into Other list their reasons under it, stage-prefixed.
+    function failureReasons(reasons){
+      const of=stage=>reasons.filter(x=>x.name.startsWith(stage.name+' · ')).map(x=>({name:x.name.slice(stage.name.length+3),count:x.count}));
+      return stage=>stage.members?stage.members.flatMap(m=>of(m).map(x=>({...x,name:`${m.name} · ${x.name}`}))):of(stage);
+    }
     // The broker returns hourly buckets; long windows are merged into wider
     // bars so every bar stays readable, and the axes are labelled to match.
     // Each bar stacks successes, failures and the attempts that resolved to
     // neither within the bucket.
     const HOUR=3600e3,MAX_BARS=48;
     function niceStep(max,ticks){const raw=max/ticks,mag=10**Math.floor(Math.log10(raw));return [1,2,5,10].map(m=>m*mag).find(s=>s>=raw)}
+    const measure=document.createElement('canvas').getContext('2d');
     function renderTrend(hourly){
+      lastTrend=hourly;
       const size=Math.max(1,Math.ceil(hourly.length/MAX_BARS)),points=[];
       for(let i=0;i<hourly.length;i+=size){const chunk=hourly.slice(i,i+size),start=new Date(chunk[0].time),sum=key=>chunk.reduce((n,x)=>n+x[key],0),attempts=sum('attempts'),successes=sum('successes'),failures=sum('failures');points.push({start,end:new Date(start.getTime()+chunk.length*HOUR),attempts,successes,failures,unresolved:Math.max(0,attempts-successes-failures)})}
       const peak=Math.max(1,...points.map(x=>x.successes+x.failures+x.unresolved)),step=Math.max(1,niceStep(peak,4)),top=step*Math.ceil(peak/step);
@@ -79,10 +85,15 @@
       $('trendY').style.width=Math.max(...ticks.map(v=>number(v).length))+1+'ch';
       $('trendY').innerHTML=ticks.map(v=>`<span style="bottom:${v/top*100}%">${number(v)}</span>`).join('');
       const span=points.length?points[points.length-1].end-points[0].start:0;
-      const fmt=new Intl.DateTimeFormat(undefined,span>26*HOUR?{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}:{hour:'2-digit',minute:'2-digit'});
       const seg=(cls,n)=>n?`<i class="seg ${cls}" style="height:max(1px,calc(${n/top*100}% - 2px))"></i>`:'';
       $('trend').innerHTML=ticks.slice(1).map(v=>`<i class="grid-line" style="bottom:${v/top*100}%"></i>`).join('')+points.map(x=>`<div class="bar-group" title="${esc(dateTime(x.start))} – ${esc(dateTime(x.end))}: ${number(x.attempts)} attempts, ${number(x.successes)} successes, ${number(x.failures)} failures">${seg('unresolved',x.unresolved)}${seg('failure',x.failures)}${seg('success',x.successes)}</div>`).join('');
-      const labels=Math.min(points.length,$('trend').clientWidth<520?4:6),marked=new Set();
+      // Fit the x labels to the space: measure the widest formatted label and
+      // take as many as fit (up to six), falling back to a shorter format.
+      const formats=span>26*HOUR?[{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'},{month:'short',day:'numeric'}]:[{hour:'2-digit',minute:'2-digit'},{hour:'numeric'}];
+      measure.font=getComputedStyle($('trendX')).font;
+      const width=$('trendX').clientWidth,fits=fmt=>Math.min(points.length,6,Math.floor(width/(Math.max(...points.map(x=>measure.measureText(fmt.format(x.start)).width))+16)));
+      let fmt=new Intl.DateTimeFormat(undefined,formats[0]);if(fits(fmt)<3)fmt=new Intl.DateTimeFormat(undefined,formats[1]);
+      const labels=Math.max(1,fits(fmt)),marked=new Set();
       for(let k=0;k<labels;k++)marked.add(labels===1?0:Math.round(k*(points.length-1)/(labels-1)));
       $('trendX').innerHTML=points.map((x,i)=>`<span>${marked.has(i)?`<b>${esc(fmt.format(x.start))}</b>`:''}</span>`).join('');
     }
@@ -117,6 +128,8 @@
     async function flipPage(delta){if(loading)return;sessionOffset=Math.max(0,sessionOffset+delta*PAGE_SIZE);try{await loadSessions()}catch(error){status('Could not load sessions: '+error.message,true)}}
     $('refresh').addEventListener('click',()=>load({resetPage:true}));$('window').addEventListener('change',()=>load({resetPage:true}));
     $('prevPage').addEventListener('click',()=>flipPage(-1));$('nextPage').addEventListener('click',()=>flipPage(1));
+    // Label density depends on the chart width, so re-fit on resize/rotation.
+    let resizeTimer=0;addEventListener('resize',()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(()=>lastTrend&&renderTrend(lastTrend),150)});
     setupRefresh({load});
     load();
   </script>

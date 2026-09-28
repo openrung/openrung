@@ -39,7 +39,8 @@ function tick(){for(const el of document.querySelectorAll('time[data-rel]'))el.t
 // colour-vision deficiency on this surface, in ring order) plus a neutral grey
 // for the folded remainder.
 const PIE_COLORS=['#3987e5','#d95926','#199e70','#c98500','#d55181'],PIE_OTHER='#9aa89f';
-const otherSlice=rest=>({name:`Other (${rest.length})`,count:rest.reduce((n,x)=>n+x.count,0),color:PIE_OTHER});
+// The folded remainder keeps its members so legend children can still list them.
+const otherSlice=rest=>({name:`Other (${rest.length})`,count:rest.reduce((n,x)=>n+x.count,0),color:PIE_OTHER,members:rest});
 function rankedSlices(items){const top=items.slice(0,PIE_COLORS.length).map((x,i)=>({...x,color:PIE_COLORS[i]})),rest=items.slice(PIE_COLORS.length);return rest.length?[...top,otherSlice(rest)]:top}
 // OS families keep one colour and one ring position whatever their rank, so
 // the panel reads the same across windows. The ring order reuses the validated
