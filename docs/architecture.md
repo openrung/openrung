@@ -70,6 +70,10 @@ The CLI produces an Xray server config with:
   relay's clients have no legitimate business on its host or its network,
   and the port rule is what keeps xray's management API off the data plane
   regardless of name resolution.
+- A peer-to-peer block: BitTorrent, recognised by its sniffed handshake on any
+  port, connections to the default BitTorrent peer and tracker ports and
+  Xunlei's peer ports, and connections to Xunlei's service domains all go to
+  the same blackhole.
 
 **Rotating credentials.** The VLESS UUID in a relay's directory entry is the
 credential that admits a client, and the directory is public, so a copied

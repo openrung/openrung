@@ -2,6 +2,7 @@ package relayruntime
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -29,6 +31,26 @@ type e2eRelay struct {
 	publicKey  string
 	api        *XrayAPI
 	stop       func()
+	// log collects the relay xray's output, including the access log line
+	// that names the outbound each connection was routed to.
+	log *lockedBuffer
+}
+
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // startE2ERelay renders and starts a relay xray whose Reality dest is a local
@@ -44,7 +66,7 @@ func startE2ERelay(t *testing.T, xrayPath string, guard bool, credential Credent
 	if err != nil {
 		t.Fatalf("generate Reality keys: %v", err)
 	}
-	relay := &e2eRelay{listenPort: freeLoopbackPort(t), apiPort: freeLoopbackPort(t), publicKey: keys.PublicKey}
+	relay := &e2eRelay{listenPort: freeLoopbackPort(t), apiPort: freeLoopbackPort(t), publicKey: keys.PublicKey, log: &lockedBuffer{}}
 	config, err := BuildXrayConfig(XrayConfigInput{
 		ListenHost:         "127.0.0.1",
 		ListenPort:         relay.listenPort,
@@ -66,6 +88,7 @@ func startE2ERelay(t *testing.T, xrayPath string, guard bool, credential Credent
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := NewXrayCommand(ctx, xrayPath, "run", "-config", configPath)
+	cmd.Stdout, cmd.Stderr = relay.log, relay.log
 	if err := cmd.Start(); err != nil {
 		cancel()
 		t.Fatalf("start relay xray: %v", err)
@@ -241,5 +264,142 @@ func TestEgressGuardKeepsClientsOffTheManagementAPI(t *testing.T) {
 	users, err := guarded.api.ListUsers(context.Background())
 	if err != nil || len(users) != 1 {
 		t.Fatalf("management API unusable by the relay itself after the guard: users %v, err %v", users, err)
+	}
+}
+
+// echoThrough opens a CONNECT tunnel to hostPort through the client proxy,
+// writes payload and returns whatever comes back before the deadline. A
+// destination the relay routes to its blackhole returns nothing.
+func echoThrough(proxy, hostPort string, payload []byte) []byte {
+	conn, err := net.DialTimeout("tcp", proxy, 2*time.Second)
+	if err != nil {
+		return nil
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+	if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", hostPort, hostPort); err != nil {
+		return nil
+	}
+	reader := bufio.NewReader(conn)
+	status, err := reader.ReadString('\n')
+	if err != nil || !strings.Contains(status, " 200 ") {
+		return nil
+	}
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return nil
+		}
+		if line == "\r\n" {
+			break
+		}
+	}
+	if _, err := conn.Write(payload); err != nil {
+		return nil
+	}
+	reply := make([]byte, len(payload))
+	n, _ := io.ReadFull(reader, reply)
+	return reply[:n]
+}
+
+// listenEchoAt echoes every connection on addr until the test ends.
+func listenEchoAt(t *testing.T, addr string) (string, error) {
+	t.Helper()
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return "", err
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() { defer conn.Close(); _, _ = io.Copy(conn, conn) }()
+		}
+	}()
+	return listener.Addr().String(), nil
+}
+
+// waitForRoute waits for the relay's access log to record hostPort routed to
+// outbound at least n times. xray writes ">>" for the default outbound and
+// "->" for one a routing rule chose.
+func waitForRoute(relay *e2eRelay, hostPort, outbound string, n int) bool {
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		log := relay.log.String()
+		count := 0
+		for _, arrow := range []string{">>", "->"} {
+			count += strings.Count(log, fmt.Sprintf("tcp:%s [%s %s %s]", hostPort, XrayInboundTag, arrow, outbound))
+		}
+		if count >= n {
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
+}
+
+// The shipped peer-to-peer block, against the real xray: ordinary traffic to
+// a destination passes, while a BitTorrent handshake to the same destination,
+// any connection to a BitTorrent port, and any connection to a Xunlei domain
+// go to the blackhole. The host guard is off so the destinations can be local;
+// the peer-to-peer rules do not depend on it.
+func TestRelayBlocksPeerToPeerTraffic(t *testing.T) {
+	xrayPath := requireXray(t)
+	credential := Credential{ID: "11111111-2222-4333-8444-555555555555", Email: "cred-20260917T140000Z"}
+	relay := startE2ERelay(t, xrayPath, false, credential)
+	proxy := startE2EClient(t, xrayPath, relay, credential.ID)
+
+	echo, err := listenEchoAt(t, "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("start echo server: %v", err)
+	}
+	hello := []byte("hello")
+	if got := echoThrough(proxy, echo, hello); !bytes.Equal(got, hello) {
+		t.Fatalf("ordinary traffic through the relay: got %q, want %q (the tunnel itself must work)", got, hello)
+	}
+	if !waitForRoute(relay, echo, "direct", 1) {
+		t.Fatalf("ordinary traffic was not routed direct; relay log:\n%s", relay.log)
+	}
+
+	// A BitTorrent peer-wire handshake: length-prefixed protocol name,
+	// reserved bytes, info hash and peer ID.
+	handshake := append([]byte("\x13BitTorrent protocol"), make([]byte, 8)...)
+	handshake = append(handshake, bytes.Repeat([]byte{0xab}, 20)...)
+	handshake = append(handshake, []byte("-qB4650-000000000000")...)
+	if got := echoThrough(proxy, echo, handshake); len(got) != 0 {
+		t.Fatalf("a BitTorrent handshake reached the destination: echoed %d bytes", len(got))
+	}
+	if !waitForRoute(relay, echo, xrayBlockOutboundTag, 1) {
+		t.Fatalf("a BitTorrent handshake was not routed to the blackhole; relay log:\n%s", relay.log)
+	}
+
+	var btPort string
+	for port := 6881; port <= 6889 && btPort == ""; port++ {
+		if addr, err := listenEchoAt(t, fmt.Sprintf("127.0.0.1:%d", port)); err == nil {
+			btPort = addr
+		}
+	}
+	if btPort == "" {
+		t.Fatal("no free port in 6881-6889 for the BitTorrent port check")
+	}
+	if got := echoThrough(proxy, btPort, hello); len(got) != 0 {
+		t.Fatalf("ordinary bytes to BitTorrent port %s reached the destination: %q", btPort, got)
+	}
+	if !waitForRoute(relay, btPort, xrayBlockOutboundTag, 1) {
+		t.Fatalf("BitTorrent port %s was not routed to the blackhole; relay log:\n%s", btPort, relay.log)
+	}
+
+	// The domain rule matches before any resolution, so the log line is the
+	// proof; the destination port is the local echo server's.
+	_, port, _ := net.SplitHostPort(echo)
+	xunlei := net.JoinHostPort("stat.download.xunlei.com", port)
+	if got := echoThrough(proxy, xunlei, hello); len(got) != 0 {
+		t.Fatalf("a Xunlei domain reached a destination: %q", got)
+	}
+	if !waitForRoute(relay, xunlei, xrayBlockOutboundTag, 1) {
+		t.Fatalf("Xunlei domain was not routed to the blackhole; relay log:\n%s", relay.log)
 	}
 }

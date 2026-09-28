@@ -3,6 +3,7 @@ package relayruntime
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -269,9 +270,12 @@ func assertEgressGuard(t *testing.T, cfg map[string]any, apiPort int) {
 	if len(outbounds) != 2 || outbounds[1].(map[string]any)["tag"] != xrayBlockOutboundTag || outbounds[1].(map[string]any)["protocol"] != "blackhole" {
 		t.Fatalf("outbounds = %v, want direct + a blackhole tagged %q", outbounds, xrayBlockOutboundTag)
 	}
+	assertP2PBlock(t, rules)
 	if apiPort == 0 {
-		if len(rules) != 1 {
-			t.Fatalf("static config has %d routing rules, want the IP guard only: %v", len(rules), rules)
+		for _, rule := range rules {
+			if _, ok := rule.(map[string]any)["port"].(float64); ok {
+				t.Fatalf("static config refuses a numeric port, but it has no management API: %v", rules)
+			}
 		}
 		return
 	}
@@ -279,4 +283,68 @@ func assertEgressGuard(t *testing.T, cfg map[string]any, apiPort int) {
 	if portRule["inboundTag"].([]any)[0] != XrayInboundTag || portRule["port"] != float64(apiPort) || portRule["outboundTag"] != xrayBlockOutboundTag {
 		t.Fatalf("second rule must refuse the API port %d from the relay inbound: %v", apiPort, portRule)
 	}
+}
+
+// assertP2PBlock checks that the relay inbound's peer-to-peer traffic goes to
+// the blackhole: BitTorrent by sniffed protocol, the peer port list, and the
+// Xunlei domains, each exactly once.
+func assertP2PBlock(t *testing.T, rules []any) {
+	t.Helper()
+	found := map[string]int{}
+	for _, raw := range rules {
+		rule := raw.(map[string]any)
+		key := ""
+		switch {
+		case rule["protocol"] != nil:
+			if fmt.Sprint(rule["protocol"]) != "[bittorrent]" {
+				continue
+			}
+			key = "protocol"
+		case rule["port"] == p2pBlockPorts:
+			key = "port"
+		case rule["domain"] != nil:
+			if fmt.Sprint(rule["domain"]) != fmt.Sprint(p2pBlockDomains) {
+				t.Fatalf("domain rule = %v, want %v", rule["domain"], p2pBlockDomains)
+			}
+			key = "domain"
+		default:
+			continue
+		}
+		if rule["inboundTag"].([]any)[0] != XrayInboundTag || rule["outboundTag"] != xrayBlockOutboundTag {
+			t.Fatalf("peer-to-peer %s rule must send the relay inbound to %q: %v", key, xrayBlockOutboundTag, rule)
+		}
+		found[key]++
+	}
+	for _, key := range []string{"protocol", "port", "domain"} {
+		if found[key] != 1 {
+			t.Fatalf("peer-to-peer %s rule appears %d times, want once: %v", key, found[key], rules)
+		}
+	}
+}
+
+// The peer-to-peer block is policy, not part of the host guard: the
+// test-only switch that drops the guard must leave it in place.
+func TestBuildXrayConfigBlocksP2PWithoutTheEgressGuard(t *testing.T) {
+	raw, err := BuildXrayConfig(XrayConfigInput{
+		ListenPort:         443,
+		ClientID:           "2c08df10-4ef4-4ab9-95c6-cb1e94cdb2ff",
+		Flow:               "xtls-rprx-vision",
+		Dest:               "www.cloudflare.com:443",
+		ServerName:         "www.cloudflare.com",
+		RealityPrivateKey:  "private-key",
+		ShortID:            "5f7a8d9c01ab23cd",
+		disableEgressGuard: true,
+	})
+	if err != nil {
+		t.Fatalf("build config: %v", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("config is not JSON: %v", err)
+	}
+	rules := cfg["routing"].(map[string]any)["rules"].([]any)
+	if len(rules) != 3 {
+		t.Fatalf("unguarded config has %d rules, want the three peer-to-peer rules only: %v", len(rules), rules)
+	}
+	assertP2PBlock(t, rules)
 }

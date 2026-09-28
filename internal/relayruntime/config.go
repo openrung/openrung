@@ -64,6 +64,16 @@ var egressGuardCIDRs = []string{
 	"fc00::/7",
 }
 
+// p2pBlockPorts are destination ports a relay refuses whatever the payload:
+// the BitTorrent peer and tracker defaults and Xunlei's peer port ladder.
+const p2pBlockPorts = "6881-6889,6969,51413,13861,23861,33861,43861,53861,63861"
+
+// p2pBlockDomains are Xunlei (Thunder) service domains, which carry its
+// peer-to-peer downloads and their coordination. Plain "domain:" matches (the
+// domain and every subdomain) need no geosite asset, which the desktop
+// volunteer relay's bare xray does not ship.
+var p2pBlockDomains = []string{"domain:xunlei.com", "domain:sandai.net", "domain:xbase.cloud"}
+
 type XrayConfigInput struct {
 	ListenHost string
 	ListenPort int
@@ -81,6 +91,7 @@ type XrayConfigInput struct {
 	// destinations — and, with APIPort set, the management port on any
 	// address. Test-only: it exists so the end-to-end test can prove both
 	// that the tunnel works and that the guard is what blocks the attack.
+	// The peer-to-peer block stays in place either way.
 	disableEgressGuard bool
 	Flow               string
 	Dest               string
@@ -201,6 +212,28 @@ func BuildXrayConfig(input XrayConfigInput) ([]byte, error) {
 			})
 		}
 	}
+	// Peer-to-peer file sharing is refused on every relay: BitTorrent by its
+	// sniffed handshake on any port, and the ports and Xunlei domains above.
+	rules = append(rules,
+		map[string]any{
+			"type":        "field",
+			"inboundTag":  []string{XrayInboundTag},
+			"protocol":    []string{"bittorrent"},
+			"outboundTag": xrayBlockOutboundTag,
+		},
+		map[string]any{
+			"type":        "field",
+			"inboundTag":  []string{XrayInboundTag},
+			"port":        p2pBlockPorts,
+			"outboundTag": xrayBlockOutboundTag,
+		},
+		map[string]any{
+			"type":        "field",
+			"inboundTag":  []string{XrayInboundTag},
+			"domain":      p2pBlockDomains,
+			"outboundTag": xrayBlockOutboundTag,
+		},
+	)
 	if input.APIPort != 0 {
 		// The standard xray management layout: the "api" object registers the
 		// gRPC service and implicitly creates an outbound handler tagged
@@ -227,11 +260,9 @@ func BuildXrayConfig(input XrayConfigInput) ([]byte, error) {
 			"outboundTag": "api",
 		})
 	}
-	if len(rules) > 0 {
-		cfg["routing"] = map[string]any{
-			"domainStrategy": "IPIfNonMatch",
-			"rules":          rules,
-		}
+	cfg["routing"] = map[string]any{
+		"domainStrategy": "IPIfNonMatch",
+		"rules":          rules,
 	}
 
 	return json.MarshalIndent(cfg, "", "  ")
