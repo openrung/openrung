@@ -29,6 +29,11 @@ const (
 //go:embed dashboard.html
 var dashboardHTML []byte
 
+// dashboardJS holds the helpers both dashboard pages share.
+//
+//go:embed dashboard.js
+var dashboardJS []byte
+
 // relayDisplay is how the dashboard identifies an active relay: its
 // operator-supplied label (may be empty, in which case views fall back to the
 // relay ID) and its broker-attested node class, which every view uses to colour
@@ -74,6 +79,7 @@ func (d *dashboardServer) register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/telemetry/logout", d.logout)
 	mux.HandleFunc("GET /admin/telemetry", d.requireAuth(servePage(dashboardHTML)))
 	mux.HandleFunc("GET /admin/telemetry/relays", d.requireAuth(servePage(relaysHTML)))
+	mux.HandleFunc("GET /admin/telemetry/dashboard.js", d.requireAuth(serveAsset("text/javascript; charset=utf-8", dashboardJS)))
 	mux.HandleFunc("GET /admin/api/telemetry/overview", d.requireAuth(d.overview))
 	mux.HandleFunc("GET /admin/api/telemetry/sessions", d.requireAuth(d.listSessions))
 	mux.HandleFunc("GET /admin/api/telemetry/relays", d.requireAuth(d.relaysPanel))
@@ -201,6 +207,17 @@ func servePage(html []byte) http.HandlerFunc {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
 		_, _ = w.Write(html)
+	}
+}
+
+// serveAsset returns a handler for one embedded page asset under the same
+// no-store posture as the pages that load it.
+func serveAsset(contentType string, body []byte) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		_, _ = w.Write(body)
 	}
 }
 
@@ -656,7 +673,7 @@ func buildTelemetryOverview(records []TelemetryRecord, appCounts map[string]int,
 			incrementNonEmpty(activeCountries, summary.Country)
 			incrementNonEmpty(activeCities, summary.City)
 			incrementNonEmpty(activeISPs, summary.ISP)
-			incrementNonEmpty(activeOS, summary.OperatingSystem)
+			incrementNonEmpty(activeOS, osFamily(summary.OperatingSystem))
 		}
 		overview.Recent = append(overview.Recent, summary)
 	}
@@ -871,6 +888,42 @@ func deviceInfoLabel(manufacturer, model, operatingSystem string) string {
 		parts = append(parts, os)
 	}
 	return strings.Join(parts, " · ")
+}
+
+// osFamily collapses a versioned OS label ("Android (API 34)", "iOS 17.5",
+// "macOS (arm64)") to its family so the active-by-OS ranking groups every
+// version of an OS together. Unrecognised labels keep their leading word.
+func osFamily(label string) string {
+	label = strings.TrimSpace(label)
+	lower := strings.ToLower(label)
+	for _, family := range []struct{ prefix, name string }{
+		{"android", "Android"},
+		{"ios", "iOS"},
+		{"ipados", "iOS"},
+		{"windows", "Windows"},
+		{"macos", "macOS"},
+		{"darwin", "macOS"},
+		{"linux", "Linux"},
+	} {
+		if strings.HasPrefix(lower, family.prefix) {
+			return family.name
+		}
+	}
+	if name, _, found := strings.Cut(label, " "); found {
+		return name
+	}
+	return label
+}
+
+// osFamilyCounts re-keys per-label counts by osFamily, summing the versions.
+func osFamilyCounts(values map[string]int) map[string]int {
+	families := make(map[string]int, len(values))
+	for label, count := range values {
+		if family := osFamily(label); family != "" {
+			families[family] += count
+		}
+	}
+	return families
 }
 
 func incrementNonEmpty(values map[string]int, name string) {

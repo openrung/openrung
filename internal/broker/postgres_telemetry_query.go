@@ -464,7 +464,7 @@ func (s *PostgresTelemetrySink) TelemetryOverview(now time.Time, window time.Dur
 	overview.ActiveCountries = sortedCounts(counts["active_by_country"], 10)
 	overview.ActiveCities = sortedCounts(counts["active_by_city"], 10)
 	overview.ActiveISPs = sortedCounts(counts["active_by_isp"], 10)
-	overview.ActiveOS = sortedCounts(counts["active_by_os"], 10)
+	overview.ActiveOS = sortedCounts(osFamilyCounts(counts["active_by_os"]), 10)
 	overview.FailureStages = sortedCounts(counts["failure_stages"], 10)
 	overview.FailureReasons = sortedCounts(counts["failure_reasons"], 10)
 	overview.TopRelays = topRelaySummaries(counts["relay_successes"], counts["relay_failures"], relayFailureReasons)

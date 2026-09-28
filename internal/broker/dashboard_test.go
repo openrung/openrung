@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -109,6 +110,19 @@ func TestDashboardLoginOverviewAndLogout(t *testing.T) {
 	server.ServeHTTP(dashboardResponse, dashboardRequest)
 	if dashboardResponse.Code != http.StatusOK || !strings.Contains(dashboardResponse.Body.String(), "OPENRUNG / TELEMETRY") {
 		t.Fatalf("dashboard failed: %d", dashboardResponse.Code)
+	}
+
+	scriptRequest := httptest.NewRequest(http.MethodGet, "/admin/telemetry/dashboard.js", nil)
+	scriptRequest.AddCookie(cookies[0])
+	scriptResponse := httptest.NewRecorder()
+	server.ServeHTTP(scriptResponse, scriptRequest)
+	if scriptResponse.Code != http.StatusOK || !strings.HasPrefix(scriptResponse.Header().Get("Content-Type"), "text/javascript") || !strings.Contains(scriptResponse.Body.String(), "function donut(") {
+		t.Fatalf("dashboard script failed: %d %q", scriptResponse.Code, scriptResponse.Header().Get("Content-Type"))
+	}
+	anonymousScript := httptest.NewRecorder()
+	server.ServeHTTP(anonymousScript, httptest.NewRequest(http.MethodGet, "/admin/telemetry/dashboard.js", nil))
+	if anonymousScript.Code == http.StatusOK {
+		t.Fatal("dashboard script must require a dashboard session")
 	}
 
 	overviewRequest := httptest.NewRequest(http.MethodGet, "/admin/api/telemetry/overview?window=24h", nil)
@@ -273,6 +287,25 @@ func TestBuildTelemetryOverview(t *testing.T) {
 	encoded, err := json.Marshal(overview)
 	if err != nil || strings.Contains(string(encoded), "recent_sessions") {
 		t.Fatalf("recent_sessions must be omitted from overview JSON: %v %s", err, encoded)
+	}
+}
+
+func TestOSFamilyCountsMergesVersions(t *testing.T) {
+	got := osFamilyCounts(map[string]int{
+		"Android (API 34)": 3,
+		"Android (API 31)": 2,
+		"iOS 17.5":         4,
+		"iOS 18.0":         1,
+		"macOS (arm64)":    2,
+		"macOS (amd64)":    1,
+		"Windows (amd64)":  5,
+		"Linux (arm64)":    1,
+		"freebsd (amd64)":  1,
+		"   ":              7,
+	})
+	want := map[string]int{"Android": 5, "iOS": 5, "macOS": 3, "Windows": 5, "Linux": 1, "freebsd": 1}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("osFamilyCounts = %v, want %v", got, want)
 	}
 }
 
@@ -705,10 +738,16 @@ func TestRecordedRelayClassSurvivesMissingActiveDescriptor(t *testing.T) {
 }
 
 func TestDashboardRelayClassHasVisibleAccessibleMarker(t *testing.T) {
-	html := string(dashboardHTML)
+	// Both pages style the marker; the shared script renders it.
+	for name, html := range map[string]string{"overview": string(dashboardHTML), "relays": string(relaysHTML)} {
+		if !strings.Contains(html, ".relay-class-marker{") {
+			t.Fatalf("%s page is missing the relay class marker style", name)
+		}
+	}
+	script := string(dashboardJS)
 	for _, required := range []string{"relay-class-marker", "'FND':'VOL'", `aria-label="${esc(cls)} relay"`} {
-		if !strings.Contains(html, required) {
-			t.Fatalf("dashboard is missing relay class marker fragment %q", required)
+		if !strings.Contains(script, required) {
+			t.Fatalf("dashboard script is missing relay class marker fragment %q", required)
 		}
 	}
 }
