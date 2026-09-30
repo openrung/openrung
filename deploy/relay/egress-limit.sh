@@ -14,6 +14,11 @@
 # connection attempts are dropped, so TCP retransmits them once the budget
 # refills instead of failing outright. Loopback is exempt.
 #
+# New destinations in Cloudflare's published address ranges
+# (https://www.cloudflare.com/ips/) also draw on a tighter budget of their
+# own, 1 per second with a burst of 120, per address family: ordinary traffic
+# reaches few new addresses there, so the cap stays out of its way.
+#
 # Applies the ruleset now, then installs it as /etc/openrung/egress-limit.nft
 # with a boot unit that restores it. Re-running replaces the ruleset
 # atomically (a failed load keeps the previous one); 'off' removes it.
@@ -70,6 +75,22 @@ table inet openrung_egress {
     flags dynamic, timeout
     timeout 10m
   }
+  set cloudflare_v4 {
+    type ipv4_addr
+    flags interval
+    elements = { 173.245.48.0/20, 103.21.244.0/22, 103.22.200.0/22,
+                 103.31.4.0/22, 141.101.64.0/18, 108.162.192.0/18,
+                 190.93.240.0/20, 188.114.96.0/20, 197.234.240.0/22,
+                 198.41.128.0/17, 162.158.0.0/15, 104.16.0.0/13,
+                 104.24.0.0/14, 172.64.0.0/13, 131.0.72.0/22 }
+  }
+  set cloudflare_v6 {
+    type ipv6_addr
+    flags interval
+    elements = { 2400:cb00::/32, 2606:4700::/32, 2803:f800::/32,
+                 2405:b500::/32, 2405:8100::/32, 2a06:98c0::/29,
+                 2c0f:f248::/32 }
+  }
   chain output {
     type filter hook output priority filter; policy accept;
     oif "lo" accept
@@ -86,6 +107,8 @@ table inet openrung_egress {
     ct state != new accept
     ip daddr @known_v4 update @known_v4 { ip daddr } accept
     ip6 daddr @known_v6 update @known_v6 { ip6 daddr } accept
+    ip daddr @cloudflare_v4 limit rate over 1/second burst 120 packets counter drop
+    ip6 daddr @cloudflare_v6 limit rate over 1/second burst 120 packets counter drop
     limit rate over ${RATE}/second burst ${BURST} packets counter drop
     meta nfproto ipv4 add @known_v4 { ip daddr }
     meta nfproto ipv6 add @known_v6 { ip6 daddr }
