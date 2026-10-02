@@ -14,8 +14,9 @@
 # connection attempts are dropped, so TCP retransmits them once the budget
 # refills instead of failing outright. Loopback is exempt.
 #
-# New destinations in Cloudflare's published address ranges
-# (https://www.cloudflare.com/ips/) also draw on a tighter budget of their
+# New destinations in Cloudflare's address ranges (those published at
+# https://www.cloudflare.com/ips/, plus 104.28.0.0/14, which completes
+# Cloudflare's 104.16.0.0/12 block) also draw on a tighter budget of their
 # own, 1 per second with a burst of 120, per address family: ordinary traffic
 # reaches few new addresses there, so the cap stays out of its way.
 #
@@ -82,7 +83,8 @@ table inet openrung_egress {
                  103.31.4.0/22, 141.101.64.0/18, 108.162.192.0/18,
                  190.93.240.0/20, 188.114.96.0/20, 197.234.240.0/22,
                  198.41.128.0/17, 162.158.0.0/15, 104.16.0.0/13,
-                 104.24.0.0/14, 172.64.0.0/13, 131.0.72.0/22 }
+                 104.24.0.0/14, 104.28.0.0/14, 172.64.0.0/13,
+                 131.0.72.0/22 }
   }
   set cloudflare_v6 {
     type ipv6_addr

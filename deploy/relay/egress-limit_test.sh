@@ -52,6 +52,7 @@ ip -6 addr add 2001:db8:ffff::1/64 dev d0 nodad
 ip -6 route add 2001:db8::/32 dev d0
 # One Cloudflare range per family, for the tighter budget there.
 ip route add 104.16.0.0/13 dev d0
+ip route add 104.28.0.0/14 dev d0
 ip -6 route add 2606:4700::/32 dev d0
 
 # sendto() fails with EPERM when the output hook drops the datagram.
@@ -110,6 +111,8 @@ sent="$(blast 4 104.16. 200)"
 [ "$sent" -ge 120 ] && [ "$sent" -le 123 ] || fail "200 new Cloudflare IPv4 destinations: sent $sent, want the 120 burst (+refill)"
 sent="$(blast 4 104.16. 120)"
 [ "$sent" = 120 ] || fail "known Cloudflare destinations must pass: sent $sent of 120"
+sent="$(blast 4 104.29. 50)"
+[ "$sent" -le 3 ] || fail "104.28.0.0/14 shares the drained Cloudflare IPv4 budget: sent $sent of 50"
 sent="$(blast 6 2606:4700:: 150)"
 [ "$sent" -ge 120 ] && [ "$sent" -le 123 ] || fail "150 new Cloudflare IPv6 destinations: sent $sent, want their own 120 burst"
 sent="$(blast 4 198.18. 200)"
