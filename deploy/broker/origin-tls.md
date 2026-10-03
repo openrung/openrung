@@ -15,20 +15,21 @@ relay ──HTTPS──► CloudFront edge ──HTTPS(:443)──► Caddy ─�
 ```
 
 The broker container is **not touched** — the proxy is purely additive, and the
-plaintext `:8080` path stays open for volunteer-run relays. Set up 2026-07-13;
-the Cloudflare Worker front also uses this leg.
+plaintext `:8080` path stays open for volunteer-run relays. Set up 2026-07-13.
+The Cloudflare Worker front and the Azure Front Door front also use this leg, and
+relays and hubs register against it directly, so `:443` serves all of them.
 
 ## What must not be undone
 
 - **`broker-origin.openrung.org` must stay DNS-only (grey cloud) in Cloudflare.**
-  It is an `A` record → `54.238.185.205`. Orange-clouding (proxying) it would
+  It is an `A` record to the broker's public IP. Orange-clouding (proxying) it would
   reintroduce Cloudflare's datacenter challenge on the origin and loop the
-  Cloudflare Worker's subrequest back into the edge. Both CDN fronts depend on
+  Cloudflare Worker's subrequest back into the edge. Every front depends on
   this record resolving straight to the broker IP, and so does every relay and
   relay hub — the provisioning helpers now register against this hostname.
 - **Keep `:8080` open.** Relays and hubs provisioned before the helpers switched
   their default to `https://broker-origin.openrung.org` keep the baked-in
-  `http://54.238.185.205:8080` in their container environment until each one is
+  `http://<broker-ip>:8080` in their container environment until each one is
   recreated, so closing the port would strand them. Do not firewall it off as
   part of this change.
 - **The CloudFront behavior must use `Managed-AllViewerExceptHostHeader`, not
@@ -39,7 +40,8 @@ the Cloudflare Worker front also uses this leg.
 
 ## Broker box: Caddy TLS terminator
 
-Host: Lightsail `typhoon-broker`, `ssh -i ~/.ssh/id_ed25519_openrung ubuntu@54.238.185.205`.
+Host: Lightsail `typhoon-broker` (operator SSH access as documented in the
+private operations notes).
 
 Caddy was chosen for native Let's Encrypt auto-renewal (no cron/certbot timer to
 manage). ACM certs cannot be installed on Lightsail, and a self-signed cert
@@ -103,6 +105,16 @@ The JSON access log redacts sensitive request headers by default — Caddy repla
 `/var/log/caddy/broker-origin.access.log`. That default does not cover custom
 headers, so the Caddyfile's log `format filter` deletes `X-OpenRung-Origin-Auth`
 explicitly.
+
+Everything else in the request headers **is** logged, including the per-viewer
+headers the fronts add (`CloudFront-Viewer-Address`, the `CloudFront-Viewer-*`
+geo/ASN suite, `X-Azure-ClientIP`, the Worker's `X-Forwarded-For`) and the
+client's `X-OpenRung-Client-ID`. The access log is therefore a record linking
+viewer IPs to client IDs. It is kept only as long as the log `roll_size` /
+`roll_keep` settings allow (5 × 20 MiB, a few hours at current volume) and is
+readable only by the `caddy` user. Treat any change to those settings, or any
+copy of the file off the box, as a privacy decision; to drop the linkage, add
+the relevant headers to the log `format filter` deletes.
 
 ### Firewall
 
@@ -171,12 +183,12 @@ was the sole cause of the 502.
 # Origin TLS directly (publicly-trusted cert, signed relay list):
 curl -v https://broker-origin.openrung.org/api/v1/relays        # 200, cert verifies
 
-# Discovery end-to-end through CloudFront (works from a datacenter IP; the
-# Cloudflare Worker front 403s datacenter IPs by design):
+# Discovery end-to-end through CloudFront (CloudFront serves any source
+# network, so this works from a datacenter host too):
 curl https://d2r7mdpyevvs1m.cloudfront.net/api/v1/relays?limit=1 # 200, X-OpenRung-Relays-Signature present
 
 # Volunteer-class relay plaintext path still intact:
-curl http://54.238.185.205:8080/api/v1/relays                   # 200
+curl http://<broker-ip>:8080/api/v1/relays                      # 200
 
 # Confirm CloudFront connects over TLS (SNI = origin, not the CF domain):
 sudo tail /var/log/caddy/broker-origin.access.log   # request.tls.server_name = broker-origin.openrung.org
@@ -290,16 +302,29 @@ depend on it.
   (`<viewer-ip>:<port>`, plus the `CloudFront-Viewer-*` geo/ASN suite). Verified
   2026-07-13 that it is **unspoofable through CloudFront** — a request sent through
   the distribution with a forged `CloudFront-Viewer-Address: 203.0.113.99:4444`
-  arrived at the origin as the real viewer IP (`159.117.71.211:59399`); CloudFront
+  arrived at the origin as the real viewer address (`<viewer-ip>:<port>`); CloudFront
   overwrites any client-supplied value. To adopt per-viewer keying, map the IP part
   of `CloudFront-Viewer-Address` into the client IP the broker keys on (e.g. Caddy
-  rewrites `X-Forwarded-For` from it for this vhost). **Caveat that must be handled
-  first:** the origin `:443` is internet-facing, so a *direct* hit (not via
-  CloudFront) could forge `CloudFront-Viewer-Address`. Trust it only after
-  authenticating the request actually came through CloudFront — a shared-secret
-  custom origin header CloudFront injects, or restricting `:443` ingress to
-  CloudFront's origin-facing IP ranges — otherwise per-viewer keying would be
-  *more* spoofable than the current edge-IP key, not less.
+  rewrites `X-Forwarded-For` from it for this vhost). The value is `<ip>:<port>`
+  with **no brackets around IPv6** (e.g. `2001:db8::1:50284`), so split the port
+  off at the *last* colon. **Caveat that must be handled first:** the origin
+  `:443` is internet-facing, so a *direct* hit (not via CloudFront) could forge
+  `CloudFront-Viewer-Address`. Trust it only after authenticating that the
+  request actually came through CloudFront, using a shared-secret custom origin
+  header that CloudFront adds to origin requests (the same pattern as the
+  Worker's `X-OpenRung-Origin-Auth`); otherwise per-viewer keying would be
+  *more* spoofable than the current edge-IP key, not less. Restricting `:443`
+  ingress to CloudFront's origin-facing IP ranges is **not** an option: the same
+  port serves the Cloudflare Worker, the Azure front, and direct relay and hub
+  registration.
+- **Per-*viewer* keying on the Azure Front Door path — OPEN.** The Azure front
+  reaches the same Caddy and is keyed on its edge IP today. Azure forwards the
+  viewer in `X-Azure-ClientIP`, and `X-Azure-FDID` identifies the Front Door
+  profile the request came through. The same rule applies: trust
+  `X-Azure-ClientIP` only for requests authenticated as coming from our profile
+  (a shared-secret origin header, or `X-Azure-FDID` together with Azure's
+  published `AzureFrontDoor.Backend` source ranges), and implement it together
+  with the CloudFront change so neither front keeps per-edge keying.
 - **Cloudflare Worker front origin leg — done.** `broker.openrung.org` fetches
   `https://broker-origin.openrung.org` through this Caddy and authenticates with
   the `X-OpenRung-Origin-Auth` shared secret. Caddy forwards the Worker's
