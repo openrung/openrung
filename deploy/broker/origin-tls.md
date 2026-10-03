@@ -70,13 +70,21 @@ a systemd drop-in loads from a root-only file:
 EnvironmentFile=/etc/caddy/origin-auth.env
 ```
 
-`/etc/caddy/origin-auth.env` (`root:root`, mode `0600`) holds
-`OPENRUNG_WORKER_ORIGIN_AUTH=<value>`: at least 32 characters, the same value as
-the Worker's `ORIGIN_AUTH` secret (`wrangler secret put ORIGIN_AUTH` in
-`deploy/broker-proxy`). Install the env file and drop-in, run
-`sudo systemctl daemon-reload`, and only then install a Caddyfile that
-references the variable. Without it, Caddy treats every request as a
-non-Worker request.
+`/etc/caddy/origin-auth.env` (`root:root`, mode `0600`) holds two values, each
+at least 32 characters:
+
+- `OPENRUNG_WORKER_ORIGIN_AUTH=<value>`: the same value as the Worker's
+  `ORIGIN_AUTH` secret (`wrangler secret put ORIGIN_AUTH` in
+  `deploy/broker-proxy`).
+- `OPENRUNG_CLOUDFRONT_ORIGIN_AUTH=<value>`: the same value as the
+  `X-OpenRung-CloudFront-Auth` custom origin header on the CloudFront
+  distribution (see [Viewer client IP](#viewer-client-ip-x-openrung-cloudfront-auth)).
+  Generate it with `openssl rand -hex 32`.
+
+Install the env file and drop-in, run `sudo systemctl daemon-reload`, and only
+then install a Caddyfile that references the variables. A missing or short value
+fails closed: Caddy treats the request as coming from neither front and forwards
+its immediate peer address.
 
 The log directory is provided by a systemd drop-in (the packaged unit sandboxes
 the service, so a plain `mkdir` is not enough — systemd must own the path):
@@ -102,7 +110,8 @@ The JSON access log redacts sensitive request headers by default — Caddy repla
 — so the Foundation bearer token is never written to
 `/var/log/caddy/broker-origin.access.log`. That default does not cover custom
 headers, so the Caddyfile's log `format filter` deletes `X-OpenRung-Origin-Auth`
-explicitly.
+and `X-OpenRung-CloudFront-Auth` explicitly. Neither header is forwarded to the
+broker.
 
 ### Firewall
 
@@ -143,6 +152,40 @@ CLI profile's default region is a broken AZ value so pass it explicitly):
 Both are applied with `get-distribution-config` → edit `DistributionConfig` →
 `update-distribution --if-match <ETag>`, then `aws cloudfront wait
 distribution-deployed`.
+
+### Viewer client IP (`X-OpenRung-CloudFront-Auth`)
+
+CloudFront forwards the viewer's address in `CloudFront-Viewer-Address`
+(`<ip>:<port>`) and overwrites any viewer-supplied value, so it is the real
+client IP. The origin `:443` is also reachable directly, though, so Caddy trusts
+that header only on requests that carry a shared secret CloudFront adds as a
+custom origin header. Those requests are forwarded to the broker with the viewer
+IP as `X-Forwarded-For`; every other non-Worker request keeps the immediate-peer
+address.
+
+Rollout order (each step is safe on its own):
+
+1. Add `OPENRUNG_CLOUDFRONT_ORIGIN_AUTH` to `/etc/caddy/origin-auth.env`,
+   install the Caddyfile, validate and reload as shown above. Nothing changes
+   yet: CloudFront does not send the header.
+2. Add the custom origin header to the distribution's origin. In the
+   `DistributionConfig` from `get-distribution-config`, set that origin's
+   `CustomHeaders` to:
+
+   ```json
+   {"Quantity": 1, "Items": [{"HeaderName": "X-OpenRung-CloudFront-Auth", "HeaderValue": "<same value>"}]}
+   ```
+
+   Apply it with `update-distribution --if-match <ETag>` and wait for
+   `distribution-deployed`. Keep the edited config file out of the repository
+   and delete it afterwards; it contains the secret.
+3. Verify: the broker records the viewer's address for a request through
+   CloudFront, while a direct request to the origin that copies the header names
+   keeps its own peer address.
+
+To rotate the secret, update the env file and reload Caddy, then update the
+distribution; requests carrying the old value fall back to the immediate-peer
+address in between. To roll back, remove `CustomHeaders` from the origin.
 
 ### The CloudFront gotcha (the 502 root cause): SNI, not the Host header
 
@@ -280,26 +323,9 @@ depend on it.
   `X-Forwarded-For` value (client-supplied `CF-Connecting-IP`/`XFF` are stripped).
   No Caddy change was needed. This restores the **pre-proxy** behavior exactly.
 
-- **Per-*viewer* rate-limit / telemetry on the CloudFront path — OPEN (achievable, not yet done).**
-  Per-edge keying (above) is a current *implementation* choice, **not** a CloudFront
-  limitation: clients sharing one CloudFront edge still share that edge's
-  2 req/s / burst-30 bucket and telemetry identity, which can still saturate under
-  a **mass-failover** surge (many clients in a region funnelling through a few
-  nearby edges). CloudFront *does* expose an attested per-viewer signal that
-  `AllViewerExceptHostHeader` already forwards to the origin: **`CloudFront-Viewer-Address`**
-  (`<viewer-ip>:<port>`, plus the `CloudFront-Viewer-*` geo/ASN suite). Verified
-  2026-07-13 that it is **unspoofable through CloudFront** — a request sent through
-  the distribution with a forged `CloudFront-Viewer-Address: 203.0.113.99:4444`
-  arrived at the origin as the real viewer IP (`159.117.71.211:59399`); CloudFront
-  overwrites any client-supplied value. To adopt per-viewer keying, map the IP part
-  of `CloudFront-Viewer-Address` into the client IP the broker keys on (e.g. Caddy
-  rewrites `X-Forwarded-For` from it for this vhost). **Caveat that must be handled
-  first:** the origin `:443` is internet-facing, so a *direct* hit (not via
-  CloudFront) could forge `CloudFront-Viewer-Address`. Trust it only after
-  authenticating the request actually came through CloudFront — a shared-secret
-  custom origin header CloudFront injects, or restricting `:443` ingress to
-  CloudFront's origin-facing IP ranges — otherwise per-viewer keying would be
-  *more* spoofable than the current edge-IP key, not less.
+- **Per-viewer client IP on the CloudFront path — implemented** by the
+  `@cloudfront` branch of the Caddyfile; see
+  [Viewer client IP](#viewer-client-ip-x-openrung-cloudfront-auth) for rollout.
 - **Cloudflare Worker front origin leg — done.** `broker.openrung.org` fetches
   `https://broker-origin.openrung.org` through this Caddy and authenticates with
   the `X-OpenRung-Origin-Auth` shared secret. Caddy forwards the Worker's

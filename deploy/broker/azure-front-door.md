@@ -221,11 +221,13 @@ DNS-observing censor gets the most, not here.
 ### Client IP behind this front
 
 Requests arriving through Front Door are attributed to the **Front Door edge
-IP**, not the real client, exactly as they already are through CloudFront. That
-is deliberate and lives in [`Caddyfile`](./Caddyfile): the origin strips
-`CF-Connecting-IP` and overwrites `X-Forwarded-For` with its own immediate peer,
-because a CDN that forwards viewer headers would otherwise let a client inject a
-forged client IP. Fidelity is traded for unspoofability.
+IP**, not the real client. That is deliberate and lives in
+[`Caddyfile`](./Caddyfile): the origin strips `CF-Connecting-IP` and overwrites
+`X-Forwarded-For` with its own immediate peer, because a CDN that forwards viewer
+headers would otherwise let a client inject a forged client IP. Fidelity is
+traded for unspoofability. (CloudFront requests are attributed to the viewer
+only because they carry an origin secret that authenticates
+`CloudFront-Viewer-Address`; see [origin TLS](origin-tls.md).)
 
 So the Azure front introduces no new exposure here, but it does inherit the
 consequences: per-IP rate limits and the 64-new-identities-per-IP-per-day
