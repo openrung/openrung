@@ -8,6 +8,7 @@ trap 'rm -rf "$TEST_TMP"' EXIT
 
 PASS=0
 FAIL=0
+MOCK_SECRET=0123456789abcdef0123456789abcdef-test-secret
 
 pass() { PASS=$((PASS + 1)); }
 fail() {
@@ -56,6 +57,11 @@ run_scenario() ( # scenario, calls file
   # exercise an override set it explicitly below.
   unset OPENRUNG_AZURE_RG OPENRUNG_AZURE_LOCATION OPENRUNG_AZURE_PROFILE
   unset OPENRUNG_AZURE_ENDPOINT OPENRUNG_BROKER_ORIGIN
+  unset OPENRUNG_AZURE_ORIGIN_AUTH_FILE
+  export OPENRUNG_AZURE_POLL_SECONDS=0
+  printf '%s\n' "$MOCK_SECRET" > "${TEST_TMP}/origin-auth"
+  export OPENRUNG_AZURE_ORIGIN_AUTH_FILE="${TEST_TMP}/origin-auth"
+  MOCK_PROFILE_ID=/subscriptions/test/resourceGroups/test/providers/Microsoft.Cdn/profiles/test
 
   MOCK_ENDPOINT_ENABLED=Enabled
   MOCK_HOSTNAME=cdn-edge-test.z02.azurefd.net
@@ -85,11 +91,22 @@ run_scenario() ( # scenario, calls file
   MOCK_ROUTE_DEFAULT_DOMAIN=Enabled
   MOCK_ROUTE_CACHE=null
   MOCK_ROUTE_CUSTOM_DOMAINS='[]'
-  MOCK_ROUTE_RULE_SETS='[]'
+  MOCK_ROUTE_RULE_SETS="[{\"id\":\"${MOCK_PROFILE_ID}/ruleSets/originauth\"}]"
   MOCK_ROUTE_ORIGIN_PATH=null
   MOCK_ROUTE_NAMES=broker-api
   MOCK_PROFILE_CUSTOM_DOMAINS=
   MOCK_STICKY_CERT=0
+  MOCK_RULE_SET_EXISTS=1
+  MOCK_RULE_SET_NAMES=originauth
+  MOCK_RULE_NAMES=setoriginauth
+  MOCK_RULE_CONDITIONS=0
+  MOCK_RULE_ACTIONS=1
+  MOCK_RULE_ACTION=ModifyRequestHeader
+  MOCK_RULE_HEADER_ACTION=Overwrite
+  MOCK_RULE_HEADER_NAME=X-OpenRung-Azure-Auth
+  MOCK_RULE_PROCESSING=Continue
+  MOCK_RULE_VALUE=
+  MOCK_STICKY_RULE=0
 
   case "$scenario" in
     safe) ;;
@@ -125,6 +142,31 @@ run_scenario() ( # scenario, calls file
     custom-domain-route)
       MOCK_ROUTE_CUSTOM_DOMAINS='[{"id":"/profiles/test/customDomains/unsafe"}]'
       ;;
+    first-attachment)
+      MOCK_ROUTE_RULE_SETS='[]'
+      ;;
+    missing-secret-file)
+      unset OPENRUNG_AZURE_ORIGIN_AUTH_FILE
+      ;;
+    weak-secret)
+      printf 'short\n' > "${TEST_TMP}/origin-auth"
+      ;;
+    extra-rule-set)
+      MOCK_RULE_SET_NAMES=originauth,shadowrules
+      ;;
+    extra-rule)
+      MOCK_RULE_NAMES=setoriginauth,shadowrule
+      ;;
+    conditional-rule)
+      MOCK_RULE_CONDITIONS=1
+      ;;
+    rule-value-does-not-stick)
+      MOCK_STICKY_RULE=1
+      MOCK_RULE_VALUE=stale-value-stale-value-stale-value
+      ;;
+    foreign-route-rule-set)
+      MOCK_ROUTE_RULE_SETS="[{\"id\":\"${MOCK_PROFILE_ID}/ruleSets/shadowrules\"}]"
+      ;;
     *)
       echo "unknown test scenario ${scenario}" >&2
       return 2
@@ -142,7 +184,45 @@ run_scenario() ( # scenario, calls file
         return 0
         ;;
       afd:profile:show)
-        if [ -n "$query" ]; then printf '%s' Standard_AzureFrontDoor; fi
+        if [ "$query" = id ]; then
+          printf '%s' "$MOCK_PROFILE_ID"
+        elif [ -n "$query" ]; then
+          printf '%s' Standard_AzureFrontDoor
+        fi
+        ;;
+      afd:rule-set:show)
+        [ "$MOCK_RULE_SET_EXISTS" = 1 ]
+        ;;
+      afd:rule-set:list)
+        printf '%s' "$MOCK_RULE_SET_NAMES"
+        ;;
+      rest:--method:put)
+        local body
+        body="$(mock_arg --body "$@")"
+        if [ "$MOCK_STICKY_RULE" != 1 ]; then
+          MOCK_RULE_VALUE="$(sed -n 's/.*"value":"\([^"]*\)".*/\1/p' "${body#@}")"
+        fi
+        printf '%s\n' "${body#@}" >> "${MOCK_CALLS}.bodies"
+        ;;
+      rest:--method:get)
+        local url
+        url="$(mock_arg --url "$@")"
+        case "$url" in
+          */rules\?*) printf '%s' "$MOCK_RULE_NAMES" ;;
+          *)
+            if [[ "$query" == *parameters.value ]]; then
+              printf '%s' "$MOCK_RULE_VALUE"
+            else
+              printf '%s|%s|%s|%s|%s|%s' "$MOCK_RULE_CONDITIONS" \
+                "$MOCK_RULE_ACTIONS" "$MOCK_RULE_ACTION" \
+                "$MOCK_RULE_HEADER_ACTION" "$MOCK_RULE_HEADER_NAME" \
+                "$MOCK_RULE_PROCESSING"
+            fi
+            ;;
+        esac
+        ;;
+      rest:--method:patch)
+        MOCK_ROUTE_RULE_SETS="[{\"id\":\"${MOCK_PROFILE_ID}/ruleSets/originauth\"}]"
         ;;
       afd:endpoint:show)
         if [ -n "$query" ]; then
@@ -199,6 +279,8 @@ run_scenario() ( # scenario, calls file
       afd:route:show)
         if [ -z "$query" ]; then
           return 0
+        elif [ "$query" = "to_string(ruleSets)" ]; then
+          printf '%s' "$MOCK_ROUTE_RULE_SETS"
         elif [[ "$query" == *enabledState* ]]; then
           printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' \
             "$MOCK_ROUTE_ENABLED" "$MOCK_ROUTE_ORIGIN_GROUP" \
@@ -314,6 +396,34 @@ assert_file_not_contains "${TEST_TMP}/cached-route.calls" \
 expect_failure custom-domain-route "route broker-api has customDomains="
 assert_file_not_contains "${TEST_TMP}/custom-domain-route.calls" \
   "az afd route update" "custom-domain route fails before route mutation"
+
+assert_file_contains "${TEST_TMP}/safe.calls" "az rest --method put" "safe rerun writes the origin-auth rule"
+assert_file_contains "${TEST_TMP}/safe.calls" "az rest --method patch" "safe rerun attaches the rule set"
+assert_file_not_contains "${TEST_TMP}/safe.calls" "$MOCK_SECRET" "origin-auth secret never appears in az arguments"
+while IFS= read -r body_file; do
+  if [ -e "$body_file" ]; then fail "rule body file ${body_file} was left behind"; else pass; fi
+done < "${TEST_TMP}/safe.calls.bodies"
+
+expect_success first-attachment
+assert_file_contains "${TEST_TMP}/first-attachment.calls" "az afd route update" "first attachment reconciles the route"
+assert_file_contains "${TEST_TMP}/first-attachment.calls" "ruleSets/originauth" "first attachment references the rule set"
+
+expect_failure missing-secret-file "OPENRUNG_AZURE_ORIGIN_AUTH_FILE is not set"
+assert_file_not_contains "${TEST_TMP}/missing-secret-file.calls" "az group create" "missing secret fails before any mutation"
+
+expect_failure weak-secret "must be at least 32 characters"
+assert_file_not_contains "${TEST_TMP}/weak-secret.calls" "az group create" "weak secret fails before any mutation"
+
+expect_failure extra-rule-set "profile openrung-broker-front has ruleSets=originauth,shadowrules; want originauth"
+assert_file_not_contains "${TEST_TMP}/extra-rule-set.calls" "az rest --method put" "extra rule set fails before writing the rule"
+
+expect_failure extra-rule "rule set originauth has rules=setoriginauth,shadowrule; want setoriginauth"
+expect_failure conditional-rule "rule setoriginauth has conditions=1; want 0"
+expect_failure rule-value-does-not-stick "rule setoriginauth does not carry the secret"
+assert_file_not_contains "${TEST_TMP}/rule-value-does-not-stick.output" "$MOCK_SECRET" "diagnostic does not print the secret"
+
+expect_failure foreign-route-rule-set "it may reference only originauth"
+assert_file_not_contains "${TEST_TMP}/foreign-route-rule-set.calls" "az afd route update" "foreign rule set fails before route mutation"
 
 if [ "$FAIL" -ne 0 ]; then
   echo "${FAIL} assertion(s) failed; ${PASS} passed" >&2

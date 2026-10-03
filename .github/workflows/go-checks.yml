@@ -51,8 +51,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Pinned to the version the broker origin runs; the release checksum file
+      # is verified before the binary is used.
+      - name: Install Caddy
+        env:
+          CADDY_VERSION: '2.11.4'
+        run: |
+          base="https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}"
+          tarball="caddy_${CADDY_VERSION}_linux_amd64.tar.gz"
+          curl -fsSLO "${base}/${tarball}"
+          curl -fsSL -o caddy_checksums.txt "${base}/caddy_${CADDY_VERSION}_checksums.txt"
+          grep " ${tarball}\$" caddy_checksums.txt | sha512sum -c -
+          tar -xzf "$tarball" caddy
+          sudo install -m 0755 caddy /usr/local/bin/caddy
+          caddy version
+
       - name: Deploy script tests
         run: |
+          bash -n deploy/broker/Caddyfile_test.sh
+          bash deploy/broker/Caddyfile_test.sh
           bash -n deploy/broker/azure-front-door-up.sh
           bash -n deploy/broker/azure-front-door-up_test.sh
           bash deploy/broker/azure-front-door-up_test.sh

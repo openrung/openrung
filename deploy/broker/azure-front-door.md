@@ -23,41 +23,10 @@ The two existing fronts are a Cloudflare Worker (`broker.openrung.org`) and an
 AWS CloudFront distribution. A third independent provider means a single CDN,
 DNS zone, or account failure cannot fail discovery closed.
 
-Azure's specific value is collateral damage: the Front Door edge shares address
-space with Microsoft services a censor is reluctant to break wholesale. It is
-*not* metadata hiding — Azure has no ECH. Suppressing SNI is what keeps the
-endpoint name off the wire, exactly as on CloudFront.
-
 Azure is a control-plane front only. Relay data must never move through it: the
 nonprofit grant buys roughly 24 TB/year, about 29 days of fleet traffic, and the
 subscription converts to pay-as-you-go rather than stopping when credit runs
 out.
-
-## Measured behaviour
-
-Measured 2026-08-03 against two independent Front Door edge partitions, each
-reached with a third party's endpoint in the `Host` header:
-
-| | no SNI | with SNI |
-| --- | --- | --- |
-| leaf SANs | `[*.azureedge.net]` | `[*.azurefd.net *.z01…z10 *.a01…a03 *.b01 *.b02.azurefd.net]` |
-| issuer | Microsoft TLS G2 ECC CA OCSP 06 | Microsoft TLS G2 ECC CA OCSP 02 |
-| TLS | 1.3 | 1.3 |
-| response | byte-identical to the SNI path | — |
-
-- Partitions checked: `p-0010` (150.171.84.20, 150.171.84.30) and `t-0009`
-  (13.107.226.39). Both behaved identically.
-- Routing is genuinely driven by the encrypted `Host` header: a real endpoint
-  name returned that endpoint's content (HTTP 200, 244752 bytes for a live
-  customer site), while an unknown name returned Front Door's own 404.
-- Microsoft blocked classic domain fronting — a ClientHello whose SNI disagrees
-  with the Host — years ago. The no-SNI case is distinct because there is no SNI
-  to mismatch, the same reason it survives on CloudFront. It is undocumented and
-  has no SLA.
-- **The default certificate belongs to the edge fleet, not to Front Door.** A
-  Microsoft edge outside that fleet served an entirely unrelated default
-  certificate. This is why every new endpoint must be measured rather than
-  assumed.
 
 ## The verification tradeoff
 
@@ -85,8 +54,7 @@ ticket failover filters it as defense in depth.
 Discovery enforces the weaker trust boundary structurally rather than relying
 only on list position. Cloudflare and CloudFront race in the first phase; Azure
 does not start when their stagger elapses and is attempted only after both have
-failed. An active censor can still force the fallback by blocking both stronger
-fronts, but a merely slow response cannot silently downgrade discovery.
+failed. A merely slow response cannot silently downgrade discovery.
 
 A custom domain does not help. Without SNI the edge serves the shared
 certificate regardless of the Host, so a custom domain would be no better
@@ -95,8 +63,12 @@ authenticated while losing the ordinary verification it gets by keeping SNI.
 ## Provisioning
 
 ```bash
-bash deploy/broker/azure-front-door-up.sh
+OPENRUNG_AZURE_ORIGIN_AUTH_FILE=/path/to/origin-auth bash deploy/broker/azure-front-door-up.sh
 ```
+
+The file holds the origin-auth secret (see
+[Client IP behind this front](#client-ip-behind-this-front)); install the same
+value on the origin first.
 
 The script is convergent and fail-closed, not merely create-if-missing. On every
 run it checks the origin, requires the existing profile to have the Standard
@@ -108,8 +80,10 @@ and forwarding, `/*` match, default-domain link, and sole endpoint, origin
 group, origin, and route.
 
 Some route state is deliberately not removed automatically. If an existing
-route has a cache configuration, custom-domain attachment, rule set, or origin
-path, the script exits with the offending value before updating that route.
+route has a cache configuration, custom-domain attachment, origin path, or any
+rule set other than the origin-auth one, the script exits with the offending
+value before updating that route. The profile must contain only that rule set,
+and the rule set only its single unconditional header rule.
 Those additions can change request routing or re-enable caching, and removing
 them may detach operator-created resources; inspect and remove them deliberately
 in Azure, then rerun. It also requires the dedicated profile to contain no
@@ -175,6 +149,11 @@ carries no VPN clause in its AUP.
 5. Health probe: `GET /healthz` over HTTPS. The default probe path is `/`, where
    a failure would mean only that the root has no handler rather than that the
    broker is unhealthy.
+6. Rule set `originauth` with one rule, `setoriginauth`: no conditions, one
+   action that overwrites the `X-OpenRung-Azure-Auth` request header with the
+   origin-auth secret. It is the route's only rule set. The script writes and
+   reads it through ARM (`az rest`) because the route's rule-set flag differs
+   between the core Azure CLI and the `cdn` extension.
 
 Rerun `bash deploy/broker/azure-front-door-up.sh` after any portal or CLI
 change. The script repairs drift in the ordinary mutable fields above and fails
@@ -191,15 +170,7 @@ resolver and there is no DoH. So the hostname is the one part of this front a
 passive on-path observer still sees, and the name we choose is the whole of what
 they learn.
 
-An endpoint called `openrung-broker-…` makes that DNS query a keyword match. Two
-consequences, the second worse than the first:
-
-- The front can be blocklisted by pattern, without the censor knowing anything
-  about this project in advance.
-- The query **marks the user** as running this software. In Iran that is a
-  personal-safety property, not just a reachability one.
-
-So the prefix is deliberately generic (`cdn-edge`), matching how CloudFront's
+The prefix is therefore deliberately generic (`cdn-edge`), matching how CloudFront's
 `d2r7mdpyevvs1m.cloudfront.net` reveals nothing. Azure appends an unguessable
 suffix, so a boring prefix costs nothing. The resource group and profile names
 are never on the wire and stay descriptive.
@@ -212,28 +183,33 @@ provision a fresh profile (and, if convenient, resource group), run the gate,
 ship the new URL, and retain the old profile until clients using its compiled-in
 URL can be retired. Then delete the old profile deliberately.
 
-Note the same reasoning indicts `broker.openrung.org`, the *primary* front,
-far more directly: it is a subdomain of the project's own domain, and ECH hides
-the SNI but not the A-record lookup. That is a larger, separate decision — the
-Cloudflare front is the deliberately well-known one — but it is where a
-DNS-observing censor gets the most, not here.
-
 ### Client IP behind this front
 
-Requests arriving through Front Door are attributed to the **Front Door edge
-IP**, not the real client, exactly as they already are through CloudFront. That
-is deliberate and lives in [`Caddyfile`](./Caddyfile): the origin strips
-`CF-Connecting-IP` and overwrites `X-Forwarded-For` with its own immediate peer,
-because a CDN that forwards viewer headers would otherwise let a client inject a
-forged client IP. Fidelity is traded for unspoofability.
+Front Door reports the address of the TCP connection the request arrived on in
+`X-Azure-SocketIP`. That is the value used. `X-Azure-ClientIP` is not, because
+a caller can influence it, and neither is `X-Forwarded-For`, to which Front Door
+appends. The origin is also reachable directly, so
+[`Caddyfile`](./Caddyfile) trusts `X-Azure-SocketIP` only on requests carrying
+the origin-auth secret that the route's rule set writes into
+`X-OpenRung-Azure-Auth`. Those requests reach the broker with that address as
+`X-Forwarded-For`. Everything else, including Front Door's health probes, keeps
+the immediate-peer address. The CloudFront front follows the same pattern; see
+[origin TLS](origin-tls.md).
 
-So the Azure front introduces no new exposure here, but it does inherit the
-consequences: per-IP rate limits and the 64-new-identities-per-IP-per-day
-registration cap bucket by edge IP for fronted traffic, and telemetry records
-the edge IP as `client_ip`. Worth watching after this front carries real load —
-if Azure egresses to the origin from a narrower set of addresses than CloudFront
-does, those caps bite sooner. `OPENRUNG_REGISTRATION_CAP_EXEMPT_CIDRS` is the
-lever if they do.
+Rollout order, each step safe on its own:
+
+1. Add `OPENRUNG_AZURE_ORIGIN_AUTH` to `/etc/caddy/origin-auth.env`, install the
+   Caddyfile, validate and reload Caddy (see [origin TLS](origin-tls.md)).
+   Nothing changes yet: Front Door does not send the header.
+2. Run `azure-front-door-up.sh` with `OPENRUNG_AZURE_ORIGIN_AUTH_FILE` pointing
+   at a private file holding the same value.
+3. Verify that the broker records the viewer's address for a request through
+   the front, while a direct request to the origin that copies the header
+   names keeps its own peer address.
+
+To rotate, update the env file and reload Caddy, then rerun the script with the
+new file. To roll back, detach and delete the `originauth` rule set; requests
+then fall back to the immediate-peer address.
 
 ## Acceptance gate — run before advertising
 
@@ -255,8 +231,7 @@ would. The SNI observation is a measurement of the connection that actually
 carried the signed list, not an inference from configuration. And the freshness
 bound catches a front that caches the relay list: a cached body still verifies,
 since the signature covers a 30-minute window plus five minutes of skew, so a
-route with caching left on would otherwise pass every other check. A Cloudflare
-edge once served this deployment a stale `/api/v1/relays` for about four hours.
+route with caching left on would otherwise pass every other check.
 
 If the run fails only on the relay-configuration comparison and reports
 *different relay sets*, the fleet most likely changed between the two fetches —
@@ -304,36 +279,6 @@ after the gate passed:
    keep the platform-owned default ticket lists endpoint-authenticated only.
 
 Re-run `frontcheck` after any endpoint, CDN, or certificate change.
-
-### Gate result, 2026-08-05
-
-```
-PASS  transport TLS policy for this host
-        SNI suppressed — Azure Front Door: certificate must carry the SAN *.azureedge.net
-PASS  handshake completes and satisfies that policy
-        TLS 1.3, ALPN ""
-        leaf subject "*.azureedge.net", issuer "Microsoft TLS G2 ECC CA OCSP 06"
-        leaf SANs [*.azureedge.net]
-        chain depth 4, leaf expires 2026-11-14T10:49:57Z
-PASS  signed relay list fetches and verifies over the shipping path
-        4180 bytes, signature verified under pinned key 627405615601c589
-        server_time is 0s old, so it was signed for this request
-        carried over TLS with ClientHello server name ""
-PASS  SNI-bearing control serves the same signed list
-        matches the no-SNI response
-PASS  edge routes on the Host header, not the address
-        Host "frontcheck-unroutable.invalid" got HTTP 404 and no relay signature
-```
-
-Azure assigned a **z02** endpoint, not the z01 seen in every earlier
-measurement. The recognizer matches the zone by shape rather than by literal, so
-this needed no code change; a hardcoded `z01` would have fallen through to
-SNI-bearing TLS and leaked the endpoint name.
-
-First propagation took about 12 minutes, during which the endpoint returned
-Front Door's generic 404 on both the no-SNI and SNI paths equally. That is
-expected for a new profile and is not an SNI problem — if only the no-SNI path
-404s, that is a different fault.
 
 **Wait for consistent 200s before running the gate.** Propagation does not flip
 cleanly: a new endpoint spends several minutes returning an intermittent mix of
