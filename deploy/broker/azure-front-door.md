@@ -185,12 +185,13 @@ URL can be retired. Then delete the old profile deliberately.
 
 ### Client IP behind this front
 
-Front Door sends the viewer's address in `X-Azure-ClientIP` and overwrites any
-viewer-supplied value; it *appends* to `X-Forwarded-For`, so that header is
-never used. The origin is also reachable directly, so
-[`Caddyfile`](./Caddyfile) trusts `X-Azure-ClientIP` only on requests carrying
+Front Door reports the address of the TCP connection the request arrived on in
+`X-Azure-SocketIP`. That is the value used. `X-Azure-ClientIP` is not, because
+a caller can influence it, and neither is `X-Forwarded-For`, to which Front Door
+appends. The origin is also reachable directly, so
+[`Caddyfile`](./Caddyfile) trusts `X-Azure-SocketIP` only on requests carrying
 the origin-auth secret that the route's rule set writes into
-`X-OpenRung-Azure-Auth`. Those requests reach the broker with the viewer IP as
+`X-OpenRung-Azure-Auth`. Those requests reach the broker with that address as
 `X-Forwarded-For`. Everything else, including Front Door's health probes, keeps
 the immediate-peer address. The CloudFront front follows the same pattern; see
 [origin TLS](origin-tls.md).

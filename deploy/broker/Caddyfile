@@ -39,9 +39,9 @@ broker-origin.openrung.org {
 	#     CloudFront injects as a custom origin header): the viewer IP from
 	#     CloudFront-Viewer-Address, which CloudFront overwrites on every request;
 	#   - our Azure Front Door profile (the Azure origin-auth secret, which its
-	#     rule set writes into every forwarded request): the viewer IP from
-	#     X-Azure-ClientIP, which Front Door overwrites on every request. Never
-	#     X-Forwarded-For, to which Front Door appends;
+	#     rule set writes into every forwarded request): the TCP peer address
+	#     Front Door reports in X-Azure-SocketIP. Never X-Azure-ClientIP, which a
+	#     caller can influence, nor X-Forwarded-For, to which Front Door appends;
 	#   - everything else (health probes, direct hits): our own immediate peer.
 	# The size() guards fail closed if a secret is unset or short; such requests
 	# fall through to the immediate-peer branch.
@@ -60,7 +60,7 @@ broker-origin.openrung.org {
 
 	@azure_front_door {
 		expression `size("{$OPENRUNG_AZURE_ORIGIN_AUTH}") >= 32 && {http.request.header.X-OpenRung-Azure-Auth} == "{$OPENRUNG_AZURE_ORIGIN_AUTH}"`
-		header_regexp azviewer X-Azure-ClientIP ^([0-9A-Fa-f:.]+)$
+		header_regexp azviewer X-Azure-SocketIP ^([0-9A-Fa-f:.]+)$
 	}
 
 	handle @cloudflare_worker {

@@ -34,7 +34,7 @@
 # Required: OPENRUNG_AZURE_ORIGIN_AUTH_FILE, a file holding the origin-auth
 # secret (at least 32 characters of [A-Za-z0-9._~-], e.g. `openssl rand -hex 32`).
 # The route's only rule set overwrites the X-OpenRung-Azure-Auth request header
-# with it, and the origin's Caddy trusts X-Azure-ClientIP only on requests that
+# with it, and the origin's Caddy trusts X-Azure-SocketIP only on requests that
 # carry it (see deploy/broker/Caddyfile). The value is passed to the Azure CLI
 # through a private temporary file, never on the command line.
 #
@@ -293,7 +293,7 @@ main() {
   echo "origin configuration verified"
 
   # The route's only rule set overwrites the origin-auth request header, which
-  # the origin's Caddy requires before trusting X-Azure-ClientIP. Rules are
+  # the origin's Caddy requires before trusting X-Azure-SocketIP. Rules are
   # written and read through ARM directly: the rule and route rule-set flags
   # differ between the core Azure CLI and the cdn extension.
   log "Rule set ${RULE_SET} (origin-auth header)"
