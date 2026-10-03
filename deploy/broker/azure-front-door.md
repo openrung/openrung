@@ -229,14 +229,6 @@ traded for unspoofability. (CloudFront requests are attributed to the viewer
 only because they carry an origin secret that authenticates
 `CloudFront-Viewer-Address`; see [origin TLS](origin-tls.md).)
 
-So the Azure front introduces no new exposure here, but it does inherit the
-consequences: per-IP rate limits and the 64-new-identities-per-IP-per-day
-registration cap bucket by edge IP for fronted traffic, and telemetry records
-the edge IP as `client_ip`. Worth watching after this front carries real load —
-if Azure egresses to the origin from a narrower set of addresses than CloudFront
-does, those caps bite sooner. `OPENRUNG_REGISTRATION_CAP_EXEMPT_CIDRS` is the
-lever if they do.
-
 ## Acceptance gate — run before advertising
 
 ```bash

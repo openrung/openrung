@@ -286,8 +286,7 @@ bash -c '
 
 `400` vs `403` is the signal: if `AllViewerExceptHostHeader` (or the origin leg)
 dropped `Authorization`, the first call would return `403` like the second.
-Verified 2026-07-13: `400` with the token, `403` without. As a no-secret
-cross-check, the Caddy access log records `request.headers.Authorization =
+As a no-secret cross-check, the Caddy access log records `request.headers.Authorization =
 ["REDACTED"]` on a CloudFront-fronted request that carried one (Caddy redacts the
 value, so the token is never written to disk).
 
@@ -311,18 +310,10 @@ depend on it.
 
 ## Follow-ups
 
-- **Loopback-wide rate-limit / telemetry collapse — RESOLVED 2026-07-13; now keyed per-CloudFront-edge.**
-  The broker did not trust the new loopback hop for forwarded client IPs
-  (`internal/broker/clientip.go`), so it
-  recorded `127.0.0.1` as the client for *every* CloudFront-fronted request — the
-  whole front collapsed onto one relay-list rate-limit bucket (2 req/s, burst 30)
-  and one telemetry client IP. Fixed by adding
-  `OPENRUNG_TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128` to `/etc/openrung/broker.env`
-  (durable) and recreating the broker container; the broker now keys on the
-  unspoofable CloudFront **edge** IP that Caddy forwards as the sole
-  `X-Forwarded-For` value (client-supplied `CF-Connecting-IP`/`XFF` are stripped).
-  No Caddy change was needed. This restores the **pre-proxy** behavior exactly.
-
+- **Client IP behind the loopback hop — done.** The broker honours forwarded
+  client IPs only from `OPENRUNG_TRUSTED_PROXY_CIDRS`; production sets it to
+  loopback (`127.0.0.1/32,::1/128`) so the broker uses the value Caddy forwards
+  (`internal/broker/clientip.go`).
 - **Per-viewer client IP on the CloudFront path — implemented** by the
   `@cloudfront` branch of the Caddyfile; see
   [Viewer client IP](#viewer-client-ip-x-openrung-cloudfront-auth) for rollout.
