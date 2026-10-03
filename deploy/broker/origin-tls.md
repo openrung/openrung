@@ -21,14 +21,14 @@ the Cloudflare Worker front also uses this leg.
 ## What must not be undone
 
 - **`broker-origin.openrung.org` must stay DNS-only (grey cloud) in Cloudflare.**
-  It is an `A` record → `54.238.185.205`. Orange-clouding (proxying) it would
+  It is an `A` record → the broker's public IP. Orange-clouding (proxying) it would
   reintroduce Cloudflare's datacenter challenge on the origin and loop the
   Cloudflare Worker's subrequest back into the edge. Both CDN fronts depend on
   this record resolving straight to the broker IP, and so does every relay and
   relay hub — the provisioning helpers now register against this hostname.
 - **Keep `:8080` open.** Relays and hubs provisioned before the helpers switched
   their default to `https://broker-origin.openrung.org` keep the baked-in
-  `http://54.238.185.205:8080` in their container environment until each one is
+  `http://<broker-ip>:8080` in their container environment until each one is
   recreated, so closing the port would strand them. Do not firewall it off as
   part of this change.
 - **The CloudFront behavior must use `Managed-AllViewerExceptHostHeader`, not
@@ -39,7 +39,7 @@ the Cloudflare Worker front also uses this leg.
 
 ## Broker box: Caddy TLS terminator
 
-Host: Lightsail `typhoon-broker`, `ssh -i ~/.ssh/id_ed25519_openrung ubuntu@54.238.185.205`.
+Host: the broker's Lightsail instance; access details are kept with the operators.
 
 Caddy was chosen for native Let's Encrypt auto-renewal (no cron/certbot timer to
 manage). ACM certs cannot be installed on Lightsail, and a self-signed cert
@@ -119,7 +119,7 @@ broker.
 is used for the ACME HTTP-01 challenge):
 
 ```sh
-aws lightsail open-instance-public-ports --instance-name typhoon-broker \
+aws lightsail open-instance-public-ports --instance-name <broker-instance> \
   --region ap-northeast-1 --port-info fromPort=443,toPort=443,protocol=TCP
 ```
 
@@ -219,7 +219,7 @@ curl -v https://broker-origin.openrung.org/api/v1/relays        # 200, cert veri
 curl https://d2r7mdpyevvs1m.cloudfront.net/api/v1/relays?limit=1 # 200, X-OpenRung-Relays-Signature present
 
 # Volunteer-class relay plaintext path still intact:
-curl http://54.238.185.205:8080/api/v1/relays                   # 200
+curl http://<broker-ip>:8080/api/v1/relays                       # 200
 
 # Confirm CloudFront connects over TLS (SNI = origin, not the CF domain):
 sudo tail /var/log/caddy/broker-origin.access.log   # request.tls.server_name = broker-origin.openrung.org
