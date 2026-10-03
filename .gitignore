@@ -10,6 +10,8 @@ go.work
 go.work.sum
 
 # Local agent guidance
+/CLAUDE.md
+/.claude/settings.json
 
 # Build outputs
 /bin/
