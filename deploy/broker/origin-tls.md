@@ -70,7 +70,7 @@ a systemd drop-in loads from a root-only file:
 EnvironmentFile=/etc/caddy/origin-auth.env
 ```
 
-`/etc/caddy/origin-auth.env` (`root:root`, mode `0600`) holds two values, each
+`/etc/caddy/origin-auth.env` (`root:root`, mode `0600`) holds three values, each
 at least 32 characters:
 
 - `OPENRUNG_WORKER_ORIGIN_AUTH=<value>`: the same value as the Worker's
@@ -80,6 +80,9 @@ at least 32 characters:
   `X-OpenRung-CloudFront-Auth` custom origin header on the CloudFront
   distribution (see [Viewer client IP](#viewer-client-ip-x-openrung-cloudfront-auth)).
   Generate it with `openssl rand -hex 32`.
+- `OPENRUNG_AZURE_ORIGIN_AUTH=<value>`: the same value as the file passed to
+  `azure-front-door-up.sh` as `OPENRUNG_AZURE_ORIGIN_AUTH_FILE` (see
+  [Azure Front Door](azure-front-door.md#client-ip-behind-this-front)).
 
 Install the env file and drop-in, run `sudo systemctl daemon-reload`, and only
 then install a Caddyfile that references the variables. A missing or short value
@@ -109,9 +112,9 @@ The JSON access log redacts sensitive request headers by default — Caddy repla
 `Authorization`, `Cookie`, `Set-Cookie`, and `Proxy-Authorization` with `REDACTED`
 — so the Foundation bearer token is never written to
 `/var/log/caddy/broker-origin.access.log`. That default does not cover custom
-headers, so the Caddyfile's log `format filter` deletes `X-OpenRung-Origin-Auth`
-and `X-OpenRung-CloudFront-Auth` explicitly. Neither header is forwarded to the
-broker.
+headers, so the Caddyfile's log `format filter` deletes `X-OpenRung-Origin-Auth`,
+`X-OpenRung-CloudFront-Auth` and `X-OpenRung-Azure-Auth` explicitly. None of
+them is forwarded to the broker.
 
 ### Firewall
 

@@ -63,8 +63,12 @@ authenticated while losing the ordinary verification it gets by keeping SNI.
 ## Provisioning
 
 ```bash
-bash deploy/broker/azure-front-door-up.sh
+OPENRUNG_AZURE_ORIGIN_AUTH_FILE=/path/to/origin-auth bash deploy/broker/azure-front-door-up.sh
 ```
+
+The file holds the origin-auth secret (see
+[Client IP behind this front](#client-ip-behind-this-front)); install the same
+value on the origin first.
 
 The script is convergent and fail-closed, not merely create-if-missing. On every
 run it checks the origin, requires the existing profile to have the Standard
@@ -76,8 +80,10 @@ and forwarding, `/*` match, default-domain link, and sole endpoint, origin
 group, origin, and route.
 
 Some route state is deliberately not removed automatically. If an existing
-route has a cache configuration, custom-domain attachment, rule set, or origin
-path, the script exits with the offending value before updating that route.
+route has a cache configuration, custom-domain attachment, origin path, or any
+rule set other than the origin-auth one, the script exits with the offending
+value before updating that route. The profile must contain only that rule set,
+and the rule set only its single unconditional header rule.
 Those additions can change request routing or re-enable caching, and removing
 them may detach operator-created resources; inspect and remove them deliberately
 in Azure, then rerun. It also requires the dedicated profile to contain no
@@ -143,6 +149,11 @@ carries no VPN clause in its AUP.
 5. Health probe: `GET /healthz` over HTTPS. The default probe path is `/`, where
    a failure would mean only that the root has no handler rather than that the
    broker is unhealthy.
+6. Rule set `originauth` with one rule, `setoriginauth`: no conditions, one
+   action that overwrites the `X-OpenRung-Azure-Auth` request header with the
+   origin-auth secret. It is the route's only rule set. The script writes and
+   reads it through ARM (`az rest`) because the route's rule-set flag differs
+   between the core Azure CLI and the `cdn` extension.
 
 Rerun `bash deploy/broker/azure-front-door-up.sh` after any portal or CLI
 change. The script repairs drift in the ordinary mutable fields above and fails
@@ -174,14 +185,30 @@ URL can be retired. Then delete the old profile deliberately.
 
 ### Client IP behind this front
 
-Requests arriving through Front Door are attributed to the **Front Door edge
-IP**, not the real client. That is deliberate and lives in
-[`Caddyfile`](./Caddyfile): the origin strips `CF-Connecting-IP` and overwrites
-`X-Forwarded-For` with its own immediate peer, because a CDN that forwards viewer
-headers would otherwise let a client inject a forged client IP. Fidelity is
-traded for unspoofability. (CloudFront requests are attributed to the viewer
-only because they carry an origin secret that authenticates
-`CloudFront-Viewer-Address`; see [origin TLS](origin-tls.md).)
+Front Door sends the viewer's address in `X-Azure-ClientIP` and overwrites any
+viewer-supplied value; it *appends* to `X-Forwarded-For`, so that header is
+never used. The origin is also reachable directly, so
+[`Caddyfile`](./Caddyfile) trusts `X-Azure-ClientIP` only on requests carrying
+the origin-auth secret that the route's rule set writes into
+`X-OpenRung-Azure-Auth`. Those requests reach the broker with the viewer IP as
+`X-Forwarded-For`. Everything else, including Front Door's health probes, keeps
+the immediate-peer address. The CloudFront front follows the same pattern; see
+[origin TLS](origin-tls.md).
+
+Rollout order, each step safe on its own:
+
+1. Add `OPENRUNG_AZURE_ORIGIN_AUTH` to `/etc/caddy/origin-auth.env`, install the
+   Caddyfile, validate and reload Caddy (see [origin TLS](origin-tls.md)).
+   Nothing changes yet: Front Door does not send the header.
+2. Run `azure-front-door-up.sh` with `OPENRUNG_AZURE_ORIGIN_AUTH_FILE` pointing
+   at a private file holding the same value.
+3. Verify that the broker records the viewer's address for a request through
+   the front, while a direct request to the origin that copies the header
+   names keeps its own peer address.
+
+To rotate, update the env file and reload Caddy, then rerun the script with the
+new file. To roll back, detach and delete the `originauth` rule set; requests
+then fall back to the immediate-peer address.
 
 ## Acceptance gate — run before advertising
 

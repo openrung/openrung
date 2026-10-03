@@ -15,10 +15,11 @@
 # handshake 502s. See origin-tls.md.) The default ECDSA (P-256) leaf is fine for
 # CloudFront and every other client.
 #
-# OPENRUNG_WORKER_ORIGIN_AUTH and OPENRUNG_CLOUDFRONT_ORIGIN_AUTH must be in
-# Caddy's environment (see origin-tls.md). The first is the same value as the
-# Worker's ORIGIN_AUTH secret; the second is the value CloudFront sends in its
-# X-OpenRung-CloudFront-Auth custom origin header.
+# OPENRUNG_WORKER_ORIGIN_AUTH, OPENRUNG_CLOUDFRONT_ORIGIN_AUTH and
+# OPENRUNG_AZURE_ORIGIN_AUTH must be in Caddy's environment (see origin-tls.md).
+# They match, respectively, the Worker's ORIGIN_AUTH secret, the value CloudFront
+# sends in its X-OpenRung-CloudFront-Auth custom origin header, and the value the
+# Azure Front Door rule set writes into X-OpenRung-Azure-Auth.
 {
 	# No ACME account email on purpose: Caddy auto-renews, so expiry notices are
 	# non-essential, and we avoid tying an operator identity to the issuance.
@@ -37,7 +38,11 @@ broker-origin.openrung.org {
 	#   - our CloudFront distribution (the CloudFront origin-auth secret, which
 	#     CloudFront injects as a custom origin header): the viewer IP from
 	#     CloudFront-Viewer-Address, which CloudFront overwrites on every request;
-	#   - everything else (other fronts, direct hits): our own immediate peer.
+	#   - our Azure Front Door profile (the Azure origin-auth secret, which its
+	#     rule set writes into every forwarded request): the viewer IP from
+	#     X-Azure-ClientIP, which Front Door overwrites on every request. Never
+	#     X-Forwarded-For, to which Front Door appends;
+	#   - everything else (health probes, direct hits): our own immediate peer.
 	# The size() guards fail closed if a secret is unset or short; such requests
 	# fall through to the immediate-peer branch.
 	@cloudflare_worker {
@@ -53,11 +58,17 @@ broker-origin.openrung.org {
 		header_regexp viewer CloudFront-Viewer-Address ^([0-9A-Fa-f:.]+):[0-9]{1,5}$
 	}
 
+	@azure_front_door {
+		expression `size("{$OPENRUNG_AZURE_ORIGIN_AUTH}") >= 32 && {http.request.header.X-OpenRung-Azure-Auth} == "{$OPENRUNG_AZURE_ORIGIN_AUTH}"`
+		header_regexp azviewer X-Azure-ClientIP ^([0-9A-Fa-f:.]+)$
+	}
+
 	handle @cloudflare_worker {
 		reverse_proxy 127.0.0.1:8080 {
 			header_up -CF-Connecting-IP
 			header_up -X-OpenRung-Origin-Auth
 			header_up -X-OpenRung-CloudFront-Auth
+			header_up -X-OpenRung-Azure-Auth
 			header_up X-Forwarded-For {http.request.header.X-Forwarded-For}
 		}
 	}
@@ -67,7 +78,18 @@ broker-origin.openrung.org {
 			header_up -CF-Connecting-IP
 			header_up -X-OpenRung-Origin-Auth
 			header_up -X-OpenRung-CloudFront-Auth
+			header_up -X-OpenRung-Azure-Auth
 			header_up X-Forwarded-For {re.viewer.1}
+		}
+	}
+
+	handle @azure_front_door {
+		reverse_proxy 127.0.0.1:8080 {
+			header_up -CF-Connecting-IP
+			header_up -X-OpenRung-Origin-Auth
+			header_up -X-OpenRung-CloudFront-Auth
+			header_up -X-OpenRung-Azure-Auth
+			header_up X-Forwarded-For {re.azviewer.1}
 		}
 	}
 
@@ -76,6 +98,7 @@ broker-origin.openrung.org {
 			header_up -CF-Connecting-IP
 			header_up -X-OpenRung-Origin-Auth
 			header_up -X-OpenRung-CloudFront-Auth
+			header_up -X-OpenRung-Azure-Auth
 			header_up X-Forwarded-For {remote_host}
 		}
 	}
@@ -90,6 +113,7 @@ broker-origin.openrung.org {
 		format filter {
 			request>headers>X-Openrung-Origin-Auth delete
 			request>headers>X-Openrung-Cloudfront-Auth delete
+			request>headers>X-Openrung-Azure-Auth delete
 		}
 	}
 }

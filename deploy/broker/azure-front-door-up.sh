@@ -20,8 +20,7 @@
 #     SNI. See deploy/broker/azure-front-door.md for the full tradeoff.
 #   * Caching disabled on the route. A cached relay list still passes signature
 #     verification — the signature covers a 30-minute window — so a caching
-#     front is invisible to every check except frontcheck's freshness bound. A
-#     Cloudflare edge once served this deployment a stale list for four hours.
+#     front is invisible to every check except frontcheck's freshness bound.
 #
 # The origin is the broker's own TLS name, NOT a CDN front and NOT a bare IP:
 # the edge->origin leg must validate a real certificate, and broker-origin
@@ -32,12 +31,20 @@
 # profile creation with "The number of profiles created exceeds quota" even at
 # zero profiles; that needs a free quota request in the portal first.
 #
+# Required: OPENRUNG_AZURE_ORIGIN_AUTH_FILE, a file holding the origin-auth
+# secret (at least 32 characters of [A-Za-z0-9._~-], e.g. `openssl rand -hex 32`).
+# The route's only rule set overwrites the X-OpenRung-Azure-Auth request header
+# with it, and the origin's Caddy trusts X-Azure-ClientIP only on requests that
+# carry it (see deploy/broker/Caddyfile). The value is passed to the Azure CLI
+# through a private temporary file, never on the command line.
+#
 # Overridable via env: OPENRUNG_AZURE_RG, OPENRUNG_AZURE_LOCATION,
 # OPENRUNG_AZURE_PROFILE, OPENRUNG_AZURE_ENDPOINT, OPENRUNG_BROKER_ORIGIN.
 #
 # This helper is idempotent: re-running it reconciles mutable settings and then
 # reads every routing- and TLS-relevant property back. It fails closed on
-# incompatible additions such as caching, custom domains, and rule sets.
+# incompatible additions such as caching, custom domains, and any rule set or
+# rule other than the origin-auth one.
 
 set -euo pipefail
 
@@ -46,18 +53,22 @@ LOCATION="${OPENRUNG_AZURE_LOCATION:-japaneast}"
 PROFILE="${OPENRUNG_AZURE_PROFILE:-openrung-broker-front}"
 # Keep this prefix GENERIC and free of anything naming this project. Suppressing
 # SNI keeps the endpoint name out of the ClientHello, but the client still
-# resolves it over ordinary cleartext DNS, so the name is the one part of this
-# front a passive observer sees. A prefix like "openrung-broker" turns that query
-# into a keyword match — enough to blocklist the front by pattern, and enough to
-# mark the user as running this software. Azure appends an unguessable suffix, so
-# a boring prefix costs nothing. The resource group and profile names below are
-# never on the wire and stay descriptive on purpose.
+# resolves it over ordinary cleartext DNS, so the name is visible on the wire.
+# Azure appends an unguessable suffix, so a generic prefix costs nothing. The
+# resource group and profile names below are never on the wire and stay
+# descriptive on purpose.
 ENDPOINT="${OPENRUNG_AZURE_ENDPOINT:-cdn-edge}"
 ORIGIN_HOST="${OPENRUNG_BROKER_ORIGIN:-broker-origin.openrung.org}"
+
+AUTH_FILE="${OPENRUNG_AZURE_ORIGIN_AUTH_FILE:-}"
 
 ORIGIN_GROUP="broker-origin"
 ORIGIN_NAME="typhoon-broker"
 ROUTE="broker-api"
+RULE_SET="originauth"
+RULE="setoriginauth"
+AUTH_HEADER="X-OpenRung-Azure-Auth"
+ARM_API_VERSION="2024-02-01"
 
 log() { printf '\n==> %s\n' "$*"; }
 
@@ -100,6 +111,34 @@ assert_empty_list() { # resource, setting, actual
   esac
 }
 
+# Rule set references come back as JSON ids; the route may reference nothing
+# (only before the first attachment) or exactly the origin-auth rule set.
+assert_route_rule_sets() { # actual, allow-empty|required
+  local actual="$1" mode="$2" count name
+  case "$actual" in
+    ''|null|None|'[]')
+      [ "$mode" = allow-empty ] && return 0
+      die "route ${ROUTE} has no rule sets; want ${RULE_SET}"
+      ;;
+  esac
+  count="$(printf '%s' "$actual" | grep -oiE '/rulesets/[^"/]+' | wc -l | tr -d ' ')"
+  name="$(printf '%s' "$actual" | grep -oiE '/rulesets/[^"/]+' | sed 's|.*/||' | tr '[:upper:]' '[:lower:]')"
+  if [ "$count" != 1 ] || [ "$name" != "$(printf '%s' "$RULE_SET" | tr '[:upper:]' '[:lower:]')" ]; then
+    die "route ${ROUTE} has ruleSets=${actual}; it may reference only ${RULE_SET}. Remove other rule sets deliberately, then rerun"
+  fi
+}
+
+# The secret is read once and never printed or passed as an argument.
+read_auth_secret() {
+  [ -n "$AUTH_FILE" ] \
+    || die "OPENRUNG_AZURE_ORIGIN_AUTH_FILE is not set; it must name a file holding the origin-auth secret"
+  [ -f "$AUTH_FILE" ] && [ -r "$AUTH_FILE" ] \
+    || die "cannot read OPENRUNG_AZURE_ORIGIN_AUTH_FILE=${AUTH_FILE}"
+  AUTH_SECRET="$(tr -d '\r\n' < "$AUTH_FILE")"
+  [[ "$AUTH_SECRET" =~ ^[A-Za-z0-9._~-]{32,}$ ]] \
+    || die "the origin-auth secret in ${AUTH_FILE} must be at least 32 characters of [A-Za-z0-9._~-]"
+}
+
 require_cli() {
   if ! command -v az >/dev/null 2>&1; then
     echo "az CLI not found; install it and run 'az login'" >&2
@@ -125,6 +164,7 @@ check_origin() {
 
 main() {
   require_cli
+  read_auth_secret
   check_origin
 
   log "Registering Microsoft.Cdn"
@@ -252,6 +292,59 @@ main() {
   assert_setting "origin group ${ORIGIN_GROUP}" origins "$ORIGIN_NAME" "$origin_names"
   echo "origin configuration verified"
 
+  # The route's only rule set overwrites the origin-auth request header, which
+  # the origin's Caddy requires before trusting X-Azure-ClientIP. Rules are
+  # written and read through ARM directly: the rule and route rule-set flags
+  # differ between the core Azure CLI and the cdn extension.
+  log "Rule set ${RULE_SET} (origin-auth header)"
+  if az afd rule-set show -g "$RG" --profile-name "$PROFILE" \
+      --rule-set-name "$RULE_SET" -o none 2>/dev/null; then
+    echo "rule set already exists"
+  else
+    az afd rule-set create -g "$RG" --profile-name "$PROFILE" \
+      --rule-set-name "$RULE_SET" -o none
+  fi
+  rule_set_names="$(azure_tsv afd rule-set list -g "$RG" --profile-name "$PROFILE" \
+    --query "join(',', sort([*].name))")"
+  assert_setting "profile ${PROFILE}" ruleSets "$RULE_SET" "$rule_set_names"
+
+  profile_id="$(azure_tsv afd profile show -g "$RG" --profile-name "$PROFILE" --query id)"
+  rule_set_id="${profile_id}/ruleSets/${RULE_SET}"
+  rules_url="${rule_set_id}/rules?api-version=${ARM_API_VERSION}"
+  rule_url="${rule_set_id}/rules/${RULE}?api-version=${ARM_API_VERSION}"
+
+  # The body carries the secret, so it goes through a private temporary file
+  # (az reads @file) rather than argv. Always PUT: that also applies a rotated
+  # secret.
+  rule_body="$(umask 077 && mktemp)"
+  trap 'rm -f "$rule_body"' EXIT
+  printf '{"properties":{"order":1,"conditions":[],"matchProcessingBehavior":"Continue","actions":[{"name":"ModifyRequestHeader","parameters":{"typeName":"DeliveryRuleHeaderActionParameters","headerAction":"Overwrite","headerName":"%s","value":"%s"}}]}}' \
+    "$AUTH_HEADER" "$AUTH_SECRET" > "$rule_body"
+  az rest --method put --url "$rule_url" --body "@${rule_body}" -o none \
+    || die "could not write rule ${RULE}"
+  rm -f "$rule_body"
+  trap - EXIT
+
+  rule_names="$(azure_tsv rest --method get --url "$rules_url" \
+    --query "join(',', sort(value[].name))")"
+  assert_setting "rule set ${RULE_SET}" rules "$RULE" "$rule_names"
+  rule_state="$(azure_tsv rest --method get --url "$rule_url" \
+    --query "join('|', [to_string(length(properties.conditions)), to_string(length(properties.actions)), properties.actions[0].name, properties.actions[0].parameters.headerAction, properties.actions[0].parameters.headerName, properties.matchProcessingBehavior])")"
+  IFS='|' read -r rule_conditions rule_actions rule_action rule_header_action \
+    rule_header_name rule_processing <<< "$rule_state"
+  assert_setting "rule ${RULE}" conditions 0 "$rule_conditions"
+  assert_setting "rule ${RULE}" actions 1 "$rule_actions"
+  assert_setting "rule ${RULE}" action ModifyRequestHeader "$rule_action"
+  assert_setting "rule ${RULE}" headerAction Overwrite "$rule_header_action"
+  assert_setting "rule ${RULE}" headerName "$AUTH_HEADER" "$rule_header_name"
+  assert_setting "rule ${RULE}" matchProcessingBehavior Continue "$rule_processing"
+  rule_value="$(azure_tsv rest --method get --url "$rule_url" \
+    --query "properties.actions[0].parameters.value")"
+  [ "$rule_value" = "$AUTH_SECRET" ] \
+    || die "rule ${RULE} does not carry the secret from ${AUTH_FILE}"
+  unset rule_value
+  echo "rule set configuration verified"
+
   # Caching is disabled by OMITTING --cache-configuration: a route with no cache
   # configuration does not cache. There is no --enable-caching flag to set false,
   # so the absence below is deliberate — do not "tidy" a cache configuration in.
@@ -266,7 +359,7 @@ main() {
       <<< "$route_attachments"
     assert_nullish "route ${ROUTE}" cacheConfiguration "$route_cache"
     assert_empty_list "route ${ROUTE}" customDomains "$route_custom_domains"
-    assert_empty_list "route ${ROUTE}" ruleSets "$route_rule_sets"
+    assert_route_rule_sets "$route_rule_sets" allow-empty
     assert_nullish "route ${ROUTE}" originPath "$route_origin_path"
 
     echo "route attachments are safe; reconciling routing settings"
@@ -285,9 +378,24 @@ main() {
       --link-to-default-domain Enabled -o none
   fi
 
+  az rest --method patch \
+    --url "${profile_id}/afdEndpoints/${ENDPOINT}/routes/${ROUTE}?api-version=${ARM_API_VERSION}" \
+    --body "{\"properties\":{\"ruleSets\":[{\"id\":\"${rule_set_id}\"}]}}" -o none \
+    || die "could not attach rule set ${RULE_SET} to route ${ROUTE}"
+  # Route updates apply asynchronously; give the attachment time to read back.
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    route_rule_sets="$(azure_tsv afd route show -g "$RG" --profile-name "$PROFILE" \
+      --endpoint-name "$ENDPOINT" --route-name "$ROUTE" --query "to_string(ruleSets)")"
+    case "$(printf '%s' "$route_rule_sets" | tr '[:upper:]' '[:lower:]')" in
+      *"/rulesets/${RULE_SET}"*) break ;;
+    esac
+    sleep "${OPENRUNG_AZURE_POLL_SECONDS:-6}"
+  done
+
   # Read the whole effective route back. A cached relay list still passes
   # signature verification, and a rule set can silently add caching or rewrite
-  # requests, so absence is as important here as the positive settings.
+  # requests, so absence is as important here as the positive settings; the
+  # only rule set allowed is the origin-auth one verified above.
   route_state="$(azure_tsv afd route show -g "$RG" --profile-name "$PROFILE" \
     --endpoint-name "$ENDPOINT" --route-name "$ROUTE" \
     --query "join('|', [to_string(enabledState), to_string(originGroup.id), join(',', sort(supportedProtocols)), join(',', sort(patternsToMatch)), to_string(forwardingProtocol), to_string(httpsRedirect), to_string(linkToDefaultDomain), to_string(cacheConfiguration), to_string(customDomains), to_string(ruleSets), to_string(originPath)])")"
@@ -303,7 +411,7 @@ main() {
   assert_setting "route ${ROUTE}" linkToDefaultDomain Enabled "$route_default_domain"
   assert_nullish "route ${ROUTE}" cacheConfiguration "$route_cache"
   assert_empty_list "route ${ROUTE}" customDomains "$route_custom_domains"
-  assert_empty_list "route ${ROUTE}" ruleSets "$route_rule_sets"
+  assert_route_rule_sets "$route_rule_sets" required
   assert_nullish "route ${ROUTE}" originPath "$route_origin_path"
   route_names="$(azure_tsv afd route list -g "$RG" --profile-name "$PROFILE" \
     --endpoint-name "$ENDPOINT" --query "join(',', sort([*].name))")"
@@ -311,7 +419,7 @@ main() {
   custom_domain_names="$(azure_tsv afd custom-domain list -g "$RG" \
     --profile-name "$PROFILE" --query "join(',', sort([*].name))")"
   assert_setting "profile ${PROFILE}" customDomains '<none>' "${custom_domain_names:-<none>}"
-  echo "route configuration verified; caching and custom domains confirmed off"
+  echo "route configuration verified; caching and custom domains confirmed off, origin-auth rule set attached"
 
   log "Provisioned"
   cat <<EOF
