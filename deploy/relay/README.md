@@ -434,17 +434,25 @@ not need to match.
   `foundation-up.sh` `convert` and `update` do all of this after every verified
   roll, from the image now serving, and the Lightsail, Linode and Hetzner
   helpers do it at first boot. To load or change it by hand on a host (the host
-  needs its `nftables` package; on other distributions, its equivalent):
+  needs its `nftables` package; on other distributions, its equivalent), stage
+  each file and check it before it replaces the installed one, so a failed
+  `docker run` can never leave an empty script or unit behind. Use `apply off`
+  to remove the limit:
 
   ```sh
   command -v nft >/dev/null || { sudo apt-get update && sudo apt-get install -y nftables; }
+  tmp="$(mktemp)"
   sudo docker run --rm --network none --cap-drop ALL --entrypoint cat \
-    ghcr.io/openrung/openrung-relay:X.Y.Z /usr/local/bin/egress-limit \
-    | sudo tee /usr/local/sbin/openrung-egress-limit >/dev/null
-  sudo chmod 0755 /usr/local/sbin/openrung-egress-limit
-  sudo openrung-egress-limit apply 10   # or: off
-  sudo openrung-egress-limit unit | sudo tee /etc/systemd/system/openrung-egress-limit.service >/dev/null
-  sudo systemctl daemon-reload && sudo systemctl enable openrung-egress-limit.service
+      ghcr.io/openrung/openrung-relay:X.Y.Z /usr/local/bin/egress-limit > "$tmp" \
+    && head -n 1 "$tmp" | grep -qx '#!/bin/sh' \
+    && sudo install -m 0755 "$tmp" /usr/local/sbin/openrung-egress-limit \
+    && sudo /usr/local/sbin/openrung-egress-limit apply 10 \
+    && sudo /usr/local/sbin/openrung-egress-limit unit > "$tmp" \
+    && sudo install -m 0644 "$tmp" /etc/systemd/system/openrung-egress-limit.service \
+    && sudo systemctl daemon-reload \
+    && sudo systemctl enable openrung-egress-limit.service \
+    || echo "egress-limit: a step failed; nothing after it was installed" >&2
+  rm -f "$tmp"
   ```
 
   `foundation-up.sh audit HOST...` reports, per host, the relay version,
