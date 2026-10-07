@@ -88,6 +88,7 @@ install_matrix_mocks() {
   convert_host() { printf 'convert\n' >> "$MUTATION_LOG"; }
   prepare_image() { printf 'pull\n' >> "$MUTATION_LOG"; }
   roll_host() { printf 'roll\n' >> "$MUTATION_LOG"; }
+  apply_egress_limit() { printf 'egress\n' >> "$MUTATION_LOG"; }
   rollback_host() { printf 'rollback\n' >> "$MUTATION_LOG"; }
 }
 
@@ -176,6 +177,7 @@ test_update_unsets_unused_token_sources() {
   }
   prepare_image() { :; }
   roll_host() { :; }
+  apply_egress_limit() { :; }
   if (set -e; OPENRUNG_FOUNDATION_TOKEN=unused-secret; export OPENRUNG_FOUNDATION_TOKEN; cmd_update 203.0.113.10) >"$OUTPUT" 2>&1; then
     pass
   else
@@ -237,9 +239,144 @@ test_convert_prepares_image_before_env_write() {
   ssh_run() { printf 'public_host=203.0.113.10\nlabel=test\n'; }
   install_env_file() { printf 'install\n' >> "$MUTATION_LOG"; }
   roll_host() { printf 'roll\n' >> "$MUTATION_LOG"; }
+  apply_egress_limit() { printf 'egress\n' >> "$MUTATION_LOG"; }
   : > "$MUTATION_LOG"
   (set -e; convert_host 203.0.113.10) >"$OUTPUT" 2>&1
-  assert_eq $'pull\nstage\ninstall\nroll' "$(<"$MUTATION_LOG")" "convert mutation order"
+  assert_eq $'pull\nstage\ninstall\nroll\negress' "$(<"$MUTATION_LOG")" "convert mutation order"
+}
+
+# The host new-destination limit is loaded only after a verified roll, from
+# the image that roll put in service, and never when the roll fails.
+test_egress_limit_follows_verified_roll() {
+  reset_script_functions
+  pin_host_key() { :; }
+  inspect_host_state() { printf '1 1 0 0 0 0 0 1 0 0 0'; }
+  preflight_host() { :; }
+  prepare_image() { printf 'pull\n' >> "$MUTATION_LOG"; }
+  roll_host() { printf 'roll\n' >> "$MUTATION_LOG"; }
+  apply_egress_limit() { printf 'egress\n' >> "$MUTATION_LOG"; }
+  : > "$MUTATION_LOG"
+  (set -e; cmd_update 203.0.113.10 203.0.113.11) >"$OUTPUT" 2>&1
+  assert_eq $'pull\nroll\negress\npull\nroll\negress' "$(<"$MUTATION_LOG")" "update loads the limit after each verified roll"
+
+  roll_host() { printf 'roll\n' >> "$MUTATION_LOG"; return 1; }
+  : > "$MUTATION_LOG"
+  if (set -e; cmd_update 203.0.113.10) >"$OUTPUT" 2>&1; then fail "update succeeded after a failed roll"; else pass; fi
+  assert_eq $'pull\nroll' "$(<"$MUTATION_LOG")" "a failed roll never loads the limit"
+}
+
+test_new_dest_rate_validation() {
+  reset_script_functions
+  local rate
+  for rate in 10 1 250 off; do
+    if (NEW_DEST_RATE="$rate"; validate_config) >/dev/null 2>&1; then pass; else fail "rate ${rate} rejected"; fi
+  done
+  for rate in 0 010 -5 abc '10;reboot' ''; do
+    if (NEW_DEST_RATE="$rate"; validate_config) >/dev/null 2>&1; then fail "rate '${rate}' accepted"; else pass; fi
+  done
+  if (NEW_DEST_RATE=off; cmd_audit 203.0.113.10) >/dev/null 2>&1; then fail "audit accepted rate off"; else pass; fi
+}
+
+# Run the exact remote command apply_egress_limit sends, against stubs, so the
+# quoting and the container flags are what reach the host.
+test_apply_egress_limit_remote_command() {
+  reset_script_functions
+  local stub="${TEST_TMP}/egress-stub" calls="${TEST_TMP}/egress-calls" out
+  mkdir -p "$stub"
+  : > "$calls"
+  cat > "${stub}/sudo" <<'EOF'
+#!/bin/sh
+exec "$@"
+EOF
+  cat > "${stub}/docker" <<EOF
+#!/bin/sh
+echo "docker \$*" >> "$calls"
+case "\$*" in *" unit") printf '[Unit]\nDescription=test unit\n' ;; esac
+EOF
+  for cmd in systemctl apt-get install tee; do
+    cat > "${stub}/${cmd}" <<EOF
+#!/bin/sh
+echo "${cmd} \$*" >> "$calls"
+[ "${cmd}" = tee ] && cat >> "$calls" || true
+EOF
+  done
+  chmod +x "$stub"/*
+  ssh_run() { PATH="${stub}:${PATH}" bash -c "$2"; }
+  IMAGE="ghcr.io/openrung/openrung-relay:0.2.2"
+  NEW_DEST_RATE=10
+  if (set -e; apply_egress_limit 203.0.113.10) >"$OUTPUT" 2>&1; then pass; else fail "apply_egress_limit failed: $(<"$OUTPUT")"; fi
+  out="$(<"$calls")"
+  assert_contains "$out" "docker run --rm --network host --user 0:0 --cap-drop ALL --cap-add NET_ADMIN --read-only -v /etc/openrung:/etc/openrung --entrypoint /usr/local/bin/egress-limit ghcr.io/openrung/openrung-relay:0.2.2 apply 10" "one-shot container is the only one with NET_ADMIN"
+  assert_contains "$out" "docker run --rm --network none --cap-drop ALL --entrypoint /usr/local/bin/egress-limit ghcr.io/openrung/openrung-relay:0.2.2 unit" "boot unit is rendered with no capabilities"
+  assert_contains "$out" "tee /etc/systemd/system/openrung-egress-limit.service" "boot unit is installed"
+  assert_contains "$out" "Description=test unit" "the image's unit text reaches the file"
+  assert_contains "$out" "systemctl enable openrung-egress-limit.service" "boot unit is enabled"
+  case "$out" in *restart*|*"enable --now"*) fail "the unit must never be restarted: ${out}" ;; *) pass ;; esac
+  assert_before "$out" "apply 10" "unit" "rules load before the unit is written"
+
+  : > "$calls"
+  cat > "${stub}/docker" <<EOF
+#!/bin/sh
+echo "docker \$*" >> "$calls"
+case "\$*" in *" unit") exit 1 ;; esac
+EOF
+  if (set -e; apply_egress_limit 203.0.113.10) >"$OUTPUT" 2>&1; then fail "apply succeeded when the image could not print its unit"; else pass; fi
+  case "$(<"$calls")" in *"tee "*) fail "an empty unit was written after a failed render" ;; *) pass ;; esac
+
+  : > "$calls"
+  NEW_DEST_RATE=off
+  cat > "${stub}/docker" <<EOF
+#!/bin/sh
+echo "docker \$*" >> "$calls"
+case "\$*" in *" unit") printf '[Unit]\n' ;; esac
+EOF
+  (set -e; apply_egress_limit 203.0.113.10) >"$OUTPUT" 2>&1
+  assert_contains "$(<"$calls")" "egress-limit ghcr.io/openrung/openrung-relay:0.2.2 apply off" "rate off removes the limit through the same path"
+}
+
+test_audit_remote_command() {
+  reset_script_functions
+  local stub="${TEST_TMP}/audit-stub" out
+  mkdir -p "$stub"
+  cat > "${stub}/sudo" <<'EOF'
+#!/bin/sh
+exec "$@"
+EOF
+  cat > "${stub}/docker" <<'EOF'
+#!/bin/sh
+case "$1" in
+  inspect) echo sha256:abc ;;
+  logs) echo "2026/10/07 INFO starting relay version=0.2.2 revision=x" ;;
+  run) echo "table inet openrung_egress" ;;
+esac
+EOF
+  cat > "${stub}/nft" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+  cat > "${stub}/systemctl" <<'EOF'
+#!/bin/sh
+echo enabled
+EOF
+  chmod +x "$stub"/*
+  pin_host_key() { :; }
+  ssh_run() { PATH="${stub}:${PATH}" bash -c "$2"; }
+  NEW_DEST_RATE=10
+  out="$(cmd_audit 203.0.113.10 2>&1)"
+  assert_contains "$out" "203.0.113.10 relay=0.2.2 " "audit reports the relay version"
+  assert_contains "$out" "host_nft=yes loaded=yes" "audit reports the host nftables and the loaded table"
+  assert_contains "$out" "unit=enabled" "audit reports the boot unit"
+  case "$out" in *"rules=current"*|*"rules=missing"*|*"rules=stale"*) pass ;; *) fail "audit reported no rules state: ${out}" ;; esac
+
+  # Without the host's nftables the boot unit cannot restore the rules; audit
+  # must say so rather than report the table as unloaded.
+  rm "${stub}/nft"
+  out="$(PATH="/usr/bin:/bin" cmd_audit 203.0.113.10 2>&1)"
+  if command -v nft >/dev/null 2>&1; then
+    pass  # this machine has a real nft on PATH; the missing case cannot be staged here
+  else
+    assert_contains "$out" "host_nft=missing loaded=unknown" "audit flags a host without nftables"
+  fi
 }
 
 # Execute the script's real multiline remote commands against a tiny file-backed
@@ -572,6 +709,10 @@ test_update_unsets_unused_token_sources
 test_convert_unexports_token_before_preflight
 test_roll_order_and_failure_boundaries
 test_convert_prepares_image_before_env_write
+test_egress_limit_follows_verified_roll
+test_new_dest_rate_validation
+test_apply_egress_limit_remote_command
+test_audit_remote_command
 test_real_transaction_and_rollback_commands
 test_commit_rechecks_before_deleting_old
 test_fail_closed_function_boundaries

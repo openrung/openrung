@@ -2,9 +2,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Cap how fast a relay host opens connections to destinations it has not
-# contacted recently. Run as root on the relay host:
+# contacted recently. Ships in the relay image as /usr/local/bin/egress-limit:
 #
-#   egress-limit.sh [RATE|off]
+#   egress-limit apply [RATE]   load the ruleset and save it for boot
+#   egress-limit off            remove the ruleset and the saved copy
+#   egress-limit render [RATE]  print the ruleset
+#   egress-limit unit           print the host boot unit
 #
 # RATE is new destinations per second (default 10, or OPENRUNG_NEW_DEST_RATE);
 # the burst allowance is 30 seconds' worth. An address contacted within the
@@ -20,47 +23,37 @@
 # own, 1 per second with a burst of 120, per address family: ordinary traffic
 # reaches few new addresses there, so the cap stays out of its way.
 #
-# Applies the ruleset now, then installs it as /etc/openrung/egress-limit.nft
-# with a boot unit that restores it. Re-running replaces the ruleset
-# atomically (a failed load keeps the previous one); 'off' removes it.
-# The bring-up helpers embed this script in cloud-init user-data, and an
-# existing relay can be updated with:
-#
-#   ssh root@HOST 'sh -s 10' < deploy/relay/egress-limit.sh
+# apply and off change the host's firewall, so they run as a one-shot
+# container that alone holds NET_ADMIN, on the host network with the host's
+# /etc/openrung mounted; the long-running relay container keeps no
+# capabilities. The host keeps only the boot unit printed by `unit`, which
+# reloads the saved ruleset with the host's own nft, so the host needs the
+# nftables package for the limit to survive a reboot. deploy/relay/README.md
+# shows the invocation; foundation-up.sh and the bring-up helpers run it.
 set -eu
 
-RATE="${1:-${OPENRUNG_NEW_DEST_RATE:-10}}"
 RULES=/etc/openrung/egress-limit.nft
-UNIT=/etc/systemd/system/openrung-egress-limit.service
 
-if [ "$RATE" = off ] || [ "$RATE" = none ]; then
-  systemctl disable --now openrung-egress-limit.service 2>/dev/null || true
-  nft delete table inet openrung_egress 2>/dev/null || true
-  rm -f "$RULES" "$UNIT"
-  systemctl daemon-reload
-  echo "openrung-egress-limit: removed"
-  exit 0
-fi
-case "$RATE" in
-  '' | *[!0-9]* | 0*) echo "openrung-egress-limit: rate must be a positive integer or 'off', got '$RATE'" >&2; exit 2 ;;
-esac
-BURST=$((RATE * 30))
+usage() {
+  echo "usage: egress-limit apply [RATE] | off | render [RATE] | unit" >&2
+  exit 2
+}
 
-if ! command -v nft >/dev/null 2>&1; then
-  # </dev/null: when this script arrives on stdin (sh -s), apt must not
-  # consume the rest of it.
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get -o DPkg::Lock::Timeout=300 update </dev/null
-  apt-get -o DPkg::Lock::Timeout=300 install -y nftables </dev/null
-fi
+valid_rate() { # rate
+  case "$1" in
+    '' | *[!0-9]* | 0*)
+      echo "egress-limit: rate must be a positive integer or 'off', got '$1'" >&2
+      exit 2
+      ;;
+  esac
+}
 
-mkdir -p /etc/openrung
-NEXT="$RULES.new"
-trap 'rm -f "$NEXT"' EXIT
-# The leading "table" + "delete table" pair makes the load an atomic replace
-# whether or not the table already exists. The replace also empties the
-# destination history; live connections repopulate it on their next packet.
-cat > "$NEXT" <<RULESET
+render() { # rate
+  burst=$(($1 * 30))
+  # The leading "table" + "delete table" pair makes the load an atomic replace
+  # whether or not the table already exists. The replace also empties the
+  # destination history; live connections repopulate it on their next packet.
+  cat <<RULESET
 table inet openrung_egress
 delete table inet openrung_egress
 table inet openrung_egress {
@@ -111,26 +104,24 @@ table inet openrung_egress {
     ip6 daddr @known_v6 update @known_v6 { ip6 daddr } accept
     ip daddr @cloudflare_v4 limit rate over 1/second burst 120 packets counter drop
     ip6 daddr @cloudflare_v6 limit rate over 1/second burst 120 packets counter drop
-    limit rate over ${RATE}/second burst ${BURST} packets counter drop
+    limit rate over $1/second burst $burst packets counter drop
     meta nfproto ipv4 add @known_v4 { ip daddr }
     meta nfproto ipv6 add @known_v6 { ip6 daddr }
   }
 }
 RULESET
+}
 
-# Load before installing: nft -f applies the file as one transaction, so a
-# failed load leaves the running ruleset and the installed file untouched.
-nft -f "$NEXT"
-mv "$NEXT" "$RULES"
-
-# The unit only restores the ruleset at boot. Never restart it: restart runs
-# ExecStop, which removes the limit before ExecStart reloads it.
-# ExecReload is the in-place, atomic path for operators.
-cat > "$UNIT" <<UNITFILE
+# The boot unit only restores the saved ruleset. Never restart it: restart runs
+# ExecStop, which removes the limit before ExecStart reloads it. ExecReload is
+# the in-place, atomic path for operators.
+unit() {
+  cat <<UNIT
 [Unit]
 Description=OpenRung relay new-destination rate limit (nftables)
 After=network-online.target
 Wants=network-online.target
+ConditionPathExists=$RULES
 
 [Service]
 Type=oneshot
@@ -141,10 +132,47 @@ ExecStop=/usr/sbin/nft delete table inet openrung_egress
 
 [Install]
 WantedBy=multi-user.target
-UNITFILE
+UNIT
+}
 
-systemctl daemon-reload
-# A no-op when the unit is already active; on first install it runs
-# ExecStart, which reloads the file just loaded.
-systemctl enable --now openrung-egress-limit.service
-echo "openrung-egress-limit: ${RATE}/s new destinations, burst ${BURST}"
+remove() {
+  nft delete table inet openrung_egress 2>/dev/null || true
+  rm -f "$RULES"
+  echo "egress-limit: removed"
+}
+
+command="${1:-}"
+[ "$#" -gt 0 ] && shift
+case "$command" in
+  apply)
+    rate="${1:-${OPENRUNG_NEW_DEST_RATE:-10}}"
+    if [ "$rate" = off ]; then
+      remove
+      exit 0
+    fi
+    valid_rate "$rate"
+    mkdir -p "${RULES%/*}"
+    next="$RULES.new"
+    trap 'rm -f "$next"' EXIT
+    render "$rate" > "$next"
+    # Load before saving: nft -f applies the file as one transaction, so a
+    # failed load leaves the running ruleset and the saved copy untouched.
+    nft -f "$next"
+    mv "$next" "$RULES"
+    echo "egress-limit: ${rate}/s new destinations, burst $((rate * 30))"
+    ;;
+  off)
+    remove
+    ;;
+  render)
+    rate="${1:-${OPENRUNG_NEW_DEST_RATE:-10}}"
+    valid_rate "$rate"
+    render "$rate"
+    ;;
+  unit)
+    unit
+    ;;
+  *)
+    usage
+    ;;
+esac
