@@ -46,10 +46,9 @@ FIREWALL_NAME="${OPENRUNG_FIREWALL_NAME:-openrung-volunteer}"
 # the queue forms on the box, where CAKE manages it, not upstream.
 SHAPE_RATE="${OPENRUNG_SHAPE_RATE:-1000mbit}"
 # New-destination rate limit ('off' disables): how many previously unseen
-# destination addresses per second the host may open connections to. See
-# deploy/relay/egress-limit.sh, which is embedded in the user-data below.
+# destination addresses per second the host may open connections to. The
+# relay image carries the limit itself (deploy/relay/egress-limit.sh).
 NEW_DEST_RATE="${OPENRUNG_NEW_DEST_RATE:-10}"
-EGRESS_LIMIT_SCRIPT="$(cat "$(dirname -- "${BASH_SOURCE[0]}")/egress-limit.sh")"
 
 if [ "${OPENRUNG_VOLUNTEER_TOKEN+x}" = x ] || [ "${OPENRUNG_FOUNDATION_TOKEN+x}" = x ]; then
   echo "error: this helper provisions anonymous volunteer-class relays only; OPENRUNG_VOLUNTEER_TOKEN / OPENRUNG_FOUNDATION_TOKEN must be unset because Hetzner retains cloud-init user-data. A Foundation relay also needs a TLS broker, which this plaintext-origin helper does not use — install its credential post-boot over an authenticated channel instead." >&2
@@ -154,18 +153,23 @@ WantedBy=multi-user.target
 SHAPEUNIT
 systemctl daemon-reload
 systemctl enable --now openrung-shape.service || echo "warning: egress shaping unit failed; relay continues unshaped" >&2
-# Bound how fast the relay opens connections to destinations it has not
-# contacted recently (deploy/relay/egress-limit.sh, embedded verbatim). Kept
-# as a local command so the rate can be changed later by re-running it.
-# Best-effort like shaping: a failure must never block relay bring-up.
-cat > /usr/local/sbin/openrung-egress-limit <<'EGRESSLIMIT'
-${EGRESS_LIMIT_SCRIPT}
-EGRESSLIMIT
-chmod 0755 /usr/local/sbin/openrung-egress-limit
-/usr/local/sbin/openrung-egress-limit ${NEW_DEST_RATE} || echo "warning: new-destination limit failed; relay continues unlimited" >&2
 # Public IPv4 from the Hetzner metadata service; clients reach the relay here.
 PUBLIC_IP="\$(curl -fsS http://169.254.169.254/hetzner/v1/metadata/public-ipv4)"
 docker pull ${IMAGE}
+# Bound how fast the relay opens connections to destinations it has not
+# contacted recently. The rules ship in the relay image (egress-limit); a
+# one-shot container, the only one granted NET_ADMIN, loads them and saves a
+# copy under /etc/openrung, and the boot unit the image prints reloads that
+# copy with the host's nft. Best-effort like shaping: a failure must never
+# block relay bring-up.
+{ { test -d /etc/openrung || install -d -m 0700 /etc/openrung; } \\
+  && docker run --rm --network host --user 0:0 --cap-drop ALL --cap-add NET_ADMIN --read-only \\
+       -v /etc/openrung:/etc/openrung --entrypoint /usr/local/bin/egress-limit ${IMAGE} apply ${NEW_DEST_RATE} \\
+  && docker run --rm --network none --cap-drop ALL --entrypoint /usr/local/bin/egress-limit ${IMAGE} unit \\
+       > /etc/systemd/system/openrung-egress-limit.service.tmp \\
+  && mv /etc/systemd/system/openrung-egress-limit.service.tmp /etc/systemd/system/openrung-egress-limit.service \\
+  && systemctl daemon-reload && systemctl enable openrung-egress-limit.service; } \\
+  || echo "warning: new-destination limit failed; relay continues unlimited" >&2
 docker rm -f openrung-relay 2>/dev/null || true
 # Minted once per instance: the broker derives the relay ID from this seed
 # (spec openrung-relay-identity-v1), so the relay keeps one identity across

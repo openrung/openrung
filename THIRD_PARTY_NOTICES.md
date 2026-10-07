@@ -132,7 +132,7 @@ recipients of the MPL-2.0 terms and where to obtain the source.
 
 ---
 
-## 3. Strong copyleft in the base image (GPL-2.0) — written source offer
+## 3. Strong copyleft in the base image (GPL) — written source offer
 
 The `alpine:3.21` base of the `openrung-relay` and `openrung-relayhub` images
 includes GPL-2.0-only userland. These are aggregated with — and do not
@@ -140,7 +140,11 @@ relicense — OpenRung's own binaries, but conveying the images still requires a
 source offer for the GPL components themselves.
 
 - **Components:** `busybox` (GPL-2.0-only), `apk-tools` (GPL-2.0-only),
-  `alpine-baselayout` (GPL-2.0-only).
+  `alpine-baselayout` (GPL-2.0-only). The `openrung-relay` image also carries
+  `nftables` (GPL-2.0-only) and its libraries `libnftnl` (GPL-2.0-or-later),
+  `libmnl` (LGPL-2.1-or-later), `gmp` (LGPL-3.0-or-later OR GPL-2.0-or-later),
+  `readline` (GPL-3.0-or-later) and `jansson` (MIT), installed for the
+  `egress-limit` host firewall tool; the relay process does not link them.
 - **Written offer (GPL-2.0 §3):** These are **unmodified** Alpine packages. The
   complete corresponding source is available from the Alpine `aports` tree for
   the pinned `alpine:3.21` release:

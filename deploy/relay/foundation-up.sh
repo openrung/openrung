@@ -6,6 +6,7 @@
 #   deploy/relay/foundation-up.sh convert <host>...    # install credentials on an existing host
 #   deploy/relay/foundation-up.sh update  <host>...    # pull the image and recreate, reusing credentials
 #   deploy/relay/foundation-up.sh rollback <host>...   # restore an exact interrupted roll
+#   deploy/relay/foundation-up.sh audit   <host>...    # read-only: relay version + egress limit state
 #
 # This wraps — and never replaces — lightsail-up.sh. That helper deliberately
 # refuses registration tokens because Lightsail retains user-data, so a Foundation
@@ -28,7 +29,9 @@
 #
 # Overridable via env: OPENRUNG_IMAGE, OPENRUNG_BROKER_URL, OPENRUNG_ENV_FILE,
 # OPENRUNG_SSH_KEY, OPENRUNG_SSH_USER, OPENRUNG_REGION (host-key pinning lookups),
-# OPENRUNG_ALLOW_TOFU=1 (explicitly accept an unverifiable first-contact host key).
+# OPENRUNG_ALLOW_TOFU=1 (explicitly accept an unverifiable first-contact host key),
+# OPENRUNG_NEW_DEST_RATE (the host new-destination limit `convert` and `update`
+# load from the relay image: new destinations per second, default 10, or off).
 # `create` also forwards OPENRUNG_BUNDLE and the rest of lightsail-up.sh's knobs.
 set -euo pipefail
 
@@ -54,6 +57,7 @@ ENV_FILE="${OPENRUNG_ENV_FILE:-/etc/openrung/relay.env}"
 SSH_KEY="${OPENRUNG_SSH_KEY:-$HOME/.ssh/id_ed25519_openrung}"
 SSH_USER="${OPENRUNG_SSH_USER:-ubuntu}"
 REGION="${OPENRUNG_REGION:-ap-northeast-1}"
+NEW_DEST_RATE="${OPENRUNG_NEW_DEST_RATE:-10}"
 
 CONTAINER="openrung-relay"
 OLD_CONTAINER="${CONTAINER}-old"
@@ -81,6 +85,7 @@ usage:
   deploy/relay/foundation-up.sh convert <host>...    # install credentials on an existing host
   deploy/relay/foundation-up.sh update  <host>...    # pull the image and recreate, reusing credentials
   deploy/relay/foundation-up.sh rollback <host>...   # restore an exact interrupted roll
+  deploy/relay/foundation-up.sh audit   <host>...    # read-only: relay version + egress limit state
 
 The Foundation token is read from OPENRUNG_FOUNDATION_TOKEN_CMD (preferred) or
 OPENRUNG_FOUNDATION_TOKEN — never from argv. `update` and `rollback` need no token.
@@ -137,6 +142,7 @@ require_https_broker() {
 validate_config() {
   assert_matches "$ENV_FILE" '^/[A-Za-z0-9/._-]+$' "OPENRUNG_ENV_FILE"
   assert_matches "$IMAGE" '^[A-Za-z0-9][A-Za-z0-9:/@._-]*$' "OPENRUNG_IMAGE"
+  assert_matches "$NEW_DEST_RATE" '^([1-9][0-9]*|off)$' "OPENRUNG_NEW_DEST_RATE"
   [ "$ENV_FILE" != "$LEGACY_ENV_FILE" ] \
     || die "OPENRUNG_ENV_FILE may not use the legacy path ${LEGACY_ENV_FILE}; migrate it to a canonical path first"
 }
@@ -665,6 +671,33 @@ rollback_host() {
 
 # --- commands ---------------------------------------------------------------
 
+# Load the relay image's host new-destination limit (deploy/relay/egress-limit.sh,
+# shipped as /usr/local/bin/egress-limit) and keep it across reboots. Only this
+# one-shot container holds NET_ADMIN; the long-running relay keeps no
+# capabilities. The boot unit is printed by the same image and reloads the
+# saved ruleset with the host's nft, which is installed here when missing. Runs
+# after a verified roll, so the rules always come from the image now serving.
+apply_egress_limit() { # host
+  local host="$1" action="apply ${NEW_DEST_RATE}"
+  ssh_run "$host" "set -e
+    command -v nft >/dev/null 2>&1 || {
+      sudo env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 update </dev/null >/dev/null
+      sudo env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y nftables </dev/null >/dev/null
+    }
+    sudo test -d /etc/openrung || sudo install -d -m 0700 /etc/openrung
+    sudo docker run --rm --network host --user 0:0 --cap-drop ALL --cap-add NET_ADMIN --read-only \\
+      -v /etc/openrung:/etc/openrung --entrypoint /usr/local/bin/egress-limit ${IMAGE} ${action} >/dev/null
+    unit=\$(sudo docker run --rm --network none --cap-drop ALL --entrypoint /usr/local/bin/egress-limit ${IMAGE} unit)
+    printf '%s\\n' \"\$unit\" | sudo tee /etc/systemd/system/openrung-egress-limit.service >/dev/null
+    sudo rm -f /usr/local/sbin/openrung-egress-limit
+    sudo systemctl daemon-reload
+    sudo systemctl enable openrung-egress-limit.service >/dev/null 2>&1" \
+    || { echo "error: ${host}: the relay is live, but the new-destination limit from ${IMAGE} could not be loaded; re-run update to retry" >&2
+         print_ssh_command "$host"
+         return 1; }
+  log "new-destination limit from the relay image: ${NEW_DEST_RATE}$([ "$NEW_DEST_RATE" = off ] || printf '/s')"
+}
+
 convert_host() {
   local host="$1" ident public_host label
   echo "==> convert ${host}"
@@ -689,6 +722,7 @@ convert_host() {
   install_env_file "$host" || return
   log "wrote ${ENV_FILE} (root:root 0600; existing settings preserved, broker URL + token updated)"
   roll_host "$host" "$ENV_FILE" || return
+  apply_egress_limit "$host" || return
 }
 
 cmd_convert() {
@@ -721,6 +755,7 @@ cmd_update() {
     prepare_image "$host" || return
     log "reusing ${ENV_FILE}; image ${IMAGE}"
     roll_host "$host" "$ENV_FILE" || return
+    apply_egress_limit "$host" || return
   done
 }
 
@@ -776,6 +811,42 @@ cmd_create() {
   convert_host "$ip" || return
 }
 
+# Read-only. Per host: the running relay's version, whether the saved host
+# ruleset is exactly what that relay's own image renders at OPENRUNG_NEW_DEST_RATE,
+# whether the table is loaded, and whether the boot unit is enabled. Everything
+# printed comes back from the host, so it is scrubbed before display.
+cmd_audit() {
+  [ "$#" -ge 1 ] || usage
+  validate_config || return
+  [ "$NEW_DEST_RATE" != off ] \
+    || die "audit compares each host against a rate; set OPENRUNG_NEW_DEST_RATE to the rate in use"
+  unset OPENRUNG_FOUNDATION_TOKEN OPENRUNG_FOUNDATION_TOKEN_CMD
+  local host out
+  for host in "$@"; do
+    assert_matches "$host" "$HOST_RE" "host"
+    pin_host_key "$host" || return
+    out="$(ssh_run "$host" "
+      image=\$(sudo docker inspect -f '{{.Image}}' ${CONTAINER} 2>/dev/null) || { echo relay=missing; exit 0; }
+      version=\$(sudo docker logs ${CONTAINER} 2>&1 | grep -m1 -o 'starting relay version=[^ ]*' | sed 's/.*=//')
+      echo \"relay=\${version:-unknown}\"
+      expected=\$(mktemp)
+      if ! sudo docker run --rm --network none --cap-drop ALL --entrypoint /usr/local/bin/egress-limit \"\$image\" render ${NEW_DEST_RATE} >\"\$expected\" 2>/dev/null; then
+        echo rules=image-without-egress-limit
+      elif ! sudo test -f /etc/openrung/egress-limit.nft; then
+        echo rules=missing
+      elif sudo cat /etc/openrung/egress-limit.nft | cmp -s - \"\$expected\"; then
+        echo rules=current
+      else
+        echo rules=stale
+      fi
+      rm -f \"\$expected\"
+      if sudo nft list table inet openrung_egress >/dev/null 2>&1; then echo loaded=yes; else echo loaded=no; fi
+      echo \"unit=\$(systemctl is-enabled openrung-egress-limit.service 2>/dev/null || echo missing)\"" 2>/dev/null)" \
+      || out="unreachable"
+    printf '%s %s\n' "$host" "$(printf '%s' "$out" | scrub_stream | tr '\n' ' ' | head -c 300)"
+  done
+}
+
 main() {
   [ "$#" -ge 1 ] || usage
   local subcommand="$1"; shift
@@ -784,6 +855,7 @@ main() {
     convert)  cmd_convert "$@" ;;
     update)   cmd_update "$@" ;;
     rollback) cmd_rollback "$@" ;;
+    audit)    cmd_audit "$@" ;;
     *)        usage ;;
   esac
 }

@@ -23,26 +23,21 @@ chain_has() { [[ "$(nft list chain inet openrung_egress output 2>/dev/null)" == 
 RULES=/etc/openrung/egress-limit.nft
 NFT="$(command -v nft)"
 
-mkdir -p /etc/openrung /etc/systemd/system /run/netns
+mkdir -p /etc/openrung /run/netns
 mount -t tmpfs none /etc/openrung
-mount -t tmpfs none /etc/systemd/system
 mount -t tmpfs none /run/netns
 STUB="$(mktemp -d)"
 mount -t tmpfs none "$STUB"
-# There is no systemd in the namespace. The stub records each call so the test
-# can hold the script to the verbs that never run ExecStop on a live unit.
-cat > "$STUB/systemctl" <<STUBEOF
+# The script runs inside the relay image, where there is no systemd and no
+# package manager: these stubs record any call so the test can refuse them.
+for tool in systemctl apt-get; do
+  cat > "$STUB/$tool" <<STUBEOF
 #!/bin/sh
-echo "\$*" >> "$STUB/systemctl.calls"
+echo "$tool \$*" >> "$STUB/host-tools.calls"
 STUBEOF
-chmod +x "$STUB/systemctl"
+  chmod +x "$STUB/$tool"
+done
 export PATH="$STUB:$PATH"
-calls() { cat "$STUB/systemctl.calls" 2>/dev/null; : > "$STUB/systemctl.calls"; }
-assert_no_stop_verbs() { # calls what
-  if grep -Eq '(^| )(restart|reload-or-restart|try-restart|stop|reload)( |$)' <<<"$1"; then
-    fail "$2 must not stop, restart or reload the unit; systemctl calls: $1"
-  fi
-}
 
 ip link set lo up
 ip link add d0 type dummy
@@ -78,12 +73,18 @@ PY
 }
 
 # --- install and basic budget -------------------------------------------------
-sh "$SCRIPT" 10 >/dev/null
-[ -f "$RULES" ] || fail "ruleset not written"
+sh "$SCRIPT" apply 10 >/dev/null
+[ -f "$RULES" ] || fail "ruleset not saved"
 [ ! -e "$RULES.new" ] || fail "staging file left behind"
-grep -q '^ExecReload=/usr/sbin/nft -f ' /etc/systemd/system/openrung-egress-limit.service || fail "unit lacks an atomic ExecReload"
-assert_no_stop_verbs "$(calls)" "install"
-chain_has 'limit rate over 10/second burst 300 packets' || fail "script did not load the ruleset"
+chain_has 'limit rate over 10/second burst 300 packets' || fail "apply did not load the ruleset"
+[ "$(sh "$SCRIPT" render 10)" = "$(cat "$RULES")" ] || fail "render must print exactly the saved ruleset"
+
+# The boot unit reloads the saved copy with the host's nft, skips cleanly when
+# the limit is off, and offers only an atomic reload, never a restart.
+unit_text="$(sh "$SCRIPT" unit)"
+[[ "$unit_text" == *"ConditionPathExists=$RULES"* ]] || fail "unit must skip when no ruleset is saved"
+[[ "$unit_text" == *"ExecStart=/usr/sbin/nft -f $RULES"* ]] || fail "unit must load the saved ruleset at boot"
+[[ "$unit_text" == *"ExecReload=/usr/sbin/nft -f $RULES"* ]] || fail "unit lacks an atomic ExecReload"
 
 sent="$(blast 4 198.18. 400)"
 [ "$sent" -ge 300 ] && [ "$sent" -le 305 ] || fail "400 new IPv4 destinations: sent $sent, want the 300 burst (+refill)"
@@ -98,11 +99,15 @@ sent="$(blast 6 2001:db8:1:: 15)"
 [ "$sent" -ge 15 ] || fail "budget must refill at the rate: sent $sent of 15 after 2s"
 
 for bad in 0 abc 010 -5; do
-  if sh "$SCRIPT" "$bad" >/dev/null 2>&1; then fail "rate '$bad' must be rejected"; fi
+  if sh "$SCRIPT" apply "$bad" >/dev/null 2>&1; then fail "rate '$bad' must be rejected"; fi
+  if sh "$SCRIPT" render "$bad" >/dev/null 2>&1; then fail "render rate '$bad' must be rejected"; fi
+done
+for bad in "" 10 bogus; do
+  if sh "$SCRIPT" $bad >/dev/null 2>&1; then fail "command '$bad' must be rejected"; fi
 done
 
 # --- re-run replaces atomically; a failed load keeps the previous policy ------
-sh "$SCRIPT" 20 >/dev/null
+sh "$SCRIPT" apply 20 >/dev/null
 chain_has 'over 20/second burst 600' || fail "re-run did not replace the ruleset"
 
 # The re-run starts every bucket full. Cloudflare's ranges get their own
@@ -117,7 +122,6 @@ sent="$(blast 6 2606:4700:: 150)"
 [ "$sent" -ge 120 ] && [ "$sent" -le 123 ] || fail "150 new Cloudflare IPv6 destinations: sent $sent, want their own 120 burst"
 sent="$(blast 4 198.18. 200)"
 [ "$sent" = 200 ] || fail "other destinations must keep the general budget after Cloudflare's is spent: sent $sent of 200"
-assert_no_stop_verbs "$(calls)" "a re-run"
 # An nft that refuses the staged file stands in for any load failure.
 cat > "$STUB/nft" <<WRAPEOF
 #!/bin/sh
@@ -125,12 +129,11 @@ for a in "\$@"; do case "\$a" in *.nft.new) echo "injected load failure" >&2; ex
 exec "$NFT" "\$@"
 WRAPEOF
 chmod +x "$STUB/nft"
-if sh "$SCRIPT" 7 >/dev/null 2>&1; then fail "a failed load must fail the script"; fi
+if sh "$SCRIPT" apply 7 >/dev/null 2>&1; then fail "a failed load must fail the script"; fi
 rm "$STUB/nft"
 chain_has 'over 20/second burst 600' || fail "a failed load must keep the running ruleset"
 grep -q 'over 20/second burst 600' "$RULES" || fail "a failed load must keep the installed ruleset file"
 [ ! -e "$RULES.new" ] || fail "a failed load left its staging file behind"
-calls >/dev/null
 
 # --- destinations in continuous use never age out -----------------------------
 # A peer namespace gives a real TCP connection to a non-loopback address. The
@@ -154,7 +157,7 @@ while True:
 PEER_PID=$!
 trap 'kill $PEER_PID 2>/dev/null || true' EXIT
 
-sh "$SCRIPT" 1 >/dev/null
+sh "$SCRIPT" apply 1 >/dev/null
 export SHORT_RULES="$STUB/egress-short.nft"
 sed 's/timeout 10m/timeout 3s/' "$RULES" > "$SHORT_RULES"
 nft -f "$SHORT_RULES"
@@ -207,6 +210,11 @@ PY
 sh "$SCRIPT" off >/dev/null
 [[ "$(nft list tables)" != *openrung_egress* ]] || fail "'off' must remove the table"
 [ ! -e "$RULES" ] || fail "'off' must remove the ruleset file"
-[ ! -e /etc/systemd/system/openrung-egress-limit.service ] || fail "'off' must remove the unit"
+sh "$SCRIPT" apply 10 >/dev/null
+sh "$SCRIPT" apply off >/dev/null
+[[ "$(nft list tables)" != *openrung_egress* ]] || fail "'apply off' must remove the table"
+[ ! -e "$RULES" ] || fail "'apply off' must remove the ruleset file"
+
+[ ! -s "$STUB/host-tools.calls" ] || fail "the script must not call host tools: $(cat "$STUB/host-tools.calls")"
 
 echo "egress-limit_test: ok"

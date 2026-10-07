@@ -416,14 +416,36 @@ not need to match.
   capabilities instead, use a public port ≥ 1024 (`OPENRUNG_PUBLIC_PORT` /
   `OPENRUNG_LISTEN_PORT`).
 
-- **New-destination rate limit:** the Lightsail, Linode and Hetzner helpers
-  install [`egress-limit.sh`](egress-limit.sh), an nftables rule that lets the
-  host open connections to at most 10 new destination addresses per second
-  (burst 300), where "new" means not contacted in the last 10 minutes.
-  `OPENRUNG_NEW_DEST_RATE` sets the rate; `off` disables it. Addresses already
+- **New-destination rate limit:** the relay image ships
+  [`egress-limit`](egress-limit.sh), an nftables ruleset that lets the host open
+  connections to at most 10 new destination addresses per second (burst 300),
+  where "new" means not contacted in the last 10 minutes. Addresses already
   contacted are never limited. New addresses in Cloudflare's ranges (the
-  published list plus `104.28.0.0/14`) also draw on a separate budget of 1 per second (burst 120) per address family. Apply or change it on an existing host with
-  `ssh root@HOST 'sh -s 10' < deploy/relay/egress-limit.sh` (`off` removes it).
+  published list plus `104.28.0.0/14`) also draw on a separate budget of 1 per
+  second (burst 120) per address family. `OPENRUNG_NEW_DEST_RATE` sets the rate;
+  `off` removes the limit.
+
+  The rules change the host firewall, so a one-shot container loads them: it
+  alone holds `NET_ADMIN`, while the long-running relay keeps no capabilities.
+  It saves a copy to `/etc/openrung/egress-limit.nft`, which a boot unit (also
+  printed by the image) reloads with the host's `nft`. `foundation-up.sh`
+  `convert` and `update` do this after every verified roll, from the image now
+  serving, and the Lightsail, Linode and Hetzner helpers do it at first boot.
+  To load or change it by hand on a host:
+
+  ```sh
+  sudo docker run --rm --network host --user 0:0 --cap-drop ALL --cap-add NET_ADMIN \
+    --read-only -v /etc/openrung:/etc/openrung --entrypoint /usr/local/bin/egress-limit \
+    ghcr.io/openrung/openrung-relay:X.Y.Z apply 10   # or: off
+  sudo docker run --rm --network none --cap-drop ALL --entrypoint /usr/local/bin/egress-limit \
+    ghcr.io/openrung/openrung-relay:X.Y.Z unit | sudo tee /etc/systemd/system/openrung-egress-limit.service
+  sudo systemctl daemon-reload && sudo systemctl enable openrung-egress-limit.service
+  ```
+
+  `foundation-up.sh audit HOST...` reports, per host, the relay version and
+  whether the saved rules match what that relay's image renders, the table is
+  loaded, and the boot unit is enabled. Volunteer relays (`volunteer-up.sh`, the
+  desktop app) never get host firewall changes.
 
 ## Operations
 
