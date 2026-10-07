@@ -431,9 +431,13 @@ not need to match.
   printed by the image) reloads with the host's `nft`. `foundation-up.sh`
   `convert` and `update` do this after every verified roll, from the image now
   serving, and the Lightsail, Linode and Hetzner helpers do it at first boot.
-  To load or change it by hand on a host:
+  To load or change it by hand on a host: the container brings its own `nft`
+  for the load, but the boot unit runs the host's `/usr/sbin/nft`, so install
+  the host's `nftables` package first (on other distributions, its equivalent),
+  or the rules will not come back after a reboot:
 
   ```sh
+  command -v nft >/dev/null || { sudo apt-get update && sudo apt-get install -y nftables; }
   sudo docker run --rm --network host --user 0:0 --cap-drop ALL --cap-add NET_ADMIN \
     --read-only -v /etc/openrung:/etc/openrung --entrypoint /usr/local/bin/egress-limit \
     ghcr.io/openrung/openrung-relay:X.Y.Z apply 10   # or: off

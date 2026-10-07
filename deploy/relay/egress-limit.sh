@@ -27,7 +27,8 @@
 # container that alone holds NET_ADMIN, on the host network with the host's
 # /etc/openrung mounted; the long-running relay container keeps no
 # capabilities. The host keeps only the boot unit printed by `unit`, which
-# reloads the saved ruleset with the host's own nft. deploy/relay/README.md
+# reloads the saved ruleset with the host's own nft, so the host needs the
+# nftables package for the limit to survive a reboot. deploy/relay/README.md
 # shows the invocation; foundation-up.sh and the bring-up helpers run it.
 set -eu
 

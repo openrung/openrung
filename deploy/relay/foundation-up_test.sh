@@ -364,9 +364,19 @@ EOF
   NEW_DEST_RATE=10
   out="$(cmd_audit 203.0.113.10 2>&1)"
   assert_contains "$out" "203.0.113.10 relay=0.2.2 " "audit reports the relay version"
-  assert_contains "$out" "loaded=yes" "audit reports the loaded table"
+  assert_contains "$out" "host_nft=yes loaded=yes" "audit reports the host nftables and the loaded table"
   assert_contains "$out" "unit=enabled" "audit reports the boot unit"
   case "$out" in *"rules=current"*|*"rules=missing"*|*"rules=stale"*) pass ;; *) fail "audit reported no rules state: ${out}" ;; esac
+
+  # Without the host's nftables the boot unit cannot restore the rules; audit
+  # must say so rather than report the table as unloaded.
+  rm "${stub}/nft"
+  out="$(PATH="/usr/bin:/bin" cmd_audit 203.0.113.10 2>&1)"
+  if command -v nft >/dev/null 2>&1; then
+    pass  # this machine has a real nft on PATH; the missing case cannot be staged here
+  else
+    assert_contains "$out" "host_nft=missing loaded=unknown" "audit flags a host without nftables"
+  fi
 }
 
 # Execute the script's real multiline remote commands against a tiny file-backed

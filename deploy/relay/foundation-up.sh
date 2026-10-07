@@ -813,7 +813,8 @@ cmd_create() {
 
 # Read-only. Per host: the running relay's version, whether the saved host
 # ruleset is exactly what that relay's own image renders at OPENRUNG_NEW_DEST_RATE,
-# whether the table is loaded, and whether the boot unit is enabled. Everything
+# whether the host has the nftables its boot unit needs, whether the table is
+# loaded, and whether the boot unit is enabled. Everything
 # printed comes back from the host, so it is scrubbed before display.
 cmd_audit() {
   [ "$#" -ge 1 ] || usage
@@ -840,7 +841,13 @@ cmd_audit() {
         echo rules=stale
       fi
       rm -f \"\$expected\"
-      if sudo nft list table inet openrung_egress >/dev/null 2>&1; then echo loaded=yes; else echo loaded=no; fi
+      if ! command -v nft >/dev/null 2>&1; then
+        echo host_nft=missing loaded=unknown
+      elif sudo nft list table inet openrung_egress >/dev/null 2>&1; then
+        echo host_nft=yes loaded=yes
+      else
+        echo host_nft=yes loaded=no
+      fi
       echo \"unit=\$(systemctl is-enabled openrung-egress-limit.service 2>/dev/null || echo missing)\"" 2>/dev/null)" \
       || out="unreachable"
     printf '%s %s\n' "$host" "$(printf '%s' "$out" | scrub_stream | tr '\n' ' ' | head -c 300)"
