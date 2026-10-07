@@ -278,60 +278,82 @@ test_new_dest_rate_validation() {
 }
 
 # Run the exact remote command apply_egress_limit sends, against stubs, so the
-# quoting and the container flags are what reach the host.
+# quoting, the container flags, and the install order are what reach the host.
+# The stub docker hands out a fake egress-limit that records how the host runs it.
 test_apply_egress_limit_remote_command() {
   reset_script_functions
-  local stub="${TEST_TMP}/egress-stub" calls="${TEST_TMP}/egress-calls" out
-  mkdir -p "$stub"
+  local stub="${TEST_TMP}/egress-stub" calls="${TEST_TMP}/egress-calls" root="${TEST_TMP}/egress-root" out
+  mkdir -p "$stub" "$root"
   : > "$calls"
   cat > "${stub}/sudo" <<'EOF'
 #!/bin/sh
 exec "$@"
 EOF
+  cat > "${stub}/fake-egress-limit" <<EOF
+#!/bin/sh
+echo "egress-limit \$*" >> "$calls"
+case "\$1" in unit) printf '[Unit]\\nDescription=test unit\\n' ;; esac
+EOF
   cat > "${stub}/docker" <<EOF
 #!/bin/sh
 echo "docker \$*" >> "$calls"
-case "\$*" in *" unit") printf '[Unit]\nDescription=test unit\n' ;; esac
+case "\$*" in *" cat "*) cat "${stub}/fake-egress-limit" ;; esac
 EOF
-  for cmd in systemctl apt-get install tee; do
+  for cmd in systemctl apt-get install; do
     cat > "${stub}/${cmd}" <<EOF
 #!/bin/sh
 echo "${cmd} \$*" >> "$calls"
-[ "${cmd}" = tee ] && cat >> "$calls" || true
 EOF
   done
   chmod +x "$stub"/*
   ssh_run() { PATH="${stub}:${PATH}" bash -c "$2"; }
-  IMAGE="ghcr.io/openrung/openrung-relay:0.2.2"
+  IMAGE="ghcr.io/openrung/openrung-relay:0.2.3"
+  EGRESS_LIMIT_BIN="${root}/openrung-egress-limit"
+  EGRESS_LIMIT_UNIT="${root}/openrung-egress-limit.service"
   NEW_DEST_RATE=10
   if (set -e; apply_egress_limit 203.0.113.10) >"$OUTPUT" 2>&1; then pass; else fail "apply_egress_limit failed: $(<"$OUTPUT")"; fi
   out="$(<"$calls")"
-  assert_contains "$out" "docker run --rm --network host --user 0:0 --cap-drop ALL --cap-add NET_ADMIN --read-only -v /etc/openrung:/etc/openrung --entrypoint /usr/local/bin/egress-limit ghcr.io/openrung/openrung-relay:0.2.2 apply 10" "one-shot container is the only one with NET_ADMIN"
-  assert_contains "$out" "docker run --rm --network none --cap-drop ALL --entrypoint /usr/local/bin/egress-limit ghcr.io/openrung/openrung-relay:0.2.2 unit" "boot unit is rendered with no capabilities"
-  assert_contains "$out" "tee /etc/systemd/system/openrung-egress-limit.service" "boot unit is installed"
-  assert_contains "$out" "Description=test unit" "the image's unit text reaches the file"
+  assert_contains "$out" "docker run --rm --network none --cap-drop ALL --entrypoint cat ghcr.io/openrung/openrung-relay:0.2.3 /usr/local/bin/egress-limit" "the image's script is copied out with no capabilities and no network"
+  case "$out" in *NET_ADMIN*|*"--network host"*) fail "no container may touch the host firewall: ${out}" ;; *) pass ;; esac
+  assert_contains "$out" "egress-limit apply 10" "the host runs the image's script with its own nft"
+  assert_before "$out" "egress-limit apply 10" "egress-limit unit" "rules load before the unit is written"
   assert_contains "$out" "systemctl enable openrung-egress-limit.service" "boot unit is enabled"
   case "$out" in *restart*|*"enable --now"*) fail "the unit must never be restarted: ${out}" ;; *) pass ;; esac
-  assert_before "$out" "apply 10" "unit" "rules load before the unit is written"
+  cmp -s "${stub}/fake-egress-limit" "$EGRESS_LIMIT_BIN" && pass || fail "the installed script is not the image's copy"
+  [ -x "$EGRESS_LIMIT_BIN" ] && pass || fail "the installed script is not executable"
+  [ ! -e "${EGRESS_LIMIT_BIN}.new" ] && pass || fail "staging copy left behind"
+  assert_contains "$(<"$EGRESS_LIMIT_UNIT")" "Description=test unit" "the script's unit text reaches the unit file"
 
+  # An image without the script must fail before anything is installed or run.
+  rm -f "$EGRESS_LIMIT_BIN" "$EGRESS_LIMIT_UNIT"
   : > "$calls"
   cat > "${stub}/docker" <<EOF
 #!/bin/sh
 echo "docker \$*" >> "$calls"
-case "\$*" in *" unit") exit 1 ;; esac
 EOF
-  if (set -e; apply_egress_limit 203.0.113.10) >"$OUTPUT" 2>&1; then fail "apply succeeded when the image could not print its unit"; else pass; fi
-  case "$(<"$calls")" in *"tee "*) fail "an empty unit was written after a failed render" ;; *) pass ;; esac
+  if (set -e; apply_egress_limit 203.0.113.10) >"$OUTPUT" 2>&1; then fail "apply succeeded from an image without the script"; else pass; fi
+  [ ! -e "$EGRESS_LIMIT_BIN" ] && [ ! -e "$EGRESS_LIMIT_UNIT" ] && pass || fail "files were installed from an image without the script"
+  case "$(<"$calls")" in *"egress-limit "*) fail "a script ran from an image without one" ;; *) pass ;; esac
+
+  # A script that cannot print its unit must not leave an empty unit behind.
+  : > "$calls"
+  cat > "${stub}/docker" <<EOF
+#!/bin/sh
+echo "docker \$*" >> "$calls"
+case "\$*" in *" cat "*) printf '#!/bin/sh\\n[ "\$1" = unit ] && exit 1\\nexit 0\\n' ;; esac
+EOF
+  if (set -e; apply_egress_limit 203.0.113.10) >"$OUTPUT" 2>&1; then fail "apply succeeded when the script could not print its unit"; else pass; fi
+  [ ! -e "$EGRESS_LIMIT_UNIT" ] && pass || fail "an empty unit was written after a failed render"
 
   : > "$calls"
   NEW_DEST_RATE=off
   cat > "${stub}/docker" <<EOF
 #!/bin/sh
 echo "docker \$*" >> "$calls"
-case "\$*" in *" unit") printf '[Unit]\n' ;; esac
+case "\$*" in *" cat "*) cat "${stub}/fake-egress-limit" ;; esac
 EOF
   (set -e; apply_egress_limit 203.0.113.10) >"$OUTPUT" 2>&1
-  assert_contains "$(<"$calls")" "egress-limit ghcr.io/openrung/openrung-relay:0.2.2 apply off" "rate off removes the limit through the same path"
+  assert_contains "$(<"$calls")" "egress-limit apply off" "rate off removes the limit through the same path"
 }
 
 test_audit_remote_command() {
@@ -347,7 +369,7 @@ EOF
 case "$1" in
   inspect) echo sha256:abc ;;
   logs) echo "2026/10/07 INFO starting relay version=0.2.2 revision=x" ;;
-  run) echo "table inet openrung_egress" ;;
+  run) echo "#!/bin/sh" ;;
 esac
 EOF
   cat > "${stub}/nft" <<'EOF'
@@ -366,6 +388,7 @@ EOF
   assert_contains "$out" "203.0.113.10 relay=0.2.2 " "audit reports the relay version"
   assert_contains "$out" "host_nft=yes loaded=yes" "audit reports the host nftables and the loaded table"
   assert_contains "$out" "unit=enabled" "audit reports the boot unit"
+  case "$out" in *"script=current"*|*"script=missing"*|*"script=stale"*) pass ;; *) fail "audit reported no script state: ${out}" ;; esac
   case "$out" in *"rules=current"*|*"rules=missing"*|*"rules=stale"*) pass ;; *) fail "audit reported no rules state: ${out}" ;; esac
 
   # Without the host's nftables the boot unit cannot restore the rules; audit

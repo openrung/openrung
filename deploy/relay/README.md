@@ -425,30 +425,32 @@ not need to match.
   second (burst 120) per address family. `OPENRUNG_NEW_DEST_RATE` sets the rate;
   `off` removes the limit.
 
-  The rules change the host firewall, so a one-shot container loads them: it
-  alone holds `NET_ADMIN`, while the long-running relay keeps no capabilities.
-  It saves a copy to `/etc/openrung/egress-limit.nft`, which a boot unit (also
-  printed by the image) reloads with the host's `nft`. `foundation-up.sh`
-  `convert` and `update` do this after every verified roll, from the image now
-  serving, and the Lightsail, Linode and Hetzner helpers do it at first boot.
-  To load or change it by hand on a host: the container brings its own `nft`
-  for the load, but the boot unit runs the host's `/usr/sbin/nft`, so install
-  the host's `nftables` package first (on other distributions, its equivalent),
-  or the rules will not come back after a reboot:
+  The script ships in the relay image as `/usr/local/bin/egress-limit`, so the
+  rules version with each relay release, but it runs on the host, as root, with
+  the host's own `nft`: a capability-less container only copies it out to
+  `/usr/local/sbin/openrung-egress-limit`. No container ever changes the host
+  firewall, and the relay container keeps no capabilities. The script saves the
+  ruleset to `/etc/openrung/egress-limit.nft`, which its boot unit reloads.
+  `foundation-up.sh` `convert` and `update` do all of this after every verified
+  roll, from the image now serving, and the Lightsail, Linode and Hetzner
+  helpers do it at first boot. To load or change it by hand on a host (the host
+  needs its `nftables` package; on other distributions, its equivalent):
 
   ```sh
   command -v nft >/dev/null || { sudo apt-get update && sudo apt-get install -y nftables; }
-  sudo docker run --rm --network host --user 0:0 --cap-drop ALL --cap-add NET_ADMIN \
-    --read-only -v /etc/openrung:/etc/openrung --entrypoint /usr/local/bin/egress-limit \
-    ghcr.io/openrung/openrung-relay:X.Y.Z apply 10   # or: off
-  sudo docker run --rm --network none --cap-drop ALL --entrypoint /usr/local/bin/egress-limit \
-    ghcr.io/openrung/openrung-relay:X.Y.Z unit | sudo tee /etc/systemd/system/openrung-egress-limit.service
+  sudo docker run --rm --network none --cap-drop ALL --entrypoint cat \
+    ghcr.io/openrung/openrung-relay:X.Y.Z /usr/local/bin/egress-limit \
+    | sudo tee /usr/local/sbin/openrung-egress-limit >/dev/null
+  sudo chmod 0755 /usr/local/sbin/openrung-egress-limit
+  sudo openrung-egress-limit apply 10   # or: off
+  sudo openrung-egress-limit unit | sudo tee /etc/systemd/system/openrung-egress-limit.service >/dev/null
   sudo systemctl daemon-reload && sudo systemctl enable openrung-egress-limit.service
   ```
 
-  `foundation-up.sh audit HOST...` reports, per host, the relay version and
-  whether the saved rules match what that relay's image renders, the table is
-  loaded, and the boot unit is enabled. Volunteer relays (`volunteer-up.sh`, the
+  `foundation-up.sh audit HOST...` reports, per host, the relay version,
+  whether the saved rules and the installed script match that relay's image,
+  whether the host has `nftables`, whether the table is loaded, and whether the
+  boot unit is enabled. Volunteer relays (`volunteer-up.sh`, the
   desktop app) never get host firewall changes.
 
 ## Operations

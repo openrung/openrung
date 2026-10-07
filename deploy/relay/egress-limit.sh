@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Cap how fast a relay host opens connections to destinations it has not
-# contacted recently. Ships in the relay image as /usr/local/bin/egress-limit:
+# contacted recently. Ships in the relay image as /usr/local/bin/egress-limit
+# and runs on the relay HOST, as root, with the host's own nft:
 #
 #   egress-limit apply [RATE]   load the ruleset and save it for boot
 #   egress-limit off            remove the ruleset and the saved copy
@@ -23,13 +24,16 @@
 # own, 1 per second with a burst of 120, per address family: ordinary traffic
 # reaches few new addresses there, so the cap stays out of its way.
 #
-# apply and off change the host's firewall, so they run as a one-shot
-# container that alone holds NET_ADMIN, on the host network with the host's
-# /etc/openrung mounted; the long-running relay container keeps no
-# capabilities. The host keeps only the boot unit printed by `unit`, which
-# reloads the saved ruleset with the host's own nft, so the host needs the
-# nftables package for the limit to survive a reboot. deploy/relay/README.md
-# shows the invocation; foundation-up.sh and the bring-up helpers run it.
+# The image only carries this script, so the rules version with each relay
+# release; nothing in a container touches the host firewall, and the relay
+# container keeps no capabilities. Callers copy it out with a capability-less,
+# network-less `docker run --entrypoint cat`, install it as
+# /usr/local/sbin/openrung-egress-limit, and run it there: loading with the
+# host's nft keeps userspace and kernel in step (an older nft can fail to
+# parse a table a newer one created). The host needs the nftables package,
+# both for apply and for the boot unit printed by `unit`, which reloads the
+# saved ruleset. deploy/relay/README.md shows the commands; foundation-up.sh
+# and the bring-up helpers run them.
 set -eu
 
 RULES=/etc/openrung/egress-limit.nft
