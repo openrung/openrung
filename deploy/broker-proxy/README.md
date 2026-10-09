@@ -5,7 +5,7 @@ broker. It gives clients on censored networks an **HTTPS, CDN-fronted** control-
 instead of a single plaintext IP that a one-line ACL can null-route.
 
 ```
-censored client ──HTTPS──► Cloudflare edge ──Worker──HTTPS:443──► broker-origin.openrung.org ──► 54.238.185.205
+censored client ──HTTPS──► Cloudflare edge ──Worker──HTTPS:443──► broker-origin.openrung.org ──► origin host
 ```
 
 - The broker is a stateless JSON control-plane API; the Worker forwards bytes and never serves
@@ -21,10 +21,10 @@ censored client ──HTTPS──► Cloudflare edge ──Worker──HTTPS:443
 
 ## Origin must be a hostname, not an IP (important)
 
-Cloudflare Workers **cannot `fetch()` a bare IP literal** — `http://54.238.185.205:8080` returns
+Cloudflare Workers **cannot `fetch()` a bare IP literal** — `http://203.0.113.10:8080` returns
 Cloudflare error **1003 "Direct IP Access Not Allowed"**, which the Worker passes straight through
 (you'll see 1003 on *both* the custom domain and any workers.dev URL). The Worker therefore targets
-**`broker-origin.openrung.org`**, a **DNS-only (grey-cloud) A record → 54.238.185.205** in the
+**`broker-origin.openrung.org`**, a **DNS-only (grey-cloud) A record** for the origin host in the
 zone. It must stay DNS-only; proxying (orange-cloud) it would loop the subrequest back into the
 edge. If you ever change the origin IP, update that DNS record (not the Worker).
 
