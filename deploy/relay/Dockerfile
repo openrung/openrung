@@ -75,19 +75,15 @@ RUN set -eux; \
 FROM alpine:3.21
 ARG RELAY_VERSION
 ARG VCS_REVISION
-# Image bundles GPL-3.0-or-later (readline from Alpine), MPL-2.0 (Xray-core,
-# ca-certificates), GPL-2.0-only (busybox/apk-tools/baselayout/nftables from
-# Alpine), GPL-2.0-or-later (libnftnl), LGPL (libmnl, gmp), CC-BY-SA-4.0
-# (geoip.dat), and MIT/BSD components. See
-# /usr/local/share/openrung/THIRD_PARTY_NOTICES.md.
+# Image bundles GPL-3.0-or-later (none here), MPL-2.0 (Xray-core, ca-certificates),
+# GPL-2.0-only (busybox/apk-tools/baselayout from Alpine), CC-BY-SA-4.0 (geoip.dat),
+# and MIT/BSD components. See /usr/local/share/openrung/THIRD_PARTY_NOTICES.md.
 LABEL org.opencontainers.image.source="https://github.com/openrung/openrung" \
-      org.opencontainers.image.licenses="GPL-3.0-or-later AND MPL-2.0 AND GPL-2.0-only AND GPL-2.0-or-later AND LGPL-2.1-or-later AND LGPL-3.0-or-later AND CC-BY-SA-4.0 AND MIT AND BSD-3-Clause" \
+      org.opencontainers.image.licenses="GPL-3.0-or-later AND MPL-2.0 AND GPL-2.0-only AND CC-BY-SA-4.0 AND MIT AND BSD-3-Clause" \
       org.opencontainers.image.title="openrung-relay" \
       org.opencontainers.image.version="$RELAY_VERSION" \
       org.opencontainers.image.revision="$VCS_REVISION"
-# nftables backs egress-limit, the host new-destination limit this image ships
-# for a one-shot NET_ADMIN container to load; the relay itself never uses it.
-RUN apk add --no-cache ca-certificates tzdata nftables \
+RUN apk add --no-cache ca-certificates tzdata \
     && addgroup -S openrung \
     && adduser -S -G openrung openrung \
     && mkdir -p /var/lib/openrung \
@@ -98,6 +94,8 @@ COPY --from=xray /xray-licenses/ /usr/local/share/openrung/xray/
 COPY --from=build /out/relay /usr/local/bin/relay
 COPY --from=build /out/wss-sidecar /usr/local/bin/wss-sidecar
 COPY deploy/relay/entrypoint.sh /usr/local/bin/entrypoint.sh
+# The host new-destination limit: shipped here so it versions with the relay,
+# but copied out and run on the host with the host's nft (see the script).
 COPY deploy/relay/egress-limit.sh /usr/local/bin/egress-limit
 # Third-party attribution + GPL/MPL source offers travel with the distributed image.
 COPY THIRD_PARTY_NOTICES.md /usr/local/share/openrung/THIRD_PARTY_NOTICES.md

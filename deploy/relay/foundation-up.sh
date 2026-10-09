@@ -671,25 +671,32 @@ rollback_host() {
 
 # --- commands ---------------------------------------------------------------
 
-# Load the relay image's host new-destination limit (deploy/relay/egress-limit.sh,
-# shipped as /usr/local/bin/egress-limit) and keep it across reboots. Only this
-# one-shot container holds NET_ADMIN; the long-running relay keeps no
-# capabilities. The boot unit is printed by the same image and reloads the
-# saved ruleset with the host's nft, which is installed here when missing. Runs
-# after a verified roll, so the rules always come from the image now serving.
+# The host new-destination limit ships in the relay image as
+# /usr/local/bin/egress-limit (deploy/relay/egress-limit.sh), so it versions with
+# the relay. A capability-less, network-less container only copies it out; the
+# host installs it at EGRESS_LIMIT_BIN and runs it with its own nft, which
+# keeps userspace and kernel in step, then installs the boot unit the same
+# script prints. Runs after a verified roll, so the rules always come from the
+# image now serving.
+EGRESS_LIMIT_BIN=/usr/local/sbin/openrung-egress-limit
+EGRESS_LIMIT_UNIT=/etc/systemd/system/openrung-egress-limit.service
+
 apply_egress_limit() { # host
-  local host="$1" action="apply ${NEW_DEST_RATE}"
+  local host="$1"
   ssh_run "$host" "set -e
     command -v nft >/dev/null 2>&1 || {
       sudo env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 update </dev/null >/dev/null
       sudo env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y nftables </dev/null >/dev/null
     }
     sudo test -d /etc/openrung || sudo install -d -m 0700 /etc/openrung
-    sudo docker run --rm --network host --user 0:0 --cap-drop ALL --cap-add NET_ADMIN --read-only \\
-      -v /etc/openrung:/etc/openrung --entrypoint /usr/local/bin/egress-limit ${IMAGE} ${action} >/dev/null
-    unit=\$(sudo docker run --rm --network none --cap-drop ALL --entrypoint /usr/local/bin/egress-limit ${IMAGE} unit)
-    printf '%s\\n' \"\$unit\" | sudo tee /etc/systemd/system/openrung-egress-limit.service >/dev/null
-    sudo rm -f /usr/local/sbin/openrung-egress-limit
+    script=\$(sudo docker run --rm --network none --cap-drop ALL --entrypoint cat ${IMAGE} /usr/local/bin/egress-limit)
+    case \"\$script\" in '#!/bin/sh'*) ;; *) echo 'the image carries no egress-limit script' >&2; exit 1 ;; esac
+    printf '%s\\n' \"\$script\" | sudo tee ${EGRESS_LIMIT_BIN}.new >/dev/null
+    sudo chmod 0755 ${EGRESS_LIMIT_BIN}.new
+    sudo mv ${EGRESS_LIMIT_BIN}.new ${EGRESS_LIMIT_BIN}
+    sudo ${EGRESS_LIMIT_BIN} apply ${NEW_DEST_RATE} >/dev/null
+    unit=\$(sudo ${EGRESS_LIMIT_BIN} unit)
+    printf '%s\\n' \"\$unit\" | sudo tee ${EGRESS_LIMIT_UNIT} >/dev/null
     sudo systemctl daemon-reload
     sudo systemctl enable openrung-egress-limit.service >/dev/null 2>&1" \
     || { echo "error: ${host}: the relay is live, but the new-destination limit from ${IMAGE} could not be loaded; re-run update to retry" >&2
@@ -813,8 +820,9 @@ cmd_create() {
 
 # Read-only. Per host: the running relay's version, whether the saved host
 # ruleset is exactly what that relay's own image renders at OPENRUNG_NEW_DEST_RATE,
-# whether the host has the nftables its boot unit needs, whether the table is
-# loaded, and whether the boot unit is enabled. Everything
+# whether the installed egress-limit script is that image's copy, whether the
+# host has the nftables it needs, whether the table is loaded, and whether the
+# boot unit is enabled. Everything
 # printed comes back from the host, so it is scrubbed before display.
 cmd_audit() {
   [ "$#" -ge 1 ] || usage
@@ -841,6 +849,13 @@ cmd_audit() {
         echo rules=stale
       fi
       rm -f \"\$expected\"
+      if ! sudo test -f ${EGRESS_LIMIT_BIN}; then
+        echo script=missing
+      elif sudo docker run --rm --network none --cap-drop ALL --entrypoint cat \"\$image\" /usr/local/bin/egress-limit 2>/dev/null | sudo cmp -s - ${EGRESS_LIMIT_BIN}; then
+        echo script=current
+      else
+        echo script=stale
+      fi
       if ! command -v nft >/dev/null 2>&1; then
         echo host_nft=missing loaded=unknown
       elif sudo nft list table inet openrung_egress >/dev/null 2>&1; then

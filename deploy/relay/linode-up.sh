@@ -168,16 +168,18 @@ fi
 [ -n "\$PUBLIC_IP" ] || PUBLIC_IP="\$(ip -4 -o addr show scope global | awk '{print \$4}' | cut -d/ -f1 | head -1)"
 docker pull ${IMAGE}
 # Bound how fast the relay opens connections to destinations it has not
-# contacted recently. The rules ship in the relay image (egress-limit); a
-# one-shot container, the only one granted NET_ADMIN, loads them and saves a
-# copy under /etc/openrung, and the boot unit the image prints reloads that
-# copy with the host's nft. Best-effort like shaping: a failure must never
-# block relay bring-up.
+# contacted recently. The limit ships in the relay image (egress-limit) so it
+# versions with the relay; a capability-less container only copies it out,
+# and the host runs it with its own nft, then installs the boot unit it
+# prints. Best-effort like shaping: a failure must never block relay bring-up.
 { { test -d /etc/openrung || install -d -m 0700 /etc/openrung; } \\
-  && docker run --rm --network host --user 0:0 --cap-drop ALL --cap-add NET_ADMIN --read-only \\
-       -v /etc/openrung:/etc/openrung --entrypoint /usr/local/bin/egress-limit ${IMAGE} apply ${NEW_DEST_RATE} \\
-  && docker run --rm --network none --cap-drop ALL --entrypoint /usr/local/bin/egress-limit ${IMAGE} unit \\
-       > /etc/systemd/system/openrung-egress-limit.service.tmp \\
+  && docker run --rm --network none --cap-drop ALL --entrypoint cat ${IMAGE} /usr/local/bin/egress-limit \\
+       > /usr/local/sbin/openrung-egress-limit.new \\
+  && head -n 1 /usr/local/sbin/openrung-egress-limit.new | grep -qx '#!/bin/sh' \\
+  && chmod 0755 /usr/local/sbin/openrung-egress-limit.new \\
+  && mv /usr/local/sbin/openrung-egress-limit.new /usr/local/sbin/openrung-egress-limit \\
+  && /usr/local/sbin/openrung-egress-limit apply ${NEW_DEST_RATE} \\
+  && /usr/local/sbin/openrung-egress-limit unit > /etc/systemd/system/openrung-egress-limit.service.tmp \\
   && mv /etc/systemd/system/openrung-egress-limit.service.tmp /etc/systemd/system/openrung-egress-limit.service \\
   && systemctl daemon-reload && systemctl enable openrung-egress-limit.service; } \\
   || echo "warning: new-destination limit failed; relay continues unlimited" >&2
