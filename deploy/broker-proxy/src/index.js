@@ -19,8 +19,8 @@
 // See src/handler.js for the logic and test/ for the unit tests.
 //
 // The origin MUST be a hostname, not a bare IP: Cloudflare Workers cannot fetch() an IP literal
-// (e.g. http://54.238.185.205:8080) — that returns Cloudflare error 1003 "Direct IP Access Not
-// Allowed". broker-origin.openrung.org is a DNS-only (grey-cloud) A record → 54.238.185.205, so
+// (e.g. http://203.0.113.10:8080) — that returns Cloudflare error 1003 "Direct IP Access Not
+// Allowed". broker-origin.openrung.org is a DNS-only (grey-cloud) A record for the origin host, so
 // the Worker resolves the name and connects straight to the AWS origin (bypassing Cloudflare's
 // proxy, which avoids a loop). It must stay DNS-only; proxying it would loop back into the edge.
 // The origin is overridable via the ORIGIN var (wrangler dev --var ORIGIN:... / tests).
