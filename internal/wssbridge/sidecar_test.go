@@ -581,3 +581,60 @@ func TestSourceUsageStreamLimit(t *testing.T) {
 		t.Fatal("stream source capacity was not released")
 	}
 }
+
+func TestParseViewerAddress(t *testing.T) {
+	cases := []struct {
+		name   string
+		values []string
+		want   string
+		ok     bool
+	}{
+		{"ipv4", []string{"198.51.100.7:443"}, "198.51.100.7", true},
+		{"bracketed ipv6", []string{"[2001:db8::7]:51234"}, "2001:db8::7", true},
+		{"bare ipv6", []string{"2001:db8::7:443"}, "2001:db8::7", true},
+		{"bare full ipv6", []string{"2001:db8:1:2:3:4:5:6:443"}, "2001:db8:1:2:3:4:5:6", true},
+		{"bare ipv4-mapped ipv6", []string{"::ffff:198.51.100.7:443"}, "198.51.100.7", true},
+		{"missing", nil, "", false},
+		{"empty", []string{""}, "", false},
+		{"repeated header", []string{"198.51.100.7:443", "198.51.100.8:443"}, "", false},
+		{"ipv4 without port", []string{"198.51.100.7"}, "", false},
+		{"ipv6 without port", []string{"2001:db8::7"}, "", false},
+		{"zero port", []string{"2001:db8::7:0"}, "", false},
+		{"port out of range", []string{"2001:db8::7:65536"}, "", false},
+		{"signed port", []string{"2001:db8::7:+443"}, "", false},
+		{"zoned ipv6", []string{"fe80::1%eth0:443"}, "", false},
+		{"bracketed ipv4", []string{"[198.51.100.7]:443"}, "", false},
+		{"ipv4 with two ports", []string{"198.51.100.7:443:1"}, "", false},
+		{"list", []string{"198.51.100.7:443, 198.51.100.8:443"}, "", false},
+		{"garbage", []string{"not-an-address"}, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := parseViewerAddress(tc.values)
+			if got != tc.want || ok != tc.ok {
+				t.Fatalf("parseViewerAddress(%q) = %q, %v; want %q, %v", tc.values, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
+func TestSidecarAcceptsBareIPv6ViewerAsOneSource(t *testing.T) {
+	fixture := newSidecarFixture(t, func(opts *SidecarOptions) { opts.MaxSessionsPerSource = 1 })
+	bare := sidecarEdge(t, fixture.handler, testOriginOld, "2001:db8::42:443")
+	bracketed := sidecarEdge(t, fixture.handler, testOriginOld, "[2001:db8::42]:51234")
+	first, err := dialSidecarClient(t, bare, fixture.ticket(t, "relay-a", "front-a"))
+	if err != nil {
+		t.Fatalf("bare IPv6 viewer address was rejected: %v", err)
+	}
+	defer first.Close()
+	waitSnapshot(t, fixture.stats, func(s SidecarSnapshot) bool { return s.CurrentSessions == 1 })
+	if second, err := dialSidecarClient(t, bracketed, fixture.ticket(t, "relay-a", "front-a")); err == nil {
+		_ = second.Close()
+		t.Fatal("bracketed form of the same IPv6 viewer was not counted as the same source")
+	}
+	snapshot := fixture.stats.Snapshot()
+	if snapshot.ViewerAddressRejections != 0 || snapshot.SourceSessionRejections != 1 {
+		t.Fatalf("viewer address rejections = %d, source session rejections = %d",
+			snapshot.ViewerAddressRejections, snapshot.SourceSessionRejections)
+	}
+}

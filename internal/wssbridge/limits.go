@@ -1,8 +1,11 @@
 package wssbridge
 
 import (
+	"errors"
 	"math"
 	"net/netip"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -262,13 +265,41 @@ func (u *sourceUsage) deleteEmptyLocked(key string, entry *sourceUsageEntry) {
 	}
 }
 
+// parseViewerAddress returns the source IP from the CDN's viewer-address
+// header. CDNs write IPv6 viewers either bracketed ("[2001:db8::1]:443") or
+// bare ("2001:db8::1:443", as CloudFront-Viewer-Address and bunny's
+// %{User.IP}:443 do), so both forms are accepted.
 func parseViewerAddress(values []string) (string, bool) {
 	if len(values) != 1 || values[0] == "" {
 		return "", false
 	}
 	address, err := netip.ParseAddrPort(values[0])
+	if err != nil {
+		address, err = parseBareIPv6AddrPort(values[0])
+	}
 	if err != nil || address.Port() == 0 || address.Addr().Zone() != "" {
 		return "", false
 	}
 	return address.Addr().Unmap().String(), true
+}
+
+// parseBareIPv6AddrPort splits an unbracketed "IPv6:port" at its last colon.
+// Only an IPv6 address qualifies, so IPv4 keeps its strict "ip:port" parse.
+func parseBareIPv6AddrPort(value string) (netip.AddrPort, error) {
+	i := strings.LastIndexByte(value, ':')
+	if i < 0 {
+		return netip.AddrPort{}, errors.New("viewer address has no port")
+	}
+	addr, err := netip.ParseAddr(value[:i])
+	if err != nil {
+		return netip.AddrPort{}, err
+	}
+	if !addr.Is6() {
+		return netip.AddrPort{}, errors.New("bare viewer address is not IPv6")
+	}
+	port, err := strconv.ParseUint(value[i+1:], 10, 16)
+	if err != nil {
+		return netip.AddrPort{}, err
+	}
+	return netip.AddrPortFrom(addr, uint16(port)), nil
 }

@@ -164,6 +164,8 @@ The sidecar needs the viewer address for its per-source session and stream
 limits, and reads it from the header named by
 `OPENRUNG_WSS_VIEWER_ADDRESS_HEADER`, defaulting to CloudFront's
 `CloudFront-Viewer-Address`. It parses `ip:port` and keeps only the address.
+IPv6 may be bracketed (`[2001:db8::1]:443`) or bare (`2001:db8::1:443`); the
+bare form is what `%{User.IP}:443` produces for IPv6 viewers.
 
 bunny sends nothing in that shape, so each pull zone carries a second
 `SetRequestHeader` rule, on the same exact-URL trigger:
