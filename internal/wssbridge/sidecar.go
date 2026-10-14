@@ -297,13 +297,13 @@ func (h *sidecarHandler) handleBridge(w http.ResponseWriter, r *http.Request) {
 		tooManyRequests(w)
 		return
 	}
-	sourceIP, ok := parseViewerAddress(r.Header.Values(h.viewerAddressHeader))
+	sourceKey, ok := viewerSourceKey(r.Header.Values(h.viewerAddressHeader))
 	if !ok {
 		h.stats.viewerAddressRejections.Add(1)
 		http.Error(w, "trusted viewer address required", http.StatusBadRequest)
 		return
 	}
-	allowed, failOpen := h.handshakeLimiter.allow(sourceIP)
+	allowed, failOpen := h.handshakeLimiter.allow(sourceKey)
 	if failOpen {
 		h.stats.handshakeLimiterFailOpen.Add(1)
 	}
@@ -362,12 +362,12 @@ func (h *sidecarHandler) handleBridge(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "ticket already used", http.StatusConflict)
 		return
 	}
-	if !h.sourceUsage.acquireSession(sourceIP) {
+	if !h.sourceUsage.acquireSession(sourceKey) {
 		h.stats.sourceSessionRejections.Add(1)
 		tooManyRequests(w)
 		return
 	}
-	defer h.sourceUsage.releaseSession(sourceIP)
+	defer h.sourceUsage.releaseSession(sourceKey)
 	select {
 	case h.sessions <- struct{}{}:
 		defer func() { <-h.sessions }()
@@ -396,7 +396,7 @@ func (h *sidecarHandler) handleBridge(w http.ResponseWriter, r *http.Request) {
 	h.stats.acceptedSessions.Add(1)
 	h.stats.currentSessions.Add(1)
 	defer h.stats.currentSessions.Add(-1)
-	h.serveSession(r.Context(), ws, claims, sourceIP)
+	h.serveSession(r.Context(), ws, claims, sourceKey)
 }
 
 func (h *sidecarHandler) authenticateOrigin(values []string) (string, bool) {
@@ -419,7 +419,7 @@ func (h *sidecarHandler) authenticateOrigin(values []string) (string, bool) {
 	return matchedFront, len(values) == 1 && matches == 1
 }
 
-func (h *sidecarHandler) serveSession(parent context.Context, ws *websocket.Conn, claims Claims, sourceIP string) {
+func (h *sidecarHandler) serveSession(parent context.Context, ws *websocket.Conn, claims Claims, sourceKey string) {
 	ctx, cancel := context.WithTimeout(parent, h.sessionLifetime)
 	defer cancel()
 	streamConn, err := wsscore.NewWebSocketConn(ws, h.readLimit)
@@ -491,7 +491,7 @@ func (h *sidecarHandler) serveSession(parent context.Context, ws *websocket.Conn
 			_ = stream.Close()
 			continue
 		}
-		if !h.sourceUsage.acquireStream(sourceIP) {
+		if !h.sourceUsage.acquireStream(sourceKey) {
 			h.stats.sourceStreamRejections.Add(1)
 			<-h.globalStreams
 			<-perSession
@@ -499,7 +499,7 @@ func (h *sidecarHandler) serveSession(parent context.Context, ws *websocket.Conn
 			continue
 		}
 		if !idle.Start() {
-			h.sourceUsage.releaseStream(sourceIP)
+			h.sourceUsage.releaseStream(sourceKey)
 			<-h.globalStreams
 			<-perSession
 			_ = stream.Close()
@@ -521,7 +521,7 @@ func (h *sidecarHandler) serveSession(parent context.Context, ws *websocket.Conn
 			defer wg.Done()
 			defer idle.Done()
 			defer h.stats.currentStreams.Add(-1)
-			defer h.sourceUsage.releaseStream(sourceIP)
+			defer h.sourceUsage.releaseStream(sourceKey)
 			defer func() { <-perSession }()
 			defer func() { <-h.globalStreams }()
 			h.handleStream(ctx, stream)

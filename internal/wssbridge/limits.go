@@ -265,11 +265,16 @@ func (u *sourceUsage) deleteEmptyLocked(key string, entry *sourceUsageEntry) {
 	}
 }
 
-// parseViewerAddress returns the source IP from the CDN's viewer-address
-// header. CDNs write IPv6 viewers either bracketed ("[2001:db8::1]:443") or
-// bare ("2001:db8::1:443", as CloudFront-Viewer-Address and bunny's
+// ipv6SourcePrefixBits is the prefix an IPv6 viewer is keyed by: one /64 is
+// one source for the per-source limits.
+const ipv6SourcePrefixBits = 64
+
+// viewerSourceKey returns the per-source limit key for the CDN's
+// viewer-address header: an IPv4 address, or an IPv6 viewer's /64 prefix.
+// CDNs write IPv6 viewers either bracketed ("[2001:db8::1]:443") or bare
+// ("2001:db8::1:443", as CloudFront-Viewer-Address and bunny's
 // %{User.IP}:443 do), so both forms are accepted.
-func parseViewerAddress(values []string) (string, bool) {
+func viewerSourceKey(values []string) (string, bool) {
 	if len(values) != 1 || values[0] == "" {
 		return "", false
 	}
@@ -280,7 +285,15 @@ func parseViewerAddress(values []string) (string, bool) {
 	if err != nil || address.Port() == 0 || address.Addr().Zone() != "" {
 		return "", false
 	}
-	return address.Addr().Unmap().String(), true
+	addr := address.Addr().Unmap()
+	if addr.Is6() {
+		prefix, err := addr.Prefix(ipv6SourcePrefixBits)
+		if err != nil {
+			return "", false
+		}
+		return prefix.String(), true
+	}
+	return addr.String(), true
 }
 
 // parseBareIPv6AddrPort splits an unbracketed "IPv6:port" at its last colon.

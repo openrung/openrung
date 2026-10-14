@@ -163,7 +163,8 @@ query-bearing variant, is ever given the token.
 The sidecar needs the viewer address for its per-source session and stream
 limits, and reads it from the header named by
 `OPENRUNG_WSS_VIEWER_ADDRESS_HEADER`, defaulting to CloudFront's
-`CloudFront-Viewer-Address`. It parses `ip:port` and keeps only the address.
+`CloudFront-Viewer-Address`. It parses `ip:port` and keeps only the address;
+an IPv6 viewer counts as its `/64` prefix.
 IPv6 may be bracketed (`[2001:db8::1]:443`) or bare (`2001:db8::1:443`); the
 bare form is what `%{User.IP}:443` produces for IPv6 viewers.
 

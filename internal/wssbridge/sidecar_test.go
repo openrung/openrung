@@ -582,7 +582,7 @@ func TestSourceUsageStreamLimit(t *testing.T) {
 	}
 }
 
-func TestParseViewerAddress(t *testing.T) {
+func TestViewerSourceKey(t *testing.T) {
 	cases := []struct {
 		name   string
 		values []string
@@ -590,9 +590,9 @@ func TestParseViewerAddress(t *testing.T) {
 		ok     bool
 	}{
 		{"ipv4", []string{"198.51.100.7:443"}, "198.51.100.7", true},
-		{"bracketed ipv6", []string{"[2001:db8::7]:51234"}, "2001:db8::7", true},
-		{"bare ipv6", []string{"2001:db8::7:443"}, "2001:db8::7", true},
-		{"bare full ipv6", []string{"2001:db8:1:2:3:4:5:6:443"}, "2001:db8:1:2:3:4:5:6", true},
+		{"bracketed ipv6", []string{"[2001:db8::7]:51234"}, "2001:db8::/64", true},
+		{"bare ipv6", []string{"2001:db8::7:443"}, "2001:db8::/64", true},
+		{"bare full ipv6", []string{"2001:db8:1:2:3:4:5:6:443"}, "2001:db8:1:2::/64", true},
 		{"bare ipv4-mapped ipv6", []string{"::ffff:198.51.100.7:443"}, "198.51.100.7", true},
 		{"missing", nil, "", false},
 		{"empty", []string{""}, "", false},
@@ -610,18 +610,20 @@ func TestParseViewerAddress(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := parseViewerAddress(tc.values)
+			got, ok := viewerSourceKey(tc.values)
 			if got != tc.want || ok != tc.ok {
-				t.Fatalf("parseViewerAddress(%q) = %q, %v; want %q, %v", tc.values, got, ok, tc.want, tc.ok)
+				t.Fatalf("viewerSourceKey(%q) = %q, %v; want %q, %v", tc.values, got, ok, tc.want, tc.ok)
 			}
 		})
 	}
 }
 
-func TestSidecarAcceptsBareIPv6ViewerAsOneSource(t *testing.T) {
+func TestSidecarKeysIPv6ViewersByPrefix(t *testing.T) {
 	fixture := newSidecarFixture(t, func(opts *SidecarOptions) { opts.MaxSessionsPerSource = 1 })
 	bare := sidecarEdge(t, fixture.handler, testOriginOld, "2001:db8::42:443")
-	bracketed := sidecarEdge(t, fixture.handler, testOriginOld, "[2001:db8::42]:51234")
+	// A different address in the same /64, in the bracketed form.
+	bracketed := sidecarEdge(t, fixture.handler, testOriginOld, "[2001:db8::99]:51234")
+	otherPrefix := sidecarEdge(t, fixture.handler, testOriginOld, "2001:db8:0:1::42:443")
 	first, err := dialSidecarClient(t, bare, fixture.ticket(t, "relay-a", "front-a"))
 	if err != nil {
 		t.Fatalf("bare IPv6 viewer address was rejected: %v", err)
@@ -630,8 +632,13 @@ func TestSidecarAcceptsBareIPv6ViewerAsOneSource(t *testing.T) {
 	waitSnapshot(t, fixture.stats, func(s SidecarSnapshot) bool { return s.CurrentSessions == 1 })
 	if second, err := dialSidecarClient(t, bracketed, fixture.ticket(t, "relay-a", "front-a")); err == nil {
 		_ = second.Close()
-		t.Fatal("bracketed form of the same IPv6 viewer was not counted as the same source")
+		t.Fatal("a second address in the same IPv6 /64 was not counted as the same source")
 	}
+	third, err := dialSidecarClient(t, otherPrefix, fixture.ticket(t, "relay-a", "front-a"))
+	if err != nil {
+		t.Fatalf("a viewer in a different IPv6 /64 was rejected: %v", err)
+	}
+	defer third.Close()
 	snapshot := fixture.stats.Snapshot()
 	if snapshot.ViewerAddressRejections != 0 || snapshot.SourceSessionRejections != 1 {
 		t.Fatalf("viewer address rejections = %d, source session rejections = %d",

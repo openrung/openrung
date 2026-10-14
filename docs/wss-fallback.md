@@ -248,8 +248,8 @@ unbounded resources:
 | Shutdown | Stop upgrades, cancel the loopback dial, close both copy directions, and wait only a bounded drain period. |
 
 `CloudFront-Viewer-Address` may be used for the source key only after the
-origin token is authenticated. Parse the address strictly and use the IP,
-not the ephemeral source port, for source limits. If it is absent or malformed,
+origin token is authenticated. Parse the address strictly and use the IP (for
+IPv6, its /64), not the ephemeral source port, for source limits. If it is absent or malformed,
 fail closed or use a deliberately more restrictive authenticated-edge bucket;
 never trust viewer-supplied `X-Forwarded-For` as an equivalent.
 
