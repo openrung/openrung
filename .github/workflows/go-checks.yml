@@ -79,6 +79,8 @@ jobs:
           bash -n deploy/relay/bunny/hetzner-wss-origin-firewall.sh
           bash -n deploy/relay/bunny/hetzner-wss-origin-firewall_test.sh
           bash deploy/relay/bunny/hetzner-wss-origin-firewall_test.sh
+          bash -n deploy/relay/bunny/host-wss-origin-firewall.sh
+          bash -n deploy/relay/bunny/host-wss-origin-firewall_test.sh
           bash -n deploy/relay/foundation-wss-host.sh
           bash -n deploy/relay/foundation-wss-host_test.sh
           bash deploy/relay/foundation-wss-host_test.sh
@@ -86,6 +88,7 @@ jobs:
           bash -n deploy/relay/egress-limit_test.sh
           command -v nft >/dev/null || sudo apt-get install -y nftables
           sudo bash deploy/relay/egress-limit_test.sh
+          sudo bash deploy/relay/bunny/host-wss-origin-firewall_test.sh
           bash -n deploy/relay/lightsail-up.sh
           bash -n deploy/relay/linode-up.sh
           bash -n deploy/relay/hetzner-up.sh

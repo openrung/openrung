@@ -256,7 +256,7 @@ write_zone_state() { # token
       Enabled:true,
       Suspended:false,
       OriginUrl:"https://relay-y.example:8443",
-      Type:0,
+      Type:1,
       EnableWebSockets:true,
       MaxWebSocketConnections:500,
       EnableLogging:false,
@@ -456,6 +456,23 @@ test_websocket_limit_must_be_a_provider_tier() {
   assert_eq 0 "$(wc -l <"$BUNNY_CALLS" | tr -d ' ')" "WebSocket limit is validated before Bunny API calls"
 }
 
+test_zone_tier_selects_pull_zone_type() {
+  printf 'null\n' >"$ZONE_STATE_FILE"
+  reset_bunny_logs
+  export OPENRUNG_BUNNY_ZONE_TIER=premium
+  if run_create; then fail "unknown zone tier was accepted"; else pass; fi
+  unset OPENRUNG_BUNNY_ZONE_TIER
+  assert_contains "$ERRORS" 'zone tier must be volume or standard' "unknown zone tier rejection"
+  assert_eq 0 "$(wc -l <"$BUNNY_CALLS" | tr -d ' ')" "zone tier is validated before Bunny API calls"
+
+  printf 'null\n' >"$ZONE_STATE_FILE"
+  reset_bunny_logs
+  export OPENRUNG_BUNNY_ZONE_TIER=standard
+  if run_create; then pass; else fail "standard-tier create failed: $(<"$ERRORS")"; fi
+  unset OPENRUNG_BUNNY_ZONE_TIER
+  assert_json "$ZONE_STATE_FILE" '.Type == 0' "standard tier creates a Type 0 zone"
+}
+
 test_origin_hostname_is_canonical_before_suffix_checks() {
   local origin
   printf 'null\n' >"$ZONE_STATE_FILE"
@@ -492,7 +509,7 @@ test_create_and_idempotent_rerun() {
   if run_create; then pass; else fail "fresh create failed: $(<"$ERRORS")"; return; fi
   assert_eq 3 "$(awk -F '\t' '$1 == "POST" {n++} END {print n+0}' "$BUNNY_CALLS")" "create performs zone and two rule writes"
   assert_json "$ZONE_STATE_FILE" '
-    .Enabled == true and .Suspended == false and .Type == 0 and
+    .Enabled == true and .Suspended == false and .Type == 1 and
     .EnableWebSockets == true and .MaxWebSocketConnections == 500 and
     .EnableLogging == false and .LoggingIPAnonymizationEnabled == true and
     .VerifyOriginSSL == true and .AddHostHeader == false and
@@ -519,7 +536,7 @@ test_existing_settings_converge() {
   secret='origin-token-0123456789abcdef0123456789abcdef'
   write_zone_state "$secret"
   jq '
-    .Type=1 |
+    .Type=0 |
     .EnableWebSockets=false |
     .MaxWebSocketConnections=2500 |
     .EnableLogging=true |
@@ -544,7 +561,7 @@ test_existing_settings_converge() {
   assert_eq 1 "$(awk -F '\t' '$1 == "POST" {n++} END {print n+0}' "$BUNNY_CALLS")" "only settings update was needed"
   assert_contains "$BUNNY_CALLS" $'POST\t/pullzone/42' "settings endpoint used"
   assert_json "$ZONE_STATE_FILE" '
-    .Enabled == true and .Type == 0 and .EnableWebSockets == true and .MaxWebSocketConnections == 500 and
+    .Enabled == true and .Type == 1 and .EnableWebSockets == true and .MaxWebSocketConnections == 500 and
     .EnableLogging == false and .LoggingIPAnonymizationEnabled == true and
     .VerifyOriginSSL == true and .AddHostHeader == false and
     .OriginHostHeader == "relay-y.example" and
@@ -676,6 +693,9 @@ test_audit_covers_every_setting_and_trigger_field() {
   secret="$(<"$ORIGIN_TOKEN_FILE")"
   write_zone_state "$secret"
   if run_audit; then pass; else fail "canonical fixture failed audit: $(<"$ERRORS")"; return; fi
+  jq '.EdgeRules[].Triggers[0].Parameter1 = ""' "$ZONE_STATE_FILE" >"${ZONE_STATE_FILE}.tmp"
+  mv "${ZONE_STATE_FILE}.tmp" "$ZONE_STATE_FILE"
+  if run_audit; then pass; else fail "empty-string trigger parameter failed audit: $(<"$ERRORS")"; fi
 
   for key in OriginUrl Type EnableWebSockets MaxWebSocketConnections EnableLogging \
     LoggingIPAnonymizationEnabled VerifyOriginSSL AddHostHeader OriginHostHeader \
@@ -732,6 +752,7 @@ test_inventory_completeness_contract
 test_inventory_origin_and_transport_guards
 test_token_permissions_fail_closed
 test_websocket_limit_must_be_a_provider_tier
+test_zone_tier_selects_pull_zone_type
 test_origin_hostname_is_canonical_before_suffix_checks
 test_unadvertised_zone_is_reported
 test_create_and_idempotent_rerun

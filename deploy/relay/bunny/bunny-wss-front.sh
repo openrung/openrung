@@ -40,6 +40,9 @@ STATE_FILE="${OPENRUNG_WSS_FRONT_STATE_FILE:-}"
 # unless the operator deliberately chooses another positive byte limit.
 BANDWIDTH_LIMIT="${OPENRUNG_WSS_MONTHLY_BANDWIDTH_LIMIT:-500000000000}"
 MAX_WS_CONNECTIONS="${OPENRUNG_WSS_MAX_EDGE_CONNECTIONS:-500}"
+# bunny.net PullZoneType: 1 is the Volume network (fewer PoPs, lower bandwidth
+# price), 0 is Standard.  Volume is the default for relay fronts.
+ZONE_TIER="${OPENRUNG_BUNNY_ZONE_TIER:-volume}"
 
 # bunny.net EdgeRule.ActionType.  SetRequestHeader is what sends the token to
 # the origin; SetResponseHeader is the adjacent value and would publish that
@@ -236,6 +239,11 @@ case "$MAX_WS_CONNECTIONS" in
   500|1000|2500|5000|10000|25000) ;;
   *) die "max WebSocket connections must be a bunny tier: 500, 1000, 2500, 5000, 10000, or 25000" ;;
 esac
+case "$ZONE_TIER" in
+  volume) ZONE_TYPE=1 ;;
+  standard) ZONE_TYPE=0 ;;
+  *) die "zone tier must be volume or standard" ;;
+esac
 
 # Capture the file path in a non-exported shell variable, then remove both the
 # supported file variable and any tempting raw-token variable before the first
@@ -340,10 +348,11 @@ jq -n \
   --arg originUrl "$ORIGIN_URL" \
   --arg originHost "$ORIGIN_HOST" \
   --argjson limit "$BANDWIDTH_LIMIT" \
-  --argjson maxSockets "$MAX_WS_CONNECTIONS" '
+  --argjson maxSockets "$MAX_WS_CONNECTIONS" \
+  --argjson zoneType "$ZONE_TYPE" '
   {
     OriginUrl:$originUrl,
-    Type:0,
+    Type:$zoneType,
     EnableWebSockets:true,
     MaxWebSocketConnections:$maxSockets,
     EnableLogging:false,
@@ -485,7 +494,7 @@ else
           .Triggers[0].Type == $want.Triggers[0].Type and
           .Triggers[0].PatternMatches == $want.Triggers[0].PatternMatches and
           .Triggers[0].PatternMatchingType == $want.Triggers[0].PatternMatchingType and
-          .Triggers[0].Parameter1 == $want.Triggers[0].Parameter1)
+          (.Triggers[0] | has("Parameter1") and (.Parameter1 == null or .Parameter1 == "")))
     ' "${TMP_DIR}/zone-before.json" >/dev/null 2>&1; then
       return
     fi
@@ -528,7 +537,8 @@ jq -e \
     (.Triggers[0] | has("Type") and .Type == 0) and
     (.Triggers[0] | has("PatternMatches") and .PatternMatches == [$bridge]) and
     (.Triggers[0] | has("PatternMatchingType") and .PatternMatchingType == 0) and
-    (.Triggers[0] | has("Parameter1") and .Parameter1 == null);
+    # The rule is written with a null Parameter1; bunny reads it back as "".
+    (.Triggers[0] | has("Parameter1") and (.Parameter1 == null or .Parameter1 == ""));
   def managed_rule($managedHeader):
     .Enabled == true and
     .ActionType == $request and .ActionParameter1 == $managedHeader and

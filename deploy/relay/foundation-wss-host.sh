@@ -533,7 +533,12 @@ REMOTE
     if [[ -n "$FRONT_ID" || -n "$FRONT_URL" ]]; then
       [[ "$FRONT_ID" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]] || die "front ID is invalid"
       [[ "$FRONT_URL" =~ $FRONT_URL_PATTERN ]] || die "front URL is invalid"
-      FRONT_CHECK="test \"\$(sudo grep -c '^OPENRUNG_WSS_FRONTS=' /etc/openrung/relay.env)\" = 1 && sudo grep -Fqx 'OPENRUNG_WSS_FRONTS=${FRONT_ID}=${FRONT_URL}' /etc/openrung/relay.env && sudo test -f /etc/openrung/relay.env.pre-wss-advertise && test \"\$(sudo stat -c '%a %U:%G' /etc/openrung/relay.env.pre-wss-advertise)\" = '600 root:root'"
+      # One check per line: set -e ignores a failure anywhere but the last
+      # command of an && list, so a chained check could never fail the audit.
+      FRONT_CHECK="test \"\$(sudo grep -c '^OPENRUNG_WSS_FRONTS=' /etc/openrung/relay.env)\" = 1
+      sudo grep -Fqx 'OPENRUNG_WSS_FRONTS=${FRONT_ID}=${FRONT_URL}' /etc/openrung/relay.env
+      sudo test -f /etc/openrung/relay.env.pre-wss-advertise
+      test \"\$(sudo stat -c '%a %U:%G' /etc/openrung/relay.env.pre-wss-advertise)\" = '600 root:root'"
       if [[ "$FRONT_URL" == wss://*.b-cdn.net/api/v1/wss-bridge ]]; then
         VIEWER_HEADER_CHECK="test \"\$(sudo grep -c '^OPENRUNG_WSS_VIEWER_ADDRESS_HEADER=' /etc/openrung/wss.env || true)\" = 1; sudo grep -Fqx 'OPENRUNG_WSS_VIEWER_ADDRESS_HEADER=X-OpenRung-Viewer-Address' /etc/openrung/wss.env"
       else

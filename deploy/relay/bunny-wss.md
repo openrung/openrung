@@ -113,7 +113,7 @@ file-backed token value, not merely a token of the right length.
 |---|---|---|
 | `Enabled` | `true` | A disabled pull zone serves no traffic even when every other setting is correct |
 | `OriginUrl` | `https://<origin-host>:8443` | The relay's own origin TLS endpoint |
-| `Type` | `0` (standard) | The volume tier serves from fewer PoPs |
+| `Type` | `1` (volume) | Lower bandwidth price; set `OPENRUNG_BUNNY_ZONE_TIER=standard` for `0` |
 | `EnableWebSockets` | `true` | Off by default; the bridge is a WebSocket |
 | `MaxWebSocketConnections` | `500` initially | Raise only to a supported tier (`1000`, `2500`, `5000`, `10000`, or `25000`); it is billed by connection-minute |
 | `EnableLogging` | `false` | A bridge log is a record of who reached which relay and when |
@@ -241,6 +241,21 @@ untouched.
 
 Only `8443` is restricted. Public Reality on `443` stays open to everyone.
 
+### Providers whose firewall cannot hold the list
+
+A Lightsail instance firewall accepts at most 60 source ranges per port, far
+below bunny's list even after aggregation. On such a host, open `8443` in the
+provider firewall (IPv4 only) and enforce the allowlist one layer down with
+`bunny/host-wss-origin-firewall.sh check|apply RELAY HOST`. It loads an
+`inet openrung_wss_origin` nftables table — bunny edge ranges accepted on
+`8443`, everything else on that port dropped, IPv6 included — with the host's
+own `nft` in one transaction, saves it to
+`/etc/openrung/wss-origin-firewall.nft`, and enables a boot unit that reloads
+it. The unit has no stop action, so stopping it never reopens the port. Apply
+it before opening the provider port, and refresh it on the same schedule as the
+Hetzner rule. `iptables -S` and `ufw status` do not show this table; read it
+with `nft list table inet openrung_wss_origin`.
+
 ## Rollout
 
 Identical to the CloudFront rollout, with the provider steps substituted. Per
@@ -249,7 +264,8 @@ relay, in order, one relay at a time:
 1. Create the unadvertised origin hostname and confirm it resolves to this relay.
 2. `foundation-wss-host.sh origin-tls` — Caddy on `8443` with a publicly trusted
    certificate, access logs disabled, only the bridge path behind it.
-3. `hetzner-wss-origin-firewall.sh apply` — restrict `8443` to bunny edges.
+3. `hetzner-wss-origin-firewall.sh apply` — restrict `8443` to bunny edges
+   (`host-wss-origin-firewall.sh apply` where the provider firewall is too small).
 4. `foundation-wss-host.sh sidecar` — loopback-only sidecar, ticket verifier
    ring, per-front origin token ring.
 5. `bunny-wss-front.sh create` — the pull zone and its edge rule.
@@ -260,6 +276,17 @@ relay, in order, one relay at a time:
    descriptor. It accepts only native `*.cloudfront.net` and `*.b-cdn.net` hosts,
    because a custom hostname could not be verified under the client's no-SNI path.
 8. `foundation-wss-host.sh audit` and a fresh signed directory fetch.
+
+### An IPv6-advertised relay needs `OPENRUNG_LISTEN_HOST=0.0.0.0`
+
+A relay with fronts lets xray own `443` directly and accepts only `0.0.0.0` or
+`127.0.0.1` as its listen host, so the sidecar can reach Reality over IPv4
+loopback. `entrypoint.sh` defaults an unset listen host to `::`, which that
+check rejects: `advertise` then rolls back and exits **1 with no message**. Set
+`OPENRUNG_LISTEN_HOST=0.0.0.0` first. xray's `0.0.0.0` listener is dual-stack,
+so the relay keeps serving its advertised IPv6 address. When the front is
+removed, restore the listen host to unset or `::`: without fronts the
+connection listener honours `0.0.0.0` literally and stops answering on IPv6.
 
 ### The relay must have connection logging off first
 

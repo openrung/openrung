@@ -489,6 +489,13 @@ test_provider_specific_viewer_header_audit() {
   if run_audit "$bunny_url"; then rc=0; else rc=$?; fi
   assert_failure "$rc" "Bunny audit with duplicate viewer headers"
 
+  new_capture audit-bunny-unadvertised
+  prepare_audit_root bunny-unadvertised "$bunny_url" \
+    'OPENRUNG_WSS_VIEWER_ADDRESS_HEADER=X-OpenRung-Viewer-Address'
+  : >"${AUDIT_ROOT}/etc/openrung/relay.env"
+  if run_audit "$bunny_url"; then rc=0; else rc=$?; fi
+  assert_failure "$rc" "Bunny audit when the relay does not advertise the front"
+
   new_capture audit-cloudfront-default
   prepare_audit_root cloudfront-default "$cloudfront_url" __unset__
   if run_audit "$cloudfront_url"; then rc=0; else rc=$?; fi
