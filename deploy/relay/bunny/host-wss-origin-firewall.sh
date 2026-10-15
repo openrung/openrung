@@ -5,9 +5,9 @@
 #
 #   host-wss-origin-firewall.sh check|apply RELAY HOST
 #
-# For providers whose own firewall cannot hold bunny's list, such as Lightsail
-# (60 source ranges per port).  The provider firewall opens the origin port and
-# this table drops every source that is not a bunny edge, one layer down.
+# bunny's list outgrows provider firewalls, so the provider firewall opens the
+# origin port and this table drops every source that is not a bunny edge, one
+# layer down.
 #
 # `check` prints the change without touching the host.  `apply` loads the new
 # table with the host's own nft as one transaction, saves it, and installs a

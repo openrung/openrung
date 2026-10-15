@@ -210,54 +210,30 @@ two-token ring:
 
 bunny publishes its edge addresses at
 `https://api.bunny.net/system/edgeserverlist` as a flat JSON array of individual
-IPv4 addresses — 579 of them on 2026-08-04, collapsing to 437 CIDRs. Hetzner
-Cloud allows up to 500 *effective* rules per firewall, counting one per source
-range, so the exact allowlist fits with little headroom.
+IPv4 addresses, several hundred CIDRs after collapsing. That outgrows provider
+firewalls — a Lightsail instance firewall accepts 60 source ranges per port and
+a Hetzner Cloud firewall 500 effective rules in total — so the allowlist is
+enforced on the host instead, on every provider.
 
-`bunny/hetzner-wss-origin-firewall.sh check|apply FIREWALL_NAME` converges one
-firewall's inbound TCP port-8443 rules to that list. It preserves UDP and every
-unrelated rule, replaces the rule set atomically, verifies the complete
-normalized ruleset afterwards, and fails closed — leaving the firewall
-untouched — on any fetch, parse, plausibility, or capacity failure. An inbound
-TCP all-port rule or range that includes 8443 is rejected rather than silently
-leaving a broader exposure in place. Run `check` first; it prints the exact
-ranges being added and removed without touching anything.
+`bunny/host-wss-origin-firewall.sh check|apply RELAY HOST` loads an
+`inet openrung_wss_origin` nftables table — bunny edge ranges accepted on
+`8443`, everything else on that port dropped, IPv6 included — with the host's
+own `nft` in one transaction, saves it to
+`/etc/openrung/wss-origin-firewall.nft`, and enables a boot unit that reloads
+it. The unit has no stop action, so stopping it never reopens the port. It fails
+closed, leaving the host untouched, on any fetch, parse, or plausibility
+failure. Run `check` first; it prints the exact ranges being added and removed
+without touching anything. `iptables -S` and `ufw status` do not show this
+table; read it with `nft list table inet openrung_wss_origin`.
+
+Apply it before opening the port, then open `8443` in the provider firewall to
+IPv4 only, as a single rule. Only `8443` is restricted. Public Reality on `443`
+stays open to everyone.
 
 Run `check` on a schedule and `apply` whenever bunny's published edge list
 changes; also run both immediately before each relay rollout. A stale allowlist
 can strand new bunny edges or retain access for retired ones, so this is an
 ongoing convergence task rather than one-time provisioning.
-
-If bunny's fleet outgrows the provider ceiling, set
-`OPENRUNG_BUNNY_AGGREGATE_PREFIX=24` to supernet the addresses (240 ranges as of
-this writing) rather than leaving the port unrestricted. That admits neighbours
-inside each block, who still have to authenticate past the per-front origin
-token. Do not raise `OPENRUNG_MAX_EFFECTIVE_RULES` past a limit the provider
-actually enforces.
-
-The rule lives on the existing `openrung-foundation` firewall rather than a
-separate one. Hetzner does not document how rules combine when several firewalls
-apply to one server, and an intersection would silently drop SSH and public
-Reality on a live relay. One firewall carrying all four rules removes the
-question. Rollback is to delete that one rule, which leaves 22, 443, and ICMP
-untouched.
-
-Only `8443` is restricted. Public Reality on `443` stays open to everyone.
-
-### Providers whose firewall cannot hold the list
-
-A Lightsail instance firewall accepts at most 60 source ranges per port, far
-below bunny's list even after aggregation. On such a host, open `8443` in the
-provider firewall (IPv4 only) and enforce the allowlist one layer down with
-`bunny/host-wss-origin-firewall.sh check|apply RELAY HOST`. It loads an
-`inet openrung_wss_origin` nftables table — bunny edge ranges accepted on
-`8443`, everything else on that port dropped, IPv6 included — with the host's
-own `nft` in one transaction, saves it to
-`/etc/openrung/wss-origin-firewall.nft`, and enables a boot unit that reloads
-it. The unit has no stop action, so stopping it never reopens the port. Apply
-it before opening the provider port, and refresh it on the same schedule as the
-Hetzner rule. `iptables -S` and `ufw status` do not show this table; read it
-with `nft list table inet openrung_wss_origin`.
 
 ## Rollout
 
@@ -267,8 +243,8 @@ relay, in order, one relay at a time:
 1. Create the unadvertised origin hostname and confirm it resolves to this relay.
 2. `foundation-wss-host.sh origin-tls` — Caddy on `8443` with a publicly trusted
    certificate, access logs disabled, only the bridge path behind it.
-3. `hetzner-wss-origin-firewall.sh apply` — restrict `8443` to bunny edges
-   (`host-wss-origin-firewall.sh apply` where the provider firewall is too small).
+3. `host-wss-origin-firewall.sh apply`, then open `8443` (IPv4) in the provider
+   firewall — restrict `8443` to bunny edges.
 4. `foundation-wss-host.sh sidecar` — loopback-only sidecar, ticket verifier
    ring, per-front origin token ring.
 5. `bunny-wss-front.sh create` — the pull zone and its edge rule.
@@ -313,9 +289,9 @@ remote preconditions are bare `test`s. It also leaves
 ## Rollback
 
 As in `cloudfront-wss.md`: stop advertising, wait out the ticket TTL, drain up to
-the sidecar's maximum session lifetime, then disable the pull zone. Delete the
-port-8443 firewall rule only after all sessions are gone. Public Reality on `443`
-is untouched at every step.
+the sidecar's maximum session lifetime, then disable the pull zone. Close `8443`
+in the provider firewall only after all sessions are gone. Public Reality on
+`443` is untouched at every step.
 
 A pull zone can be disabled without deletion, which keeps the name reserved.
 Deleting it frees the label for any other bunny customer to claim, so prefer
