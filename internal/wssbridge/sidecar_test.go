@@ -394,6 +394,53 @@ func TestSidecarStreamBudgetRefusesExcessWithoutEndingSession(t *testing.T) {
 	}
 }
 
+func TestSidecarEndsSessionWhenRefusedStreamsAreNeverClosed(t *testing.T) {
+	fixture := newSidecarFixture(t, func(opts *SidecarOptions) {
+		opts.FixedTarget = startEchoTarget(t).Addr().String()
+		opts.NoStreamIdleTimeout = time.Minute
+		opts.StreamRefillPerSecond = 0.001
+	})
+	claims := validClaims(fixture.now, "relay-a", "front-a", "one-stream-ticket-00000003")
+	claims.MaxStreams = 1
+	ticket, err := fixture.signer.Sign(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edge := sidecarEdge(t, fixture.handler, testOriginOld, "198.51.100.14:443")
+	options := sidecarClientOptions(edge, ticket)
+	dialer := options.WebSocketDialer
+	dialer.TLSClientConfig = options.TLSConfig
+	dialer.Subprotocols = []string{Subprotocol}
+	header := http.Header{}
+	header.Set(wsscore.TicketAuthorizationHeader, wsscore.TicketBearerPrefix+ticket)
+	ws, _, err := dialer.DialContext(t.Context(), edge.URL, header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := wsscore.NewWebSocketConn(ws, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := wsscore.NewClientSession(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	waitSnapshot(t, fixture.stats, func(s SidecarSnapshot) bool { return s.CurrentSessions == 1 })
+
+	// Open refused streams and never close them, so each one stays tracked
+	// on the sidecar until its close timeout.
+	for i := 0; i < 16 && !session.IsClosed(); i++ {
+		stream, err := session.Open()
+		if err != nil {
+			break
+		}
+		_, _ = stream.Write([]byte{0})
+		time.Sleep(10 * time.Millisecond)
+	}
+	waitSnapshot(t, fixture.stats, func(s SidecarSnapshot) bool { return s.CurrentSessions == 0 })
+}
+
 func TestSidecarStreamBudgetRefills(t *testing.T) {
 	fixture, endpoint, dialCount := openOneStreamSession(t, 50, "one-stream-ticket-00000002")
 	for i := range 3 {

@@ -470,10 +470,20 @@ func (h *sidecarHandler) serveSession(parent context.Context, ws *websocket.Conn
 	perSessionMax := min(claims.MaxStreams, h.maxStreamsPerSession)
 	perSession := make(chan struct{}, perSessionMax)
 	streamTokens, refilledAt := float64(perSessionMax), time.Now()
+	// A refused stream stays in yamux's stream table until the peer answers
+	// its FIN, or for the stream close timeout. A client that never answers
+	// could otherwise grow that table without bound while the session lives,
+	// so the session ends once it holds this many streams, open or closing.
+	maxTrackedStreams := 2 * perSessionMax
 	var wg sync.WaitGroup
 	for {
 		stream, err := session.AcceptStreamWithContext(ctx)
 		if err != nil {
+			break
+		}
+		if session.NumStreams() > maxTrackedStreams {
+			h.stats.streamLimitRejections.Add(1)
+			_ = stream.Close()
 			break
 		}
 		// max_streams is the session's stream burst, not merely a concurrency
