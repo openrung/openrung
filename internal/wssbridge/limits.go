@@ -22,6 +22,10 @@ const (
 	DefaultHandshakeRatePerSecond       = 20.0
 	DefaultHandshakeBurst               = 200
 	DefaultMaxTrackedSources            = 100_000
+	// A session's stream budget starts at the ticket's max_streams and refills
+	// at this rate, so a long-lived session keeps working while one ticket's
+	// rate of loopback Reality dials stays bounded.
+	DefaultStreamRefillPerSecond = 1.0
 	// Defaults are intentionally generous for carrier-grade NAT. Operators can
 	// tune them, while global caps remain the primary overload boundary.
 	DefaultMaxSessionsPerSource = 512

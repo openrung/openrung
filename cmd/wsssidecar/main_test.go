@@ -67,6 +67,9 @@ func TestParseConfigDefaultsAreRelayLocalAndCGNATFriendly(t *testing.T) {
 	if cfg.MaxPendingHandshakes != wssbridge.DefaultMaxPendingHandshakes {
 		t.Fatalf("max pending handshakes = %d", cfg.MaxPendingHandshakes)
 	}
+	if cfg.StreamRefillRate != wssbridge.DefaultStreamRefillPerSecond {
+		t.Fatalf("stream refill rate = %v", cfg.StreamRefillRate)
+	}
 	if len(cfg.FrontOriginTokens["front-a"]) != 1 {
 		t.Fatalf("front tokens = %+v", cfg.FrontOriginTokens)
 	}
@@ -92,6 +95,7 @@ func TestParseConfigFlagsOverrideBoundedControls(t *testing.T) {
 		"-fixed-target", "[::1]:4443",
 		"-max-sessions-per-source", "700",
 		"-max-streams-per-source", "5000",
+		"-stream-refill-rate", "2.5",
 		"-max-pending-handshakes", "900",
 		"-global-handshake-rate", "3000",
 		"-global-handshake-burst", "12000",
@@ -101,7 +105,7 @@ func TestParseConfigFlagsOverrideBoundedControls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.FixedTarget != "[::1]:4443" || cfg.MaxSessionsPerSource != 700 || cfg.MaxStreamsPerSource != 5000 || cfg.MaxPendingHandshakes != 900 || cfg.GlobalHandshakeRate != 3000 || cfg.GlobalHandshakeBurst != 12000 || cfg.SessionLifetime != 2*time.Hour || cfg.ReplayStatePath != "/var/lib/openrung/custom-replay.journal" {
+	if cfg.FixedTarget != "[::1]:4443" || cfg.MaxSessionsPerSource != 700 || cfg.MaxStreamsPerSource != 5000 || cfg.StreamRefillRate != 2.5 || cfg.MaxPendingHandshakes != 900 || cfg.GlobalHandshakeRate != 3000 || cfg.GlobalHandshakeBurst != 12000 || cfg.SessionLifetime != 2*time.Hour || cfg.ReplayStatePath != "/var/lib/openrung/custom-replay.journal" {
 		t.Fatalf("flag overrides = %+v", cfg)
 	}
 }

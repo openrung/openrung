@@ -65,6 +65,7 @@ type SidecarOptions struct {
 	MaxGlobalStreams             int
 	MaxSessionsPerSource         int
 	MaxStreamsPerSource          int
+	StreamRefillPerSecond        float64
 	GlobalHandshakeRatePerSecond float64
 	GlobalHandshakeBurst         int
 	HandshakeRatePerSecond       float64
@@ -106,6 +107,7 @@ type sidecarHandler struct {
 	pendingHandshakes    chan struct{}
 	globalStreams        chan struct{}
 	maxStreamsPerSession int
+	streamRefill         float64
 	handshakeTimeout     time.Duration
 	dialTimeout          time.Duration
 	firstByteTimeout     time.Duration
@@ -165,6 +167,12 @@ func NewSidecarHandler(opts SidecarOptions) (http.Handler, error) {
 	}
 	if opts.MaxStreamsPerSource, err = boundedDefault(opts.MaxStreamsPerSource, DefaultMaxStreamsPerSource, maxSidecarGlobalStreams, "max streams per source"); err != nil {
 		return nil, err
+	}
+	if opts.StreamRefillPerSecond == 0 {
+		opts.StreamRefillPerSecond = DefaultStreamRefillPerSecond
+	}
+	if opts.StreamRefillPerSecond < 0 || math.IsNaN(opts.StreamRefillPerSecond) || math.IsInf(opts.StreamRefillPerSecond, 0) || opts.StreamRefillPerSecond > 1_000 {
+		return nil, errors.New("stream refill rate must be within (0, 1000]")
 	}
 	if opts.GlobalHandshakeRatePerSecond == 0 {
 		opts.GlobalHandshakeRatePerSecond = DefaultGlobalHandshakeRatePerSecond
@@ -242,6 +250,7 @@ func NewSidecarHandler(opts SidecarOptions) (http.Handler, error) {
 		pendingHandshakes:      make(chan struct{}, opts.MaxPendingHandshakes),
 		globalStreams:          make(chan struct{}, opts.MaxGlobalStreams),
 		maxStreamsPerSession:   opts.MaxStreamsPerSession,
+		streamRefill:           opts.StreamRefillPerSecond,
 		handshakeTimeout:       opts.HandshakeTimeout, dialTimeout: opts.DialTimeout,
 		firstByteTimeout: opts.FirstByteTimeout, streamIdleTimeout: opts.StreamIdleTimeout,
 		sessionLifetime: opts.SessionLifetime, noStreamIdleTimeout: opts.NoStreamIdleTimeout,
@@ -460,22 +469,26 @@ func (h *sidecarHandler) serveSession(parent context.Context, ws *websocket.Conn
 
 	perSessionMax := min(claims.MaxStreams, h.maxStreamsPerSession)
 	perSession := make(chan struct{}, perSessionMax)
-	remainingStreams := perSessionMax
+	streamTokens, refilledAt := float64(perSessionMax), time.Now()
 	var wg sync.WaitGroup
 	for {
 		stream, err := session.AcceptStreamWithContext(ctx)
 		if err != nil {
 			break
 		}
-		// max_streams is a ticket-lifetime authorization budget, not merely a
-		// concurrency hint. Never replenish it when a stream closes: one
-		// consumed ticket can cause at most this many loopback Reality dials.
-		if remainingStreams == 0 {
+		// max_streams is the session's stream burst, not merely a concurrency
+		// hint: it refills at streamRefill per second, so one consumed ticket's
+		// loopback Reality dials stay rate-bounded for the session's lifetime.
+		// Only the excess stream is refused; the session itself stays up.
+		now := time.Now()
+		streamTokens = math.Min(float64(perSessionMax), streamTokens+now.Sub(refilledAt).Seconds()*h.streamRefill)
+		refilledAt = now
+		if streamTokens < 1 {
 			h.stats.streamLimitRejections.Add(1)
 			_ = stream.Close()
-			break
+			continue
 		}
-		remainingStreams--
+		streamTokens--
 		select {
 		case perSession <- struct{}{}:
 		default:
@@ -511,7 +524,7 @@ func (h *sidecarHandler) serveSession(parent context.Context, ws *websocket.Conn
 		// with the VPN on sends nothing for hours, and evicting it would break the
 		// tunnel for no gain against an attacker, who need only open one cheap
 		// stream to reset the same window. Session lifetime, the per-source
-		// session cap, and the ticket's non-replenishing stream budget still bound
+		// session cap, and the ticket's rate-limited stream budget still bound
 		// an in-use session.
 		idle.Disarm()
 		h.stats.acceptedStreams.Add(1)

@@ -51,6 +51,7 @@ type config struct {
 	MaxGlobalStreams     int
 	MaxSessionsPerSource int
 	MaxStreamsPerSource  int
+	StreamRefillRate     float64
 	GlobalHandshakeRate  float64
 	GlobalHandshakeBurst int
 	HandshakeRate        float64
@@ -118,6 +119,7 @@ func serve(ctx context.Context, cfg config, logger *slog.Logger) error {
 		MaxStreamsPerSession: cfg.MaxStreamsPerSession,
 		MaxGlobalStreams:     cfg.MaxGlobalStreams, MaxSessionsPerSource: cfg.MaxSessionsPerSource,
 		MaxStreamsPerSource:          cfg.MaxStreamsPerSource,
+		StreamRefillPerSecond:        cfg.StreamRefillRate,
 		GlobalHandshakeRatePerSecond: cfg.GlobalHandshakeRate,
 		GlobalHandshakeBurst:         cfg.GlobalHandshakeBurst,
 		HandshakeRatePerSecond:       cfg.HandshakeRate, HandshakeBurst: cfg.HandshakeBurst,
@@ -151,6 +153,7 @@ func serve(ctx context.Context, cfg config, logger *slog.Logger) error {
 		"max_global_streams", cfg.MaxGlobalStreams,
 		"max_sessions_per_source", cfg.MaxSessionsPerSource,
 		"max_streams_per_source", cfg.MaxStreamsPerSource,
+		"stream_refill_rate", cfg.StreamRefillRate,
 		"global_handshake_rate", cfg.GlobalHandshakeRate,
 		"global_handshake_burst", cfg.GlobalHandshakeBurst,
 	)
@@ -233,6 +236,7 @@ func parseConfig(args []string, getenv func(string) string) (config, error) {
 		"max-global-streams":      envOr("OPENRUNG_WSS_MAX_GLOBAL_STREAMS", strconv.Itoa(wssbridge.DefaultMaxGlobalStreams)),
 		"max-sessions-per-source": envOr("OPENRUNG_WSS_MAX_SESSIONS_PER_SOURCE", strconv.Itoa(wssbridge.DefaultMaxSessionsPerSource)),
 		"max-streams-per-source":  envOr("OPENRUNG_WSS_MAX_STREAMS_PER_SOURCE", strconv.Itoa(wssbridge.DefaultMaxStreamsPerSource)),
+		"stream-refill-rate":      envOr("OPENRUNG_WSS_STREAM_REFILL_RATE", strconv.FormatFloat(wssbridge.DefaultStreamRefillPerSecond, 'f', -1, 64)),
 		"global-handshake-rate":   envOr("OPENRUNG_WSS_GLOBAL_HANDSHAKE_RATE", strconv.FormatFloat(wssbridge.DefaultGlobalHandshakeRatePerSecond, 'f', -1, 64)),
 		"global-handshake-burst":  envOr("OPENRUNG_WSS_GLOBAL_HANDSHAKE_BURST", strconv.Itoa(wssbridge.DefaultGlobalHandshakeBurst)),
 		"handshake-rate":          envOr("OPENRUNG_WSS_HANDSHAKE_RATE", strconv.FormatFloat(wssbridge.DefaultHandshakeRatePerSecond, 'f', -1, 64)),
@@ -268,6 +272,7 @@ func parseConfig(args []string, getenv func(string) string) (config, error) {
 	maxGlobal := values["max-global-streams"]
 	maxSourceSessions := values["max-sessions-per-source"]
 	maxSourceStreams := values["max-streams-per-source"]
+	streamRefillRate := values["stream-refill-rate"]
 	globalHandshakeRate := values["global-handshake-rate"]
 	globalHandshakeBurst := values["global-handshake-burst"]
 	handshakeRate := values["handshake-rate"]
@@ -290,6 +295,7 @@ func parseConfig(args []string, getenv func(string) string) (config, error) {
 	fs.StringVar(&maxGlobal, "max-global-streams", maxGlobal, "maximum concurrent streams")
 	fs.StringVar(&maxSourceSessions, "max-sessions-per-source", maxSourceSessions, "maximum sessions per trusted source")
 	fs.StringVar(&maxSourceStreams, "max-streams-per-source", maxSourceStreams, "maximum streams per trusted source")
+	fs.StringVar(&streamRefillRate, "stream-refill-rate", streamRefillRate, "per-session stream budget refill per second")
 	fs.StringVar(&globalHandshakeRate, "global-handshake-rate", globalHandshakeRate, "global handshake tokens per second")
 	fs.StringVar(&globalHandshakeBurst, "global-handshake-burst", globalHandshakeBurst, "global handshake burst")
 	fs.StringVar(&handshakeRate, "handshake-rate", handshakeRate, "per-source handshake tokens per second")
@@ -335,6 +341,9 @@ func parseConfig(args []string, getenv func(string) string) (config, error) {
 		return config{}, err
 	}
 	if cfg.MaxStreamsPerSource, err = parsePositiveInt("max-streams-per-source", maxSourceStreams); err != nil {
+		return config{}, err
+	}
+	if cfg.StreamRefillRate, err = parsePositiveFloat("stream-refill-rate", streamRefillRate); err != nil {
 		return config{}, err
 	}
 	if cfg.GlobalHandshakeRate, err = parsePositiveFloat("global-handshake-rate", globalHandshakeRate); err != nil {
