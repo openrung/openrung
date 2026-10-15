@@ -429,16 +429,40 @@ func TestSidecarEndsSessionWhenRefusedStreamsAreNeverClosed(t *testing.T) {
 	waitSnapshot(t, fixture.stats, func(s SidecarSnapshot) bool { return s.CurrentSessions == 1 })
 
 	// Open refused streams and never close them, so each one stays tracked
-	// on the sidecar until its close timeout.
-	for i := 0; i < 16 && !session.IsClosed(); i++ {
+	// on the sidecar until its close timeout. Past the bound's allowance for a
+	// cooperating client, the sidecar must end the session.
+	for i := 0; i < 2*yamuxAcceptBacklog && !session.IsClosed(); i++ {
 		stream, err := session.Open()
 		if err != nil {
 			break
 		}
 		_, _ = stream.Write([]byte{0})
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(time.Millisecond)
 	}
 	waitSnapshot(t, fixture.stats, func(s SidecarSnapshot) bool { return s.CurrentSessions == 0 })
+}
+
+func TestSidecarCooperativeBurstKeepsSession(t *testing.T) {
+	fixture, endpoint, _ := openOneStreamSession(t, 0.001, "one-stream-ticket-00000004")
+	var wg sync.WaitGroup
+	var carried atomic.Int32
+	for i := range 16 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if echoOnce(t, endpoint, fmt.Sprintf("burst-%d", i)) {
+				carried.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if carried.Load() == 0 {
+		t.Fatal("no stream in the burst was carried")
+	}
+	time.Sleep(200 * time.Millisecond)
+	if snapshot := fixture.stats.Snapshot(); snapshot.CurrentSessions != 1 {
+		t.Fatalf("current sessions = %d after a cooperative burst, want 1", snapshot.CurrentSessions)
+	}
 }
 
 func TestSidecarStreamBudgetRefills(t *testing.T) {

@@ -473,8 +473,10 @@ func (h *sidecarHandler) serveSession(parent context.Context, ws *websocket.Conn
 	// A refused stream stays in yamux's stream table until the peer answers
 	// its FIN, or for the stream close timeout. A client that never answers
 	// could otherwise grow that table without bound while the session lives,
-	// so the session ends once it holds this many streams, open or closing.
-	maxTrackedStreams := 2 * perSessionMax
+	// so the session ends once the table outgrows what a cooperating client
+	// can produce: the streams it may carry, one closing handshake for each,
+	// and a full accept backlog of streams not yet accepted.
+	maxTrackedStreams := 2*perSessionMax + yamuxAcceptBacklog
 	var wg sync.WaitGroup
 	for {
 		stream, err := session.AcceptStreamWithContext(ctx)

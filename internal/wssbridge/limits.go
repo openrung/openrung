@@ -32,7 +32,10 @@ const (
 	DefaultMaxStreamsPerSource  = 4096
 	DefaultNoStreamIdleTimeout  = wsscore.DefaultNoStreamIdleTimeout
 
-	maxTrackedSources   = 1_000_000
+	maxTrackedSources = 1_000_000
+	// yamuxAcceptBacklog is wsscore's yamux AcceptBacklog: the most streams a
+	// peer can have opened that the sidecar has not yet accepted.
+	yamuxAcceptBacklog  = 256
 	maxTokenRefillDelay = 100 * 365 * 24 * time.Hour
 )
 
