@@ -684,20 +684,25 @@ func accessStoreConformance(t *testing.T, store AccessStore) {
 		t.Fatalf("unknown SetUserStatus: %v", err)
 	}
 
-	// Concurrent first authentications of one key yield one user.
+	// Concurrent first authentications of one key yield one user, and with
+	// the budget enabled exactly one of them pays: the source still has one
+	// of its two burst slots afterwards, and only one.
 	keyC := keyOf(t)
+	later := now.Add(48 * time.Hour)
 	var wg sync.WaitGroup
 	ids := make([]string, 8)
+	createds := make([]bool, 8)
 	errs := make([]error, 8)
 	for i := range ids {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			user, _, err := store.AuthenticateUser(ctx, keyC, "src-"+strconv.Itoa(100+i), nil, now)
-			ids[i], errs[i] = user.ID, err
+			user, created, err := store.AuthenticateUser(ctx, keyC, "src-race", windows, later)
+			ids[i], createds[i], errs[i] = user.ID, created, err
 		}(i)
 	}
 	wg.Wait()
+	creators := 0
 	for i := range ids {
 		if errs[i] != nil {
 			t.Fatalf("concurrent auth %d: %v", i, errs[i])
@@ -705,6 +710,28 @@ func accessStoreConformance(t *testing.T, store AccessStore) {
 		if ids[i] != ids[0] {
 			t.Fatalf("concurrent auths minted distinct users: %q vs %q", ids[i], ids[0])
 		}
+		if createds[i] {
+			creators++
+		}
+	}
+	if creators != 1 {
+		t.Fatalf("%d concurrent auths reported created=true, want exactly 1", creators)
+	}
+	if _, created, err := store.AuthenticateUser(ctx, keyOf(t), "src-race", windows, later.Add(time.Minute)); err != nil || !created {
+		t.Fatalf("second burst slot after the race: %v %v (the race charged more than one slot)", created, err)
+	}
+	if _, _, err := store.AuthenticateUser(ctx, keyOf(t), "src-race", windows, later.Add(2*time.Minute)); !errors.As(err, &limited) {
+		t.Fatalf("third identity after the race: %v, want EnrollmentLimitedError", err)
+	}
+
+	// A refusal rolls back the would-be user as well: the refused key is
+	// still unknown and can enroll elsewhere.
+	refusedKey := keyOf(t)
+	if _, _, err := store.AuthenticateUser(ctx, refusedKey, "src-race", windows, later.Add(3*time.Minute)); !errors.As(err, &limited) {
+		t.Fatalf("refused key: %v", err)
+	}
+	if _, created, err := store.AuthenticateUser(ctx, refusedKey, "src-fresh", windows, later.Add(4*time.Minute)); err != nil || !created {
+		t.Fatalf("refused key enrolling from another source: %v %v (refusal left a user row behind)", created, err)
 	}
 }
 

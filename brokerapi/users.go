@@ -245,9 +245,12 @@ func VerifyUserAuth(pub *ecdsa.PublicKey, challenge, signature string) bool {
 }
 
 // RequestUserChallenge asks one endpoint-authenticated broker front for a
-// challenge. Like WSS tickets, the exchange is refused on endpoint-unbound
-// fronts: the following authentication returns a bearer token, which a
-// relay-list signature cannot keep confidential from an impersonating front.
+// challenge. The exchange is refused on an endpoint-unbound front: the
+// following authentication returns a bearer token, which a relay-list
+// signature cannot keep confidential from an impersonating front. The native
+// Azure front counts as endpoint-bound only when the caller selected its
+// hostname-verified SNI mode (WithAzureSNI); its no-SNI fallback mode, which
+// authenticates a shared edge rather than the exact endpoint, is refused.
 // The telemetry client identity is deliberately never attached: the user ID
 // stays unlinked from the installation's telemetry ID on the wire.
 func (c *Client) RequestUserChallenge(ctx context.Context, brokerURL string) (UserChallenge, error) {
@@ -255,7 +258,7 @@ func (c *Client) RequestUserChallenge(ctx context.Context, brokerURL string) (Us
 	if err != nil {
 		return UserChallenge{}, err
 	}
-	if EndpointUnboundBrokerFront(brokerURL) {
+	if EndpointUnboundBrokerFront(brokerURL) && !AzureSNIRequested(ctx) {
 		return UserChallenge{}, errors.New("user authentication requires TLS authentication of the exact broker endpoint")
 	}
 	body, err := c.postUserAuth(ctx, endpoint, nil)
@@ -289,7 +292,7 @@ func (c *Client) AuthenticateUser(ctx context.Context, brokerURL string, request
 	if err != nil {
 		return UserAuthResponse{}, err
 	}
-	if EndpointUnboundBrokerFront(brokerURL) {
+	if EndpointUnboundBrokerFront(brokerURL) && !AzureSNIRequested(ctx) {
 		return UserAuthResponse{}, errors.New("user authentication requires TLS authentication of the exact broker endpoint")
 	}
 	payload, err := json.Marshal(request)

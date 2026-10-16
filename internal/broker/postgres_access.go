@@ -39,10 +39,37 @@ func (s *PostgresStore) AuthenticateUser(parent context.Context, canonicalPublic
 		return User{}, false, err
 	}
 
-	// A new identity is charged against every window inside this transaction.
-	// The upsert resets a window that has ended and otherwise increments it;
-	// exceeding any limit rolls the whole transaction back, so a refused
-	// attempt leaves every counter as it was.
+	// Create the user first, then charge the budget, all in this transaction.
+	// The unique index on public_key serialises concurrent first
+	// authentications of one key: the loser blocks until the winner commits,
+	// then its DO NOTHING returns no row and it takes the existing-user path
+	// below without ever reaching the counters — so exactly the transaction
+	// that creates a user pays for it. If the winner instead rolls back on an
+	// exhausted budget, the loser proceeds as the creator. Exceeding any
+	// window rolls the whole transaction back, user row and charges alike,
+	// so a refused attempt leaves everything as it was.
+	id, err := newUserID()
+	if err != nil {
+		return User{}, false, err
+	}
+	user, err = scanUser(tx.QueryRow(ctx, `
+		INSERT INTO users (id, public_key, status, created_at, last_auth_at)
+		VALUES ($1, $2, $3, $4, $4)
+		ON CONFLICT (public_key) DO NOTHING
+		RETURNING `+userColumns, id, canonicalPublicKey, brokerapi.UserStatusEnabled, now))
+	if errors.Is(err, pgx.ErrNoRows) {
+		user, err = scanUser(tx.QueryRow(ctx, `
+			UPDATE users SET last_auth_at = $2 WHERE public_key = $1
+			RETURNING `+userColumns, canonicalPublicKey, now))
+		if err != nil {
+			return User{}, false, fmt.Errorf("adopt concurrently created user: %w", err)
+		}
+		return user, false, tx.Commit(ctx)
+	}
+	if err != nil {
+		return User{}, false, fmt.Errorf("store user: %w", err)
+	}
+
 	var retryAfter time.Duration
 	for _, w := range windows {
 		var count int
@@ -72,32 +99,10 @@ func (s *PostgresStore) AuthenticateUser(parent context.Context, canonicalPublic
 		}
 	}
 	if retryAfter > 0 {
+		// Rolls back the user row inserted above together with the charges.
 		return User{}, false, &EnrollmentLimitedError{RetryAfter: retryAfter}
 	}
-
-	id, err := newUserID()
-	if err != nil {
-		return User{}, false, err
-	}
-	user, err = scanUser(tx.QueryRow(ctx, `
-		INSERT INTO users (id, public_key, status, created_at, last_auth_at)
-		VALUES ($1, $2, $3, $4, $4)
-		ON CONFLICT (public_key) DO NOTHING
-		RETURNING `+userColumns, id, canonicalPublicKey, brokerapi.UserStatusEnabled, now))
-	created := true
-	if errors.Is(err, pgx.ErrNoRows) {
-		// A concurrent first authentication of the same key committed between
-		// our UPDATE and INSERT: adopt its row. The budget charge above stands
-		// for this rare race; it is one unit, not an unbounded leak.
-		created = false
-		user, err = scanUser(tx.QueryRow(ctx, `
-			UPDATE users SET last_auth_at = $2 WHERE public_key = $1
-			RETURNING `+userColumns, canonicalPublicKey, now))
-	}
-	if err != nil {
-		return User{}, false, fmt.Errorf("store user: %w", err)
-	}
-	return user, created, tx.Commit(ctx)
+	return user, true, tx.Commit(ctx)
 }
 
 func (s *PostgresStore) UserByID(parent context.Context, id string) (User, error) {

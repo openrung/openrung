@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -326,5 +327,66 @@ func TestUserURLs(t *testing.T) {
 	auth, err := UserAuthURL("https://broker.example.org")
 	if err != nil || auth != "https://broker.example.org/api/v1/users/auth" {
 		t.Fatalf("auth URL = %q, %v", auth, err)
+	}
+}
+
+// azureProbeTransport stands in for the network on the native Azure front:
+// it records whether a request reached it and in which TLS mode, and answers
+// a valid challenge.
+type azureProbeTransport struct {
+	calls   int
+	sniMode bool
+}
+
+func (t *azureProbeTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	t.calls++
+	t.sniMode = AzureSNIRequested(r.Context())
+	body := `{"challenge":"abc","expires_at":"2999-01-01T00:00:00Z"}`
+	return &http.Response{
+		StatusCode: http.StatusCreated,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    r,
+	}, nil
+}
+
+// The native Azure front is endpoint-unbound only in its no-SNI fallback
+// mode. With the hostname-verified SNI mode selected (as discovery does when
+// that mode won), user authentication proceeds; without it, it is refused
+// before any request leaves the client.
+func TestClientUserAuthAzureFrontDependsOnSNIMode(t *testing.T) {
+	probe := &azureProbeTransport{}
+	client := NewClient(&http.Client{Transport: probe}, Options{})
+	request, _ := SignUserAuth(testUserKey(t), "abc")
+
+	ctx := WithAzureSNI(context.Background(), true)
+	if _, err := client.RequestUserChallenge(ctx, AzureBrokerURL); err != nil {
+		t.Fatalf("challenge on Azure with SNI: %v", err)
+	}
+	if probe.calls != 1 || !probe.sniMode {
+		t.Fatalf("SNI-mode challenge reached the transport %d times (sni=%v), want once in SNI mode", probe.calls, probe.sniMode)
+	}
+	if _, err := client.AuthenticateUser(ctx, AzureBrokerURL, request); err == nil || probe.calls != 2 || !probe.sniMode {
+		// The probe answers a challenge body, so decoding fails after the
+		// request was made; what matters is that it was made, in SNI mode.
+		t.Fatalf("auth on Azure with SNI: calls=%d sni=%v err=%v", probe.calls, probe.sniMode, err)
+	}
+
+	probe.calls = 0
+	noSNI := WithAzureSNI(context.Background(), false)
+	for name, call := range map[string]func() error{
+		"challenge": func() error { _, err := client.RequestUserChallenge(noSNI, AzureBrokerURL); return err },
+		"auth":      func() error { _, err := client.AuthenticateUser(noSNI, AzureBrokerURL, request); return err },
+	} {
+		if err := call(); err == nil || !strings.Contains(err.Error(), "exact broker endpoint") {
+			t.Errorf("%s on Azure without SNI: %v, want refusal", name, err)
+		}
+	}
+	if probe.calls != 0 {
+		t.Fatalf("no-SNI requests reached the transport %d times", probe.calls)
+	}
+	// Other fronts never consult the mode.
+	if _, err := client.RequestUserChallenge(noSNI, CloudFrontBrokerURL); err != nil {
+		t.Fatalf("CloudFront without the Azure flag: %v", err)
 	}
 }
