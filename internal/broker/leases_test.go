@@ -206,6 +206,40 @@ func leaseStoreConformance(t *testing.T, store leaseTestStore) {
 	if after.Revision != before.Revision {
 		t.Fatalf("a skipped relay advanced from %d to %d", before.Revision, after.Revision)
 	}
+	// A skipped relay costs the user nothing: at cap 1 with a live lease on
+	// relay E, asking for full relay A evicts nothing and issues nothing.
+	relayE := "relay_" + strings.Repeat("e", 32)
+	held, err := issue(other.ID, []string{relayE}, later, 1, 2000)
+	if err != nil || len(held.Leases) != 1 {
+		t.Fatalf("seed lease on E = %+v, %v", held, err)
+	}
+	none, err := issue(other.ID, []string{relayA.ID}, later.Add(time.Second), 1, 1)
+	if err != nil || len(none.Leases) != 0 || len(none.ChangedRelayIDs) != 0 {
+		t.Fatalf("issue on a full relay at the user cap = %+v, %v", none, err)
+	}
+	if kept, _ := store.LeaseByID(ctx, held.Leases[0].ID); !kept.RevokedAt.IsZero() {
+		t.Fatal("a lease was evicted to make room for a relay that could not take one")
+	}
+	// Mixed request at cap 2 with live leases on E (older) and G: one full
+	// relay, one with room — exactly one eviction, of the oldest lease.
+	relayF, relayG := "relay_"+strings.Repeat("f", 32), "relay_"+strings.Repeat("1", 32)
+	heldG, err := issue(other.ID, []string{relayG}, later.Add(2*time.Second), 2, 2000)
+	if err != nil || len(heldG.Leases) != 1 {
+		t.Fatalf("seed lease on G = %+v, %v", heldG, err)
+	}
+	mixed, err := issue(other.ID, []string{relayA.ID, relayF}, later.Add(3*time.Second), 2, 1)
+	if err != nil || len(mixed.Leases) != 1 || mixed.Leases[0].RelayID != relayF {
+		t.Fatalf("mixed issue = %+v, %v", mixed, err)
+	}
+	if evictedE, _ := store.LeaseByID(ctx, held.Leases[0].ID); evictedE.RevokedAt.IsZero() {
+		t.Fatal("the issuable create did not evict the oldest lease")
+	}
+	if keptG, _ := store.LeaseByID(ctx, heldG.Leases[0].ID); !keptG.RevokedAt.IsZero() {
+		t.Fatal("the full relay's skipped create evicted a second lease")
+	}
+	if !equalStrings(mixed.ChangedRelayIDs, sortedUnique([]string{relayE, relayF})) {
+		t.Fatalf("mixed changed relays = %v", mixed.ChangedRelayIDs)
+	}
 
 	// Acks only rise and share the guard.
 	if err := store.AckLeaseRevision(ctx, relayA.ID, relayA.LeaseToken, 2, later); err != nil {
@@ -607,30 +641,48 @@ func equalStrings(a, b []string) bool {
 	return true
 }
 
-func TestLeaseNotifierBroadcastsPerKey(t *testing.T) {
+func TestLeaseNotifierBroadcastsPerKeyAndReleases(t *testing.T) {
 	n := newLeaseNotifier()
 	a1, a2, b := n.changedC("a"), n.changedC("a"), n.changedC("b")
-	if a1 != a2 {
+	if a1.C != a2.C {
 		t.Fatal("two subscribers before a broadcast must share one generation")
 	}
 	n.notifyChanged("a")
 	select {
-	case <-a1:
+	case <-a1.C:
 	default:
 		t.Fatal("a subscriber was not woken")
 	}
 	select {
-	case <-b:
+	case <-b.C:
 		t.Fatal("an unrelated key was woken")
 	default:
 	}
-	if n.changedC("a") == a1 {
+	a3 := n.changedC("a")
+	if a3.C == a1.C {
 		t.Fatal("a woken generation was reused")
+	}
+	// Releasing after a broadcast is harmless and must not disturb the new
+	// generation; releasing the last live subscriber drops the entry.
+	a1.release()
+	a2.release()
+	a1.release()
+	if n.waiting() != 2 {
+		t.Fatalf("waiting = %d after releasing a closed generation, want a3 and b", n.waiting())
+	}
+	a3.release()
+	b.release()
+	if n.waiting() != 0 {
+		t.Fatalf("waiting = %d after releasing everything", n.waiting())
 	}
 	n.notifyChanged("unknown") // no waiter: nothing to do, must not panic
 	applied := n.appliedC("a")
 	n.notifyApplied("a")
-	<-applied
+	<-applied.C
+	applied.release()
+	if n.waiting() != 0 {
+		t.Fatalf("waiting = %d", n.waiting())
+	}
 }
 
 func TestPlanLeaseIssueEvictsLeastRecentlyRenewedOutsideRequest(t *testing.T) {
@@ -648,13 +700,22 @@ func TestPlanLeaseIssueEvictsLeastRecentlyRenewedOutsideRequest(t *testing.T) {
 	if _, ok := plan.extend["r1"]; !ok || !equalStrings(plan.create, []string{"r5", "r6"}) {
 		t.Fatalf("extend/create = %v / %v", plan.extend, plan.create)
 	}
-	// 4 live + 2 new − cap 4 = 2 victims: the two renewed earliest outside
-	// the request, ties broken by ID (2 then 4, never the requested r1).
-	if len(plan.victims["r2"]) != 1 || len(plan.victims["r4"]) != 1 || len(plan.victims) != 2 {
-		t.Fatalf("victims = %v", plan.victims)
-	}
-	if !equalStrings(plan.affected, []string{"r1", "r2", "r4", "r5", "r6"}) {
+	// Every relay an eviction could touch is in the lock set.
+	if !equalStrings(plan.affected, []string{"r1", "r2", "r3", "r4", "r5", "r6"}) {
 		t.Fatalf("affected = %v", plan.affected)
+	}
+	// 4 live + 2 issuable − cap 4 = 2 victims: the two renewed earliest
+	// outside the request, ties broken by ID (2 then 4, never the requested r1).
+	victims := plan.victims(map[string]bool{"r5": true, "r6": true})
+	if len(victims["r2"]) != 1 || len(victims["r4"]) != 1 || len(victims) != 2 {
+		t.Fatalf("victims = %v", victims)
+	}
+	// A relay without room is not issuable and costs no eviction.
+	if victims := plan.victims(map[string]bool{"r5": true}); len(victims) != 1 || len(victims["r2"]) != 1 {
+		t.Fatalf("victims with one full relay = %v", victims)
+	}
+	if victims := plan.victims(map[string]bool{}); len(victims) != 0 {
+		t.Fatalf("victims with every relay full = %v", victims)
 	}
 	if _, err := planLeaseIssue(LeaseIssueRequest{RelayIDs: []string{"a", "b", "c"}, MaxPerUser: 2}.normalized(), nil); !errors.Is(err, ErrLeaseCapExceeded) {
 		t.Fatalf("over-wide = %v", err)

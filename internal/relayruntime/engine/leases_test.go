@@ -324,3 +324,71 @@ func TestDirectSessionDoesNotAckPartialInstalls(t *testing.T) {
 		return ok && acked == revision && users.has("11111111-2222-4333-8444-555555555557")
 	})
 }
+
+// A failed first ack is retried until it succeeds, and the relay goes online
+// on the retry that lands — never earlier, never not at all.
+func TestDirectSessionRetriesFailedFirstAckBeforeGoingOnline(t *testing.T) {
+	shortRotation(t, time.Hour)
+	shortLeaseTiming(t)
+	broker := &fakeBroker{leaseCapable: true, failLeaseAcks: true}
+	users := newRecordingUsers()
+	eng, _ := startRotatingSession(t, broker, users)
+
+	eventually(t, 5*time.Second, "first poll", func() bool { polls, _ := broker.leaseStats(); return polls >= 1 })
+	time.Sleep(300 * time.Millisecond)
+	if eng.Status().Phase == PhaseOnline {
+		t.Fatal("online while every ack fails")
+	}
+	broker.mu.Lock()
+	broker.failLeaseAcks = false
+	broker.mu.Unlock()
+	eventually(t, 5*time.Second, "online after the retried ack", func() bool { return eng.Status().Phase == PhaseOnline })
+	if acked, ok := broker.lastAcked(); !ok || acked != 0 {
+		t.Fatalf("acks = %v", broker.ackedRevisions())
+	}
+
+	// The same holds at a higher revision: a set installed under failing
+	// acks is acked once acks work again, with no further set change.
+	broker.mu.Lock()
+	broker.failLeaseAcks = true
+	broker.mu.Unlock()
+	revision := broker.setLeases(leaseEntry("hhhh", "11111111-2222-4333-8444-555555555558", time.Hour))
+	eventually(t, 3*time.Second, "installed", func() bool { return users.has("11111111-2222-4333-8444-555555555558") })
+	time.Sleep(200 * time.Millisecond)
+	broker.mu.Lock()
+	broker.failLeaseAcks = false
+	broker.mu.Unlock()
+	eventually(t, 5*time.Second, "retried ack", func() bool { acked, _ := broker.lastAcked(); return acked == revision })
+}
+
+// A re-registration the lease channel never saw as a 404 (the heartbeat
+// re-registered between polls) still restarts synchronisation on the new
+// token: the next poll is a full fetch and its set is acked again, so the
+// broker's reset applied revision is covered even at an unchanged revision.
+func TestDirectSessionReRegistrationWithoutLease404RefetchesAndReacks(t *testing.T) {
+	shortRotation(t, time.Hour)
+	shortLeaseTiming(t)
+	broker := &fakeBroker{leaseCapable: true}
+	users := newRecordingUsers()
+	eng, _ := startRotatingSession(t, broker, users)
+	eventually(t, 5*time.Second, "online", func() bool { return eng.Status().Phase == PhaseOnline })
+	revision := broker.setLeases(leaseEntry("iiii", "11111111-2222-4333-8444-555555555559", time.Hour))
+	eventually(t, 3*time.Second, "installed", func() bool { acked, _ := broker.lastAcked(); return acked == revision })
+	acksBefore := len(broker.ackedRevisions())
+	pollsBefore := len(broker.pollAfters())
+
+	// Only the heartbeat sees the 404; lease polls keep succeeding.
+	broker.mu.Lock()
+	broker.notFoundOnce = true
+	broker.mu.Unlock()
+	eventually(t, 5*time.Second, "re-registration", func() bool { return eng.Status().RelayID == "relay_2" })
+	eventually(t, 5*time.Second, "full poll and ack on the new token", func() bool {
+		afters, acks := broker.pollAfters(), broker.ackedRevisions()
+		_, bearers := broker.leaseStats()
+		fullOnNew := false
+		for _, after := range afters[pollsBefore:] {
+			fullOnNew = fullOnNew || after < 0
+		}
+		return fullOnNew && len(acks) > acksBefore && acks[len(acks)-1] == revision && bearers[len(bearers)-1] == "lease_relay_2"
+	})
+}

@@ -221,21 +221,37 @@ func sortedUnique(ids []string) []string {
 
 // leaseNotifier wakes long polls and ack waiters in process. It is a hint,
 // not state: a woken waiter re-reads the store, which is the truth, and a
-// missed wakeup costs at most one poll hold.
+// missed wakeup costs at most one poll hold. Entries exist only while someone
+// waits: a subscriber that leaves without a broadcast releases its
+// subscription, so unauthenticated or abandoned requests retain nothing.
 type leaseNotifier struct {
 	mu      sync.Mutex
-	changed map[string]chan struct{}
-	applied map[string]chan struct{}
+	changed map[string]*leaseWaiters
+	applied map[string]*leaseWaiters
+}
+
+// leaseWaiters is one generation of subscribers to one key.
+type leaseWaiters struct {
+	ch   chan struct{}
+	refs int
+}
+
+// leaseSubscription is one subscriber's handle: C closes on the next
+// broadcast; release drops the subscription (idempotent, safe after a
+// broadcast).
+type leaseSubscription struct {
+	C       <-chan struct{}
+	release func()
 }
 
 func newLeaseNotifier() *leaseNotifier {
-	return &leaseNotifier{changed: make(map[string]chan struct{}), applied: make(map[string]chan struct{})}
+	return &leaseNotifier{changed: make(map[string]*leaseWaiters), applied: make(map[string]*leaseWaiters)}
 }
 
-// changedC returns a channel closed on the next desired-set change of relayID.
-// Subscribe before reading the set so a change between the read and the wait
-// cannot be lost.
-func (n *leaseNotifier) changedC(relayID string) <-chan struct{} {
+// changedC subscribes to the next desired-set change of relayID. Subscribe
+// before re-reading the set so a change between the read and the wait cannot
+// be lost, and release the subscription when done waiting.
+func (n *leaseNotifier) changedC(relayID string) leaseSubscription {
 	return subscribe(&n.mu, n.changed, relayID)
 }
 
@@ -244,8 +260,8 @@ func (n *leaseNotifier) notifyChanged(relayIDs ...string) {
 	broadcast(&n.mu, n.changed, relayIDs)
 }
 
-// appliedC returns a channel closed on the next ack from relayID.
-func (n *leaseNotifier) appliedC(relayID string) <-chan struct{} {
+// appliedC subscribes to the next ack from relayID.
+func (n *leaseNotifier) appliedC(relayID string) leaseSubscription {
 	return subscribe(&n.mu, n.applied, relayID)
 }
 
@@ -254,23 +270,45 @@ func (n *leaseNotifier) notifyApplied(relayID string) {
 	broadcast(&n.mu, n.applied, []string{relayID})
 }
 
-func subscribe(mu *sync.Mutex, waiters map[string]chan struct{}, key string) <-chan struct{} {
-	mu.Lock()
-	defer mu.Unlock()
-	ch, ok := waiters[key]
-	if !ok {
-		ch = make(chan struct{})
-		waiters[key] = ch
-	}
-	return ch
+// waiting reports how many keys currently have subscribers (tests).
+func (n *leaseNotifier) waiting() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return len(n.changed) + len(n.applied)
 }
 
-func broadcast(mu *sync.Mutex, waiters map[string]chan struct{}, keys []string) {
+func subscribe(mu *sync.Mutex, waiters map[string]*leaseWaiters, key string) leaseSubscription {
+	mu.Lock()
+	defer mu.Unlock()
+	entry, ok := waiters[key]
+	if !ok {
+		entry = &leaseWaiters{ch: make(chan struct{})}
+		waiters[key] = entry
+	}
+	entry.refs++
+	released := false
+	return leaseSubscription{C: entry.ch, release: func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if released {
+			return
+		}
+		released = true
+		entry.refs--
+		// Only the generation still registered is removable; a broadcast
+		// already dropped and replaced closed ones.
+		if entry.refs == 0 && waiters[key] == entry {
+			delete(waiters, key)
+		}
+	}}
+}
+
+func broadcast(mu *sync.Mutex, waiters map[string]*leaseWaiters, keys []string) {
 	mu.Lock()
 	defer mu.Unlock()
 	for _, key := range keys {
-		if ch, ok := waiters[key]; ok {
-			close(ch)
+		if entry, ok := waiters[key]; ok {
+			close(entry.ch)
 			delete(waiters, key)
 		}
 	}

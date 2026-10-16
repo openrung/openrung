@@ -35,23 +35,31 @@ var (
 
 // leaseSession is the mutex-guarded (relay ID, lease token) the syncer
 // authenticates with. sendHeartbeat updates it after a re-registration, and
-// the syncer re-reads it after a 404 instead of ending the session.
+// the syncer re-reads it on every cycle: a new token is a new broker-side
+// session whose applied revision the broker reset, so the syncer starts that
+// session with a full fetch and ack whether or not it ever saw a 404. The
+// generation counter is how it notices the change.
 type leaseSession struct {
-	mu    sync.Mutex
-	id    string
-	token string
+	mu         sync.Mutex
+	id         string
+	token      string
+	generation uint64
 }
 
 func (s *leaseSession) set(id, token string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if id == s.id && token == s.token {
+		return
+	}
 	s.id, s.token = id, token
+	s.generation++
 }
 
-func (s *leaseSession) get() (id, token string) {
+func (s *leaseSession) get() (id, token string, generation uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.id, s.token
+	return s.id, s.token, s.generation
 }
 
 // installedLease is one lease the relay's Xray currently accepts.
@@ -80,12 +88,19 @@ type leaseSync struct {
 	mu        sync.Mutex
 	installed map[string]installedLease // by lease ID
 	// applied is the revision of the set the relay has fully installed;
-	// acked is the highest revision the broker has confirmed receiving.
-	applied, acked int64
+	// pendingAck is set from the moment a set is installed until the broker
+	// has confirmed the ack for it, so a failed ack is retried before the
+	// next poll no matter which path produced it.
+	applied    int64
+	pendingAck bool
 	// full asks the next poll for the whole set with no hold: at session
-	// start, after a re-registration, or after a reconcile that failed.
+	// start, after a re-registration, or after a reconcile that failed. A
+	// full fetch is always acked, even at an unchanged revision — that is
+	// how a new broker-side session learns the set is installed.
 	full bool
-	// announced records that onApplied has run for this session.
+	// generation is the leaseSession generation this state belongs to.
+	generation uint64
+	// announced records that onApplied has run.
 	announced bool
 }
 
@@ -149,25 +164,31 @@ func (l *leaseSync) run(ctx context.Context) {
 }
 
 // step performs one poll → reconcile → ack cycle and reports whether it
-// completed without error. A pending ack (applied but not yet confirmed) is
-// retried before polling again, so a lost ack never leaves the broker
-// waiting on a set the relay already installed.
+// completed without error. A pending ack is retried before polling again, so
+// a lost ack never leaves the broker waiting on a set the relay already
+// installed, and the relay's own online transition never depends on which
+// attempt finally succeeded.
 func (l *leaseSync) step(ctx context.Context) bool {
-	id, token := l.session.get()
+	id, token, generation := l.session.get()
 	if id == "" || token == "" {
 		return false
 	}
 	l.mu.Lock()
-	full, applied, acked := l.full, l.applied, l.acked
+	if generation != l.generation {
+		// A new registration session: the broker reset its applied revision
+		// when it minted this token, so start over with a full fetch and ack.
+		// The installed users stay — the full set reconciles them.
+		l.generation = generation
+		l.full = true
+		l.pendingAck = false
+	}
+	full, applied, pending := l.full, l.applied, l.pendingAck
 	l.mu.Unlock()
 
-	if !full && applied > acked {
-		if err := l.broker.AckLeases(ctx, id, token, applied); err != nil {
-			return l.handleBrokerError(ctx, "ack", err)
+	if pending && !full {
+		if !l.ack(ctx, id, token, applied) {
+			return false
 		}
-		l.mu.Lock()
-		l.acked = applied
-		l.mu.Unlock()
 	}
 
 	after := int64(-1)
@@ -193,25 +214,36 @@ func (l *leaseSync) step(ctx context.Context) bool {
 		l.logf("lease revision went backwards (%d → %d); following the broker", applied, resp.Revision)
 	}
 	l.mu.Lock()
+	changed := resp.Revision != l.applied
 	l.applied = resp.Revision
-	// A full fetch is always acked, even at an unchanged revision: it is how
-	// a new session (or a re-registered one, whose applied revision the broker
-	// reset) tells the broker the set is installed.
-	needAck := l.full || resp.Revision > l.acked
+	if full || changed || l.pendingAck {
+		l.pendingAck = true
+	}
 	l.full = false
+	pending = l.pendingAck
 	l.mu.Unlock()
-	if needAck {
-		if err := l.broker.AckLeases(ctx, id, token, resp.Revision); err != nil {
-			return l.handleBrokerError(ctx, "ack", err)
-		}
-		l.mu.Lock()
-		l.acked = resp.Revision
-		announce := !l.announced && l.onApplied != nil
-		l.announced = true
-		l.mu.Unlock()
-		if announce {
-			l.onApplied()
-		}
+	if pending {
+		return l.ack(ctx, id, token, resp.Revision)
+	}
+	return true
+}
+
+// ack confirms revision to the broker and, on success, clears the pending
+// ack and fires onApplied once per syncer. Every ack — first attempt or
+// retry — goes through here so the online transition cannot be skipped.
+func (l *leaseSync) ack(ctx context.Context, id, token string, revision int64) bool {
+	if err := l.broker.AckLeases(ctx, id, token, revision); err != nil {
+		return l.handleBrokerError(ctx, "ack", err)
+	}
+	l.mu.Lock()
+	if l.applied == revision {
+		l.pendingAck = false
+	}
+	announce := !l.announced && l.onApplied != nil
+	l.announced = true
+	l.mu.Unlock()
+	if announce {
+		l.onApplied()
 	}
 	return true
 }

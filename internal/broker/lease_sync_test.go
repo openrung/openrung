@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -185,33 +186,77 @@ func TestLeasePollAndAckRefuseWrongTokenAndLegacyRows(t *testing.T) {
 	}
 }
 
+// Unauthenticated polls and abandoned holds leave nothing behind in the
+// notifier: subscriptions exist only while an authenticated request waits.
+func TestLeasePollRetainsNoStateForRefusedOrAbandonedRequests(t *testing.T) {
+	h := newLeaseHarness(t)
+	for i := 0; i < 50; i++ {
+		id := "relay_" + strings.Repeat(fmt.Sprintf("%x", i%16), 32)
+		if rec, _ := h.poll(id, "lease_"+strings.Repeat("0", 64), "?after=0"); rec.Code != http.StatusNotFound {
+			t.Fatalf("poll %s: %d", id, rec.Code)
+		}
+	}
+	if rec, _ := h.poll(h.relay.ID, "lease_wrong", "?after=0"); rec.Code != http.StatusNotFound {
+		t.Fatalf("wrong token: %d", rec.Code)
+	}
+	if got := h.access.notifier.waiting(); got != 0 {
+		t.Fatalf("%d notifier entries after refused polls", got)
+	}
+	// A hold that times out releases its subscription too, and a cancelled
+	// request likewise.
+	if rec, _ := h.poll(h.relay.ID, h.relay.LeaseToken, "?after=0"); rec.Code != http.StatusOK {
+		t.Fatalf("held poll: %d", rec.Code)
+	}
+	if got := h.access.notifier.waiting(); got != 0 {
+		t.Fatalf("%d notifier entries after a timed-out hold", got)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/relays/"+h.relay.ID+"/leases?after=0", nil).WithContext(ctx)
+	req.Header.Set("Authorization", "Bearer "+h.relay.LeaseToken)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.server.ServeHTTP(httptest.NewRecorder(), req)
+	}()
+	time.Sleep(50 * time.Millisecond)
+	if got := h.access.notifier.waiting(); got != 1 {
+		t.Fatalf("%d notifier entries while one authenticated poll waits, want 1", got)
+	}
+	cancel()
+	<-done
+	if got := h.access.notifier.waiting(); got != 0 {
+		t.Fatalf("%d notifier entries after a cancelled hold", got)
+	}
+}
+
 func TestLeaseAckRecordsAppliedRevision(t *testing.T) {
 	h := newLeaseHarness(t)
 	user := enrollLeaseUser(t, h.store, h.now)
 	if _, err := h.access.issueLeases(context.Background(), user.ID, []string{h.relay.ID}); err != nil {
 		t.Fatal(err)
 	}
-	appliedC := h.access.notifier.appliedC(h.relay.ID)
+	applied := h.access.notifier.appliedC(h.relay.ID)
+	defer applied.release()
 	if rec := h.ack(h.relay.ID, h.relay.LeaseToken, `{"revision":1}`); rec.Code != http.StatusNoContent {
 		t.Fatalf("ack: %d %s", rec.Code, rec.Body.String())
 	}
 	select {
-	case <-appliedC:
+	case <-applied.C:
 	default:
 		t.Fatal("ack did not wake applied waiters")
 	}
-	applied, _ := h.store.AppliedLeaseRevisions(context.Background(), []string{h.relay.ID})
-	if applied[h.relay.ID] != 1 {
-		t.Fatalf("applied = %v", applied)
+	revisions, _ := h.store.AppliedLeaseRevisions(context.Background(), []string{h.relay.ID})
+	if revisions[h.relay.ID] != 1 {
+		t.Fatalf("applied = %v", revisions)
 	}
 	for _, body := range []string{`{"revision":-1}`, `{"revision":"1"}`, `{"revision":1,"extra":true}`, `{"revision":1}{"revision":2}`, ``} {
 		if rec := h.ack(h.relay.ID, h.relay.LeaseToken, body); rec.Code != http.StatusBadRequest {
 			t.Fatalf("ack %q: %d", body, rec.Code)
 		}
 	}
-	applied, _ = h.store.AppliedLeaseRevisions(context.Background(), []string{h.relay.ID})
-	if applied[h.relay.ID] != 1 {
-		t.Fatalf("bad acks changed applied to %v", applied)
+	revisions, _ = h.store.AppliedLeaseRevisions(context.Background(), []string{h.relay.ID})
+	if revisions[h.relay.ID] != 1 {
+		t.Fatalf("bad acks changed applied to %v", revisions)
 	}
 }
 

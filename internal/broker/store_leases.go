@@ -80,12 +80,21 @@ func (s *Store) IssueLeases(_ context.Context, req LeaseIssueRequest, now time.T
 		minted[relayID] = Lease{ID: id, UserID: req.UserID, RelayID: relayID, Credential: credential, CreatedAt: now, RenewedAt: now, ExpiresAt: now.Add(req.TTL)}
 	}
 
+	// Capacity decides which new leases can actually be issued; only those
+	// count towards the user's cap, so a full relay never costs the user an
+	// existing lease for nothing.
+	eligible := make(map[string]bool, len(plan.create))
+	for _, relayID := range plan.create {
+		eligible[relayID] = s.liveLeaseCountForRelayLocked(relayID, now) < req.MaxPerRelay
+	}
+	victims := plan.victims(eligible)
+
 	var result LeaseIssueResult
 	for _, relayID := range plan.affected {
 		state := s.leaseStateLocked(relayID)
 		revision := state.revision + 1
 		changed := false
-		for _, victim := range plan.victims[relayID] {
+		for _, victim := range victims[relayID] {
 			lease := s.leases[victim.ID]
 			lease.RevokedAt = now
 			lease.Revision = revision
@@ -101,14 +110,11 @@ func (s *Store) IssueLeases(_ context.Context, req LeaseIssueRequest, now time.T
 			result.Leases = append(result.Leases, lease)
 			changed = true
 		}
-		if lease, ok := minted[relayID]; ok {
-			// Victims on this relay were just revoked, so they no longer count.
-			if s.liveLeaseCountForRelayLocked(relayID, now) < req.MaxPerRelay {
-				lease.Revision = revision
-				s.leases[lease.ID] = lease
-				result.Leases = append(result.Leases, lease)
-				changed = true
-			}
+		if lease, ok := minted[relayID]; ok && eligible[relayID] {
+			lease.Revision = revision
+			s.leases[lease.ID] = lease
+			result.Leases = append(result.Leases, lease)
+			changed = true
 		}
 		if changed {
 			state.revision = revision
@@ -119,19 +125,29 @@ func (s *Store) IssueLeases(_ context.Context, req LeaseIssueRequest, now time.T
 }
 
 // leaseIssuePlan is the per-relay work IssueLeases derived from the user's
-// live leases: which to extend, where to create, and which to evict.
+// live leases: which to extend, where to create, and — once the stores
+// know which creates the relays can take — which to evict.
 type leaseIssuePlan struct {
-	extend  map[string]Lease   // requested relay → the live lease to extend
-	create  []string           // requested relays without a live lease
-	victims map[string][]Lease // relay → leases evicted for the user cap
-	// affected is requested ∪ victims' relays, sorted: the lock order.
+	extend map[string]Lease // requested relay → the live lease to extend
+	create []string         // requested relays without a live lease
+	// candidates are the user's live leases outside the request, least
+	// recently renewed first: the eviction order.
+	candidates []Lease
+	liveCount  int
+	maxPerUser int
+	// affected is requested ∪ candidates' relays, sorted: the lock order.
+	// Every relay an eviction could touch is locked up front, so the choice
+	// of victims can wait until the relays' capacities are known.
 	affected []string
 }
 
 // planLeaseIssue is the one decision procedure both stores run after locking
 // the user and reading their live leases.
 func planLeaseIssue(req LeaseIssueRequest, live []Lease) (leaseIssuePlan, error) {
-	plan := leaseIssuePlan{extend: make(map[string]Lease), victims: make(map[string][]Lease)}
+	if len(req.RelayIDs) > req.MaxPerUser {
+		return leaseIssuePlan{}, ErrLeaseCapExceeded
+	}
+	plan := leaseIssuePlan{extend: make(map[string]Lease), liveCount: len(live), maxPerUser: req.MaxPerUser}
 	requested := make(map[string]struct{}, len(req.RelayIDs))
 	byRelay := make(map[string]Lease, len(live))
 	for _, lease := range live {
@@ -149,33 +165,51 @@ func planLeaseIssue(req LeaseIssueRequest, live []Lease) (leaseIssuePlan, error)
 	for relayID := range requested {
 		affected[relayID] = struct{}{}
 	}
-	if over := len(live) + len(plan.create) - req.MaxPerUser; over > 0 {
-		var candidates []Lease
-		for _, lease := range live {
-			if _, ok := requested[lease.RelayID]; !ok {
-				candidates = append(candidates, lease)
-			}
-		}
-		if over > len(candidates) {
-			return leaseIssuePlan{}, ErrLeaseCapExceeded
-		}
-		// Least recently renewed first; the ID breaks ties deterministically.
-		sort.Slice(candidates, func(i, j int) bool {
-			if !candidates[i].RenewedAt.Equal(candidates[j].RenewedAt) {
-				return candidates[i].RenewedAt.Before(candidates[j].RenewedAt)
-			}
-			return candidates[i].ID < candidates[j].ID
-		})
-		for _, victim := range candidates[:over] {
-			plan.victims[victim.RelayID] = append(plan.victims[victim.RelayID], victim)
-			affected[victim.RelayID] = struct{}{}
+	for _, lease := range live {
+		if _, ok := requested[lease.RelayID]; !ok {
+			plan.candidates = append(plan.candidates, lease)
+			affected[lease.RelayID] = struct{}{}
 		}
 	}
+	// Least recently renewed first; the ID breaks ties deterministically.
+	sort.Slice(plan.candidates, func(i, j int) bool {
+		if !plan.candidates[i].RenewedAt.Equal(plan.candidates[j].RenewedAt) {
+			return plan.candidates[i].RenewedAt.Before(plan.candidates[j].RenewedAt)
+		}
+		return plan.candidates[i].ID < plan.candidates[j].ID
+	})
 	for relayID := range affected {
 		plan.affected = append(plan.affected, relayID)
 	}
 	sort.Strings(plan.affected)
 	return plan, nil
+}
+
+// victims picks the leases to evict so that the user's live leases plus the
+// creates that can actually be issued (eligible[relay] is true when the relay
+// has room) fit the cap, keyed by relay. A create the relay cannot take costs
+// the user nothing.
+func (p leaseIssuePlan) victims(eligible map[string]bool) map[string][]Lease {
+	issuable := 0
+	for _, relayID := range p.create {
+		if eligible[relayID] {
+			issuable++
+		}
+	}
+	victims := make(map[string][]Lease)
+	over := p.liveCount + issuable - p.maxPerUser
+	if over <= 0 {
+		return victims
+	}
+	if over > len(p.candidates) {
+		// Unreachable once planLeaseIssue refused requests wider than the
+		// cap: every requested relay either extends a live lease or adds one.
+		over = len(p.candidates)
+	}
+	for _, victim := range p.candidates[:over] {
+		victims[victim.RelayID] = append(victims[victim.RelayID], victim)
+	}
+	return victims
 }
 
 // leaseRelayAuthorizedLocked applies the shared guard: the relay must hold an

@@ -79,7 +79,10 @@ type fakeBroker struct {
 	leasePolls        int
 	leaseBearers      []string
 	failLeasePolls    bool
+	failLeaseAcks     bool
 	leaseNotFoundOnce bool
+	// leaseAfters records each poll's `after` (-1 when omitted).
+	leaseAfters []int64
 }
 
 // fakeLeaseHold is how long the fake broker holds a poll whose `after` is
@@ -119,6 +122,12 @@ func (f *fakeBroker) leaseStats() (polls int, bearers []string) {
 	return f.leasePolls, append([]string(nil), f.leaseBearers...)
 }
 
+func (f *fakeBroker) pollAfters() []int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int64(nil), f.leaseAfters...)
+}
+
 func (f *fakeBroker) leaseHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/relays/{id}/leases", func(w http.ResponseWriter, r *http.Request) {
 		bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -134,6 +143,7 @@ func (f *fakeBroker) leaseHandlers(mux *http.ServeMux) {
 		f.mu.Lock()
 		f.leasePolls++
 		f.leaseBearers = append(f.leaseBearers, bearer)
+		f.leaseAfters = append(f.leaseAfters, after)
 		notFound := f.leaseNotFoundOnce
 		f.leaseNotFoundOnce = false
 		failing := f.failLeasePolls
@@ -171,8 +181,16 @@ func (f *fakeBroker) leaseHandlers(mux *http.ServeMux) {
 		_ = json.NewDecoder(r.Body).Decode(&ack)
 		f.mu.Lock()
 		f.leaseBearers = append(f.leaseBearers, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
-		f.leaseAcks = append(f.leaseAcks, ack.Revision)
+		failing := f.failLeaseAcks
+		if !failing {
+			f.leaseAcks = append(f.leaseAcks, ack.Revision)
+		}
 		f.mu.Unlock()
+		if failing {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"broker unavailable"}`))
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 }

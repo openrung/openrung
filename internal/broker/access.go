@@ -133,36 +133,62 @@ func (a *accessService) leasePollHandler() http.HandlerFunc {
 			after, hasAfter = parsed, true
 		}
 
-		deadline := time.Now().Add(a.pollHold)
-		for {
-			// Subscribe before reading so a change landing between the read
-			// and the wait closes the channel we are about to wait on.
-			var wake <-chan struct{}
-			if hasAfter {
-				wake = a.notifier.changedC(id)
-			}
+		// readSet is one authenticated snapshot; it writes the error response
+		// itself and reports whether the handler should return.
+		readSet := func() (RelayLeaseSet, time.Time, bool) {
 			now := a.now().UTC()
 			set, err := a.store.RelayLeaseSet(r.Context(), id, token, now)
 			if errors.Is(err, ErrRelayNotFound) {
 				writeError(w, http.StatusNotFound, "relay not found")
-				return
+				return RelayLeaseSet{}, now, false
 			}
 			if err != nil {
 				slog.Error("could not read relay lease set", "relay_id", id, "error", err)
 				writeError(w, http.StatusServiceUnavailable, "could not read relay leases")
-				return
+				return RelayLeaseSet{}, now, false
 			}
+			return set, now, true
+		}
+
+		// The first read authenticates the request before any waiter state
+		// is allocated, so unknown relays and wrong tokens retain nothing.
+		set, now, ok := readSet()
+		if !ok {
+			return
+		}
+		deadline := time.Now().Add(a.pollHold)
+		for {
 			if !hasAfter || set.Revision > after || !time.Now().Before(deadline) {
 				writeJSON(w, http.StatusOK, leaseSyncResponse(set, now))
 				return
 			}
+			// Subscribe, then re-read: a change landing between the read above
+			// and the subscription shows up in this read, and one landing after
+			// the subscription closes the channel we wait on. The subscription
+			// is released on every exit so an abandoned hold leaves no entry.
+			wake := a.notifier.changedC(id)
+			set, now, ok = readSet()
+			if !ok {
+				wake.release()
+				return
+			}
+			if set.Revision > after {
+				wake.release()
+				continue
+			}
 			hold := time.NewTimer(time.Until(deadline))
 			select {
-			case <-wake:
+			case <-wake.C:
 				hold.Stop()
 			case <-hold.C:
 			case <-r.Context().Done():
 				hold.Stop()
+				wake.release()
+				return
+			}
+			wake.release()
+			set, now, ok = readSet()
+			if !ok {
 				return
 			}
 		}

@@ -65,12 +65,26 @@ func (s *PostgresStore) IssueLeases(parent context.Context, req LeaseIssueReques
 		return LeaseIssueResult{}, err
 	}
 
+	// With every affected relay locked, capacity is exact; it decides which
+	// creates are issuable, and only those count against the user's cap.
+	eligible := make(map[string]bool, len(plan.create))
+	for _, relayID := range plan.create {
+		var count int
+		if err := tx.QueryRow(ctx, `
+			SELECT COUNT(*) FROM access_leases
+			WHERE relay_id = $1 AND revoked_at IS NULL AND expires_at > $2`, relayID, now).Scan(&count); err != nil {
+			return LeaseIssueResult{}, fmt.Errorf("count relay leases: %w", err)
+		}
+		eligible[relayID] = count < req.MaxPerRelay
+	}
+	victimsByRelay := plan.victims(eligible)
+
 	var result LeaseIssueResult
 	expiresAt := now.Add(req.TTL)
 	for _, relayID := range plan.affected {
 		revision := revisions[relayID] + 1
 		changed := false
-		if victims := plan.victims[relayID]; len(victims) > 0 {
+		if victims := victimsByRelay[relayID]; len(victims) > 0 {
 			ids := make([]string, 0, len(victims))
 			for _, victim := range victims {
 				ids = append(ids, victim.ID)
@@ -92,32 +106,24 @@ func (s *PostgresStore) IssueLeases(parent context.Context, req LeaseIssueReques
 			result.Leases = append(result.Leases, lease)
 			changed = true
 		}
-		if containsString(plan.create, relayID) {
-			var count int
-			if err := tx.QueryRow(ctx, `
-				SELECT COUNT(*) FROM access_leases
-				WHERE relay_id = $1 AND revoked_at IS NULL AND expires_at > $2`, relayID, now).Scan(&count); err != nil {
-				return LeaseIssueResult{}, fmt.Errorf("count relay leases: %w", err)
+		if eligible[relayID] {
+			id, err := newLeaseID()
+			if err != nil {
+				return LeaseIssueResult{}, err
 			}
-			if count < req.MaxPerRelay {
-				id, err := newLeaseID()
-				if err != nil {
-					return LeaseIssueResult{}, err
-				}
-				credential, err := newLeaseCredential()
-				if err != nil {
-					return LeaseIssueResult{}, err
-				}
-				lease, err := scanLease(tx.QueryRow(ctx, `
-					INSERT INTO access_leases (`+leaseColumns+`)
-					VALUES ($1, $2, $3, $4, $5, $5, $6, NULL, $7)
-					RETURNING `+leaseColumns, id, req.UserID, relayID, credential, now, expiresAt, revision))
-				if err != nil {
-					return LeaseIssueResult{}, fmt.Errorf("insert lease: %w", err)
-				}
-				result.Leases = append(result.Leases, lease)
-				changed = true
+			credential, err := newLeaseCredential()
+			if err != nil {
+				return LeaseIssueResult{}, err
 			}
+			lease, err := scanLease(tx.QueryRow(ctx, `
+				INSERT INTO access_leases (`+leaseColumns+`)
+				VALUES ($1, $2, $3, $4, $5, $5, $6, NULL, $7)
+				RETURNING `+leaseColumns, id, req.UserID, relayID, credential, now, expiresAt, revision))
+			if err != nil {
+				return LeaseIssueResult{}, fmt.Errorf("insert lease: %w", err)
+			}
+			result.Leases = append(result.Leases, lease)
+			changed = true
 		}
 		if changed {
 			if _, err := tx.Exec(ctx, `
@@ -339,13 +345,4 @@ func scanLeases(rows pgx.Rows, err error) ([]Lease, error) {
 		leases = append(leases, lease)
 	}
 	return leases, rows.Err()
-}
-
-func containsString(list []string, value string) bool {
-	for _, item := range list {
-		if item == value {
-			return true
-		}
-	}
-	return false
 }
