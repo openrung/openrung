@@ -20,6 +20,8 @@ type recordingUsers struct {
 	adds     []string
 	removes  []string
 	failAdds bool
+	// addDelay slows every AddUser (a slow management API).
+	addDelay time.Duration
 }
 
 func newRecordingUsers() *recordingUsers {
@@ -27,6 +29,12 @@ func newRecordingUsers() *recordingUsers {
 }
 
 func (r *recordingUsers) AddUser(_ context.Context, credential relayruntime.Credential) error {
+	r.mu.Lock()
+	delay := r.addDelay
+	r.mu.Unlock()
+	if delay > 0 {
+		time.Sleep(delay)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.failAdds {

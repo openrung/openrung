@@ -275,74 +275,107 @@ func (l *leaseSync) handleBrokerError(ctx context.Context, what string, err erro
 // reconcile makes Xray accept exactly resp's leases. Expiry-only changes
 // update the local expiry without an Xray call; it returns true only when
 // every needed Xray call succeeded, so a partial result is never acked.
+//
+// The mutex is held per operation, never across the batch: each lease is
+// re-evaluated against the installed set under the lock, acted on, and
+// released before the next, so the expiry sweep interleaves with a slow
+// batch instead of waiting behind it — and because every decision is made
+// under the same lock as its Xray call, an expiry that removed a lease while
+// the batch was in flight is seen by the batch and the lease re-installed.
 func (l *leaseSync) reconcile(ctx context.Context, resp relay.LeaseSyncResponse, now time.Time) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
 	ok := true
 	desired := make(map[string]struct{}, len(resp.Leases))
 	for _, entry := range resp.Leases {
-		desired[entry.ID] = struct{}{}
 		remaining := entry.ExpiresAt.Sub(resp.ServerTime)
 		if remaining <= 0 {
 			// Already expired by the broker's clock; nothing to install.
-			delete(desired, entry.ID)
 			continue
 		}
-		localExpiry := now.Add(remaining)
-		email := relay.LeaseEmailPrefix + entry.ID
-		if current, installed := l.installed[entry.ID]; installed && current.credential == entry.Credential {
-			current.expiresAt = localExpiry
-			l.installed[entry.ID] = current
-			continue
-		} else if installed {
-			// A credential change (never expected: the broker keeps a lease's
-			// UUID stable) is a remove-then-add under the same label.
-			if err := l.users.RemoveUser(ctx, email); err != nil {
-				l.logf("could not replace lease %s (will retry): %v", entry.ID, err)
-				ok = false
-				continue
-			}
-			delete(l.installed, entry.ID)
-		}
-		if err := l.users.AddUser(ctx, relayruntime.Credential{ID: entry.Credential, Email: email}); err != nil {
-			l.logf("could not install lease %s (will retry): %v", entry.ID, err)
+		desired[entry.ID] = struct{}{}
+		if !l.install(ctx, entry, now.Add(remaining)) {
 			ok = false
-			continue
 		}
-		l.installed[entry.ID] = installedLease{credential: entry.Credential, expiresAt: localExpiry}
-		l.logf("lease %s installed", entry.ID)
 	}
-	for id := range l.installed {
+	for _, id := range l.installedIDs() {
 		if _, keep := desired[id]; keep {
 			continue
 		}
-		if err := l.users.RemoveUser(ctx, relay.LeaseEmailPrefix+id); err != nil {
-			l.logf("could not remove lease %s (will retry): %v", id, err)
+		if !l.remove(ctx, id, "removed", nil) {
 			ok = false
-			continue
 		}
-		delete(l.installed, id)
-		l.logf("lease %s removed", id)
 	}
 	return ok
 }
 
-// expireLocal removes leases past their local expiry. Expiry is not a
-// revision change on the broker, so this is the only thing that ends a lease
-// the broker never revoked — including through a broker outage.
-func (l *leaseSync) expireLocal(ctx context.Context, now time.Time) {
+// install makes Xray accept entry, or just moves its local expiry when the
+// same credential is already installed. One locked operation.
+func (l *leaseSync) install(ctx context.Context, entry relay.LeaseEntry, localExpiry time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	for id, lease := range l.installed {
-		if lease.expiresAt.After(now) {
-			continue
+	email := relay.LeaseEmailPrefix + entry.ID
+	if current, installed := l.installed[entry.ID]; installed && current.credential == entry.Credential {
+		current.expiresAt = localExpiry
+		l.installed[entry.ID] = current
+		return true
+	} else if installed {
+		// A credential change (never expected: the broker keeps a lease's
+		// UUID stable) is a remove-then-add under the same label.
+		if err := l.users.RemoveUser(ctx, email); err != nil {
+			l.logf("could not replace lease %s (will retry): %v", entry.ID, err)
+			return false
 		}
-		if err := l.users.RemoveUser(ctx, relay.LeaseEmailPrefix+id); err != nil {
-			l.logf("could not expire lease %s (will retry): %v", id, err)
-			continue
-		}
-		delete(l.installed, id)
-		l.logf("lease %s expired", id)
+		delete(l.installed, entry.ID)
+	}
+	if err := l.users.AddUser(ctx, relayruntime.Credential{ID: entry.Credential, Email: email}); err != nil {
+		l.logf("could not install lease %s (will retry): %v", entry.ID, err)
+		return false
+	}
+	l.installed[entry.ID] = installedLease{credential: entry.Credential, expiresAt: localExpiry}
+	l.logf("lease %s installed", entry.ID)
+	return true
+}
+
+// remove drops lease id from Xray and the installed set in one locked
+// operation. When unless is non-nil the removal is skipped if the installed
+// entry no longer satisfies it (re-checked under the lock), so a sweep
+// decision made from a snapshot cannot remove a lease that was extended in
+// the meantime. A lease that is no longer installed is not an error.
+func (l *leaseSync) remove(ctx context.Context, id, why string, unless func(installedLease) bool) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	lease, installed := l.installed[id]
+	if !installed || (unless != nil && !unless(lease)) {
+		return true
+	}
+	if err := l.users.RemoveUser(ctx, relay.LeaseEmailPrefix+id); err != nil {
+		l.logf("could not remove lease %s (%s, will retry): %v", id, why, err)
+		return false
+	}
+	delete(l.installed, id)
+	l.logf("lease %s %s", id, why)
+	return true
+}
+
+// installedIDs snapshots the installed lease IDs.
+func (l *leaseSync) installedIDs() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	ids := make([]string, 0, len(l.installed))
+	for id := range l.installed {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// expireLocal removes leases past their local expiry. Expiry is not a
+// revision change on the broker, so this is the only thing that ends a lease
+// the broker never revoked — including through a broker outage. Each removal
+// is its own locked operation that re-checks the expiry, so a lease the
+// reconcile extended between the snapshot and the removal is kept.
+func (l *leaseSync) expireLocal(ctx context.Context, now time.Time) {
+	expired := func(lease installedLease) bool { return !lease.expiresAt.After(now) }
+	for _, id := range l.installedIDs() {
+		l.remove(ctx, id, "expired", expired)
 	}
 }
 
@@ -351,14 +384,8 @@ func (l *leaseSync) expireLocal(ctx context.Context, now time.Time) {
 func (l *leaseSync) removeAll() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	for id := range l.installed {
-		if err := l.users.RemoveUser(ctx, relay.LeaseEmailPrefix+id); err != nil {
-			l.logf("could not remove lease %s at session end: %v", id, err)
-			continue
-		}
-		delete(l.installed, id)
+	for _, id := range l.installedIDs() {
+		l.remove(ctx, id, "removed at session end", nil)
 	}
 }
 

@@ -1392,25 +1392,44 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 	// and shares the session's (ID, token) through leaseSess, which the
 	// heartbeat refreshes on re-registration. A broker that did not echo the
 	// capability (it predates leases) leaves the session exactly as before.
+	// The decision is re-evaluated after every registration: a broker
+	// upgraded mid-session starts echoing the capability on the next
+	// re-registration and the syncer starts then; one that stops echoing it
+	// ends the syncer, which removes the leases it installed.
+	var onlineOnce sync.Once
 	leaseSess := &leaseSession{}
-	leaseSess.set(desc.ID, desc.LeaseToken)
-	if credentials != nil && desc.LeaseCapable {
-		syncer := newLeaseSync(broker, leaseSess, credentials.users, cfg.HeartbeatInterval, e.logf)
-		syncer.onApplied = goOnline
-		leaseCtx, cancelLeases := context.WithCancel(ctx)
-		leaseDone := make(chan struct{})
-		go func() {
-			defer close(leaseDone)
-			syncer.run(leaseCtx)
-		}()
-		defer func() { cancelLeases(); <-leaseDone }()
-		e.logf("access leases are on: installing broker-issued per-client credentials")
-	} else {
-		if req.AccessLeases {
-			e.logf("the broker did not confirm access leases; serving the shared credential only")
+	var stopLeases func()
+	defer func() {
+		if stopLeases != nil {
+			stopLeases()
 		}
-		goOnline()
+	}()
+	ensureLeaseSync := func(registered relay.Descriptor) {
+		leaseSess.set(registered.ID, registered.LeaseToken)
+		switch {
+		case credentials != nil && registered.LeaseCapable && stopLeases == nil:
+			syncer := newLeaseSync(broker, leaseSess, credentials.users, cfg.HeartbeatInterval, e.logf)
+			syncer.onApplied = func() { onlineOnce.Do(goOnline) }
+			leaseCtx, cancelLeases := context.WithCancel(ctx)
+			leaseDone := make(chan struct{})
+			go func() {
+				defer close(leaseDone)
+				syncer.run(leaseCtx)
+			}()
+			stopLeases = func() { cancelLeases(); <-leaseDone; stopLeases = nil }
+			e.logf("access leases are on: installing broker-issued per-client credentials")
+		case !registered.LeaseCapable && stopLeases != nil:
+			e.logf("the broker no longer confirms access leases; removing installed per-client credentials")
+			stopLeases()
+		}
+		if !registered.LeaseCapable {
+			if req.AccessLeases {
+				e.logf("the broker did not confirm access leases; serving the shared credential only")
+			}
+			onlineOnce.Do(goOnline)
+		}
 	}
+	ensureLeaseSync(desc)
 
 	heartbeat := time.NewTicker(cfg.HeartbeatInterval)
 	defer heartbeat.Stop()
@@ -1485,7 +1504,7 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 			return
 		}
 		desc = updated
-		leaseSess.set(desc.ID, desc.LeaseToken)
+		ensureLeaseSync(desc)
 		e.logf("re-registered with the broker as %q (%s)", desc.Label, desc.ID)
 		if credentials != nil {
 			credentials.confirm(now, desc.ClientID)

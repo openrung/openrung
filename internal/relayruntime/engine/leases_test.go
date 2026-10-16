@@ -4,6 +4,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -391,4 +392,84 @@ func TestDirectSessionReRegistrationWithoutLease404RefetchesAndReacks(t *testing
 		}
 		return fullOnNew && len(acks) > acksBefore && acks[len(acks)-1] == revision && bearers[len(bearers)-1] == "lease_relay_2"
 	})
+}
+
+// Local expiry is not held up by a slow reconcile: with a management API
+// that takes 150 ms per add and a batch of five new leases, an installed
+// lease that expires during the batch is removed between operations rather
+// than after the whole batch.
+func TestDirectSessionExpiresLeasesBetweenSlowReconcileOperations(t *testing.T) {
+	shortRotation(t, time.Hour)
+	shortLeaseTiming(t)
+	broker := &fakeBroker{leaseCapable: true}
+	users := newRecordingUsers()
+	eng, _ := startRotatingSession(t, broker, users)
+	eventually(t, 5*time.Second, "online", func() bool { return eng.Status().Phase == PhaseOnline })
+
+	short := leaseEntry("ssss", "11111111-2222-4333-8444-555555555560", 250*time.Millisecond)
+	revision := broker.setLeases(short)
+	eventually(t, 3*time.Second, "short lease installed", func() bool { acked, _ := broker.lastAcked(); return acked == revision })
+
+	users.mu.Lock()
+	users.addDelay = 150 * time.Millisecond
+	users.mu.Unlock()
+	batch := []relay.LeaseEntry{short}
+	for i := 0; i < 5; i++ {
+		batch = append(batch, leaseEntry(fmt.Sprintf("b%03d", i), fmt.Sprintf("11111111-2222-4333-8444-55555555556%d", i+1), time.Hour))
+	}
+	broker.setLeases(batch...)
+	eventually(t, 2*time.Second, "short lease expired mid-batch", func() bool { return !users.has(short.Credential) })
+	if adds, _ := users.count("lease-b"); adds >= 5 {
+		t.Fatalf("the expiry waited for the whole batch (%d of 5 adds done)", adds)
+	}
+	eventually(t, 3*time.Second, "batch finished", func() bool { adds, _ := users.count("lease-b"); return adds == 5 })
+}
+
+// A broker upgraded mid-session starts echoing the capability on the next
+// re-registration; the syncer starts then, without a relay restart.
+func TestDirectSessionStartsLeaseSyncWhenReRegistrationGainsCapability(t *testing.T) {
+	shortRotation(t, time.Hour)
+	shortLeaseTiming(t)
+	broker := &fakeBroker{}
+	users := newRecordingUsers()
+	eng, _ := startRotatingSession(t, broker, users)
+	eventually(t, 5*time.Second, "online", func() bool { return eng.Status().Phase == PhaseOnline })
+	time.Sleep(100 * time.Millisecond)
+	if polls, _ := broker.leaseStats(); polls != 0 {
+		t.Fatalf("polled %d times before the broker understood leases", polls)
+	}
+	onlineAt := eng.Status().StartedAtMs
+
+	broker.mu.Lock()
+	broker.leaseCapable = true
+	broker.notFoundOnce = true
+	broker.mu.Unlock()
+	eventually(t, 5*time.Second, "re-registration", func() bool { return eng.Status().RelayID == "relay_2" })
+	eventually(t, 5*time.Second, "lease sync started on the new session", func() bool {
+		_, bearers := broker.leaseStats()
+		acked, ok := broker.lastAcked()
+		return ok && acked == 0 && len(bearers) > 0 && bearers[0] == "lease_relay_2"
+	})
+	revision := broker.setLeases(leaseEntry("jjjj", "11111111-2222-4333-8444-555555555570", time.Hour))
+	eventually(t, 3*time.Second, "lease installed", func() bool {
+		acked, _ := broker.lastAcked()
+		return acked == revision && users.has("11111111-2222-4333-8444-555555555570")
+	})
+	if eng.Status().StartedAtMs != onlineAt {
+		t.Fatal("a later syncer start reset the online time")
+	}
+
+	// And a broker that stops echoing it ends the syncer, which removes the
+	// leases it installed.
+	broker.mu.Lock()
+	broker.leaseCapable = false
+	broker.notFoundOnce = true
+	broker.mu.Unlock()
+	eventually(t, 5*time.Second, "re-registration without the capability", func() bool { return eng.Status().RelayID == "relay_3" })
+	eventually(t, 3*time.Second, "leases removed", func() bool { return len(users.leaseEmails()) == 0 })
+	polls, _ := broker.leaseStats()
+	time.Sleep(300 * time.Millisecond)
+	if after, _ := broker.leaseStats(); after != polls {
+		t.Fatalf("the syncer kept polling after the capability was withdrawn (%d → %d)", polls, after)
+	}
 }
