@@ -81,6 +81,19 @@ type Config struct {
 	WSSTicketSigningSeed []byte
 	WSSTicketTTL         time.Duration
 	WSSTicketMaxStreams  int
+	// UserTokenKey is the 32-byte HMAC key behind client access tokens
+	// (OPENRUNG_USER_TOKEN_KEY). It enables the user challenge/auth endpoints
+	// and the operational user routes; empty leaves all of them unregistered,
+	// like APIToken. The store must then implement AccessStore. Rotating the
+	// key invalidates every outstanding token at once.
+	UserTokenKey []byte
+	// AccessTokenTTL bounds how long an access token authenticates; zero
+	// applies the default (24 h). User status is re-checked on every
+	// authorization, so the TTL is a convenience bound, not a security one.
+	AccessTokenTTL time.Duration
+	// EnrollmentBudget limits NEW user identities per source address (IPv6:
+	// per /64). Zero fields apply the defaults; see EnrollmentBudget.
+	EnrollmentBudget EnrollmentBudget
 }
 
 func NewServer(store RelayStore, cfg Config) http.Handler {
@@ -132,6 +145,7 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 	// limiter spans the whole operational surface: it is one credential
 	// driven by one operator's tooling, and the budget is per token holder,
 	// not per route.
+	users := newUserAuthService(store, cfg, clientIP)
 	if cfg.APIToken != "" {
 		operationalLimiter := newIPRateLimiter(inventoryRatePerSecond, inventoryBurst, rateLimiterMaxTrackedIPs)
 		operational := func(next http.HandlerFunc) http.HandlerFunc {
@@ -140,6 +154,18 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 		mux.HandleFunc("/admin/api/relays/inventory", operational(relayInventoryHandler(store, cfg.APIToken, relaySigner)))
 		mux.HandleFunc("/admin/api/relays/weights", operational(relayWeightsListHandler(store, cfg.APIToken)))
 		mux.HandleFunc("/admin/api/relays/{id}/weight", operational(relayWeightHandler(store, cfg.APIToken, clientIP.clientIP)))
+		if users != nil {
+			mux.HandleFunc("/admin/api/users/{id}", operational(adminUserHandler(users.store, cfg.APIToken)))
+			mux.HandleFunc("/admin/api/users/{id}/status", operational(adminUserStatusHandler(users.store, cfg.APIToken, clientIP.clientIP)))
+		}
+	}
+	// Client user endpoints exist only with an access token key configured.
+	// One limiter spans both: a challenge is worthless without the auth call
+	// that consumes it, so budgeting them together bounds the pair.
+	if users != nil {
+		userAuthLimiter := newIPRateLimiter(userAuthRatePerSecond, userAuthBurst, rateLimiterMaxTrackedIPs)
+		mux.HandleFunc("POST /api/v1/users/challenge", rateLimited(userAuthLimiter, clientIP, 10, users.challengeHandler()))
+		mux.HandleFunc("POST /api/v1/users/auth", rateLimited(userAuthLimiter, clientIP, 10, users.authHandler()))
 	}
 	mux.HandleFunc("POST /api/v1/telemetry/events", rateLimited(telemetryLimiter, clientIP, 10, telemetryHandler(cfg.TelemetrySink, store, clientIP, relayLedger)))
 	mux.HandleFunc("GET /api/v1/speed-test", rateLimited(speedTestLimiter, clientIP, 30, speedTestHandler(speedTestMaxConcurrent)))

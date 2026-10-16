@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/ed25519"
 	"encoding/base64"
 	"strings"
 	"testing"
@@ -90,7 +91,7 @@ func TestValidateAPITokenRejectsEquivalentSigningSeedEncodings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse relay seed with newline: %v", err)
 	}
-	wssSeed, err := parseOptionalWSSTicketSeed(" \t" + canonical + "\r\n")
+	wssSeed, err := parseOptionalSeed("OPENRUNG_WSS_TICKET_SIGNING_SEED", " \t"+canonical+"\r\n", ed25519.SeedSize)
 	if err != nil {
 		t.Fatalf("parse WSS seed with surrounding whitespace: %v", err)
 	}
@@ -108,16 +109,16 @@ func TestValidateAPITokenRejectsEquivalentSigningSeedEncodings(t *testing.T) {
 }
 
 func TestParseOptionalWSSTicketSeed(t *testing.T) {
-	if seed, err := parseOptionalWSSTicketSeed(""); err != nil || seed != nil {
+	if seed, err := parseOptionalSeed("OPENRUNG_WSS_TICKET_SIGNING_SEED", "", ed25519.SeedSize); err != nil || seed != nil {
 		t.Fatalf("empty seed = %x, %v", seed, err)
 	}
 	raw := []byte(strings.Repeat("t", 32))
-	seed, err := parseOptionalWSSTicketSeed(base64.StdEncoding.EncodeToString(raw))
+	seed, err := parseOptionalSeed("OPENRUNG_WSS_TICKET_SIGNING_SEED", base64.StdEncoding.EncodeToString(raw), ed25519.SeedSize)
 	if err != nil || string(seed) != string(raw) {
 		t.Fatalf("parsed seed = %x, %v", seed, err)
 	}
 	for _, value := range []string{"not-base64", base64.StdEncoding.EncodeToString(raw[:31])} {
-		if _, err := parseOptionalWSSTicketSeed(value); err == nil {
+		if _, err := parseOptionalSeed("OPENRUNG_WSS_TICKET_SIGNING_SEED", value, ed25519.SeedSize); err == nil {
 			t.Fatalf("accepted invalid seed %q", value)
 		}
 	}

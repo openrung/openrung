@@ -148,13 +148,25 @@ func (c *newRelayCap) key(source string) (string, bool) {
 			return "", true
 		}
 	}
+	return sourceBucketKey(source), false
+}
+
+// sourceBucketKey collapses a client source to its per-source accounting
+// bucket: the IPv4 address, or the /64 for IPv6 (one host trivially holds a
+// whole /64). Unparseable sources bucket by their raw string so they are still
+// bounded rather than waved through. Shared by every per-source budget.
+func sourceBucketKey(source string) string {
+	addr, err := netip.ParseAddr(strings.TrimSpace(source))
+	if err != nil {
+		return source
+	}
+	addr = addr.Unmap()
 	if addr.Is6() {
-		grouped, err := addr.Prefix(64)
-		if err == nil {
-			return grouped.String(), false
+		if grouped, err := addr.Prefix(64); err == nil {
+			return grouped.String()
 		}
 	}
-	return addr.String(), false
+	return addr.String()
 }
 
 // sweepLocked drops sources whose every stamp has aged out of the window.

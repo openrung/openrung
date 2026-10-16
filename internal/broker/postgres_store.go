@@ -178,6 +178,25 @@ CREATE TABLE IF NOT EXISTS relay_ranking_weights (
 	weight double precision NOT NULL CHECK (weight >= 0 AND weight <= 1),
 	updated_at timestamptz NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS users (
+	id text PRIMARY KEY,
+	public_key text NOT NULL UNIQUE,
+	status text NOT NULL DEFAULT 'enabled' CHECK (status IN ('enabled', 'disabled')),
+	created_at timestamptz NOT NULL,
+	last_auth_at timestamptz NOT NULL,
+	disabled_at timestamptz,
+	disabled_reason text NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS user_enrollment_counters (
+	source_key text NOT NULL,
+	window_name text NOT NULL,
+	window_start timestamptz NOT NULL,
+	window_seconds bigint NOT NULL CHECK (window_seconds > 0),
+	count integer NOT NULL,
+	PRIMARY KEY (source_key, window_name)
+);
 `
 
 type PostgresStore struct {
@@ -622,6 +641,9 @@ func (s *PostgresStore) Prune(now time.Time) ([]relay.Descriptor, error) {
 		return nil, err
 	}
 	if _, err := s.pool.Exec(ctx, `DELETE FROM relay_sessions WHERE terminal_at IS NOT NULL AND terminal_at < $1`, cutoff); err != nil {
+		return nil, err
+	}
+	if err := s.pruneEnrollmentCounters(ctx, now); err != nil {
 		return nil, err
 	}
 	return expired, nil

@@ -23,6 +23,12 @@ const (
 	telemetryRatePerSecond = 1.0
 	telemetryBurst         = 20
 
+	// User challenge/auth: a legitimate installation authenticates about once
+	// a day, so even a carrier-grade NAT needs little sustained rate; the
+	// burst covers a building's worth of first launches after a release.
+	userAuthRatePerSecond = 1.0
+	userAuthBurst         = 20
+
 	// Relay registration/heartbeat are token-gated in production; this limiter
 	// is a backstop against a flood if the token leaks or the broker is
 	// deliberately run open. Generous: one relay hub re-registers and heartbeats

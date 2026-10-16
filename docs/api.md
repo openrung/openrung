@@ -5,7 +5,8 @@ All API paths are currently versioned under `/api/v1`.
 ## Abuse limits
 
 The unauthenticated endpoints (`GET /api/v1/relays`, `POST
-/api/v1/wss/tickets`, `POST /api/v1/telemetry/events`, and `GET
+/api/v1/wss/tickets`, `POST /api/v1/users/challenge`, `POST
+/api/v1/users/auth`, `POST /api/v1/telemetry/events`, and `GET
 /api/v1/speed-test`) are rate limited. Requests over the budget receive `429
 Too Many Requests` with a `Retry-After` header (seconds); clients should back
 off and retry only within their bounded operation deadline. Most endpoints use
@@ -996,6 +997,130 @@ Clients must use fronts only from a fresh, verified directory response. A front
 belongs to the descriptor containing it; clients must never copy a URL to
 another relay. Unknown protocol versions are ignored, preserving direct
 Reality compatibility for older clients and newer front protocols.
+
+## Client users (spec `openrung-user-auth-v1`)
+
+Every client installation can hold a P-256 ECDSA keypair and authenticate it
+to the broker. The broker mints a random, stable user ID for a public key the
+first time it sees it and returns the same ID on every later authentication,
+so there is no separate enrollment step. Operators can disable a user; a
+disabled user still authenticates (so the client learns its state) but
+receives no access token, and every later authorization refuses it. These
+endpoints exist only when `OPENRUNG_USER_TOKEN_KEY` is configured.
+
+User IDs are deliberately independent of telemetry identifiers: clients must
+not send `X-OpenRung-Client-ID` / `X-OpenRung-Session-ID` on these requests,
+and the broker never logs public keys, challenges, signatures or tokens.
+
+### Challenge
+
+```http
+POST /api/v1/users/challenge
+```
+
+Returns `201 Created` with a single-use challenge valid for one minute:
+
+```json
+{
+  "challenge": "Zm9yLWV4YW1wbGUtb25seS1ub3QtcmVhbC1kYXRh",
+  "expires_at": "2026-10-16T12:01:00Z"
+}
+```
+
+Challenges live in broker memory. A broker restart forgets outstanding
+challenges; the client then simply requests another. Under extreme load the
+endpoint answers `503` with `Retry-After` rather than growing without bound.
+
+### Authenticate
+
+```http
+POST /api/v1/users/auth
+Content-Type: application/json
+
+{
+  "public_key": "<standard base64 of the SubjectPublicKeyInfo DER of a P-256 key>",
+  "challenge": "<the challenge exactly as issued>",
+  "signature": "<standard base64 of the raw 64-byte r‖s ECDSA signature>"
+}
+```
+
+The signature covers the SHA-256 digest of the newline-joined statement
+
+```
+openrung-user-auth-v1
+<challenge>
+<canonical public key>
+```
+
+where the canonical public key is the standard base64 of the 65-byte
+uncompressed point. Every SPKI encoding of one key therefore names one user.
+The body must be exactly one JSON object with no unknown fields (8 KiB cap).
+The challenge is consumed before the signature is checked: each challenge
+buys exactly one verification attempt.
+
+Success is `200 OK`:
+
+```json
+{
+  "user_id": "user_0123456789abcdef0123456789abcdef",
+  "status": "enabled",
+  "access_token": "<opaque bearer token>",
+  "token_expires_at": "2026-10-17T12:00:00Z"
+}
+```
+
+The access token is opaque to clients and authenticates later control-plane
+requests for 24 hours by default (`OPENRUNG_ACCESS_TOKEN_TTL`); it must be
+sent only as an `Authorization: Bearer` header over HTTPS and never logged.
+Rotating `OPENRUNG_USER_TOKEN_KEY` invalidates every outstanding token at
+once, and clients re-authenticate.
+
+| Status | Meaning |
+| --- | --- |
+| `400` | Malformed body, unknown field, unparseable or non-P-256 key, invalid challenge text |
+| `401` | `challenge unknown or expired`, or `invalid signature` |
+| `403` | The user is disabled; the body carries `user_id` and `status` but no token |
+| `429` | Enrollment budget exhausted for this source; `Retry-After` says when the window resets |
+| `503` | Store unavailable |
+
+**Enrollment budget.** Only a *new* identity is charged, after its signature
+verifies, against two fixed windows per source (the IPv4 address, or the IPv6
+/64): `OPENRUNG_ENROLLMENT_BURST_LIMIT` per hour (default 3) and
+`OPENRUNG_ENROLLMENT_DAILY_LIMIT` per 24 hours (default 10). A refused
+attempt is never charged, and existing keys authenticate freely. A negative
+limit disables that window. Clients behind one shared address share a budget,
+so a client should surface the `Retry-After` rather than retry immediately.
+
+Later authentication of an existing key only updates its `last_auth_at`;
+nothing else about the record changes, and a disabled identity stays disabled.
+
+### Operational user endpoints
+
+```http
+GET /admin/api/users/{id}
+PUT /admin/api/users/{id}/status
+Authorization: Bearer <OPENRUNG_API_TOKEN>
+```
+
+`GET` returns the operator view — never the public key:
+
+```json
+{
+  "user_id": "user_0123456789abcdef0123456789abcdef",
+  "status": "disabled",
+  "created_at": "2026-10-16T12:00:00Z",
+  "last_auth_at": "2026-10-16T14:00:00Z",
+  "disabled_at": "2026-10-16T15:00:00Z",
+  "disabled_reason": "abuse report"
+}
+```
+
+`PUT` takes exactly one JSON object `{"status": "disabled", "reason": "…"}`
+(or `"enabled"`, which clears the reason) and answers with the updated view.
+The reason is at most 256 characters of printable text. Every change is
+logged with the caller's IP. Unknown or malformed IDs are `404`; the routes
+share the operational API's limiter and exist only when both
+`OPENRUNG_API_TOKEN` and `OPENRUNG_USER_TOKEN_KEY` are configured.
 
 ## Issue WSS Session Ticket
 

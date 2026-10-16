@@ -100,6 +100,11 @@ type Store struct {
 	observations []relayMetricObservation
 	// rankingWeights holds operator overrides only; see RelayRankingWeights.
 	rankingWeights map[string]float64
+	// users and userIDsByKey hold client identities (AccessStore); enrollment
+	// holds per-source new-identity counters keyed by source then window.
+	users        map[string]User
+	userIDsByKey map[string]string
+	enrollment   map[string]map[string]enrollmentCounter
 }
 
 type StoreStats struct {
@@ -113,6 +118,9 @@ func NewStore() *Store {
 		relays:         make(map[string]relay.Descriptor),
 		sessions:       make(map[string]relaySessionState),
 		rankingWeights: make(map[string]float64),
+		users:          make(map[string]User),
+		userIDsByKey:   make(map[string]string),
+		enrollment:     make(map[string]map[string]enrollmentCounter),
 	}
 }
 
@@ -352,6 +360,7 @@ func (s *Store) Prune(now time.Time) ([]relay.Descriptor, error) {
 		}
 	}
 	s.pruneMetricsLocked(now.Add(-rankingWindow))
+	s.pruneEnrollmentLocked(now)
 	return expired, nil
 }
 

@@ -147,13 +147,18 @@ func wssTicketHandler(store RelayStore, issuer *wssTicketIssuer) http.HandlerFun
 	}
 }
 
+// requireJSONEOF reports an error unless the decoder has reached end of
+// input: a second JSON value (or any trailing garbage) is a malformed request.
 func requireJSONEOF(decoder *json.Decoder) error {
 	var extra any
-	if err := decoder.Decode(&extra); errors.Is(err, io.EOF) {
+	err := decoder.Decode(&extra)
+	if errors.Is(err, io.EOF) {
 		return nil
-	} else {
-		return err
 	}
+	if err == nil {
+		return errors.New("request body must contain exactly one JSON value")
+	}
+	return err
 }
 
 func newWSSTicketID() (string, error) {
