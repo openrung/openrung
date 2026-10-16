@@ -1396,8 +1396,14 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 	// upgraded mid-session starts echoing the capability on the next
 	// re-registration and the syncer starts then; one that stops echoing it
 	// ends the syncer, which removes the leases it installed.
+	// One lease worker lives for the whole session (started lazily on the
+	// first registration that confirms the capability) and is switched
+	// between synchronising and draining, so a withdrawn capability keeps
+	// retrying removals and expiring leases until nothing is installed
+	// rather than abandoning credentials with their expiry worker gone.
 	var onlineOnce sync.Once
 	leaseSess := &leaseSession{}
+	var syncer *leaseSync
 	var stopLeases func()
 	defer func() {
 		if stopLeases != nil {
@@ -1406,9 +1412,9 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 	}()
 	ensureLeaseSync := func(registered relay.Descriptor) {
 		leaseSess.set(registered.ID, registered.LeaseToken)
-		switch {
-		case credentials != nil && registered.LeaseCapable && stopLeases == nil:
-			syncer := newLeaseSync(broker, leaseSess, credentials.users, cfg.HeartbeatInterval, e.logf)
+		capable := credentials != nil && registered.LeaseCapable
+		if capable && syncer == nil {
+			syncer = newLeaseSync(broker, leaseSess, credentials.users, cfg.HeartbeatInterval, e.logf)
 			syncer.onApplied = func() { onlineOnce.Do(goOnline) }
 			leaseCtx, cancelLeases := context.WithCancel(ctx)
 			leaseDone := make(chan struct{})
@@ -1416,13 +1422,19 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 				defer close(leaseDone)
 				syncer.run(leaseCtx)
 			}()
-			stopLeases = func() { cancelLeases(); <-leaseDone; stopLeases = nil }
-			e.logf("access leases are on: installing broker-issued per-client credentials")
-		case !registered.LeaseCapable && stopLeases != nil:
-			e.logf("the broker no longer confirms access leases; removing installed per-client credentials")
-			stopLeases()
+			stopLeases = func() { cancelLeases(); <-leaseDone }
 		}
-		if !registered.LeaseCapable {
+		if syncer != nil {
+			if capable != syncer.isActive() {
+				if capable {
+					e.logf("access leases are on: installing broker-issued per-client credentials")
+				} else {
+					e.logf("the broker no longer confirms access leases; removing installed per-client credentials")
+				}
+			}
+			syncer.setActive(capable)
+		}
+		if !capable {
 			if req.AccessLeases {
 				e.logf("the broker did not confirm access leases; serving the shared credential only")
 			}

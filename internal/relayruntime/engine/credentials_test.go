@@ -20,6 +20,8 @@ type recordingUsers struct {
 	adds     []string
 	removes  []string
 	failAdds bool
+	// failRemoves makes every RemoveUser fail (the user stays accepted).
+	failRemoves bool
 	// addDelay slows every AddUser (a slow management API).
 	addDelay time.Duration
 }
@@ -48,6 +50,9 @@ func (r *recordingUsers) AddUser(_ context.Context, credential relayruntime.Cred
 func (r *recordingUsers) RemoveUser(_ context.Context, email string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.failRemoves {
+		return errors.New("management API unavailable")
+	}
 	delete(r.accepted, email)
 	r.removes = append(r.removes, email)
 	return nil

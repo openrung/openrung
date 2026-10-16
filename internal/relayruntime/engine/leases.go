@@ -102,6 +102,13 @@ type leaseSync struct {
 	generation uint64
 	// announced records that onApplied has run.
 	announced bool
+	// active is whether the broker currently confirms the capability. While
+	// inactive the syncer polls nothing and drains: it keeps retrying the
+	// removal of every installed lease (and keeps the expiry sweep running)
+	// until none is left, so a failed removal never strands a credential
+	// without its expiry enforcement. activate wakes the loop on a change.
+	active   bool
+	activate chan struct{}
 }
 
 func newLeaseSync(broker *relayruntime.BrokerClient, session *leaseSession, users relayruntime.XrayUserManager, heartbeatInterval time.Duration, logf func(string, ...any)) *leaseSync {
@@ -114,13 +121,43 @@ func newLeaseSync(broker *relayruntime.BrokerClient, session *leaseSession, user
 		now:               time.Now,
 		installed:         map[string]installedLease{},
 		full:              true,
+		activate:          make(chan struct{}, 1),
 	}
 }
 
-// run polls, reconciles and acks until ctx ends, then removes every lease
-// user it installed so a session that ends leaves no stray credential. The
-// expiry sweep runs on its own ticker so an unreachable broker (a poll
-// blocked in backoff) never delays local expiry.
+// setActive turns synchronisation on (the broker echoed the capability) or
+// off (it stopped). Turning it on starts the next cycle with a full fetch;
+// turning it off switches the loop to draining.
+func (l *leaseSync) setActive(active bool) {
+	l.mu.Lock()
+	changed := l.active != active
+	l.active = active
+	if active {
+		l.full = true
+		l.pendingAck = false
+	}
+	l.mu.Unlock()
+	if changed {
+		select {
+		case l.activate <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func (l *leaseSync) isActive() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.active
+}
+
+// run is the session's lease worker. While active it polls, reconciles and
+// acks; while inactive it drains — retrying the removal of every installed
+// lease with backoff until none is left, then waiting for activation. When
+// ctx ends it makes one best-effort removal pass (the session's xray is
+// about to be stopped anyway). The expiry sweep runs on its own ticker for
+// as long as the worker lives, so an unreachable broker (a poll blocked in
+// backoff) or a failed removal never delays local expiry.
 func (l *leaseSync) run(ctx context.Context) {
 	expiry := time.NewTicker(leaseExpiryInterval)
 	defer expiry.Stop()
@@ -130,7 +167,7 @@ func (l *leaseSync) run(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-expiry.C:
-				l.expireLocal(ctx, l.now())
+				l.expireLocal(ctx)
 			}
 		}
 	}()
@@ -138,22 +175,40 @@ func (l *leaseSync) run(ctx context.Context) {
 	backoff := leaseSyncMinBackoff
 	for {
 		if ctx.Err() != nil {
-			l.removeAll()
+			l.removeAll(ctx)
 			return
 		}
-		ok := l.step(ctx)
+		var ok bool
+		if l.isActive() {
+			ok = l.step(ctx)
+		} else {
+			ok = l.removeAll(ctx)
+			if ok {
+				// Drained: nothing to do until the broker confirms the
+				// capability again.
+				select {
+				case <-ctx.Done():
+					l.removeAll(ctx)
+					return
+				case <-l.activate:
+				}
+				backoff = leaseSyncMinBackoff
+				continue
+			}
+		}
 		if ok {
 			backoff = leaseSyncMinBackoff
 			continue
 		}
 		if ctx.Err() != nil {
-			l.removeAll()
+			l.removeAll(ctx)
 			return
 		}
 		select {
 		case <-ctx.Done():
-			l.removeAll()
+			l.removeAll(ctx)
 			return
+		case <-l.activate:
 		case <-time.After(backoff):
 		}
 		backoff *= 2
@@ -369,24 +424,45 @@ func (l *leaseSync) installedIDs() []string {
 
 // expireLocal removes leases past their local expiry. Expiry is not a
 // revision change on the broker, so this is the only thing that ends a lease
-// the broker never revoked — including through a broker outage. Each removal
-// is its own locked operation that re-checks the expiry, so a lease the
-// reconcile extended between the snapshot and the removal is kept.
-func (l *leaseSync) expireLocal(ctx context.Context, now time.Time) {
-	expired := func(lease installedLease) bool { return !lease.expiresAt.After(now) }
-	for _, id := range l.installedIDs() {
-		l.remove(ctx, id, "expired", expired)
+// the broker never revoked — including through a broker outage. It is one
+// locked pass: the clock is read once the lock is held, so a wait behind a
+// slow install cannot age the decision, and only leases that are expired at
+// that moment cost an Xray call — unexpired entries are never waited on.
+// A removal that fails is retried on the next tick.
+func (l *leaseSync) expireLocal(ctx context.Context) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.now()
+	for id, lease := range l.installed {
+		if lease.expiresAt.After(now) {
+			continue
+		}
+		if err := l.users.RemoveUser(ctx, relay.LeaseEmailPrefix+id); err != nil {
+			l.logf("could not expire lease %s (will retry): %v", id, err)
+			continue
+		}
+		delete(l.installed, id)
+		l.logf("lease %s expired", id)
 	}
 }
 
-// removeAll drops every installed lease user when the session ends. It uses
-// a short background context because the session context is already done.
-func (l *leaseSync) removeAll() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	for _, id := range l.installedIDs() {
-		l.remove(ctx, id, "removed at session end", nil)
+// removeAll drops every installed lease user, one locked operation each,
+// and reports whether none is left. While draining the caller retries until
+// it does; at session end it is one best-effort pass with a short deadline
+// because the session context is already done.
+func (l *leaseSync) removeAll(ctx context.Context) bool {
+	if ctx.Err() != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 	}
+	drained := true
+	for _, id := range l.installedIDs() {
+		if !l.remove(ctx, id, "removed", nil) {
+			drained = false
+		}
+	}
+	return drained
 }
 
 // installedCount reports how many leases Xray currently accepts (status).

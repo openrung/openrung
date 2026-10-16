@@ -406,14 +406,20 @@ func TestDirectSessionExpiresLeasesBetweenSlowReconcileOperations(t *testing.T) 
 	eng, _ := startRotatingSession(t, broker, users)
 	eventually(t, 5*time.Second, "online", func() bool { return eng.Status().Phase == PhaseOnline })
 
+	// Thirty long-lived leases are installed first: the sweep must not wait
+	// behind a slow install once per installed entry.
 	short := leaseEntry("ssss", "11111111-2222-4333-8444-555555555560", 250*time.Millisecond)
-	revision := broker.setLeases(short)
+	installed := []relay.LeaseEntry{short}
+	for i := 0; i < 30; i++ {
+		installed = append(installed, leaseEntry(fmt.Sprintf("l%03d", i), fmt.Sprintf("11111111-2222-4333-8444-5555555556%02d", i), time.Hour))
+	}
+	revision := broker.setLeases(installed...)
 	eventually(t, 3*time.Second, "short lease installed", func() bool { acked, _ := broker.lastAcked(); return acked == revision })
 
 	users.mu.Lock()
 	users.addDelay = 150 * time.Millisecond
 	users.mu.Unlock()
-	batch := []relay.LeaseEntry{short}
+	batch := installed
 	for i := 0; i < 5; i++ {
 		batch = append(batch, leaseEntry(fmt.Sprintf("b%03d", i), fmt.Sprintf("11111111-2222-4333-8444-55555555556%d", i+1), time.Hour))
 	}
@@ -423,6 +429,58 @@ func TestDirectSessionExpiresLeasesBetweenSlowReconcileOperations(t *testing.T) 
 		t.Fatalf("the expiry waited for the whole batch (%d of 5 adds done)", adds)
 	}
 	eventually(t, 3*time.Second, "batch finished", func() bool { adds, _ := users.count("lease-b"); return adds == 5 })
+}
+
+// A withdrawn capability keeps the lease worker alive in drain mode: a
+// removal that fails is retried until it succeeds, and the expiry sweep
+// keeps running, so no credential is left installed with nothing enforcing
+// its end. Re-confirming the capability resumes synchronisation.
+func TestDirectSessionDrainsWithRetriesWhenCapabilityWithdrawn(t *testing.T) {
+	shortRotation(t, time.Hour)
+	shortLeaseTiming(t)
+	broker := &fakeBroker{leaseCapable: true}
+	users := newRecordingUsers()
+	eng, _ := startRotatingSession(t, broker, users)
+	eventually(t, 5*time.Second, "online", func() bool { return eng.Status().Phase == PhaseOnline })
+	long := leaseEntry("kkkk", "11111111-2222-4333-8444-555555555580", time.Hour)
+	short := leaseEntry("mmmm", "11111111-2222-4333-8444-555555555581", 400*time.Millisecond)
+	revision := broker.setLeases(long, short)
+	eventually(t, 3*time.Second, "installed", func() bool { acked, _ := broker.lastAcked(); return acked == revision })
+
+	users.mu.Lock()
+	users.failRemoves = true
+	users.mu.Unlock()
+	broker.mu.Lock()
+	broker.leaseCapable = false
+	broker.notFoundOnce = true
+	broker.mu.Unlock()
+	eventually(t, 5*time.Second, "re-registration without the capability", func() bool { return eng.Status().RelayID == "relay_2" })
+	time.Sleep(600 * time.Millisecond)
+	if !users.has(long.Credential) || !users.has(short.Credential) {
+		t.Fatalf("removals failed yet leases disappeared: %v", users.acceptedIDs())
+	}
+	polls, _ := broker.leaseStats()
+
+	users.mu.Lock()
+	users.failRemoves = false
+	users.mu.Unlock()
+	eventually(t, 3*time.Second, "drain retried until empty", func() bool { return len(users.leaseEmails()) == 0 })
+	time.Sleep(200 * time.Millisecond)
+	if after, _ := broker.leaseStats(); after != polls {
+		t.Fatalf("drain mode polled the broker (%d → %d)", polls, after)
+	}
+
+	// Re-confirmation resumes: a full fetch on the new token, acked.
+	acksBefore := len(broker.ackedRevisions())
+	broker.mu.Lock()
+	broker.leaseCapable = true
+	broker.notFoundOnce = true
+	broker.mu.Unlock()
+	eventually(t, 5*time.Second, "resumed on relay_3", func() bool {
+		_, bearers := broker.leaseStats()
+		return eng.Status().RelayID == "relay_3" && len(broker.ackedRevisions()) > acksBefore && bearers[len(bearers)-1] == "lease_relay_3"
+	})
+	eventually(t, 3*time.Second, "set re-installed", func() bool { return users.has(long.Credential) })
 }
 
 // A broker upgraded mid-session starts echoing the capability on the next
