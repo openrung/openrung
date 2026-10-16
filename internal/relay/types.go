@@ -98,6 +98,15 @@ type RegisterRequest struct {
 	IdentityPublicKey string `json:"identity_public_key,omitempty"`
 	IdentityProof     string `json:"identity_proof,omitempty"`
 	IdentityExpiresAt string `json:"identity_expires_at,omitempty"`
+	// AccessLeases declares that this relay installs broker-issued per-client
+	// credentials (access leases) through its lease sync endpoints. It is a
+	// registration-time capability only: heartbeats do not carry it, the
+	// identity statement does not bind it, and the broker echoes the value
+	// it recorded in the registration response (access_leases) so the relay
+	// starts its syncer only against a broker that understands leases. Only
+	// identity-bearing registrations can be lease-capable, because the sync
+	// endpoints authenticate with the registration's lease token.
+	AccessLeases bool `json:"access_leases,omitempty"`
 }
 
 // MarshalJSON emits the canonical key plus the deprecated v1 alias so upgraded
@@ -176,6 +185,12 @@ type Descriptor struct {
 	// keep a newer session's endpoint alive. The token is returned only by the
 	// registration endpoint and is never included in public relay lists.
 	LeaseToken string `json:"-"`
+	// LeaseCapable records that the registration declared AccessLeases and
+	// the broker accepted it (identity-bearing registration). It is private
+	// registration state: echoed to the registering relay, used by the
+	// broker to pick relays that can install per-client credentials, never
+	// serialized into the public directory.
+	LeaseCapable bool `json:"-"`
 	// NodeClass is the broker-attested operator class (NodeClassFoundation or
 	// NodeClassVolunteer). Always serialized, and covered by the relay-list
 	// signature like every other descriptor field; clients that predate it
@@ -214,10 +229,12 @@ func (r RegisterResponse) MarshalJSON() ([]byte, error) {
 		descriptorAlias
 		VolunteerVersion string `json:"volunteer_version"`
 		LeaseToken       string `json:"lease_token,omitempty"`
+		AccessLeases     bool   `json:"access_leases,omitempty"`
 	}{
 		descriptorAlias:  descriptorAlias(r.Descriptor),
 		VolunteerVersion: r.Descriptor.RelayVersion,
 		LeaseToken:       r.Descriptor.LeaseToken,
+		AccessLeases:     r.Descriptor.LeaseCapable,
 	})
 }
 
@@ -227,12 +244,14 @@ func (r *RegisterResponse) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	var private struct {
-		LeaseToken string `json:"lease_token"`
+		LeaseToken   string `json:"lease_token"`
+		AccessLeases bool   `json:"access_leases"`
 	}
 	if err := json.Unmarshal(data, &private); err != nil {
 		return err
 	}
 	desc.LeaseToken = private.LeaseToken
+	desc.LeaseCapable = private.AccessLeases
 	r.Descriptor = desc
 	return nil
 }
@@ -324,6 +343,41 @@ type HeartbeatResponse struct {
 	// broker that predates the field (and so never echoes it) leaves the
 	// relay serving the credential it registered with.
 	ClientID string `json:"client_id,omitempty"`
+}
+
+// LeaseSyncResponse is the full set of access leases a relay must currently
+// accept, as served by GET /api/v1/relays/{id}/leases. Revision is the
+// relay's per-relay change counter: every change to the set (issue, renewal,
+// revocation) advances it, and the set and the revision are read in one
+// snapshot, so acknowledging Revision tells the broker that every lease
+// changed at or before it has been applied. A relay keys its local expiry
+// off ServerTime (local expiry = now + (expires_at − server_time)) so a clock
+// offset between relay and broker never shortens or extends a lease.
+// Leases carry no user identity: relays only ever see the lease label.
+type LeaseSyncResponse struct {
+	ServerTime time.Time    `json:"server_time"`
+	Revision   int64        `json:"revision"`
+	Leases     []LeaseEntry `json:"leases"`
+}
+
+// LeaseEntry is one per-client VLESS credential a relay installs. The Xray
+// user is labelled LeaseEmailPrefix+ID, which is the label relay logs show
+// and the operational API resolves back to a user.
+type LeaseEntry struct {
+	ID         string    `json:"id"`
+	Credential string    `json:"credential"`
+	ExpiresAt  time.Time `json:"expires_at"`
+}
+
+// LeaseEmailPrefix prefixes lease IDs in the Xray user label. It is disjoint
+// from the rotating shared credentials' "cred-" labels, so lease reconciliation
+// and credential retirement never touch each other's users.
+const LeaseEmailPrefix = "lease-"
+
+// LeaseAckRequest is the body of POST /api/v1/relays/{id}/leases/ack: the
+// highest revision whose set the relay has fully applied to its Xray.
+type LeaseAckRequest struct {
+	Revision int64 `json:"revision"`
 }
 
 // WSSSessionTicketRequest asks for one short-lived, single-use ticket bound to

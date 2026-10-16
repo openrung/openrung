@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -81,10 +82,16 @@ func adminUserHandler(store AccessStore, apiToken string) http.HandlerFunc {
 	}
 }
 
+// userStatusSetter applies an operator decision; accessService.setUserStatus
+// is the production implementation, which also wakes the relays whose
+// leases a disable revoked.
+type userStatusSetter func(ctx context.Context, id, status, reason string) (User, error)
+
 // adminUserStatusHandler serves PUT /admin/api/users/{id}/status. Disabling
 // is the revocation lever: a disabled user authenticates but gets no token,
-// and every later authorization check refuses it.
-func adminUserStatusHandler(store AccessStore, apiToken string, clientIP func(*http.Request) string) http.HandlerFunc {
+// every later authorization check refuses it, and its live leases are
+// revoked so relays drop the credentials on their next sync.
+func adminUserStatusHandler(setStatus userStatusSetter, apiToken string, clientIP func(*http.Request) string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		if !bearerMatches(r, apiToken) {
@@ -127,7 +134,7 @@ func adminUserStatusHandler(store AccessStore, apiToken string, clientIP func(*h
 			request.Reason = ""
 		}
 
-		user, err := store.SetUserStatus(r.Context(), id, request.Status, request.Reason, time.Now().UTC())
+		user, err := setStatus(r.Context(), id, request.Status, request.Reason)
 		if errors.Is(err, ErrUserNotFound) {
 			writeError(w, http.StatusNotFound, "user not found")
 			return

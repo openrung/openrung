@@ -503,3 +503,82 @@ func brokerJSONResponse(req *http.Request, status int, body string) *http.Respon
 		Request:    req,
 	}
 }
+
+// Lease synchronisation authenticates with the registration's lease token,
+// never the registration token: the poll is a GET that omits `after` on a
+// full fetch and sends it otherwise, the ack posts the revision, and the
+// broker's 404 keeps the shape IsRelayNotFound recognizes.
+func TestBrokerClientLeaseSyncRoutes(t *testing.T) {
+	t.Parallel()
+	serverTime := time.Date(2026, time.October, 16, 12, 0, 0, 0, time.UTC)
+	var (
+		mu    sync.Mutex
+		seen  []string
+		acked []int64
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.Method+" "+r.URL.RequestURI())
+		mu.Unlock()
+		if got := r.Header.Get("Authorization"); got != "Bearer lease_canonical" {
+			t.Errorf("Authorization = %q, want the lease token bearer", got)
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == relayHeartbeatPathBase+"relay_canonical/leases":
+			if r.Header.Get("Content-Type") != "" || r.ContentLength != 0 {
+				t.Errorf("poll sent a body: %q %d", r.Header.Get("Content-Type"), r.ContentLength)
+			}
+			writeBrokerJSON(w, http.StatusOK, relay.LeaseSyncResponse{ServerTime: serverTime, Revision: 7, Leases: []relay.LeaseEntry{{ID: "abc", Credential: "uuid", ExpiresAt: serverTime.Add(time.Hour)}}})
+		case r.Method == http.MethodPost && r.URL.Path == relayHeartbeatPathBase+"relay_canonical/leases/ack":
+			var ack relay.LeaseAckRequest
+			if err := json.NewDecoder(r.Body).Decode(&ack); err != nil {
+				t.Errorf("decode ack: %v", err)
+			}
+			mu.Lock()
+			acked = append(acked, ack.Revision)
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		case r.URL.Path == relayHeartbeatPathBase+"relay_gone/leases":
+			writeBrokerJSON(w, http.StatusNotFound, relay.ErrorResponse{Error: "relay not found"})
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.RequestURI())
+			w.WriteHeader(http.StatusTeapot)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := &BrokerClient{BaseURL: server.URL, Token: "relay-token", HTTPClient: server.Client()}
+	full, err := client.PollLeases(context.Background(), "relay_canonical", "lease_canonical", -1)
+	if err != nil || full.Revision != 7 || len(full.Leases) != 1 || full.Leases[0].ID != "abc" || !full.ServerTime.Equal(serverTime) {
+		t.Fatalf("full poll = %+v, %v", full, err)
+	}
+	if _, err := client.PollLeases(context.Background(), "relay_canonical", "lease_canonical", 7); err != nil {
+		t.Fatalf("held poll: %v", err)
+	}
+	if err := client.AckLeases(context.Background(), "relay_canonical", "lease_canonical", 7); err != nil {
+		t.Fatalf("ack: %v", err)
+	}
+	_, err = client.PollLeases(context.Background(), "relay_gone", "lease_canonical", 3)
+	if !IsRelayNotFound(err) {
+		t.Fatalf("pruned relay poll error = %v, want IsRelayNotFound", err)
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || strings.Contains(apiErr.Path, "?") {
+		t.Fatalf("APIError path carries the query: %+v", apiErr)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{
+		"GET /api/v1/relays/relay_canonical/leases",
+		"GET /api/v1/relays/relay_canonical/leases?after=7",
+		"POST /api/v1/relays/relay_canonical/leases/ack",
+		"GET /api/v1/relays/relay_gone/leases?after=3",
+	}
+	if !reflect.DeepEqual(seen, want) {
+		t.Fatalf("requests = %q, want %q", seen, want)
+	}
+	if !reflect.DeepEqual(acked, []int64{7}) {
+		t.Fatalf("acked = %v", acked)
+	}
+}

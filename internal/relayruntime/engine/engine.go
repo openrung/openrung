@@ -186,6 +186,15 @@ type Config struct {
 	// every derived credential at once without touching the relay identity —
 	// the response to a suspected derivation-key leak.
 	CredentialEpoch string
+	// DisableAccessLeases keeps a direct-mode relay off the broker's per-client
+	// credential (access lease) channel. By default a rotating direct-mode
+	// relay declares the capability at registration and, when the broker
+	// echoes it, long-polls the broker for the set of broker-issued per-client
+	// credentials to accept, installs them through the same Xray management
+	// API rotation uses, and acknowledges each applied revision. Leases need
+	// rotation's managed xray, so a static session (rotation off, or an xray
+	// this relay does not run) never declares them. Tunnel mode is untouched.
+	DisableAccessLeases bool
 	// ConfigDir is where the generated xray config (which contains the Reality
 	// private key) is written, 0600. Defaults to os.TempDir().
 	ConfigDir string
@@ -1321,6 +1330,9 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 		NodeClass:        cfg.NodeClass,
 		Transport:        relay.TransportDirect,
 		WSSFronts:        slices.Clone(cfg.WSSFronts),
+		// Per-client credentials ride the managed xray rotation already
+		// drives; a static session has nothing to install them with.
+		AccessLeases: credentials != nil && !cfg.DisableAccessLeases,
 	}
 	// Every register call — initial and after an expired lease — signs a fresh
 	// proof over the final request fields, so the proof never ages out within
@@ -1358,15 +1370,47 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 		credentials.confirm(time.Now(), desc.ClientID)
 	}
 	e.registrations.Add(1)
-	e.setStatus(func() {
-		e.phase = PhaseOnline
-		e.transport = relay.TransportDirect
-		e.relayID = desc.ID
-		e.publicHost = desc.PublicHost
-		e.publicPort = desc.PublicPort
-		e.lastErr = ""
-		e.onlineAt = time.Now()
-	})
+	// goOnline publishes the registration-time endpoint. It takes a copy of
+	// the descriptor because the lease syncer may call it from its own
+	// goroutine while the heartbeat below is already re-registering.
+	registered := desc
+	goOnline := func() {
+		e.setStatus(func() {
+			e.phase = PhaseOnline
+			e.transport = relay.TransportDirect
+			e.relayID = registered.ID
+			e.publicHost = registered.PublicHost
+			e.publicPort = registered.PublicPort
+			e.lastErr = ""
+			e.onlineAt = time.Now()
+		})
+	}
+	// A lease-capable session is online once the broker has confirmed the
+	// relay applied its first lease set (possibly empty): before that ack the
+	// broker would not hand any client a credential for this relay. The
+	// syncer is its own goroutine — its poll blocks for the broker's hold —
+	// and shares the session's (ID, token) through leaseSess, which the
+	// heartbeat refreshes on re-registration. A broker that did not echo the
+	// capability (it predates leases) leaves the session exactly as before.
+	leaseSess := &leaseSession{}
+	leaseSess.set(desc.ID, desc.LeaseToken)
+	if credentials != nil && desc.LeaseCapable {
+		syncer := newLeaseSync(broker, leaseSess, credentials.users, cfg.HeartbeatInterval, e.logf)
+		syncer.onApplied = goOnline
+		leaseCtx, cancelLeases := context.WithCancel(ctx)
+		leaseDone := make(chan struct{})
+		go func() {
+			defer close(leaseDone)
+			syncer.run(leaseCtx)
+		}()
+		defer func() { cancelLeases(); <-leaseDone }()
+		e.logf("access leases are on: installing broker-issued per-client credentials")
+	} else {
+		if req.AccessLeases {
+			e.logf("the broker did not confirm access leases; serving the shared credential only")
+		}
+		goOnline()
+	}
 
 	heartbeat := time.NewTicker(cfg.HeartbeatInterval)
 	defer heartbeat.Stop()
@@ -1441,6 +1485,7 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 			return
 		}
 		desc = updated
+		leaseSess.set(desc.ID, desc.LeaseToken)
 		e.logf("re-registered with the broker as %q (%s)", desc.Label, desc.ID)
 		if credentials != nil {
 			credentials.confirm(now, desc.ClientID)

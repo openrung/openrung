@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -61,6 +63,118 @@ type fakeBroker struct {
 	// failRegisters answers every registration 503.
 	failHeartbeats bool
 	failRegisters  bool
+
+	// Lease synchronisation. leaseCapable makes registration echo the
+	// access_leases capability (a broker that understands leases); the set
+	// and revision are what GET …/leases serves, leaseWake is closed and
+	// replaced on every change so a held poll wakes, and acks records every
+	// acknowledged revision. failLeasePolls answers every poll 503;
+	// leaseNotFoundOnce answers the next poll 404 then clears. Every lease
+	// request's bearer is appended to leaseBearers.
+	leaseCapable      bool
+	leaseRevision     int64
+	leaseSet          []relay.LeaseEntry
+	leaseWake         chan struct{}
+	leaseAcks         []int64
+	leasePolls        int
+	leaseBearers      []string
+	failLeasePolls    bool
+	leaseNotFoundOnce bool
+}
+
+// fakeLeaseHold is how long the fake broker holds a poll whose `after` is
+// current; short so outage tests move quickly.
+const fakeLeaseHold = 200 * time.Millisecond
+
+// setLeases replaces the served set, advances the revision and wakes polls.
+func (f *fakeBroker) setLeases(entries ...relay.LeaseEntry) int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.leaseSet = append([]relay.LeaseEntry(nil), entries...)
+	f.leaseRevision++
+	if f.leaseWake != nil {
+		close(f.leaseWake)
+		f.leaseWake = nil
+	}
+	return f.leaseRevision
+}
+
+func (f *fakeBroker) ackedRevisions() []int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int64(nil), f.leaseAcks...)
+}
+
+func (f *fakeBroker) lastAcked() (int64, bool) {
+	acks := f.ackedRevisions()
+	if len(acks) == 0 {
+		return 0, false
+	}
+	return acks[len(acks)-1], true
+}
+
+func (f *fakeBroker) leaseStats() (polls int, bearers []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.leasePolls, append([]string(nil), f.leaseBearers...)
+}
+
+func (f *fakeBroker) leaseHandlers(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/v1/relays/{id}/leases", func(w http.ResponseWriter, r *http.Request) {
+		bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		after, hasAfter := int64(-1), false
+		if raw := r.URL.Query().Get("after"); raw != "" {
+			parsed, err := strconv.ParseInt(raw, 10, 64)
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			after, hasAfter = parsed, true
+		}
+		f.mu.Lock()
+		f.leasePolls++
+		f.leaseBearers = append(f.leaseBearers, bearer)
+		notFound := f.leaseNotFoundOnce
+		f.leaseNotFoundOnce = false
+		failing := f.failLeasePolls
+		if f.leaseWake == nil {
+			f.leaseWake = make(chan struct{})
+		}
+		wake := f.leaseWake
+		revision := f.leaseRevision
+		f.mu.Unlock()
+		if failing {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"broker unavailable"}`))
+			return
+		}
+		if notFound {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"relay not found"}`))
+			return
+		}
+		if hasAfter && revision <= after {
+			select {
+			case <-wake:
+			case <-time.After(fakeLeaseHold):
+			case <-r.Context().Done():
+				return
+			}
+		}
+		f.mu.Lock()
+		resp := relay.LeaseSyncResponse{ServerTime: time.Now().UTC(), Revision: f.leaseRevision, Leases: append([]relay.LeaseEntry{}, f.leaseSet...)}
+		f.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+	mux.HandleFunc("POST /api/v1/relays/{id}/leases/ack", func(w http.ResponseWriter, r *http.Request) {
+		var ack relay.LeaseAckRequest
+		_ = json.NewDecoder(r.Body).Decode(&ack)
+		f.mu.Lock()
+		f.leaseBearers = append(f.leaseBearers, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		f.leaseAcks = append(f.leaseAcks, ack.Revision)
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
 }
 
 func (f *fakeBroker) handler() http.Handler {
@@ -80,10 +194,15 @@ func (f *fakeBroker) handler() http.Handler {
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		f.lastRegister = req
 		f.servedClientID = req.ClientID
+		leaseCapable := req.AccessLeases && f.leaseCapable
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(relay.Descriptor{ID: id, Label: req.Label, PublicHost: req.PublicHost, PublicPort: req.PublicPort, ClientID: req.ClientID})
+		_ = json.NewEncoder(w).Encode(relay.RegisterResponse{Descriptor: relay.Descriptor{
+			ID: id, Label: req.Label, PublicHost: req.PublicHost, PublicPort: req.PublicPort, ClientID: req.ClientID,
+			LeaseToken: "lease_" + id, LeaseCapable: leaseCapable,
+		}})
 	})
+	f.leaseHandlers(mux)
 	mux.HandleFunc("/api/v1/relays/", func(w http.ResponseWriter, r *http.Request) {
 		var hb relay.HeartbeatRequest
 		_ = json.NewDecoder(r.Body).Decode(&hb)

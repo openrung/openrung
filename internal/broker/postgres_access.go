@@ -115,14 +115,22 @@ func (s *PostgresStore) UserByID(parent context.Context, id string) (User, error
 	return user, err
 }
 
-func (s *PostgresStore) SetUserStatus(parent context.Context, id, status, reason string, now time.Time) (User, error) {
+func (s *PostgresStore) SetUserStatus(parent context.Context, id, status, reason string, now time.Time) (User, []string, error) {
 	if !validUserStatus(status) {
-		return User{}, ErrInvalidUserStatus
+		return User{}, nil, ErrInvalidUserStatus
 	}
 	ctx, cancel := context.WithTimeout(parent, postgresOperationTimeout)
 	defer cancel()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return User{}, nil, fmt.Errorf("begin user status update: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
 	disabling := status == brokerapi.UserStatusDisabled
-	user, err := scanUser(s.pool.QueryRow(ctx, `
+	// The UPDATE takes the user's row lock — the same lock lease issuance
+	// takes first — so a disable and an issuance for one user serialise and
+	// the revocation below cannot miss a lease issued concurrently.
+	user, err := scanUser(tx.QueryRow(ctx, `
 		UPDATE users
 		SET status = $2,
 			disabled_at = CASE WHEN $3 THEN $4::timestamptz ELSE NULL END,
@@ -130,9 +138,21 @@ func (s *PostgresStore) SetUserStatus(parent context.Context, id, status, reason
 		WHERE id = $1
 		RETURNING `+userColumns, id, status, disabling, now, reason))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return User{}, ErrUserNotFound
+		return User{}, nil, ErrUserNotFound
 	}
-	return user, err
+	if err != nil {
+		return User{}, nil, err
+	}
+	var changed []string
+	if disabling {
+		if changed, err = revokeUserLeases(ctx, tx, id, now); err != nil {
+			return User{}, nil, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return User{}, nil, fmt.Errorf("commit user status update: %w", err)
+	}
+	return user, changed, nil
 }
 
 // pruneEnrollmentCounters drops counters whose window has ended.

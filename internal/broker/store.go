@@ -105,6 +105,11 @@ type Store struct {
 	users        map[string]User
 	userIDsByKey map[string]string
 	enrollment   map[string]map[string]enrollmentCounter
+	// leases holds every retained access lease by ID; leaseStates is the
+	// per-relay revision/applied pair, keyed by the stable relay ID and
+	// never dropped with a descriptor (see leases.go).
+	leases      map[string]Lease
+	leaseStates map[string]*leaseStateRow
 }
 
 type StoreStats struct {
@@ -121,6 +126,8 @@ func NewStore() *Store {
 		users:          make(map[string]User),
 		userIDsByKey:   make(map[string]string),
 		enrollment:     make(map[string]map[string]enrollmentCounter),
+		leases:         make(map[string]Lease),
+		leaseStates:    make(map[string]*leaseStateRow),
 	}
 }
 
@@ -155,6 +162,7 @@ func (s *Store) Register(req relay.RegisterRequest, now time.Time, ttl time.Dura
 		ID:                id,
 		IdentityPublicKey: req.IdentityPublicKey,
 		LeaseToken:        leaseToken,
+		LeaseCapable:      req.AccessLeases && identityKey != nil,
 		Label:             req.Label,
 		NodeClass:         normalizeNodeClass(req.NodeClass),
 		PublicHost:        req.PublicHost,
@@ -221,6 +229,13 @@ func (s *Store) Register(req relay.RegisterRequest, now time.Time, ttl time.Dura
 	// this on most reconnects, because the hub round-robins their public port,
 	// so it is normal traffic and not logged.)
 	s.relays[id] = desc
+	// A new lease token means a new relay session that has applied nothing
+	// yet: reset the applied revision (keeping the revision itself) so the
+	// relay's first poll re-installs every live lease before any is relied
+	// upon. The row is keyed by the stable ID and survives the descriptor.
+	if leaseToken != "" {
+		s.leaseStateLocked(id).applied = 0
+	}
 
 	return cloneRelayDescriptor(desc), nil
 }
@@ -361,6 +376,7 @@ func (s *Store) Prune(now time.Time) ([]relay.Descriptor, error) {
 	}
 	s.pruneMetricsLocked(now.Add(-rankingWindow))
 	s.pruneEnrollmentLocked(now)
+	s.pruneLeasesLocked(now)
 	return expired, nil
 }
 

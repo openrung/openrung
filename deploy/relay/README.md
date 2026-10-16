@@ -241,6 +241,20 @@ accepts `client_id` on heartbeat (broker 0.4.0 or later); against an older
 broker the relay keeps its registration-time credential accepted and
 otherwise behaves as before.
 
+**Access leases (default with rotation).** A rotating direct-mode relay also
+declares the `access_leases` capability at registration. When the broker
+(0.8.0 or later) echoes it, the relay long-polls the broker for the set of
+broker-issued per-client credentials it must accept, installs them through
+the same management API under `lease-<id>` user labels, removes the ones the
+broker revokes or that expire, and acknowledges each applied revision; the
+relay reports itself online once the first set is acknowledged. An operator
+resolves a `lease-<id>` label seen in relay logs through the broker's
+operational API (`GET /admin/api/leases/{id}`). Leases ride rotation's
+managed xray, so `OPENRUNG_CREDENTIAL_ROTATION=off` and `-skip-xray-run`
+leave them off as well, and a broker without lease support leaves the relay
+serving the shared credential only. `OPENRUNG_ACCESS_LEASES=off` disables the
+capability explicitly.
+
 ## Run
 
 ### One-line volunteer VPS bring-up

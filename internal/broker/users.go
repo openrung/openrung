@@ -160,9 +160,13 @@ type AccessStore interface {
 	AuthenticateUser(ctx context.Context, canonicalPublicKey, sourceKey string, windows []EnrollmentWindow, now time.Time) (user User, created bool, err error)
 	UserByID(ctx context.Context, id string) (User, error)
 	// SetUserStatus records an operator decision. Disabling stamps
-	// DisabledAt and the reason; enabling clears both. ErrUserNotFound for
-	// an unknown ID, ErrInvalidUserStatus for anything but the two states.
-	SetUserStatus(ctx context.Context, id, status, reason string, now time.Time) (User, error)
+	// DisabledAt and the reason and, in the same transaction, revokes every
+	// live lease the user holds — the returned relay IDs (sorted) are the
+	// relays whose desired set changed and must be woken; enabling clears
+	// both fields and revokes nothing. ErrUserNotFound for an unknown ID,
+	// ErrInvalidUserStatus for anything but the two states.
+	SetUserStatus(ctx context.Context, id, status, reason string, now time.Time) (User, []string, error)
+	LeaseStore
 }
 
 func validUserStatus(status string) bool {

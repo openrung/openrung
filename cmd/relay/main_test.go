@@ -39,6 +39,7 @@ var relayEnvironmentVariables = []string{
 	"OPENRUNG_PUNCH_DISABLE",
 	"OPENRUNG_CREDENTIAL_ROTATION",
 	"OPENRUNG_CREDENTIAL_EPOCH",
+	"OPENRUNG_ACCESS_LEASES",
 }
 
 // parseFlags runs the real registration and parsing path, so what these tests
@@ -105,6 +106,7 @@ func TestFlagSurfaceAndDefaultsAreStable(t *testing.T) {
 		"punch":                "true",
 		"credential-rotation":  "true",
 		"credential-epoch":     "",
+		"access-leases":        "true",
 	}
 
 	fs := flag.NewFlagSet("relay", flag.ContinueOnError)
@@ -764,6 +766,45 @@ func TestCredentialRotationFlagsMapOntoEngineConfig(t *testing.T) {
 		}
 		if cfg.CredentialEpoch != "epoch-"+value {
 			t.Errorf("OPENRUNG_CREDENTIAL_EPOCH not passed through: %q", cfg.CredentialEpoch)
+		}
+	}
+}
+
+// Access leases are on unless the operator turns them off, and map onto the
+// engine's DisableAccessLeases exactly like rotation's switch.
+func TestAccessLeasesFlagMapsOntoEngineConfig(t *testing.T) {
+	cfg, err := parseFlags(t, "-mode", "direct").engineConfig()
+	if err != nil {
+		t.Fatalf("engineConfig: %v", err)
+	}
+	if cfg.DisableAccessLeases {
+		t.Fatal("default config disables access leases")
+	}
+	cfg, err = parseFlags(t, "-mode", "direct", "-access-leases=false").engineConfig()
+	if err != nil {
+		t.Fatalf("engineConfig: %v", err)
+	}
+	if !cfg.DisableAccessLeases {
+		t.Fatal("-access-leases=false did not disable access leases")
+	}
+	for _, name := range relayEnvironmentVariables {
+		t.Setenv(name, "")
+	}
+	for value, wantDisabled := range map[string]bool{"off": true, "false": true, "0": true, "no": true, "on": false, "": false, "nonsense": false} {
+		t.Setenv("OPENRUNG_ACCESS_LEASES", value)
+		flags := &cliFlags{}
+		fs := flag.NewFlagSet("relay", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		flags.register(fs, "")
+		if err := fs.Parse([]string{"-mode", "direct"}); err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		cfg, err := flags.engineConfig()
+		if err != nil {
+			t.Fatalf("engineConfig: %v", err)
+		}
+		if cfg.DisableAccessLeases != wantDisabled {
+			t.Errorf("OPENRUNG_ACCESS_LEASES=%q: leases disabled = %v, want %v", value, cfg.DisableAccessLeases, wantDisabled)
 		}
 	}
 }

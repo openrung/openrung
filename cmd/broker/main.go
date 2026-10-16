@@ -71,6 +71,19 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// Per-client relay credentials (access leases): lifetime and live caps.
+	accessLeaseTTL, err := parseOptionalDuration("OPENRUNG_ACCESS_LEASE_TTL")
+	if err != nil {
+		return err
+	}
+	maxLeasesPerUser, err := parseOptionalInt("OPENRUNG_MAX_LEASES_PER_USER")
+	if err != nil {
+		return err
+	}
+	maxLeasesPerRelay, err := parseOptionalInt("OPENRUNG_MAX_LEASES_PER_RELAY")
+	if err != nil {
+		return err
+	}
 	if *printWSSTicketPublicKey {
 		if len(wssTicketSeed) == 0 {
 			return errors.New("OPENRUNG_WSS_TICKET_SIGNING_SEED is required")
@@ -162,6 +175,9 @@ func run() error {
 		UserTokenKey:               userTokenKey,
 		AccessTokenTTL:             accessTokenTTL,
 		EnrollmentBudget:           broker.EnrollmentBudget{BurstLimit: enrollmentBurstLimit, DailyLimit: enrollmentDailyLimit},
+		AccessLeaseTTL:             accessLeaseTTL,
+		MaxLeasesPerUser:           maxLeasesPerUser,
+		MaxLeasesPerRelay:          maxLeasesPerRelay,
 	}
 	if len(userTokenKey) > 0 {
 		slog.Info("client user authentication enabled")

@@ -267,6 +267,45 @@ func TestEgressGuardKeepsClientsOffTheManagementAPI(t *testing.T) {
 	}
 }
 
+// A per-client lease credential installed at runtime under its lease-<id>
+// label admits a VLESS handshake exactly like the shared credential, and
+// stops admitting new handshakes the moment it is removed — the relay-side
+// half of revoking one installation.
+func TestLeaseCredentialAdmitsUntilRemoved(t *testing.T) {
+	xrayPath := requireXray(t)
+	victim := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "victim") }))
+	defer victim.Close()
+	shared := Credential{ID: "11111111-2222-4333-8444-555555555555", Email: "cred-20260917T140000Z"}
+	lease := Credential{ID: "44444444-2222-4333-8444-555555555555", Email: "lease-0123456789abcdef0123456789abcdef"}
+
+	relay := startE2ERelay(t, xrayPath, false, shared)
+	// Before the lease exists its credential is refused.
+	before := startE2EClient(t, xrayPath, relay, lease.ID)
+	if body, err := fetchThrough(before, victim.URL); err == nil {
+		t.Fatalf("an uninstalled lease credential reached the victim: %q", body)
+	}
+	if err := relay.api.AddUser(context.Background(), lease); err != nil {
+		t.Fatalf("install lease: %v", err)
+	}
+	proxy := startE2EClient(t, xrayPath, relay, lease.ID)
+	body, err := fetchThrough(proxy, victim.URL)
+	if err != nil || body != "victim" {
+		t.Fatalf("lease credential through the relay: body %q, err %v", body, err)
+	}
+	if err := relay.api.RemoveUser(context.Background(), lease.Email); err != nil {
+		t.Fatalf("remove lease: %v", err)
+	}
+	after := startE2EClient(t, xrayPath, relay, lease.ID)
+	if body, err := fetchThrough(after, victim.URL); err == nil {
+		t.Fatalf("a removed lease credential still reached the victim: %q", body)
+	}
+	// The shared credential beside it is unaffected.
+	sharedProxy := startE2EClient(t, xrayPath, relay, shared.ID)
+	if body, err := fetchThrough(sharedProxy, victim.URL); err != nil || body != "victim" {
+		t.Fatalf("shared credential after lease removal: body %q, err %v", body, err)
+	}
+}
+
 // echoThrough opens a CONNECT tunnel to hostPort through the client proxy,
 // writes payload and returns whatever comes back before the deadline. A
 // destination the relay routes to its blackhole returns nothing.

@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"openrung/internal/relay"
@@ -21,9 +22,10 @@ const (
 	maxBrokerErrorBodyBytes = 64 << 10
 )
 
-// BrokerClient speaks the relay side of the broker HTTP API: registration
-// and heartbeats. The zero HTTPClient falls back to http.DefaultClient; Token
-// is optional (anonymous registration when the broker allows it).
+// BrokerClient speaks the relay side of the broker HTTP API: registration,
+// heartbeats and access-lease synchronisation. The zero HTTPClient falls back
+// to http.DefaultClient; Token is optional (anonymous registration when the
+// broker allows it).
 type BrokerClient struct {
 	BaseURL    string
 	Token      string
@@ -55,10 +57,44 @@ func (b *BrokerClient) Heartbeat(ctx context.Context, id, leaseToken, clientID s
 	return resp, err
 }
 
+// PollLeases fetches the access leases the relay must accept. A negative
+// after asks for the full set immediately (the first poll of a session, or
+// after a re-registration); otherwise the broker holds the request until its
+// revision exceeds after or its hold elapses, answering with the current set
+// either way. The bearer is the registration's lease token, never the
+// registration token. A wrong token, a pruned relay or a legacy identityless
+// row yields the 404 that IsRelayNotFound recognizes, so the caller waits for
+// the heartbeat to re-register and retries with the new token.
+func (b *BrokerClient) PollLeases(ctx context.Context, id, leaseToken string, after int64) (relay.LeaseSyncResponse, error) {
+	path := relayHeartbeatPathBase + id + "/leases"
+	if after >= 0 {
+		path += "?after=" + strconv.FormatInt(after, 10)
+	}
+	var resp relay.LeaseSyncResponse
+	err := b.doJSON(ctx, http.MethodGet, path, leaseToken, nil, &resp)
+	return resp, err
+}
+
+// AckLeases tells the broker the relay has applied the lease set at revision.
+func (b *BrokerClient) AckLeases(ctx context.Context, id, leaseToken string, revision int64) error {
+	return b.doJSON(ctx, http.MethodPost, relayHeartbeatPathBase+id+"/leases/ack", leaseToken, relay.LeaseAckRequest{Revision: revision}, nil)
+}
+
 func (b *BrokerClient) postJSON(ctx context.Context, path string, body any, out any) error {
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return err
+	return b.doJSON(ctx, http.MethodPost, path, b.Token, body, out)
+}
+
+// doJSON performs one broker request with the given bearer (empty sends no
+// Authorization header) and JSON body (nil sends none), decoding a 2xx body
+// into out when out is non-nil.
+func (b *BrokerClient) doJSON(ctx context.Context, method, path, bearer string, body any, out any) error {
+	var reader io.Reader
+	if body != nil {
+		payload, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		reader = bytes.NewReader(payload)
 	}
 
 	requestURL := strings.TrimRight(b.BaseURL, "/") + path
@@ -67,13 +103,15 @@ func (b *BrokerClient) postJSON(ctx context.Context, path string, body any, out 
 			return err
 		}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, method, requestURL, reader)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	if b.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+b.Token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
 	}
 
 	httpClient := b.HTTPClient
@@ -106,7 +144,7 @@ func (b *BrokerClient) postJSON(ctx context.Context, path string, body any, out 
 			apiErr.Error = resp.Status
 		}
 		return &APIError{
-			Path:       path,
+			Path:       strings.SplitN(path, "?", 2)[0],
 			StatusCode: resp.StatusCode,
 			Message:    apiErr.Error,
 			RetryAfter: resp.Header.Get("Retry-After"),

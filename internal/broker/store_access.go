@@ -89,26 +89,28 @@ func (s *Store) UserByID(_ context.Context, id string) (User, error) {
 	return user, nil
 }
 
-func (s *Store) SetUserStatus(_ context.Context, id, status, reason string, now time.Time) (User, error) {
+func (s *Store) SetUserStatus(_ context.Context, id, status, reason string, now time.Time) (User, []string, error) {
 	if !validUserStatus(status) {
-		return User{}, ErrInvalidUserStatus
+		return User{}, nil, ErrInvalidUserStatus
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	user, ok := s.users[id]
 	if !ok {
-		return User{}, ErrUserNotFound
+		return User{}, nil, ErrUserNotFound
 	}
+	var changed []string
 	user.Status = status
 	if status == brokerapi.UserStatusDisabled {
 		user.DisabledAt = now
 		user.DisabledReason = reason
+		changed = s.revokeUserLeasesLocked(id, now)
 	} else {
 		user.DisabledAt = time.Time{}
 		user.DisabledReason = ""
 	}
 	s.users[id] = user
-	return user, nil
+	return user, changed, nil
 }
 
 // pruneEnrollmentLocked drops counters whose window has ended; they would

@@ -94,6 +94,18 @@ type Config struct {
 	// EnrollmentBudget limits NEW user identities per source address (IPv6:
 	// per /64). Zero fields apply the defaults; see EnrollmentBudget.
 	EnrollmentBudget EnrollmentBudget
+	// AccessLeaseTTL is how long an issued per-client relay credential stays
+	// valid without renewal (OPENRUNG_ACCESS_LEASE_TTL); zero applies the
+	// default (1 h). Renewal extends the same credential.
+	AccessLeaseTTL time.Duration
+	// MaxLeasesPerUser caps one user's live leases across the fleet
+	// (OPENRUNG_MAX_LEASES_PER_USER, default 10); at the cap the least
+	// recently renewed leases outside a request are revoked to make room.
+	// MaxLeasesPerRelay caps one relay's live leases
+	// (OPENRUNG_MAX_LEASES_PER_RELAY, default 2000); a relay at its cap is
+	// skipped by issuance.
+	MaxLeasesPerUser  int
+	MaxLeasesPerRelay int
 }
 
 func NewServer(store RelayStore, cfg Config) http.Handler {
@@ -132,6 +144,16 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 	})
 	mux.HandleFunc("POST /api/v1/relays/register", registerRelay)
 	mux.HandleFunc("POST /api/v1/relays/", heartbeatRelay)
+	// Relay lease synchronisation authenticates with the registration's lease
+	// token, not the registration bearer, so it needs no token configuration;
+	// it exists whenever the store can hold leases. The ack pattern is more
+	// specific than the heartbeat prefix pattern above, so ServeMux routes it
+	// here rather than to the heartbeat handler.
+	access := newAccessService(store, cfg)
+	if access != nil {
+		mux.HandleFunc("GET /api/v1/relays/{id}/leases", rateLimited(relayRegistrationLimiter, clientIP, 10, access.leasePollHandler()))
+		mux.HandleFunc("POST /api/v1/relays/{id}/leases/ack", rateLimited(relayRegistrationLimiter, clientIP, 10, access.leaseAckHandler()))
+	}
 	mux.HandleFunc("GET /api/v1/relays", rateLimited(relayListLimiter, clientIP, 10, listRelaysHandler(store, cfg.TelemetrySink, clientIP, clientSeen, relaySigner)))
 	if wssIssuer != nil {
 		mux.HandleFunc("POST /api/v1/wss/tickets", rateLimitedBy(wssTicketLimiter, wssTicketRateKey(clientIP), 10, wssTicketHandler(store, wssIssuer)))
@@ -156,7 +178,10 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 		mux.HandleFunc("/admin/api/relays/{id}/weight", operational(relayWeightHandler(store, cfg.APIToken, clientIP.clientIP)))
 		if users != nil {
 			mux.HandleFunc("/admin/api/users/{id}", operational(adminUserHandler(users.store, cfg.APIToken)))
-			mux.HandleFunc("/admin/api/users/{id}/status", operational(adminUserStatusHandler(users.store, cfg.APIToken, clientIP.clientIP)))
+			mux.HandleFunc("/admin/api/users/{id}/status", operational(adminUserStatusHandler(access.setUserStatus, cfg.APIToken, clientIP.clientIP)))
+		}
+		if access != nil {
+			mux.HandleFunc("/admin/api/leases/{id}", operational(access.adminLeaseHandler(cfg.APIToken)))
 		}
 	}
 	// Client user endpoints exist only with an access token key configured.

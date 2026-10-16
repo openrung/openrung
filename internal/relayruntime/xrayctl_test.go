@@ -226,6 +226,28 @@ func TestXrayAPIManagesUsersOnRunningXray(t *testing.T) {
 	if len(users) != 0 {
 		t.Fatalf("users after remove = %+v", users)
 	}
+
+	// Access leases share the adapter under their own label namespace: a
+	// lease-<id> user is added and removed exactly like a rotating credential
+	// and never disturbs a cred-* user installed beside it.
+	shared := Credential{ID: "22222222-2222-4333-8444-555555555555", Email: "cred-20260917T150000Z"}
+	lease := Credential{ID: "33333333-2222-4333-8444-555555555555", Email: "lease-0123456789abcdef0123456789abcdef"}
+	for _, c := range []Credential{shared, lease} {
+		if err := api.AddUser(ctx, c); err != nil {
+			t.Fatalf("AddUser %s: %v", c.Email, err)
+		}
+	}
+	users, err = api.ListUsers(ctx)
+	if err != nil || len(users) != 2 {
+		t.Fatalf("users with a lease installed = %+v, %v", users, err)
+	}
+	if err := api.RemoveUser(ctx, lease.Email); err != nil {
+		t.Fatalf("RemoveUser lease: %v", err)
+	}
+	users, err = api.ListUsers(ctx)
+	if err != nil || len(users) != 1 || users[0].Email != shared.Email {
+		t.Fatalf("users after removing the lease = %+v, %v (the shared credential must survive)", users, err)
+	}
 }
 
 // requireXray locates the xray binary the integration tests drive. A

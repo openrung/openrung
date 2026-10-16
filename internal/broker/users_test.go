@@ -37,6 +37,7 @@ type userTestHarness struct {
 	t      *testing.T
 	server http.Handler
 	users  *userAuthService
+	access *accessService
 	now    time.Time
 	source string
 }
@@ -56,11 +57,17 @@ func newUserTestHarness(t *testing.T, store RelayStore, cfg Config) *userTestHar
 	// then swap the clock on the service it holds, so expose it.
 	h.users = newUserAuthService(store, cfg, newClientIPResolver(nil))
 	h.users.now = func() time.Time { return h.now }
+	h.access = newAccessService(store, cfg)
+	h.access.now = func() time.Time { return h.now }
+	h.access.pollHold = 300 * time.Millisecond
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/users/challenge", h.users.challengeHandler())
 	mux.HandleFunc("POST /api/v1/users/auth", h.users.authHandler())
+	mux.HandleFunc("GET /api/v1/relays/{id}/leases", h.access.leasePollHandler())
+	mux.HandleFunc("POST /api/v1/relays/{id}/leases/ack", h.access.leaseAckHandler())
 	mux.HandleFunc("/admin/api/users/{id}", adminUserHandler(h.users.store, cfg.APIToken))
-	mux.HandleFunc("/admin/api/users/{id}/status", adminUserStatusHandler(h.users.store, cfg.APIToken, func(*http.Request) string { return "test" }))
+	mux.HandleFunc("/admin/api/users/{id}/status", adminUserStatusHandler(h.access.setUserStatus, cfg.APIToken, func(*http.Request) string { return "test" }))
+	mux.HandleFunc("/admin/api/leases/{id}", h.access.adminLeaseHandler(cfg.APIToken))
 	h.server = mux
 	return h
 }
@@ -665,7 +672,7 @@ func accessStoreConformance(t *testing.T, store AccessStore) {
 		t.Fatalf("unknown UserByID: %v", err)
 	}
 	disabledAt := now.Add(3 * time.Hour)
-	disabled, err := store.SetUserStatus(ctx, userA.ID, brokerapi.UserStatusDisabled, "resale", disabledAt)
+	disabled, _, err := store.SetUserStatus(ctx, userA.ID, brokerapi.UserStatusDisabled, "resale", disabledAt)
 	if err != nil || disabled.Status != brokerapi.UserStatusDisabled || !disabled.DisabledAt.Equal(disabledAt) || disabled.DisabledReason != "resale" {
 		t.Fatalf("disable: %+v %v", disabled, err)
 	}
@@ -673,14 +680,14 @@ func accessStoreConformance(t *testing.T, store AccessStore) {
 	if err != nil || created || stillDisabled.Status != brokerapi.UserStatusDisabled {
 		t.Fatalf("auth while disabled: %+v %v %v", stillDisabled, created, err)
 	}
-	enabled, err := store.SetUserStatus(ctx, userA.ID, brokerapi.UserStatusEnabled, "ignored", disabledAt.Add(time.Hour))
+	enabled, _, err := store.SetUserStatus(ctx, userA.ID, brokerapi.UserStatusEnabled, "ignored", disabledAt.Add(time.Hour))
 	if err != nil || enabled.Status != brokerapi.UserStatusEnabled || !enabled.DisabledAt.IsZero() || enabled.DisabledReason != "" {
 		t.Fatalf("enable: %+v %v", enabled, err)
 	}
-	if _, err := store.SetUserStatus(ctx, userA.ID, "banned", "", now); !errors.Is(err, ErrInvalidUserStatus) {
+	if _, _, err := store.SetUserStatus(ctx, userA.ID, "banned", "", now); !errors.Is(err, ErrInvalidUserStatus) {
 		t.Fatalf("invalid status: %v", err)
 	}
-	if _, err := store.SetUserStatus(ctx, "user_"+strings.Repeat("0", 32), brokerapi.UserStatusDisabled, "", now); !errors.Is(err, ErrUserNotFound) {
+	if _, _, err := store.SetUserStatus(ctx, "user_"+strings.Repeat("0", 32), brokerapi.UserStatusDisabled, "", now); !errors.Is(err, ErrUserNotFound) {
 		t.Fatalf("unknown SetUserStatus: %v", err)
 	}
 

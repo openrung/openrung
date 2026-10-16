@@ -583,9 +583,21 @@ Request:
   "max_mbps": 100,
   "relay_version": "relay/0.1.0",
   "transport": "direct",
-  "node_class": "volunteer"
+  "node_class": "volunteer",
+  "access_leases": true
 }
 ```
+
+`access_leases` (optional, default `false`) declares that the relay installs
+broker-issued per-client credentials through the [relay lease
+sync](#relay-lease-sync) endpoints. It is a registration-time capability
+only — heartbeats never carry it and the identity statement does not bind it
+— and it is honoured only for identity-bearing registrations, because the sync
+endpoints authenticate with the registration's `lease_token`. The response
+echoes the recorded value as `access_leases` (absent when `false`); a relay
+starts its lease syncer only when the echo is present, so a broker that
+predates leases leaves the relay serving the shared credential alone. The
+capability is private registration state and never appears in relay lists.
 
 `relay_version` identifies the relay runtime artifact, independently of the
 broker, relay hub, and client app versions. Standalone images report values such
@@ -794,6 +806,7 @@ Response:
 {
   "id": "relay_...",
   "lease_token": "lease_<opaque random token>",
+  "access_leases": true,
   "public_host": "2001:db8::1",
   "public_port": 443,
   "city": "Tokyo",
@@ -888,6 +901,110 @@ bounded clock-skew
 allowance has elapsed. Until then a snapshot can still show the earlier
 `foundation` provenance, so removing the origin row is not an instant
 client-visible revocation mechanism.
+
+## Relay lease sync
+
+```http
+GET /api/v1/relays/{id}/leases
+GET /api/v1/relays/{id}/leases?after=<revision>
+POST /api/v1/relays/{id}/leases/ack
+Authorization: Bearer <lease_token from registration>
+```
+
+Access leases are broker-issued, short-lived VLESS credentials for one client
+installation on one relay (ADR-006). A relay that registered with
+`access_leases` keeps its xray in step with the broker's desired set through
+these two endpoints. Both authenticate with the registration's `lease_token`
+— not the registration token — and both answer `404 relay not found` for a
+missing or superseded token, an unknown relay, or a legacy identityless
+registration, so the relay's ordinary heartbeat re-registration path takes
+over and the next poll uses the new token.
+
+The poll returns the relay's **full** desired set and its revision in one
+consistent snapshot:
+
+```json
+{
+  "server_time": "2026-10-16T12:00:00Z",
+  "revision": 42,
+  "leases": [
+    {
+      "id": "0123456789abcdef0123456789abcdef",
+      "credential": "2c08df10-4ef4-4ab9-95c6-cb1e94cdb2ff",
+      "expires_at": "2026-10-16T13:00:00Z"
+    }
+  ]
+}
+```
+
+`revision` is a per-relay counter that advances by one on every change to the
+set — a lease issued, renewed, revoked or evicted — and every lease carries
+the revision of its last change, so a set served at revision *N* contains
+exactly the live leases changed at or before *N*. Leases never carry user
+identity; relays only ever see the lease ID, which they use as the xray user
+label `lease-<id>`. Expiry is relative: a relay removes a lease at
+`now + (expires_at − server_time)` on its own clock, so a clock offset between
+broker and relay never shifts the window, and a lease the broker never revoked
+still ends on time through a broker outage.
+
+Without `after` the broker answers immediately, even with an empty set at
+revision `0` — the first poll of a session, which the relay acknowledges
+before it goes online so nothing is ever released against a set it has not
+installed. With `after=N` (the revision the relay last applied) the broker
+holds the request for up to 20 s until its revision exceeds *N*, then answers;
+when nothing changes within the hold it answers with the unchanged set and the
+relay simply polls again, so an idle relay never busy-loops. `after` must be a
+non-negative integer (`400` otherwise).
+
+The ack body is `{"revision": 42}` and the response is `204`. A relay
+acknowledges a revision only after every xray add and remove for that set
+succeeded; a partial result is retried with a fresh full poll instead. The
+broker records the highest acknowledged revision per relay and only ever
+raises it. A registration that mints a new `lease_token` (first registration,
+endpoint move, re-registration after the lease expired) resets the
+acknowledged revision to `0` while keeping the revision counter, so the
+relay's next full poll re-installs every live lease — leases outlive relay
+descriptors, and so does the per-relay revision state.
+
+Issuance is bounded: a user holds at most `OPENRUNG_MAX_LEASES_PER_USER`
+(default 10) live leases — at the cap the least recently renewed leases
+outside the current request are revoked to make room — and a relay holds at
+most `OPENRUNG_MAX_LEASES_PER_RELAY` (default 2000); a relay at its cap is
+skipped. Leases live for `OPENRUNG_ACCESS_LEASE_TTL` (default `1h`, between
+`1m` and `24h`); renewal extends the same credential rather than minting a
+new one. Expired and revoked leases stay resolvable through the operational
+API for seven days.
+
+### Operational lease lookup
+
+```http
+GET /admin/api/leases/{id}
+Authorization: Bearer <OPENRUNG_API_TOKEN>
+```
+
+Resolves a relay-log label to its lease. `{id}` is the bare lease ID or the
+label as logged (`lease-<id>`). The view never includes the credential:
+
+```json
+{
+  "lease_id": "0123456789abcdef0123456789abcdef",
+  "label": "lease-0123456789abcdef0123456789abcdef",
+  "user_id": "user_0123456789abcdef0123456789abcdef",
+  "relay_id": "relay_0123456789abcdef0123456789abcdef",
+  "status": "live",
+  "created_at": "2026-10-16T12:00:00Z",
+  "renewed_at": "2026-10-16T12:30:00Z",
+  "expires_at": "2026-10-16T13:30:00Z",
+  "revision": 42
+}
+```
+
+`status` is `live`, `expired` or `revoked` (with `revoked_at`). Disabling the
+user through `PUT /admin/api/users/{id}/status` revokes every live lease the
+user holds in the same transaction and wakes the affected relays' polls, so
+the credentials are removed within one relay sync. Unknown, malformed and
+retention-expired IDs are `404`; the route shares the operational API's
+limiter and exists when `OPENRUNG_API_TOKEN` is configured.
 
 ## List Relays
 
@@ -1117,6 +1234,8 @@ Authorization: Bearer <OPENRUNG_API_TOKEN>
 
 `PUT` takes exactly one JSON object `{"status": "disabled", "reason": "…"}`
 (or `"enabled"`, which clears the reason) and answers with the updated view.
+Disabling also revokes every live [access lease](#relay-lease-sync) the user
+holds; enabling revokes nothing.
 The reason is at most 256 characters of printable text. Every change is
 logged with the caller's IP. Unknown or malformed IDs are `404`; the routes
 share the operational API's limiter and exist only when both
