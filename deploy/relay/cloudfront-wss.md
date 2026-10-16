@@ -457,7 +457,7 @@ evicting it broke the tunnel while costing an attacker nothing, since one cheap
 stream reset the same window. An in-use session stays bounded by
 `OPENRUNG_WSS_SESSION_LIFETIME`, the per-source session cap, and the ticket's
 stream budget: the ticket's `max_streams` is a burst that refills at
-`OPENRUNG_WSS_STREAM_REFILL_RATE` streams per second (default 1). A stream
+`OPENRUNG_WSS_STREAM_REFILL_RATE` streams per second (default 10). A stream
 beyond the budget is refused; the session stays open. Origin mode still exercises this because its
 lifecycle probe opens a session and never opens a stream.
 
