@@ -98,13 +98,14 @@ type fakeAccessBroker struct {
 	challenges atomic.Int64
 	auths      atomic.Int64
 	// Behaviour switches.
-	noEndpoints  bool // 404 on every user/access route (an older broker)
-	disabled     bool // 403 on auth and access
-	unapplied    int  // answer this many access requests with 503 first
-	failAccess   bool // 500 on access
-	failRenewals bool // 500 on single-relay requests (the renewal shape)
-	emptyAccess  bool // 200 with no relays
-	rejectTokens int  // answer this many access requests with 401 first
+	noEndpoints  bool                             // 404 on every user/access route (an older broker)
+	disabled     bool                             // 403 on auth and access
+	unapplied    int                              // answer this many access requests with 503 first
+	failAccess   bool                             // 500 on access
+	failRenewals bool                             // 500 on single-relay requests (the renewal shape)
+	emptyAccess  bool                             // 200 with no relays
+	mutateAccess func(*brokerapi.RelayDescriptor) // applied to every relay the access route returns
+	rejectTokens int                              // answer this many access requests with 401 first
 	tokenPrefix  string
 	bearers      []string // every Authorization header the access route saw
 }
@@ -215,6 +216,9 @@ func (b *fakeAccessBroker) access(w http.ResponseWriter, r *http.Request) {
 			// The directory lease of a live relay is always current on the
 			// broker's clock.
 			relay.ExpiresAt = now.Add(3 * time.Minute)
+			if b.mutateAccess != nil {
+				b.mutateAccess(&relay)
+			}
 			picked = append(picked, relay)
 			if req.Limit > 0 && len(picked) == req.Limit {
 				break
@@ -795,4 +799,39 @@ func TestAccessRecoveryFallsBackToPublicCandidates(t *testing.T) {
 	}
 	_ = e.Disconnect()
 	waitIdle(t, e.Engine)
+}
+
+// An access answer whose relays the ladder would reject (here: a dedicated
+// exit) is treated like an empty one (recovery shares this fetchAccess path),
+// so a usable public relay still carries the connect.
+func TestAccessFallsBackWhenNoLeasedRelayIsUsable(t *testing.T) {
+	for name, target := range map[string]RelayTarget{"untargeted": {}, "country": {Country: "JP"}} {
+		t.Run(name, func(t *testing.T) {
+			leased := publicRelay("relay-a", "JP")
+			public := publicRelay("relay-p", "JP")
+			broker := newFakeAccessBroker(t, time.Now, leased)
+			broker.mutateAccess = func(r *brokerapi.RelayDescriptor) { r.ExitMode = brokerapi.ExitModeDedicated }
+			e := newAccessEngine(t, broker, leased, public)
+			e.fetchRelays = func(ctx context.Context, brokerURL string, limit int, clientID, sessionID string) (discovery.Fetch, error) {
+				e.public.Add(1)
+				// The public list has only the public-only relay usable.
+				dedicated := leased
+				dedicated.ExitMode = brokerapi.ExitModeDedicated
+				return discovery.Fetch{BrokerURL: broker.srv.URL, Response: listOf(dedicated, public)}, nil
+			}
+
+			if err := e.ConnectTarget("https://configured.example", target); err != nil {
+				t.Fatal(err)
+			}
+			waitForStatus(t, e.Engine, StatusConnected)
+			if runs := e.tunnelRuns(); len(runs) != 1 || runs[0] != "shared-relay-p" {
+				t.Fatalf("tunnel credentials = %v, want the usable public relay", runs)
+			}
+			if len(broker.accessRequests()) != 1 {
+				t.Fatalf("access requests = %d", len(broker.accessRequests()))
+			}
+			_ = e.Disconnect()
+			waitIdle(t, e.Engine)
+		})
+	}
 }

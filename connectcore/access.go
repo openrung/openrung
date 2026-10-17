@@ -152,8 +152,13 @@ func (s *Engine) fetchAccess(ctx context.Context, conn *connection, front string
 		s.appendLog(fmt.Sprintf("per-user relay access failed (%v); using the public relay list", err))
 		return discovery.Fetch{}, false, nil
 	}
-	if len(resp.Relays) == 0 {
-		s.appendLog("no relay with per-user access matches; using the public relay list")
+	// The answer must survive the same selection the ladder applies —
+	// usability (e.g. direct exit) and the target filter — or the connect
+	// would fail on it before any fallback could run. An answer with nothing
+	// usable is treated like an empty one.
+	usable := usableRelays(resp.RelayListResponse)
+	if cands, _, err := FilterCandidates(usable, target); err != nil || len(cands) == 0 {
+		s.appendLog("no usable relay with per-user access matches; using the public relay list")
 		return discovery.Fetch{}, false, nil
 	}
 	lifetime := resp.LeaseExpiresAt.Sub(resp.ServerTime)
