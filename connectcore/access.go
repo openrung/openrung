@@ -162,6 +162,67 @@ func (s *Engine) fetchAccess(ctx context.Context, conn *connection, front string
 	return discovery.Fetch{BrokerURL: front, AzureSNI: azureSNI, Response: resp.RelayListResponse}, true, nil
 }
 
+// runPublicFallback walks the public list after every leased candidate
+// failed. During the compatibility phase relays without per-user access
+// (tunnel-transport, not yet updated) still accept the shared credential, so
+// a fleet that mixes both must not fail a connect a public-only relay could
+// carry. It applies only when the failed ladder came from per-user access
+// and failed remotely; ok=false leaves the caller's error as it was. The
+// public list is the one the discovery race already returned, or a fresh
+// race when the access request went straight to the pinned front. Relays
+// already tried are skipped, failedRelayID (a recovery's dead relay) is
+// demoted, and the lease is cleared so no renewal runs for a shared
+// credential.
+func (s *Engine) runPublicFallback(ctx context.Context, conn *connection, brokerURL string, target RelayTarget, tried []brokerapi.RelayDescriptor, port int, failedRelayID string, ladderErr error) (*candidateResult, ladderOrder, bool, error) {
+	if !conn.lease.valid() || ctx.Err() != nil {
+		return nil, ladderOrder{}, false, nil
+	}
+	if _, local := localCandidateErrorStage(ladderErr); local {
+		return nil, ladderOrder{}, false, nil
+	}
+	conn.lease = accessLease{}
+	public := conn.publicFallback
+	conn.publicFallback = nil
+	if public == nil {
+		limit := RelayLimit
+		if target.Targeted() {
+			limit = DirectoryRelayLimit
+		}
+		fetch, err := s.relayFetcher()(ctx, brokerURL, limit, managerClientID(conn.mgr), s.SessionID())
+		if err != nil {
+			return nil, ladderOrder{}, false, nil
+		}
+		_ = conn.mgr.SetBrokerFront(fetch.BrokerURL, fetch.AzureSNI)
+		public = &fetch
+	}
+	cands, _, err := s.candidatesFor(public.Response, target)
+	if err != nil {
+		return nil, ladderOrder{}, false, nil
+	}
+	skip := make(map[string]bool, len(tried))
+	for _, relay := range tried {
+		skip[relay.ID] = true
+	}
+	remaining := make([]brokerapi.RelayDescriptor, 0, len(cands))
+	for _, cand := range cands {
+		if !skip[cand.ID] {
+			remaining = append(remaining, cand)
+		}
+	}
+	if len(remaining) == 0 {
+		return nil, ladderOrder{}, false, nil
+	}
+	s.appendLog(fmt.Sprintf("relays with per-user access failed; trying %d relay(s) from the public list", len(remaining)))
+	order := s.rankLadder(ctx, remaining, target)
+	ladder := demoteRelay(order.candidates(), failedRelayID)
+	s.mu.Lock()
+	conn.candidates = ladder
+	conn.brokerURL = public.BrokerURL
+	s.mu.Unlock()
+	res, err := s.runLadder(ctx, conn, ladder, port)
+	return res, order, true, err
+}
+
 func (s *Engine) reportAccessDisabled() {
 	s.appendLog("the broker refused access: this installation has been disabled")
 	s.notify(Notice{Kind: NoticeAccessDenied, Reason: ErrAccessDisabled.Error()})
@@ -224,14 +285,31 @@ func (s *Engine) requestAccess(ctx context.Context, front string, azureSNI bool,
 	}
 }
 
-// userAccessToken returns the cached access token, or authenticates the
-// installation key for a new one when none is cached, it is about to expire,
-// or the cached one equals stale (the broker just refused it).
+// accessTokenScopeFor names the broker a front belongs to, for scoping the
+// cached bearer token. The compiled-in default fronts are explicitly trusted
+// aliases of one broker and share a scope; any other URL (a custom broker, a
+// development broker) is its own scope, so a token is never presented to a
+// broker other than the one that issued it.
+func accessTokenScopeFor(front string) string {
+	front = strings.TrimSpace(front)
+	for _, alias := range brokerapi.DefaultBrokerURLs() {
+		if front == strings.TrimSpace(alias) {
+			return "default"
+		}
+	}
+	return "url:" + front
+}
+
+// userAccessToken returns the cached access token when it was issued by the
+// broker behind front, or authenticates the installation key for a new one
+// when none is cached for that broker, it is about to expire, or the cached
+// one equals stale (the broker just refused it).
 func (s *Engine) userAccessToken(ctx context.Context, client *brokerapi.Client, front, stale string) (string, error) {
+	scope := accessTokenScopeFor(front)
 	s.accessMu.Lock()
-	token, expiry := s.accessToken, s.accessTokenExpiry
+	token, expiry, tokenScope := s.accessToken, s.accessTokenExpiry, s.accessTokenScope
 	s.accessMu.Unlock()
-	if token != "" && token != stale && s.leaseNow().Add(accessTokenRefreshMargin).Before(expiry) {
+	if token != "" && tokenScope == scope && token != stale && s.leaseNow().Add(accessTokenRefreshMargin).Before(expiry) {
 		return token, nil
 	}
 
@@ -256,7 +334,7 @@ func (s *Engine) userAccessToken(ctx context.Context, client *brokerapi.Client, 
 		return "", userAuthError(err)
 	}
 	s.accessMu.Lock()
-	s.accessToken, s.accessTokenExpiry = resp.AccessToken, resp.TokenExpiresAt
+	s.accessToken, s.accessTokenExpiry, s.accessTokenScope = resp.AccessToken, resp.TokenExpiresAt, scope
 	s.accessMu.Unlock()
 	if store, ok := s.Persistence.(UserIDPersistence); ok {
 		_ = store.SaveUserID(resp.UserID)

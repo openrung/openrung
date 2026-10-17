@@ -396,6 +396,11 @@ func (s *Engine) reladder(ctx context.Context, conn *connection, port int, targe
 	}
 	res, err := s.runLadder(ctx, conn, cands, port)
 	if err != nil {
+		if fallback, fallbackOrder, ok, fallbackErr := s.runPublicFallback(ctx, conn, brokerURL, target, cands, port, failedRelayID, err); ok {
+			res, order, err = fallback, fallbackOrder, fallbackErr
+		}
+	}
+	if err != nil {
 		return nil, 0, "relay_connect", err
 	}
 	order.annotate(res)

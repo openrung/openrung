@@ -154,6 +154,10 @@ type connection struct {
 	accessAzureSNI    bool
 	accessUnsupported bool
 	lease             accessLease
+	// publicFallback is the public list the discovery race returned when
+	// per-user access then succeeded: the candidates tried after the leased
+	// ones fail (see runPublicFallback). Nil when no race ran.
+	publicFallback *discovery.Fetch
 	// handledNetEpoch is the network epoch the supervisor has accounted for.
 	// Touched only by the runConnect goroutine.
 	handledNetEpoch uint64
@@ -441,10 +445,13 @@ type Engine struct {
 
 	// accessMu guards the cached broker access token (see access.go). It is
 	// process-local on purpose: the token is a bearer credential and is never
-	// persisted; a restart authenticates again.
+	// persisted; a restart authenticates again. accessTokenScope names the
+	// broker that issued it (see accessTokenScopeFor), and the token is only
+	// ever presented to that broker.
 	accessMu          sync.Mutex
 	accessToken       string
 	accessTokenExpiry time.Time
+	accessTokenScope  string
 
 	// proxyPortMu pins only a successfully resolved endpoint for this process.
 	// A transient resolution failure remains retryable on the next call.
@@ -902,6 +909,11 @@ func (s *Engine) connectFlow(ctx context.Context, conn *connection, brokerURL st
 	conn.geo.abandon()
 	res, err := s.runLadder(ctx, conn, ladder, port)
 	if err != nil {
+		if fallback, fallbackOrder, ok, fallbackErr := s.runPublicFallback(ctx, conn, brokerURL, target, ladder, port, "", err); ok {
+			res, order, err = fallback, fallbackOrder, fallbackErr
+		}
+	}
+	if err != nil {
 		if ctx.Err() != nil {
 			return "", nil
 		}
@@ -935,6 +947,7 @@ func (s *Engine) fetchCandidates(ctx context.Context, conn *connection, brokerUR
 	// while a first connect races the public list as before and then asks the
 	// winner. The public answer stays the fallback either way.
 	conn.lease = accessLease{}
+	conn.publicFallback = nil
 	wantAccess := s.accessWanted(conn, target)
 	triedFront := ""
 	if wantAccess && conn.accessFront != "" {
@@ -961,6 +974,7 @@ func (s *Engine) fetchCandidates(ctx context.Context, conn *connection, brokerUR
 			return discovery.Fetch{}, 0, err
 		}
 		if ok {
+			conn.publicFallback = &fetch
 			return access, time.Since(started).Milliseconds(), nil
 		}
 	}

@@ -105,11 +105,13 @@ type fakeAccessBroker struct {
 	failRenewals bool // 500 on single-relay requests (the renewal shape)
 	emptyAccess  bool // 200 with no relays
 	rejectTokens int  // answer this many access requests with 401 first
+	tokenPrefix  string
+	bearers      []string // every Authorization header the access route saw
 }
 
 func newFakeAccessBroker(t *testing.T, clock func() time.Time, relays ...brokerapi.RelayDescriptor) *fakeAccessBroker {
 	t.Helper()
-	b := &fakeAccessBroker{t: t, clock: clock, ttl: time.Hour, relays: relays, leases: map[string]fakeAccessLease{}}
+	b := &fakeAccessBroker{t: t, clock: clock, ttl: time.Hour, relays: relays, leases: map[string]fakeAccessLease{}, tokenPrefix: "token-"}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/users/challenge", func(w http.ResponseWriter, r *http.Request) {
 		if b.noEndpoints {
@@ -148,7 +150,7 @@ func newFakeAccessBroker(t *testing.T, clock func() time.Time, relays ...brokera
 		}
 		_ = json.NewEncoder(w).Encode(brokerapi.UserAuthResponse{
 			UserID: "user_test", Status: brokerapi.UserStatusEnabled,
-			AccessToken: fmt.Sprintf("token-%d", n), TokenExpiresAt: time.Now().Add(24 * time.Hour),
+			AccessToken: fmt.Sprintf("%s%d", b.tokenPrefix, n), TokenExpiresAt: time.Now().Add(24 * time.Hour),
 		})
 	})
 	mux.HandleFunc("POST /api/v1/access", b.access)
@@ -176,8 +178,9 @@ func (b *fakeAccessBroker) access(w http.ResponseWriter, r *http.Request) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.requests = append(b.requests, req)
+	b.bearers = append(b.bearers, r.Header.Get("Authorization"))
 	switch {
-	case !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer token-"):
+	case !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer "+b.tokenPrefix):
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	case b.rejectTokens > 0:
@@ -653,4 +656,143 @@ func TestMobileHostRequiresInstallationKey(t *testing.T) {
 	if err := s.validateMobile(); err == nil || !strings.Contains(err.Error(), "installation key") {
 		t.Fatalf("validateMobile without a key = %v", err)
 	}
+}
+
+func TestAccessTokenScopeFollowsTheIssuingBroker(t *testing.T) {
+	defaults := brokerapi.DefaultBrokerURLs()
+	if len(defaults) < 2 {
+		t.Fatalf("expected several default fronts, got %v", defaults)
+	}
+	for _, front := range defaults[1:] {
+		if accessTokenScopeFor(front) != accessTokenScopeFor(defaults[0]) {
+			t.Fatalf("default front %s does not share the default scope", front)
+		}
+	}
+	for _, custom := range []string{"https://custom.example/", "http://127.0.0.1:8080"} {
+		if accessTokenScopeFor(custom) == accessTokenScopeFor(defaults[0]) {
+			t.Fatalf("custom broker %s shares the default scope", custom)
+		}
+	}
+	if accessTokenScopeFor("https://a.example/") == accessTokenScopeFor("https://b.example/") {
+		t.Fatal("two custom brokers share a scope")
+	}
+}
+
+// A token cached from one broker is never presented to another: switching
+// brokers authenticates against the new one before any access request.
+func TestAccessTokenIsNotSentToAnotherBroker(t *testing.T) {
+	relays := []brokerapi.RelayDescriptor{publicRelay("relay-a", "JP")}
+	first := newFakeAccessBroker(t, time.Now, relays...)
+	second := newFakeAccessBroker(t, time.Now, relays...)
+	second.tokenPrefix = "second-"
+	e := newAccessEngine(t, first, relays...)
+
+	if err := e.Connect(first.srv.URL, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForStatus(t, e.Engine, StatusConnected)
+	_ = e.Disconnect()
+	waitIdle(t, e.Engine)
+
+	e.fetchRelays = func(ctx context.Context, brokerURL string, limit int, clientID, sessionID string) (discovery.Fetch, error) {
+		return discovery.Fetch{BrokerURL: second.srv.URL, Response: listOf(relays...)}, nil
+	}
+	if err := e.Connect(second.srv.URL, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForStatus(t, e.Engine, StatusConnected)
+	_ = e.Disconnect()
+	waitIdle(t, e.Engine)
+
+	second.mu.Lock()
+	bearers := append([]string(nil), second.bearers...)
+	second.mu.Unlock()
+	if len(bearers) == 0 || second.auths.Load() != 1 {
+		t.Fatalf("second broker: %d access requests, %d auths", len(bearers), second.auths.Load())
+	}
+	for _, bearer := range bearers {
+		if !strings.HasPrefix(bearer, "Bearer second-") {
+			t.Fatalf("second broker received %q, a token it did not issue", bearer)
+		}
+	}
+	if runs := e.tunnelRuns(); len(runs) != 2 || runs[1] != second.lease("relay-a").credential {
+		t.Fatalf("tunnel credentials = %v", runs)
+	}
+}
+
+// mixedFleet is a lease-capable relay plus a public-only relay (the public
+// list carries both, the access answer only the first); dials to dead hosts
+// fail.
+func mixedFleet(t *testing.T) (*fakeAccessBroker, *accessEngine, *atomic.Value) {
+	t.Helper()
+	leased := publicRelay("relay-a", "JP")
+	leased.PublicHost = "198.51.100.1"
+	public := publicRelay("relay-p", "JP")
+	public.PublicHost = "198.51.100.2"
+	broker := newFakeAccessBroker(t, time.Now, leased)
+	e := newAccessEngine(t, broker, leased, public)
+	dead := &atomic.Value{}
+	dead.Store("")
+	e.dialRelay = func(ctx context.Context, host string, port int) (int64, error) {
+		if host == dead.Load().(string) {
+			return 0, fmt.Errorf("dial %s: connection refused", host)
+		}
+		return 1, nil
+	}
+	return broker, e, dead
+}
+
+// During the compatibility phase a public-only relay still carries the
+// connect when every leased candidate fails.
+func TestAccessFallsBackToPublicCandidatesWhenLeasedOnesFail(t *testing.T) {
+	_, e, dead := mixedFleet(t)
+	dead.Store("198.51.100.1")
+
+	if err := e.Connect("https://configured.example", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForStatus(t, e.Engine, StatusConnected)
+	if runs := e.tunnelRuns(); len(runs) != 1 || runs[0] != "shared-relay-p" {
+		t.Fatalf("tunnel credentials = %v, want the public-only relay", runs)
+	}
+	if e.public.Load() != 1 {
+		t.Fatalf("public list fetched %d times, want the race's answer reused", e.public.Load())
+	}
+	if info, ok := e.ActiveConnectionInfo(); !ok || info.Relay.ID != "relay-p" {
+		t.Fatalf("active relay = %+v", info)
+	}
+	_ = e.Disconnect()
+	waitIdle(t, e.Engine)
+}
+
+// A recovery asks the pinned front for access without racing; when its
+// leased candidates fail it races for the public list and uses it.
+func TestAccessRecoveryFallsBackToPublicCandidates(t *testing.T) {
+	_, e, dead := mixedFleet(t)
+	e.healthTick = 5 * time.Millisecond
+	e.healthProbe = func(ctx context.Context, proxyPort int) error {
+		if runs := e.tunnelRuns(); len(runs) > 0 && strings.HasPrefix(runs[len(runs)-1], "lease-") && dead.Load().(string) != "" {
+			return fmt.Errorf("probe timeout")
+		}
+		return nil
+	}
+
+	if err := e.Connect("https://configured.example", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForStatus(t, e.Engine, StatusConnected)
+	if runs := e.tunnelRuns(); len(runs) != 1 || !strings.HasPrefix(runs[0], "lease-relay-a") {
+		t.Fatalf("initial tunnel credentials = %v", runs)
+	}
+	dead.Store("198.51.100.1")
+	waitUntil(t, "the public-only relay", func() bool {
+		runs := e.tunnelRuns()
+		return len(runs) >= 2 && runs[len(runs)-1] == "shared-relay-p"
+	})
+	waitForStatus(t, e.Engine, StatusConnected)
+	if e.public.Load() != 2 {
+		t.Fatalf("public list fetched %d times, want the initial race plus one recovery race", e.public.Load())
+	}
+	_ = e.Disconnect()
+	waitIdle(t, e.Engine)
 }
