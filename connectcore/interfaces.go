@@ -74,6 +74,10 @@ const (
 	// Threshold; Reason is set when a failed sweep did not trigger a failover
 	// because the local network itself looks down.
 	NoticeHealthProbe NoticeKind = "health_probe"
+	// NoticeAccessDenied: the broker refused this installation access to
+	// relays because an operator disabled it. Terminal: the connect (or the
+	// live session) ends and is not retried. Reason is user-presentable.
+	NoticeAccessDenied NoticeKind = "access_denied"
 )
 
 // Notice is one typed mid-flow engine event for host status UIs. Only the
@@ -116,6 +120,33 @@ type Persistence interface {
 	LoadProxySnapshot() (OSProxySnapshot, bool)
 	// ClearProxySnapshot removes the snapshot after a clean restore.
 	ClearProxySnapshot() error
+}
+
+// UserIDPersistence is an optional extension of Persistence for hosts that
+// keep the broker-assigned user ID of this installation (ADR-006), so support
+// can identify the installation without its key. The engine saves the ID
+// after every successful authentication; it never needs it back, because the
+// key alone re-derives the same ID from the broker.
+type UserIDPersistence interface {
+	SaveUserID(userID string) error
+}
+
+// InstallationKey is the installation's P-256 identity key (ADR-006): the
+// broker derives a stable user ID from it and issues per-user relay
+// credentials to whoever proves possession. Implementations load the key
+// from durable, private storage, creating it on first use, and must keep
+// returning the same key: a new key is a new user. Methods may be called
+// from any engine goroutine. A nil InstallationKey keeps the engine on the
+// public relay list.
+//
+// The interface is gomobile-bindable on purpose: mobile hosts implement it
+// over the Android Keystore / iOS Keychain without exporting the private key.
+type InstallationKey interface {
+	// PublicKey returns the DER SubjectPublicKeyInfo of the P-256 public key.
+	PublicKey() ([]byte, error)
+	// Sign returns the raw 64-byte r‖s ECDSA signature over digest, which is
+	// already a SHA-256 digest (do not hash it again).
+	Sign(digest []byte) ([]byte, error)
 }
 
 // OSProxySnapshot is an opaque restorable capture of the platform's proxy

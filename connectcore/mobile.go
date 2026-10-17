@@ -37,6 +37,10 @@ type MobileHost struct {
 	// Called outside engine/manager locks; return an owned map promptly. Identity
 	// attributes below always win. Never perform network I/O in this callback.
 	Attributes func() map[string]string
+	// Key is the installation's identity key (ADR-006), required: the host
+	// implements it over the Android Keystore / iOS Keychain (load-or-create,
+	// non-exportable). See InstallationKey.
+	Key InstallationKey
 }
 
 // MobileTunnelSettings contains only host-owned builder inputs. Relay credentials,
@@ -149,6 +153,9 @@ func (s *Engine) validateMobile() error {
 	}
 	if h.Outbox == nil {
 		return errors.New("mobile host requires the process-owned persistent outbox")
+	}
+	if h.Key == nil {
+		return errors.New("mobile host requires the installation key")
 	}
 	if s.TelemetryOutboxDirectory != "" {
 		return errors.New("mobile host must lend the single process-owned outbox")

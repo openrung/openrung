@@ -7,7 +7,7 @@ All API paths are currently versioned under `/api/v1`.
 The unauthenticated endpoints (`GET /api/v1/relays`, `POST
 /api/v1/wss/tickets`, `POST /api/v1/users/challenge`, `POST
 /api/v1/users/auth`, `POST /api/v1/telemetry/events`, and `GET
-/api/v1/speed-test`) are rate limited. Requests over the budget receive `429
+/api/v1/speed-test`) and `POST /api/v1/access` are rate limited. Requests over the budget receive `429
 Too Many Requests` with a `Retry-After` header (seconds); clients should back
 off and retry only within their bounded operation deadline. Most endpoints use
 the real client IP resolved through trusted proxies. WSS ticket requests also
@@ -1240,6 +1240,73 @@ The reason is at most 256 characters of printable text. Every change is
 logged with the caller's IP. Unknown or malformed IDs are `404`; the routes
 share the operational API's limiter and exist only when both
 `OPENRUNG_API_TOKEN` and `OPENRUNG_USER_TOKEN_KEY` are configured.
+
+## Client access
+
+```http
+POST /api/v1/access
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{"limit": 5, "relay_id": "relay_0123456789abcdef0123456789abcdef"}
+```
+
+An authenticated user asks for relays to connect to and receives one
+per-user VLESS credential (an access lease) on each. The body is exactly one
+JSON object with no unknown fields: `limit` (1–5, default 5), and at most one
+target — `relay_id` (one exact relay) or `country` (a two-letter code, matched
+case-insensitively against `country_code`). No target asks for the
+best-ranked relays.
+
+The broker ranks relays exactly as for `GET /api/v1/relays`, keeps only relays
+that can install per-user credentials (identity-bearing, lease-capable,
+direct-transport registrations), narrows them to the target, reserves the WSS
+slot like the public list, and then issues or extends one lease per relay. It
+waits up to five seconds for each relay to acknowledge the lease through its
+[lease sync](#relay-lease-sync) and answers with the relays that did.
+
+Success is `200 OK`, signed exactly like a relay list (same key, same
+`X-OpenRung-Relays-Signature` header, same wire schema) but on the `access`
+channel, without `limit`, and with the lease expiry:
+
+```json
+{
+  "count": 1,
+  "server_time": "2026-10-17T12:00:00Z",
+  "not_after": "2026-10-17T12:30:00Z",
+  "key_id": "<key id>",
+  "channel": "access",
+  "lease_expires_at": "2026-10-17T13:00:00Z",
+  "relays": [{ "id": "relay_…", "client_id": "<this user's lease credential>", "…": "…" }]
+}
+```
+
+Each descriptor's `client_id` is the caller's credential for that relay; it
+stops being accepted at `lease_expires_at` (compare with `server_time`, not the
+local clock). Clients must verify the signature and require
+`channel == "access"`; a public list never verifies here and an access body
+never verifies as a public list.
+
+**Renewal.** A connected client repeats the request with the connected relay
+as `relay_id` well before expiry (about half-way). The broker extends the
+existing lease and returns the same `client_id` with a later
+`lease_expires_at`, so a running tunnel never needs a new credential.
+
+| Status | Meaning |
+| --- | --- |
+| `200` with `"relays": []` | No relay matches the target (or every match is at its lease capacity); nothing was issued |
+| `400` | Malformed body, unknown field, `limit` out of range, both targets, invalid country |
+| `401` | Missing, invalid or expired access token, or an unknown user: authenticate again |
+| `403` | The user is disabled |
+| `429` | Rate limit (per client address and user) |
+| `503` + `Retry-After: 2` | Leases were issued but no relay acknowledged them in time; the retry returns the same credentials |
+
+Access requests carry no telemetry identifiers, never follow redirects, and are
+refused by clients on endpoint-unbound fronts (the Azure no-SNI mode); the
+route exists only when `OPENRUNG_USER_TOKEN_KEY` is configured and the store
+holds leases. Each user holds at most `OPENRUNG_MAX_LEASES_PER_USER` live
+leases; past it the least recently renewed leases outside the request are
+revoked first.
 
 ## Issue WSS Session Ticket
 

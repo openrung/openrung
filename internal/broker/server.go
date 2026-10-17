@@ -184,6 +184,12 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 			mux.HandleFunc("/admin/api/leases/{id}", operational(access.adminLeaseHandler(cfg.APIToken)))
 		}
 	}
+	// Client access issues per-user relay credentials; it needs both the
+	// token key (users) and a store that can hold leases (access).
+	if clientAccess := newClientAccessHandler(store, users, access, relaySigner); clientAccess != nil {
+		accessLimiter := newIPRateLimiter(accessRatePerSecond, accessBurst, rateLimiterMaxTrackedIPs)
+		mux.HandleFunc("POST /api/v1/access", rateLimitedBy(accessLimiter, clientAccess.rateKey(clientIP), 10, clientAccess.handler()))
+	}
 	// Client user endpoints exist only with an access token key configured.
 	// One limiter spans both: a challenge is worthless without the auth call
 	// that consumes it, so budgeting them together bounds the pair.

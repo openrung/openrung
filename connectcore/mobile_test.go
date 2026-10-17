@@ -94,7 +94,7 @@ func mobileTestEngine(t *testing.T) (*Engine, *mobileTestRuntime, brokerapi.Rela
 		t.Fatal(err)
 	}
 	rt := &mobileTestRuntime{}
-	s.Mobile = &MobileHost{InstallID: mobileInstallID, AppVersion: "0.3.9", PlatformVersion: "35", Runtime: rt, Settings: func(context.Context) (MobileTunnelSettings, error) {
+	s.Mobile = &MobileHost{InstallID: mobileInstallID, AppVersion: "0.3.9", PlatformVersion: "35", Runtime: rt, Key: noAccessKey{}, Settings: func(context.Context) (MobileTunnelSettings, error) {
 		return MobileTunnelSettings{MTU: 1400, LogLevel: "warn", RouteFindProcess: true, ClashAPI: true}, nil
 	}}
 	r := relayWithWSS("relay-a", "KR", "Seoul", "Korea", "192.0.2.1")
@@ -508,7 +508,7 @@ func TestMobileIdentityTelemetryOwnershipAndRestart(t *testing.T) {
 			}
 			continue
 		}
-		if e.Attributes["engine"] != "connectcore" || e.Attributes["engine_version"] != "0.6.4" || e.Attributes["platform"] != "android" || e.Attributes["app_version"] != "0.3.9" || e.Attributes["device_model"] != "test" {
+		if e.Attributes["engine"] != "connectcore" || e.Attributes["engine_version"] != "0.7.0" || e.Attributes["platform"] != "android" || e.Attributes["app_version"] != "0.3.9" || e.Attributes["device_model"] != "test" {
 			t.Fatalf("release metadata %+v", e.Attributes)
 		}
 		if e.Event == "connection_ended" {

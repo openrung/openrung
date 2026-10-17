@@ -29,6 +29,12 @@ const (
 	userAuthRatePerSecond = 1.0
 	userAuthBurst         = 20
 
+	// Client access: a connect makes one or two requests (one more per
+	// recovery), a connected client renews about twice per lease lifetime.
+	// Keyed per address and user, so the bucket is one installation's.
+	accessRatePerSecond = 0.5
+	accessBurst         = 10
+
 	// Relay registration/heartbeat are token-gated in production; this limiter
 	// is a backstop against a flood if the token leaks or the broker is
 	// deliberately run open. Generous: one relay hub re-registers and heartbeats

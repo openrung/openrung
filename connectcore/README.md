@@ -25,8 +25,9 @@ the client policy layer:
   mobile repository vendors the JSON files under `contract/vectors/`.
 
 Everything platform-specific reaches the engine through narrow interfaces
-(`interfaces.go`): event sink, persistence, OS proxy control, elevation, and
-the NAT punch transport (`PunchEstablisher` — implemented in the root module's
+(`interfaces.go`): event sink, persistence, OS proxy control, elevation, the
+installation key that per-user relay access (`access.go`, ADR-006) signs with,
+and the NAT punch transport (`PunchEstablisher` — implemented in the root module's
 `internal/enginepunch` over the quic-go transport in `internal/punch`, which
 deliberately stays out of this module). Hosts report their application version
 either at link time (`-X …/connectcore/client.appVersion=…`, used by the

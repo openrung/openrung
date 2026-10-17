@@ -109,6 +109,11 @@ func WSSTicketURL(baseURL string) (string, error) {
 	return endpointURL(baseURL, "api/v1/wss/tickets")
 }
 
+// AccessURL resolves POST /api/v1/access.
+func AccessURL(baseURL string) (string, error) {
+	return endpointURL(baseURL, "api/v1/access")
+}
+
 // HealthURL resolves GET /healthz.
 func HealthURL(baseURL string) (string, error) {
 	return endpointURL(baseURL, "healthz")

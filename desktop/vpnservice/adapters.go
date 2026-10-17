@@ -58,6 +58,17 @@ func (a storeAdapter) ClearProxySnapshot() error {
 	return a.store.ClearProxySnapshot()
 }
 
+var (
+	_ connectcore.UserIDPersistence = storeAdapter{}
+	_ connectcore.InstallationKey   = (*clientstate.InstallationKey)(nil)
+)
+
+// SaveUserID makes the adapter a connectcore.UserIDPersistence: the engine
+// records the broker-assigned user ID after authenticating.
+func (a storeAdapter) SaveUserID(userID string) error {
+	return a.store.SaveUserID(userID)
+}
+
 // helperStore must return a nil interface, never a nil pointer inside one, which
 // proxyconfig's nil check cannot see through.
 func (s *Service) helperStore() proxyconfig.HelperStore {

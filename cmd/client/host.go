@@ -47,6 +47,9 @@ func newEngineHost(sink connectcore.EventSink, singBoxPath string, externalSingB
 	if store, err := clientstate.New(); err == nil {
 		host.store = store
 		engine.Persistence = storeAdapter{store: store}
+		// The installation key enables per-user relay access (ADR-006); it
+		// is created in the same state directory on first use.
+		engine.Key = store.InstallationKey()
 	}
 	return host
 }
@@ -128,6 +131,17 @@ func (a storeAdapter) LoadProxySnapshot() (connectcore.OSProxySnapshot, bool) {
 
 func (a storeAdapter) ClearProxySnapshot() error {
 	return a.store.ClearProxySnapshot()
+}
+
+var (
+	_ connectcore.UserIDPersistence = storeAdapter{}
+	_ connectcore.InstallationKey   = (*clientstate.InstallationKey)(nil)
+)
+
+// SaveUserID makes the adapter a connectcore.UserIDPersistence: the engine
+// records the broker-assigned user ID after authenticating.
+func (a storeAdapter) SaveUserID(userID string) error {
+	return a.store.SaveUserID(userID)
 }
 
 // osProxyAdapter implements connectcore.OSProxy over the per-OS controllers in

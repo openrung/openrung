@@ -144,6 +144,16 @@ type connection struct {
 	// wins. Written in connectFlow and read in reladder; touched only by the
 	// runConnect goroutine, not protected by mu.
 	discoveryPrimary string
+	// accessFront is the broker front per-user access requests go to (the
+	// discovery race winner, pinned for recovery and renewal), with its Azure
+	// TLS mode; accessUnsupported records a broker without the access
+	// endpoints for the rest of the session; lease describes the credentials
+	// of the last fetch (zero when it came from the public list). All are
+	// touched only by the runConnect goroutine (see access.go).
+	accessFront       string
+	accessAzureSNI    bool
+	accessUnsupported bool
+	lease             accessLease
 	// handledNetEpoch is the network epoch the supervisor has accounted for.
 	// Touched only by the runConnect goroutine.
 	handledNetEpoch uint64
@@ -291,6 +301,13 @@ type Engine struct {
 	// disables persistence.
 	Persistence Persistence
 
+	// Key is the installation's identity key (ADR-006). With a key the engine
+	// asks the broker for per-user relay credentials before connecting and
+	// renews them while connected; without one (or against a broker that
+	// does not issue them) it uses the public relay list. Mobile hosts set
+	// MobileHost.Key instead.
+	Key InstallationKey
+
 	// OSProxy points the OS system proxy at the tunnel while connected. Nil
 	// behaves like an unsupported platform.
 	OSProxy OSProxy
@@ -422,6 +439,13 @@ type Engine struct {
 	protectorOverride wsscore.SocketProtector
 	dnsServers        []string
 
+	// accessMu guards the cached broker access token (see access.go). It is
+	// process-local on purpose: the token is a bearer credential and is never
+	// persisted; a restart authenticates again.
+	accessMu          sync.Mutex
+	accessToken       string
+	accessTokenExpiry time.Time
+
 	// proxyPortMu pins only a successfully resolved endpoint for this process.
 	// A transient resolution failure remains retryable on the next call.
 	// Persistence carries automatic selections across launches.
@@ -451,6 +475,8 @@ type Engine struct {
 	networkRecoveryLimit time.Duration      // 0 means mobileNetworkRecoveryLimit
 	physicalLivenessURLs []string           // nil means the fixed neutral mobile endpoints (per-engine test seam)
 	tunnelReadyLimit     time.Duration      // 0 means TunnelReadyTimeout
+	leaseClock           func() time.Time   // nil means the wall clock (lease renewal and token expiry)
+	leaseTimer           func(time.Duration) <-chan time.Time
 }
 
 func (s *Engine) tunnelReadyProbe() func(context.Context, int) error {
@@ -840,6 +866,9 @@ func (s *Engine) connectFlow(ctx context.Context, conn *connection, brokerURL st
 		if ctx.Err() != nil {
 			return "", nil
 		}
+		if errors.Is(err, ErrAccessDisabled) {
+			return "access_denied", err
+		}
 		return "broker_fetch", err
 	}
 
@@ -901,6 +930,23 @@ func (s *Engine) fetchCandidates(ctx context.Context, conn *connection, brokerUR
 		limit = DirectoryRelayLimit
 	}
 	started := time.Now()
+	// Per-user access (access.go) goes to the front a discovery race already
+	// proved reachable: a recovery reuses the pinned front without racing,
+	// while a first connect races the public list as before and then asks the
+	// winner. The public answer stays the fallback either way.
+	conn.lease = accessLease{}
+	wantAccess := s.accessWanted(conn, target)
+	triedFront := ""
+	if wantAccess && conn.accessFront != "" {
+		triedFront = conn.accessFront
+		fetch, ok, err := s.fetchAccess(ctx, conn, conn.accessFront, conn.accessAzureSNI, target)
+		if err != nil {
+			return discovery.Fetch{}, 0, err
+		}
+		if ok {
+			return fetch, time.Since(started).Milliseconds(), nil
+		}
+	}
 	fetch, err := s.relayFetcher()(ctx, brokerURL, limit, managerClientID(conn.mgr), s.SessionID())
 	if err != nil {
 		return discovery.Fetch{}, 0, err
@@ -908,6 +954,16 @@ func (s *Engine) fetchCandidates(ctx context.Context, conn *connection, brokerUR
 	// All hosts follow the verified winner, including queued events and
 	// recovery fetches. In-flight uploads retain their captured endpoint.
 	_ = conn.mgr.SetBrokerFront(fetch.BrokerURL, fetch.AzureSNI)
+	if wantAccess && !conn.accessUnsupported && fetch.BrokerURL != triedFront {
+		conn.accessFront, conn.accessAzureSNI = fetch.BrokerURL, fetch.AzureSNI
+		access, ok, err := s.fetchAccess(ctx, conn, fetch.BrokerURL, fetch.AzureSNI, target)
+		if err != nil {
+			return discovery.Fetch{}, 0, err
+		}
+		if ok {
+			return access, time.Since(started).Milliseconds(), nil
+		}
+	}
 	return fetch, time.Since(started).Milliseconds(), nil
 }
 

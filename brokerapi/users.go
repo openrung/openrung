@@ -224,6 +224,43 @@ func SignUserAuth(priv *ecdsa.PrivateKey, challenge string) (UserAuthRequest, er
 	}, nil
 }
 
+// SignUserAuthWith builds the request body for a challenge when the private
+// key is held elsewhere (an OS keystore, a hardware-backed key): publicKeySPKI
+// is the key's DER SubjectPublicKeyInfo and sign returns the raw 64-byte r‖s
+// signature over the SHA-256 digest it is given. The signature is checked
+// against the public key before it is returned, so a host key that signs
+// wrongly fails here instead of as an opaque 401.
+func SignUserAuthWith(publicKeySPKI []byte, challenge string, sign func(digest []byte) ([]byte, error)) (UserAuthRequest, error) {
+	if sign == nil {
+		return UserAuthRequest{}, errors.New("user signing function is required")
+	}
+	if !ValidUserChallenge(challenge) {
+		return UserAuthRequest{}, errors.New("user challenge is empty, oversized, or not printable")
+	}
+	encodedKey := base64.StdEncoding.EncodeToString(publicKeySPKI)
+	pub, err := ParseUserPublicKey(encodedKey)
+	if err != nil {
+		return UserAuthRequest{}, err
+	}
+	canonical, err := CanonicalUserPublicKey(pub)
+	if err != nil {
+		return UserAuthRequest{}, err
+	}
+	digest := sha256.Sum256(UserAuthStatement(challenge, canonical))
+	raw, err := sign(digest[:])
+	if err != nil {
+		return UserAuthRequest{}, fmt.Errorf("sign user authentication: %w", err)
+	}
+	if len(raw) != userSignatureBytes {
+		return UserAuthRequest{}, fmt.Errorf("user signature must be %d raw r||s bytes, got %d", userSignatureBytes, len(raw))
+	}
+	signature := base64.StdEncoding.EncodeToString(raw)
+	if !VerifyUserAuth(pub, challenge, signature) {
+		return UserAuthRequest{}, errors.New("user signature does not verify under the installation public key")
+	}
+	return UserAuthRequest{PublicKey: encodedKey, Challenge: challenge, Signature: signature}, nil
+}
+
 // VerifyUserAuth checks a raw r‖s signature over the statement for challenge
 // and pub. It is the broker's check; clients use it in tests.
 func VerifyUserAuth(pub *ecdsa.PublicKey, challenge, signature string) bool {
