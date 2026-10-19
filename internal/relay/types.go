@@ -191,6 +191,14 @@ type Descriptor struct {
 	// broker to pick relays that can install per-client credentials, never
 	// serialized into the public directory.
 	LeaseCapable bool `json:"-"`
+	// Reachable and ReachabilityCheckedAt record the broker's latest inbound
+	// probe of the advertised endpoint (direct transport only). A zero
+	// ReachabilityCheckedAt means no probe has run; Reachable is meaningful
+	// only beside a non-zero timestamp. Operational state for the broker's
+	// own listing decision and the operator views; never part of the signed
+	// public directory.
+	Reachable             bool      `json:"-"`
+	ReachabilityCheckedAt time.Time `json:"-"`
 	// NodeClass is the broker-attested operator class (NodeClassFoundation or
 	// NodeClassVolunteer). Always serialized, and covered by the relay-list
 	// signature like every other descriptor field; clients that predate it
@@ -218,23 +226,33 @@ type Descriptor struct {
 // RegisterResponse is the private response to a successful registration. It
 // has the same wire shape as Descriptor plus lease_token; keeping the token out
 // of Descriptor's JSON representation prevents it from leaking through signed
-// public relay-list responses.
+// public relay-list responses. It also reports the broker's registration-time
+// reachability probe as reachable (absent when the broker did not probe), so a
+// relay operator can see from the registration itself whether clients will be
+// handed the relay.
 type RegisterResponse struct {
 	Descriptor Descriptor
 }
 
 func (r RegisterResponse) MarshalJSON() ([]byte, error) {
 	type descriptorAlias Descriptor
+	var reachable *bool
+	if !r.Descriptor.ReachabilityCheckedAt.IsZero() {
+		value := r.Descriptor.Reachable
+		reachable = &value
+	}
 	return json.Marshal(struct {
 		descriptorAlias
 		VolunteerVersion string `json:"volunteer_version"`
 		LeaseToken       string `json:"lease_token,omitempty"`
 		AccessLeases     bool   `json:"access_leases,omitempty"`
+		Reachable        *bool  `json:"reachable,omitempty"`
 	}{
 		descriptorAlias:  descriptorAlias(r.Descriptor),
 		VolunteerVersion: r.Descriptor.RelayVersion,
 		LeaseToken:       r.Descriptor.LeaseToken,
 		AccessLeases:     r.Descriptor.LeaseCapable,
+		Reachable:        reachable,
 	})
 }
 

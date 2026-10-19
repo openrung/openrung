@@ -46,7 +46,9 @@ const descriptorColumns = `
 	identity_public_key,
 	lease_token,
 	wss_fronts,
-	lease_capable
+	lease_capable,
+	reachable,
+	reachability_checked_at
 `
 
 const postgresOperationTimeout = 5 * time.Second
@@ -202,6 +204,12 @@ CREATE TABLE IF NOT EXISTS user_enrollment_counters (
 ALTER TABLE relay_descriptors
 	ADD COLUMN IF NOT EXISTS lease_capable boolean NOT NULL DEFAULT false;
 
+ALTER TABLE relay_descriptors
+	ADD COLUMN IF NOT EXISTS reachable boolean NOT NULL DEFAULT false;
+
+ALTER TABLE relay_descriptors
+	ADD COLUMN IF NOT EXISTS reachability_checked_at timestamptz;
+
 CREATE TABLE IF NOT EXISTS access_leases (
 	id text PRIMARY KEY,
 	user_id text NOT NULL REFERENCES users (id),
@@ -323,7 +331,10 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 	// at the same host:port keeps its previously resolved location until the
 	// handler's next successful UpdateGeo — except when the exit host changed
 	// (a hub port reused by a different relay), where the upsert clears
-	// the stale location so the handler resolves the new exit.
+	// the stale location so the handler resolves the new exit. The
+	// reachability columns are absent too, and the upsert resets them: a
+	// registration is a new incarnation of the endpoint, and the handler
+	// probes it afresh before anything reads the row.
 	//
 	// The DO UPDATE WHERE guards a LIVE foundation endpoint: a foundation row
 	// may only be overwritten by another foundation-class registration.
@@ -428,7 +439,9 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 			identity_public_key = EXCLUDED.identity_public_key,
 			lease_token = EXCLUDED.lease_token,
 			wss_fronts = EXCLUDED.wss_fronts,
-			lease_capable = EXCLUDED.lease_capable
+			lease_capable = EXCLUDED.lease_capable,
+			reachable = false,
+			reachability_checked_at = NULL
 		WHERE relay_descriptors.node_class <> $27
 			OR EXCLUDED.node_class = $27
 			OR relay_descriptors.expires_at <= EXCLUDED.registered_at
@@ -559,6 +572,25 @@ func (s *PostgresStore) UpdateGeo(id, leaseToken string, geo relay.GeoLocation) 
 		WHERE id = $1
 			AND (identity_public_key = '' OR (lease_token <> '' AND lease_token = $2))
 	`, id, leaseToken, geo.City, geo.Country, geo.CountryCode, geo.Latitude, geo.Longitude)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrRelayNotFound
+	}
+	return nil
+}
+
+func (s *PostgresStore) UpdateReachability(id, leaseToken string, reachable bool, checkedAt time.Time) error {
+	ctx, cancel := postgresOperationContext()
+	defer cancel()
+
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE relay_descriptors
+		SET reachable = $3, reachability_checked_at = $4
+		WHERE id = $1
+			AND (identity_public_key = '' OR (lease_token <> '' AND lease_token = $2))
+	`, id, leaseToken, reachable, checkedAt)
 	if err != nil {
 		return err
 	}
@@ -1049,6 +1081,7 @@ func (s *PostgresStore) markSessionTerminal(ctx context.Context, tx pgx.Tx, even
 func scanDescriptor(row pgx.Row) (relay.Descriptor, error) {
 	var desc relay.Descriptor
 	var wssFrontsJSON []byte
+	var reachabilityCheckedAt sql.NullTime
 	err := row.Scan(
 		&desc.ID,
 		&desc.PublicHost,
@@ -1081,9 +1114,14 @@ func scanDescriptor(row pgx.Row) (relay.Descriptor, error) {
 		&desc.LeaseToken,
 		&wssFrontsJSON,
 		&desc.LeaseCapable,
+		&desc.Reachable,
+		&reachabilityCheckedAt,
 	)
 	if err != nil {
 		return relay.Descriptor{}, err
+	}
+	if reachabilityCheckedAt.Valid {
+		desc.ReachabilityCheckedAt = reachabilityCheckedAt.Time
 	}
 	if len(wssFrontsJSON) != 0 {
 		if err := json.Unmarshal(wssFrontsJSON, &desc.WSSFronts); err != nil {

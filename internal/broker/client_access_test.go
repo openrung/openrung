@@ -220,6 +220,40 @@ func TestAccessIssuesSignedLeasesOnEligibleRelays(t *testing.T) {
 	}
 }
 
+func TestAccessWithholdsRelaysWhoseProbeFailed(t *testing.T) {
+	h := newAccessHarness(t)
+	a := h.addRelay("a", 'a', "JP", nil)
+	b := h.addRelay("b", 'b', "JP", nil)
+	h.autoAck(a)
+	h.autoAck(b)
+	if err := h.store.UpdateReachability(b.ID, b.LeaseToken, false, h.now); err != nil {
+		t.Fatal(err)
+	}
+
+	token, _ := h.token()
+	rec, resp := h.request(token, `{}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("access: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(resp.Relays) != 1 || resp.Relays[0].ID != a.ID {
+		t.Fatalf("access relays = %+v, want only %s", resp.Relays, a.ID)
+	}
+	// Naming the withheld relay directly does not bypass the probe result.
+	rec, resp = h.request(token, `{"relay_id":"`+b.ID+`"}`)
+	if rec.Code != http.StatusOK || len(resp.Relays) != 0 {
+		t.Fatalf("targeted access to an unreachable relay: %d %+v", rec.Code, resp.Relays)
+	}
+
+	// A later successful probe makes it eligible again.
+	if err := h.store.UpdateReachability(b.ID, b.LeaseToken, true, h.now); err != nil {
+		t.Fatal(err)
+	}
+	rec, resp = h.request(token, `{"relay_id":"`+b.ID+`"}`)
+	if rec.Code != http.StatusOK || len(resp.Relays) != 1 {
+		t.Fatalf("access after a successful probe: %d %+v", rec.Code, resp.Relays)
+	}
+}
+
 func TestAccessTargetedRequestIssuesOnlyForTheTarget(t *testing.T) {
 	h := newAccessHarness(t)
 	a := h.addRelay("a", 'a', "JP", nil)

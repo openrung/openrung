@@ -429,13 +429,14 @@ func (h *clientAccessHandler) anyRelayAlive(leases []Lease, now time.Time) (bool
 }
 
 // accessCandidates keeps the ranked relays that can carry a lease — an
-// identity-bearing, lease-capable, direct-transport registration — narrowed
-// to the target: an exact relay ID, or a country code (case-insensitive, as
-// clients match it). Order is preserved; it is the ranking.
+// identity-bearing, lease-capable, direct-transport registration whose
+// endpoint did not fail its latest reachability probe — narrowed to the
+// target: an exact relay ID, or a country code (case-insensitive, as clients
+// match it). Order is preserved; it is the ranking.
 func accessCandidates(relays []relay.Descriptor, relayID, country string) []relay.Descriptor {
 	out := make([]relay.Descriptor, 0, len(relays))
 	for _, desc := range relays {
-		if !desc.LeaseCapable || desc.IdentityPublicKey == "" || desc.Transport != relay.TransportDirect {
+		if !desc.LeaseCapable || desc.IdentityPublicKey == "" || desc.Transport != relay.TransportDirect || relayUnreachable(desc) {
 			continue
 		}
 		if relayID != "" && desc.ID != relayID {

@@ -442,12 +442,17 @@ replayed into a client's API slot. `not_after` is `server_time` + 5
 minutes, far tighter than the API channel's 30: a relay lease lives about three
 minutes, so a stale inventory describes a fleet that no longer exists.
 
-The relay objects are the public directory descriptors plus one operator-only
-key, `ranking_weight` — the effective ranking weight the broker is applying to
+The relay objects are the public directory descriptors plus operator-only
+keys: `ranking_weight` — the effective ranking weight the broker is applying to
 that relay right now (`1` unless an override is stored; see
-[Relay ranking weights](#relay-ranking-weights)). Lease tokens, stable-identity
-keys and proofs, hub-observed exit addresses, telemetry, and signing seeds never
-appear here; the endpoint exposes fleet membership, not credentials.
+[Relay ranking weights](#relay-ranking-weights)) — and the latest [inbound
+reachability probe](#inbound-reachability-probe): `reachable` is `null` until
+the broker has probed the relay (tunnel transport, probing off, or not yet),
+otherwise `true` or `false`, with `reachability_checked_at` giving the probe
+time when there is one. A `false` relay is registered but withheld from
+clients. Lease tokens, stable-identity keys and proofs, hub-observed exit
+addresses, telemetry, and signing seeds never appear here; the endpoint
+exposes fleet membership, not credentials.
 
 Response:
 
@@ -459,7 +464,7 @@ Response:
   "key_id": "3097e2dee2cb4a34",
   "channel": "inventory",
   "relays": [
-    { "id": "relay_0a1b...", "public_host": "203.0.113.7", "public_port": 443, "node_class": "foundation", "...": "...", "ranking_weight": 1 }
+    { "id": "relay_0a1b...", "public_host": "203.0.113.7", "public_port": 443, "node_class": "foundation", "...": "...", "ranking_weight": 1, "reachable": true, "reachability_checked_at": "2026-06-09T06:58:00Z" }
   ]
 }
 ```
@@ -633,6 +638,34 @@ echoes the recorded value as `access_leases` (absent when `false`); a relay
 starts its lease syncer only when the echo is present, so a broker that
 predates leases leaves the relay serving the shared credential alone. The
 capability is private registration state and never appears in relay lists.
+
+### Inbound reachability probe
+
+A direct-transport relay registers and heartbeats over connections it opens
+itself, which proves nothing about whether its advertised
+`public_host:public_port` accepts connections. The broker therefore dials that
+endpoint itself (a bounded plain TCP connect, no Reality handshake) in the
+registration request and reports the outcome in the response as `reachable`
+(`true` or `false`; absent when the broker did not probe). The relay listens
+before it registers, so a `false` here means the endpoint is not accepting
+connections from the broker's network: the relay stays registered, heartbeats
+and syncs leases normally, but is **withheld from [`GET
+/api/v1/relays`](#list-relays) and [`POST /api/v1/access`](#client-access)**
+until a later probe succeeds. The operator views show the result (see
+[inventory](#operational-relay-inventory)).
+
+Heartbeats re-probe once the stored result is older than the probe interval,
+so a relay that goes dark is withheld and a repaired one relisted without
+re-registering. Only direct transport is probed; a tunnel relay's advertised
+endpoint is the relay hub. A probe the broker could not attempt — no route or
+local address for the endpoint's address family, a transient resolver
+failure — is inconclusive and changes nothing.
+
+`OPENRUNG_RELAY_PROBE` switches the probe `off` (default `on`);
+`OPENRUNG_RELAY_PROBE_TIMEOUT` bounds one dial (default `5s`) and
+`OPENRUNG_RELAY_PROBE_INTERVAL` is how old a result may be before a heartbeat
+re-probes (default `5m`). With the probe off every relay is listed on its
+lease alone.
 
 `relay_version` identifies the relay runtime artifact, independently of the
 broker, relay hub, and client app versions. Standalone images report values such
@@ -920,6 +953,11 @@ through a pre-`node_class` broker binary) or interfering with a foundation
 relay: a refused heartbeat changes nothing, and an unattended foundation row
 expires from the origin store within one lease TTL.
 
+A heartbeat also re-runs the [inbound reachability
+probe](#inbound-reachability-probe) of a direct relay's endpoint once the
+stored result is older than `OPENRUNG_RELAY_PROBE_INTERVAL`; the heartbeat
+response is unaffected, but the outcome decides whether the relay is listed.
+
 An identity-bearing registration also requires its current `lease_token` on
 heartbeat. The broker rotates this opaque token on every successful
 registration and returns `404 relay not found` for a missing or superseded
@@ -1047,7 +1085,9 @@ limiter and exists when `OPENRUNG_API_TOKEN` is configured.
 GET /api/v1/relays?limit=5
 ```
 
-The order of `relays` is the broker's candidate ranking. The broker uses recent
+The order of `relays` is the broker's candidate ranking. A direct relay whose
+latest [inbound reachability probe](#inbound-reachability-probe) failed is
+left out before ranking and page shaping. The broker uses recent
 connection successes/failures, active sessions, observed client latency, and
 speed-test telemetry. The latency it scores is aggregated across all clients,
 so it cannot describe any one client's path. IPv6 is only a final tie-breaker
@@ -1295,7 +1335,8 @@ best-ranked relays.
 
 The broker ranks relays exactly as for `GET /api/v1/relays`, keeps only relays
 that can install per-user credentials (identity-bearing, lease-capable,
-direct-transport registrations), narrows them to the target, reserves the WSS
+direct-transport registrations whose latest [inbound reachability
+probe](#inbound-reachability-probe) did not fail), narrows them to the target, reserves the WSS
 slot like the public list, and then issues or extends one lease per relay. It
 waits up to five seconds for each relay to acknowledge the lease through its
 [lease sync](#relay-lease-sync) and answers with the relays that did.

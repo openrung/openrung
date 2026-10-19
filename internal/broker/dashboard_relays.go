@@ -286,6 +286,9 @@ type relayPanelTotals struct {
 	TunnelRelays       int `json:"tunnel_relays"`
 	PunchCapableRelays int `json:"punch_capable_relays"`
 	WSSCapableRelays   int `json:"wss_capable_relays"`
+	// UnreachableRelays counts online relays the broker is withholding from
+	// clients because their latest inbound reachability probe failed.
+	UnreachableRelays int `json:"unreachable_relays"`
 }
 
 // relayPanelRow is one relay on the admin relays page: the live registry
@@ -305,7 +308,10 @@ type relayPanelRow struct {
 	// Registry fields, present on online rows only. Endpoint is the advertised
 	// public host:port — for tunnel relays that is the relay hub, never the
 	// operator's own address — and the geo fields locate the relay's exit.
-	Endpoint        string     `json:"endpoint,omitempty"`
+	Endpoint string `json:"endpoint,omitempty"`
+	// Reachable is the latest inbound probe of the endpoint: absent until the
+	// broker has probed the relay, false while it is withheld from clients.
+	Reachable       *bool      `json:"reachable,omitempty"`
 	Transport       string     `json:"transport,omitempty"`
 	City            string     `json:"city,omitempty"`
 	Country         string     `json:"country,omitempty"`
@@ -354,6 +360,7 @@ func buildRelaysPanel(descriptors []relay.Descriptor, stats relayTelemetryStats,
 			Online:          true,
 			RankingWeight:   rankingWeightFor(weights, desc.ID),
 			Endpoint:        net.JoinHostPort(desc.PublicHost, strconv.Itoa(desc.PublicPort)),
+			Reachable:       reachablePointer(desc),
 			Transport:       desc.Transport,
 			City:            desc.City,
 			Country:         desc.Country,
@@ -385,6 +392,9 @@ func buildRelaysPanel(descriptors []relay.Descriptor, stats relayTelemetryStats,
 		}
 		if len(desc.WSSFronts) > 0 {
 			response.Totals.WSSCapableRelays++
+		}
+		if relayUnreachable(desc) {
+			response.Totals.UnreachableRelays++
 		}
 		response.Relays = append(response.Relays, row)
 	}

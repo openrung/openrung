@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
-	"strconv"
 	"time"
 
 	"openrung/internal/relay"
@@ -119,21 +118,33 @@ type inventoryResponse struct {
 	Relays     []inventoryDescriptor `json:"relays"`
 }
 
-// inventoryDescriptor is a public descriptor plus the effective operator
-// ranking weight the broker is applying to it right now (defaultRankingWeight
-// when no override is stored). The weight is operational state — it exists so
-// fleet tooling can see where an operator has shifted load — and never appears
-// in the client-facing channels.
+// inventoryDescriptor is a public descriptor plus the operator-only state the
+// broker holds about it: the effective ranking weight it is applying right
+// now (defaultRankingWeight when no override is stored) and the latest
+// inbound reachability probe. Both are operational state — they exist so
+// fleet tooling can see where an operator has shifted load and which relays
+// the broker is withholding from clients — and never appear in the
+// client-facing channels.
 type inventoryDescriptor struct {
 	relay.Descriptor
-	RankingWeight float64 `json:"ranking_weight"`
+	RankingWeight float64
+}
+
+// inventoryState is the trailing operator-only block of an inventory
+// descriptor. reachable is null until the broker has probed the relay (tunnel
+// transport, probing disabled, or not yet), then the latest outcome;
+// reachability_checked_at is omitted in the same case.
+type inventoryState struct {
+	RankingWeight         float64    `json:"ranking_weight"`
+	Reachable             *bool      `json:"reachable"`
+	ReachabilityCheckedAt *time.Time `json:"reachability_checked_at,omitempty"`
 }
 
 // MarshalJSON emits the descriptor exactly as the public channels do (through
 // relay.Descriptor's own marshaler, deprecated aliases included) and appends
-// ranking_weight as one trailing key. Embedding alone would not do: the
-// embedded type's MarshalJSON is promoted and would silently drop every field
-// declared beside it.
+// the operator-only keys after it. Embedding alone would not do: the embedded
+// type's MarshalJSON is promoted and would silently drop every field declared
+// beside it.
 func (d inventoryDescriptor) MarshalJSON() ([]byte, error) {
 	body, err := json.Marshal(d.Descriptor)
 	if err != nil {
@@ -142,9 +153,16 @@ func (d inventoryDescriptor) MarshalJSON() ([]byte, error) {
 	if len(body) < 2 || body[len(body)-1] != '}' {
 		return nil, errors.New("relay descriptor did not marshal to a JSON object")
 	}
-	body = append(body[:len(body)-1], `,"ranking_weight":`...)
-	body = strconv.AppendFloat(body, d.RankingWeight, 'g', -1, 64)
-	return append(body, '}'), nil
+	state, err := json.Marshal(inventoryState{
+		RankingWeight:         d.RankingWeight,
+		Reachable:             reachablePointer(d.Descriptor),
+		ReachabilityCheckedAt: timePointer(d.ReachabilityCheckedAt),
+	})
+	if err != nil {
+		return nil, err
+	}
+	body = append(body[:len(body)-1], ',')
+	return append(body, state[1:]...), nil
 }
 
 func decorateInventory(relays []relay.Descriptor, weights map[string]float64) []inventoryDescriptor {
