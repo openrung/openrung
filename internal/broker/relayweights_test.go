@@ -252,7 +252,7 @@ func TestDashboardRelayWeightEndpoints(t *testing.T) {
 	}
 	telemetry := &dashboardTelemetryStore{}
 	server := NewServer(store, Config{SigningSeed: testSigningSeed(), TelemetrySink: telemetry, TelemetryReader: telemetry, DashboardToken: "secret-token"})
-	path := "/admin/api/telemetry/relays/" + registered.ID + "/weight"
+	path := "/admin/api/dashboard/relays/" + registered.ID + "/weight"
 
 	// No session: 401 like every other dashboard API route.
 	anonymous := httptest.NewRequest(http.MethodPut, path, strings.NewReader(`{"weight":0.5}`))
@@ -311,7 +311,7 @@ func TestDashboardRelayWeightEndpoints(t *testing.T) {
 	if response := do(http.MethodPut, path, `{"weight":2}`, jsonHeaders); response.Code != http.StatusBadRequest {
 		t.Errorf("weight 2 = %d, want 400", response.Code)
 	}
-	if response := do(http.MethodPut, "/admin/api/telemetry/relays/not-a-relay/weight", `{"weight":0.5}`, jsonHeaders); response.Code != http.StatusBadRequest {
+	if response := do(http.MethodPut, "/admin/api/dashboard/relays/not-a-relay/weight", `{"weight":0.5}`, jsonHeaders); response.Code != http.StatusBadRequest {
 		t.Errorf("malformed id = %d, want 400", response.Code)
 	}
 
@@ -323,7 +323,7 @@ func TestDashboardRelayWeightEndpoints(t *testing.T) {
 	if got := decodeWeightResponse(t, set.Body.Bytes()); got.Weight != 0.5 || got.PreviousWeight != 1 {
 		t.Errorf("PUT response = %+v", got)
 	}
-	panelResponse := do(http.MethodGet, "/admin/api/telemetry/relays?window=24h", "", nil)
+	panelResponse := do(http.MethodGet, "/admin/api/dashboard/relays?window=24h", "", nil)
 	if panelResponse.Code != http.StatusOK {
 		t.Fatalf("panel = %d: %s", panelResponse.Code, panelResponse.Body.String())
 	}
@@ -360,14 +360,14 @@ func TestDashboardRelayWeightEndpoints(t *testing.T) {
 	if got := decodeWeightResponse(t, restore.Body.Bytes()); got.Weight != 1 || got.PreviousWeight != 0.5 {
 		t.Errorf("DELETE response = %+v", got)
 	}
-	panelResponse = do(http.MethodGet, "/admin/api/telemetry/relays?window=24h", "", nil)
+	panelResponse = do(http.MethodGet, "/admin/api/dashboard/relays?window=24h", "", nil)
 	if err := json.Unmarshal(panelResponse.Body.Bytes(), &panel); err != nil || panel.Relays[0].RankingWeight != 1 {
 		t.Errorf("panel row after restore = %+v (%v), want weight 1", panel.Relays, err)
 	}
 
 	// The page carries the control the endpoints serve.
-	page := do(http.MethodGet, "/admin/telemetry/relays", "", nil)
-	for _, needle := range []string{"<th>Weight</th>", "weight-save", "weight-reset", "/admin/api/telemetry/relays/", "ranking_weight"} {
+	page := do(http.MethodGet, "/admin/dashboard/relays", "", nil)
+	for _, needle := range []string{"<th>Weight</th>", "weight-save", "weight-reset", "/admin/api/dashboard/relays/", "ranking_weight"} {
 		if !strings.Contains(page.Body.String(), needle) {
 			t.Errorf("relays page lacks %q", needle)
 		}

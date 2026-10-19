@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>OpenRung Admin · Sign in</title>
+  <style>
+    body{margin:0;background:radial-gradient(circle at 85% -10%,#133d20 0,transparent 35%),#06100a;color:#e9f7ee;font:15px ui-monospace,SFMono-Regular,Menlo,monospace;display:grid;min-height:100vh;place-items:center}
+    .box{width:min(88vw,400px);padding:30px;border:1px solid #1e4b2d;background:linear-gradient(145deg,#0e1d14,#0b1710);box-shadow:0 18px 80px #0008;border-radius:4px}
+    .brand{display:flex;align-items:center;gap:12px;margin-bottom:22px}
+    .brand svg{width:34px;height:34px;color:#55e27b;flex:none}
+    h1{font-size:17px;margin:0;color:#55e27b;letter-spacing:.06em}
+    .brand small{display:block;color:#89a994;font-size:11px;letter-spacing:.14em;text-transform:uppercase;margin-top:3px}
+    p{margin:0;color:#89a994;font-size:13px}
+    label,input,button{display:block;width:100%;box-sizing:border-box}
+    label{margin:22px 0 8px;color:#a9c9b3;font-size:12px;text-transform:uppercase;letter-spacing:.08em}
+    input{padding:12px;background:#06100a;border:1px solid #327448;color:#fff;font:inherit;border-radius:3px}
+    input:focus{border-color:#55e27b;outline:none}
+    button{margin-top:16px;padding:12px;border:0;background:#55e27b;color:#061008;font:700 15px inherit;cursor:pointer;border-radius:3px}
+    .version{margin-top:22px;color:#89a994;font-size:11px;text-align:center}
+  </style>
+</head>
+<body>
+  <main class="box">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M8 3v26M24 3v26M8 9h16M8 16h16M8 23h16"/></svg>
+      <div><h1>OPENRUNG</h1><small>Admin dashboard</small></div>
+    </div>
+    <p>Administrator access to the broker.</p>
+    <form method="post" action="/admin/dashboard/login">
+      <label for="token">Dashboard token</label>
+      <input id="token" name="token" type="password" autocomplete="current-password" required autofocus>
+      <button type="submit">Sign in</button>
+    </form>
+    <div class="version">broker %%BROKER_VERSION%% %%BROKER_REVISION%%</div>
+  </main>
+</body>
+</html>

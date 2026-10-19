@@ -224,7 +224,7 @@ echo "Done. Broker '${NAME}' is at ${STATIC_IP}:${PORT} (ready ~2-3 min after bo
 echo "  Health:  curl http://${STATIC_IP}:${PORT}/healthz"
 echo "  Relays:  curl http://${STATIC_IP}:${PORT}/api/v1/relays"
 if [ -n "$DASHBOARD_TOKEN" ]; then
-  echo "  Dashboard: http://${STATIC_IP}:${PORT}/admin/telemetry"
+  echo "  Dashboard: http://${STATIC_IP}:${PORT}/admin/dashboard"
 fi
 echo
 echo "Point hubs and relay runtimes at it with:"

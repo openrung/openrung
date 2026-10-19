@@ -1,0 +1,143 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Shared stylesheet for the admin dashboard pages: the sidebar shell, top
+   bar, stat cards, panels, donuts, trend chart, tables and controls. Each
+   page keeps only its own layout rules inline. */
+:root{color-scheme:dark;--bg:#06100a;--panel:#0b1710;--panel2:#0e1d14;--line:#1e4b2d;--line2:#183923;--green:#55e27b;--green2:#1a9c49;--text:#e7f5eb;--muted:#89a994;--red:#ff7078;--amber:#f0bb53;--orange:#ff9d4d;--sidebar:224px;--gutter:clamp(16px,2.6vw,36px)}
+*{box-sizing:border-box}
+html{scroll-padding-top:80px}
+body{margin:0;background:radial-gradient(circle at 85% -10%,#133d20 0,transparent 35%),var(--bg);color:var(--text);font:14px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;min-height:100vh}
+button,select,input{font:inherit}
+a{color:var(--green)}
+
+/* Shell: sidebar on the left, top bar and content on the right. */
+.shell{display:flex;min-height:100vh}
+.sidebar{position:sticky;top:0;height:100vh;width:var(--sidebar);flex:none;display:flex;flex-direction:column;border-right:1px solid var(--line);background:#07130c}
+.brand{display:flex;align-items:center;gap:11px;padding:20px 18px 18px;color:var(--text);text-decoration:none;border-bottom:1px solid var(--line2)}
+.brand svg{width:30px;height:30px;flex:none;color:var(--green)}
+.brand b{display:block;font-size:15px;letter-spacing:.06em;color:var(--green)}
+.brand small{display:block;color:var(--muted);font-size:11px;letter-spacing:.14em;text-transform:uppercase;margin-top:2px}
+.nav{display:flex;flex-direction:column;gap:2px;padding:14px 10px;flex:1}
+.nav-title{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.14em;padding:6px 10px 8px}
+.nav a{display:flex;align-items:center;gap:10px;padding:9px 10px 9px 12px;color:var(--text);text-decoration:none;font-size:13px;border-left:2px solid transparent;border-radius:0 3px 3px 0}
+.nav a svg{width:16px;height:16px;flex:none;color:var(--muted)}
+.nav a:hover{background:#0d2015;color:var(--green)}
+.nav a:hover svg{color:var(--green)}
+.nav a.current{background:#0f2a19;border-left-color:var(--green);color:var(--green)}
+.nav a.current svg{color:var(--green)}
+.sidebar-foot{padding:14px 18px 18px;border-top:1px solid var(--line2);display:flex;flex-direction:column;gap:12px}
+.sidebar-foot .logout button{width:100%;padding:8px 10px;font-size:12px}
+.version{color:var(--muted);font-size:11px;line-height:1.5}
+.version b{color:var(--text);font-weight:600}
+.version .rev{display:block;font-size:10px;letter-spacing:.04em;opacity:.8}
+
+.content{flex:1;min-width:0;display:flex;flex-direction:column}
+.topbar{position:sticky;top:0;z-index:3;display:flex;gap:18px;align-items:center;justify-content:space-between;padding:16px var(--gutter);background:#06100aef;border-bottom:1px solid var(--line);backdrop-filter:blur(10px)}
+h1{font-size:18px;margin:0;color:var(--text);letter-spacing:.02em;font-weight:700}
+.subtitle{color:var(--muted);font-size:12px;margin-top:4px}
+.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.updated{color:var(--muted);font-size:11px;margin-right:4px;white-space:nowrap}
+button,select,input[type=search]{border:1px solid #327448;background:#0a1710;color:var(--text);padding:8px 11px;cursor:pointer;border-radius:3px}
+input[type=search]{cursor:text;min-width:220px}
+button:hover,select:hover,input[type=search]:hover,input[type=search]:focus{border-color:var(--green);outline:none}
+button.primary{background:var(--green);color:#041007;border-color:var(--green);font-weight:800}
+button:disabled{opacity:.5;cursor:default}
+.logout{display:inline}.logout button{border-color:#63343a;color:#ffc1c4}
+main{width:100%;max-width:1560px;padding:22px var(--gutter) 60px;margin:0 auto}
+
+/* Status banner, stat cards and panels. */
+.status{display:none;padding:12px 16px;border:1px solid var(--line);background:var(--panel);margin-bottom:18px;border-radius:3px}
+.status.show{display:block}.status.error{border-color:#7d3339;color:#ffc1c4}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(124px,1fr));gap:12px}
+.card,.panel{border:1px solid var(--line);background:linear-gradient(145deg,var(--panel2),var(--panel));box-shadow:0 16px 40px #0003;border-radius:4px}
+.card{padding:16px 18px}
+.label{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em}
+.value{font-size:26px;margin-top:8px;font-weight:800;letter-spacing:-.01em}
+.value.good{color:var(--green)}.value.bad{color:var(--red)}.value.volunteer{color:var(--orange)}.value.shifted{color:var(--amber)}
+.panel{padding:18px;min-width:0}
+.panel h2{font-size:12px;color:var(--green);margin:0 0 16px;text-transform:uppercase;letter-spacing:.08em;font-weight:700}
+.panel:has(.empty):not(:has(.pie)){padding-block:14px}
+.panel:has(.empty):not(:has(.pie)) h2{margin-bottom:2px}
+.panel-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+.panel-head h2{margin:0}
+.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.toolbar select,.toolbar input{padding:6px 9px;font-size:12px}
+.hint{color:var(--muted);font-size:11px}
+.empty{color:var(--muted);padding:8px 0}
+.muted{color:var(--muted)}
+.meta{color:var(--muted);font-size:11px;margin-top:16px;text-align:right}
+
+/* Donut breakdowns. */
+.pie{display:flex;gap:18px;align-items:center;flex-wrap:wrap}
+.pie svg{width:140px;height:140px;flex:none}
+.pie circle.slice{transition:stroke-width .12s}.pie circle.slice:hover{stroke-width:30px}
+.pie-total{fill:var(--text);font-size:18px;font-weight:800}
+.pie-sub{fill:var(--muted);font-size:9px;text-transform:uppercase;letter-spacing:.08em}
+.pie-legend{flex:1;min-width:160px;display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:7px 10px;align-items:center;font-size:12px}
+.pie-legend .swatch{width:10px;height:10px;border-radius:2px}
+.pie-legend button.pct{color:var(--green);text-align:right;background:none;border:0;padding:0;cursor:default}
+.pie-legend .sub{color:var(--muted);font-size:11px;padding-left:10px}
+.pie-legend button.pct.sub{color:var(--green);opacity:.8}
+.pie-note{grid-column:1/-1;color:var(--muted);font-size:10px;margin-top:4px}
+.pair{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:20px 26px}
+.pair .pie svg{width:120px;height:120px}
+.pie-title{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px}
+.pair .empty{padding:0}
+
+/* Stacked trend chart. */
+.chart{display:grid;grid-template-columns:auto minmax(0,1fr);column-gap:8px}
+.axis-title{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.06em}
+.axis-title.y{grid-column:1/-1;margin-bottom:10px}.axis-title.x{grid-column:2;text-align:center;margin-top:4px}
+.y-axis{position:relative;color:var(--muted);font-size:10px;text-align:right}
+.y-axis span{position:absolute;right:0;transform:translateY(50%);white-space:nowrap}
+.trend{height:210px;display:flex;align-items:end;gap:4px;border-bottom:1px solid var(--line);border-left:1px solid var(--line);position:relative;overflow:hidden}
+.grid-line{position:absolute;left:0;right:0;border-top:1px dashed var(--line2);pointer-events:none}
+.x-axis{grid-column:2;position:relative;height:22px;color:var(--muted);font-size:10px}
+.x-axis span{position:absolute;top:0;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center}
+.x-axis span::before{content:"";width:1px;height:4px;background:var(--line)}
+.x-axis b{font-weight:400;white-space:nowrap;margin-top:3px}
+.bar-group{height:100%;min-width:0;flex:1;display:flex;flex-direction:column;justify-content:flex-end;gap:2px;position:relative}
+.seg{display:block;min-height:1px}.bar-group>.seg:first-child{border-radius:2px 2px 0 0}
+.seg.success{background:var(--green)}.seg.failure{background:var(--red)}.seg.unresolved{background:#3d5c48}
+.legend{display:flex;gap:18px;flex-wrap:wrap;color:var(--muted);font-size:11px;margin-top:12px}
+.dot{display:inline-block;width:8px;height:8px;margin-right:6px}
+
+/* Tables. */
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--line2);white-space:nowrap;vertical-align:middle}
+th{color:var(--muted);font-weight:400;text-transform:uppercase;font-size:10px;letter-spacing:.04em}
+tbody tr:hover td{background:#0c1d12}
+td.truncate{max-width:220px;overflow:hidden;text-overflow:ellipsis}
+.scroll{overflow:auto}
+.rank-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rank-count{color:var(--green)}
+.relay-foundation{color:var(--green)}.relay-volunteer{color:var(--orange)}
+.relay-class-marker{display:inline-block;margin-left:6px;padding:1px 4px;border:1px solid currentColor;font-size:9px;line-height:1.2;vertical-align:1px;letter-spacing:.04em}
+.badge{display:inline-block;padding:3px 7px;border:1px solid var(--line);font-size:10px;border-radius:2px}
+.badge.active{color:var(--green);border-color:#276b3d}
+.badge.failed{color:var(--red);border-color:#6e3036}
+.badge.attempting{color:var(--amber);border-color:#695326}
+.badge.ended,.badge.inactive{color:var(--muted)}
+.badge.unreachable{color:var(--red);border-color:#7d3339}
+td.location{max-width:240px}.location div{overflow:hidden;text-overflow:ellipsis}.location .isp{color:var(--muted);font-size:11px;margin-top:3px}
+button.copyable{position:relative;background:none;border:0;padding:0;color:inherit;cursor:copy;border-radius:0}
+button.copyable.flash::after{content:attr(data-flash);position:absolute;left:0;bottom:calc(100% + 4px);padding:2px 6px;border:1px solid var(--green);background:#0a1710;color:var(--green);font-size:10px;white-space:nowrap}
+.pager{display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:12px;color:var(--muted);font-size:12px}
+.pager button{padding:5px 10px}.pager button:disabled{opacity:.35;cursor:default}
+
+/* Narrow screens: the sidebar becomes a top strip with horizontal nav. */
+@media(max-width:900px){
+  .shell{flex-direction:column}
+  .sidebar{position:static;height:auto;width:auto;flex-direction:row;align-items:center;flex-wrap:wrap;border-right:0;border-bottom:1px solid var(--line)}
+  .brand{border-bottom:0;padding:12px 16px}
+  .nav{flex-direction:row;padding:6px 10px;flex:1}
+  .nav-title{display:none}
+  .nav a{border-left:0;border-bottom:2px solid transparent;border-radius:3px 3px 0 0;padding:8px 10px}
+  .nav a.current{border-bottom-color:var(--green)}
+  .sidebar-foot{flex-direction:row;align-items:center;border-top:0;padding:8px 16px;gap:14px;margin-left:auto}
+  .sidebar-foot .logout button{width:auto}
+  .version .rev{display:inline;margin-left:6px}
+  .topbar{position:static;align-items:flex-start;flex-direction:column}
+  .actions{justify-content:flex-start}
+  .value{font-size:22px}
+  .panel{padding:14px}
+}

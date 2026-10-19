@@ -334,16 +334,16 @@ func TestDashboardRelaysEndpointAndPage(t *testing.T) {
 	server := NewServer(store, Config{SigningSeed: testSigningSeed(), TelemetrySink: telemetry, TelemetryReader: telemetry, DashboardToken: "secret-token"})
 
 	// Unauthenticated: the API answers 401, the page redirects to login.
-	apiRequest := httptest.NewRequest(http.MethodGet, "/admin/api/telemetry/relays", nil)
+	apiRequest := httptest.NewRequest(http.MethodGet, "/admin/api/dashboard/relays", nil)
 	apiResponse := httptest.NewRecorder()
 	server.ServeHTTP(apiResponse, apiRequest)
 	if apiResponse.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated API = %d, want 401", apiResponse.Code)
 	}
-	pageRequest := httptest.NewRequest(http.MethodGet, "/admin/telemetry/relays", nil)
+	pageRequest := httptest.NewRequest(http.MethodGet, "/admin/dashboard/relays", nil)
 	pageResponse := httptest.NewRecorder()
 	server.ServeHTTP(pageResponse, pageRequest)
-	if pageResponse.Code != http.StatusSeeOther || pageResponse.Header().Get("Location") != "/admin/telemetry/login" {
+	if pageResponse.Code != http.StatusSeeOther || pageResponse.Header().Get("Location") != "/admin/dashboard/login" {
 		t.Fatalf("unauthenticated page = %d → %q, want redirect to login", pageResponse.Code, pageResponse.Header().Get("Location"))
 	}
 
@@ -361,12 +361,12 @@ func TestDashboardRelaysEndpointAndPage(t *testing.T) {
 		return response
 	}
 
-	badWindow := get("/admin/api/telemetry/relays?window=2h")
+	badWindow := get("/admin/api/dashboard/relays?window=2h")
 	if badWindow.Code != http.StatusBadRequest {
 		t.Fatalf("invalid window = %d, want 400", badWindow.Code)
 	}
 
-	response := get("/admin/api/telemetry/relays?window=24h")
+	response := get("/admin/api/dashboard/relays?window=24h")
 	if response.Code != http.StatusOK {
 		t.Fatalf("relays API failed: %d: %s", response.Code, response.Body.String())
 	}
@@ -405,8 +405,8 @@ func TestDashboardRelaysEndpointAndPage(t *testing.T) {
 	}
 
 	// The page itself renders behind the same session, with the shared CSP.
-	page := get("/admin/telemetry/relays")
-	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "OPENRUNG / RELAYS") {
+	page := get("/admin/dashboard/relays")
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "<h1>Relays</h1>") {
 		t.Fatalf("relays page failed: %d", page.Code)
 	}
 	if page.Header().Get("Content-Security-Policy") == "" {
@@ -414,13 +414,14 @@ func TestDashboardRelaysEndpointAndPage(t *testing.T) {
 	}
 }
 
-// Both dashboard pages must link to each other so the relays page is
-// discoverable and escapable without editing the URL.
+// Both dashboard pages carry the sidebar: links to every page, the current
+// one marked, and the footer's build-identity placeholders.
 func TestDashboardPagesCrossLink(t *testing.T) {
-	if !strings.Contains(string(dashboardHTML), `href="/admin/telemetry/relays"`) {
-		t.Errorf("overview page has no link to the relays page")
-	}
-	if !strings.Contains(string(relaysHTML), `href="/admin/telemetry"`) {
-		t.Errorf("relays page has no link back to the overview")
+	for name, page := range map[string][]byte{"overview": dashboardHTML, "relays": relaysHTML} {
+		for _, needle := range []string{`href="/admin/dashboard"`, `href="/admin/dashboard/relays"`, `aria-current="page"`, `action="/admin/dashboard/logout"`, versionPlaceholder, revisionPlaceholder} {
+			if !strings.Contains(string(page), needle) {
+				t.Errorf("%s page lacks %q", name, needle)
+			}
+		}
 	}
 }

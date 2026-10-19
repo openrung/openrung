@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Shared helpers for the admin telemetry pages (overview and relays):
+// Shared helpers for the admin dashboard pages (overview and relays):
 // escaping and formatting, relay class markers, relative times, donut
-// breakdowns, tap-to-copy, and the header's freshness label with optional
-// auto-refresh. Loaded as a classic script ahead of each page's own code.
+// breakdowns, tap-to-copy, the history window carried in the URL, and the
+// top bar's freshness label with optional auto-refresh. Loaded as a classic
+// script ahead of each page's own code.
 const $=id=>document.getElementById(id), esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const number=value=>new Intl.NumberFormat().format(value||0);
 const dateTime=value=>value?new Intl.DateTimeFormat(undefined,{dateStyle:'short',timeStyle:'short'}).format(new Date(value)):'—';
@@ -11,7 +12,7 @@ function status(message,error=false){$('status').textContent=message;$('status')
 // Mutations always declare a JSON body (even a bodiless DELETE): the weight
 // endpoints refuse anything else, which is what keeps a cross-site form post
 // from reaching them alongside the session cookie's SameSite=Strict.
-async function fetchJSON(path,{method='GET',body}={}){const headers={Accept:'application/json'};if(method!=='GET')headers['Content-Type']='application/json';const response=await fetch(path,{method,headers,body:body===undefined?undefined:JSON.stringify(body)});if(response.status===401){location.href='/admin/telemetry/login';throw new Error('signed out')}if(!response.ok)throw new Error((await response.json().catch(()=>({}))).error||`Server returned ${response.status}`);return response.json()}
+async function fetchJSON(path,{method='GET',body}={}){const headers={Accept:'application/json'};if(method!=='GET')headers['Content-Type']='application/json';const response=await fetch(path,{method,headers,body:body===undefined?undefined:JSON.stringify(body)});if(response.status===401){location.href='/admin/dashboard/login';throw new Error('signed out')}if(!response.ok)throw new Error((await response.json().catch(()=>({}))).error||`Server returned ${response.status}`);return response.json()}
 
 // A relay's broker-attested node class is shown by colouring its name:
 // bright green for foundation, orange for volunteer. The class is mapped to a
@@ -99,5 +100,14 @@ function setupRefresh({load,busy=()=>false}){
   const schedule=()=>{clearInterval(timer);const every=Number(auto.value);if(every)timer=setInterval(()=>{if(!document.hidden&&!busy())load({quiet:true})},every*1000)};
   auto.addEventListener('change',()=>{try{localStorage.setItem('openrung.autoRefresh',auto.value)}catch{}schedule()});
   schedule();setInterval(tick,15000);
+}
+// The history window rides in the URL (?window=7d) so a view can be shared
+// and the sidebar links carry it from page to page; the default window
+// keeps the URL clean. onChange runs after a pick.
+function setupWindow(onChange){
+  const select=$('window'),requested=new URLSearchParams(location.search).get('window');
+  if(requested&&[...select.options].some(o=>o.value===requested))select.value=requested;
+  const sync=()=>{const value=select.value==='24h'?null:select.value,url=new URL(location);if(value)url.searchParams.set('window',value);else url.searchParams.delete('window');history.replaceState(null,'',url);for(const link of document.querySelectorAll('.nav a[href]')){const target=new URL(link.getAttribute('href'),location.origin);if(value)target.searchParams.set('window',value);else target.searchParams.delete('window');link.setAttribute('href',target.pathname+target.search)}};
+  sync();select.addEventListener('change',()=>{sync();onChange()});
 }
 function markUpdated(value){$('updated').innerHTML=`Updated ${timeCell(value)}`}

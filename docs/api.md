@@ -300,20 +300,23 @@ Set `OPENRUNG_DASHBOARD_TOKEN` on the broker to enable the administrator
 dashboard at:
 
 ```http
-GET /admin/telemetry
+GET /admin/dashboard
 ```
 
-The dashboard requires the configured token, creates an HttpOnly administrator
-session lasting 12 hours, and refreshes its operational overview every 30
-seconds. It supports one-hour, 24-hour, and seven-day windows. The JSONL file
-remains the durable telemetry store; the broker retains the most recent seven
-days in memory for dashboard queries, capped at a 64 MiB budget that discards
-the oldest records first if a burst of telemetry would exceed it.
+The dashboard requires the configured token (sign-in at
+`/admin/dashboard/login`) and creates an HttpOnly administrator session lasting
+12 hours. A left sidebar switches between the Overview and Relays pages and
+names the running broker version; the top bar picks the one-hour, 24-hour, or
+seven-day window (carried in the URL as `?window=`) and an optional
+auto-refresh. The JSONL file remains the durable telemetry store; the broker
+retains the most recent seven days in memory for dashboard queries, capped at a
+64 MiB budget that discards the oldest records first if a burst of telemetry
+would exceed it.
 
 The authenticated dashboard reads its data from:
 
 ```http
-GET /admin/api/telemetry/overview?window=24h
+GET /admin/api/dashboard/overview?window=24h
 ```
 
 Valid windows are `1h`, `24h`, and `7d`. When the dashboard token is unset, all
@@ -324,7 +327,7 @@ The overview embeds only the 25 most recent sessions; the full session list for
 a window is paged through:
 
 ```http
-GET /admin/api/telemetry/sessions?window=24h&offset=0&limit=25
+GET /admin/api/dashboard/sessions?window=24h&offset=0&limit=25
 ```
 
 `offset` is the zero-based position into the window's sessions ordered newest
@@ -359,11 +362,11 @@ breakdowns are available by relay, country, city, ISP, and operating system.
 
 ### Relays page
 
-The dashboard links to a dedicated relay-fleet page at `/admin/telemetry/relays`,
+The sidebar links to a dedicated relay-fleet page at `/admin/dashboard/relays`,
 backed by:
 
 ```http
-GET /admin/api/telemetry/relays?window=24h
+GET /admin/api/dashboard/relays?window=24h
 ```
 
 The response merges the live relay registry with the window's telemetry. Fleet
@@ -534,12 +537,12 @@ the relay ID, old and new weight, and the caller's IP.
 
 ### Dashboard weight endpoints
 
-The relays page (`/admin/telemetry/relays`) edits the same weights through the
+The relays page (`/admin/dashboard/relays`) edits the same weights through the
 dashboard session cookie rather than the operational token:
 
 ```http
-PUT    /admin/api/telemetry/relays/{id}/weight
-DELETE /admin/api/telemetry/relays/{id}/weight
+PUT    /admin/api/dashboard/relays/{id}/weight
+DELETE /admin/api/dashboard/relays/{id}/weight
 ```
 
 Validation and responses match the operational routes. Because the session is
@@ -551,7 +554,7 @@ only in its absence is the `Origin` header's host compared with `Host`. Fetch
 metadata is used first because a CDN front rewrites `Host` to the origin
 hostname, which would make the `Origin` comparison refuse every legitimate
 request through the front. Together with the cookie's `SameSite=Strict` this
-keeps a visited page from moving the dial. Each row of `GET /admin/api/telemetry/relays` carries the
+keeps a visited page from moving the dial. Each row of `GET /admin/api/dashboard/relays` carries the
 relay's effective `ranking_weight`, offline rows included.
 
 ## Health

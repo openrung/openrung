@@ -178,6 +178,8 @@ func run() error {
 		RelayLeaseTTL:     *leaseTTL,
 		TelemetrySink:     telemetrySink,
 		DashboardToken:    dashboardToken,
+		Version:           buildinfo.Version(baseVersion),
+		Revision:          buildinfo.Revision(),
 		APIToken:          apiToken,
 		// The only proxies trusted for forwarded client IPs; empty trusts none (prod: loopback Caddy).
 		TrustedProxyCIDRs:          splitAndTrim(os.Getenv("OPENRUNG_TRUSTED_PROXY_CIDRS")),

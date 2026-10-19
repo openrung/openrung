@@ -7,6 +7,7 @@ import (
 	_ "embed"
 	"encoding/base64"
 	"fmt"
+	"html"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -29,10 +30,24 @@ const (
 //go:embed dashboard.html
 var dashboardHTML []byte
 
-// dashboardJS holds the helpers both dashboard pages share.
+//go:embed login.html
+var loginHTML []byte
+
+// dashboardJS and dashboardCSS hold the helpers and the stylesheet every
+// dashboard page shares.
 //
 //go:embed dashboard.js
 var dashboardJS []byte
+
+//go:embed dashboard.css
+var dashboardCSS []byte
+
+// Page placeholders substituted once, at registration, so every page's
+// footer names the running broker build without a further request.
+const (
+	versionPlaceholder  = "%%BROKER_VERSION%%"
+	revisionPlaceholder = "%%BROKER_REVISION%%"
+)
 
 // relayDisplay is how the dashboard identifies an active relay: its
 // operator-supplied label (may be empty, in which case views fall back to the
@@ -44,8 +59,12 @@ type relayDisplay struct {
 }
 
 type dashboardServer struct {
-	tokenHash     [32]byte
-	querier       TelemetryQuerier
+	tokenHash [32]byte
+	querier   TelemetryQuerier
+	// version and revision identify the broker build in every page footer;
+	// empty values render as "dev" and no revision.
+	version       string
+	revision      string
 	relayDisplays func() map[string]relayDisplay
 	// relayDirectory feeds the relays page the currently registered descriptor
 	// set; nil (only in tests that never exercise that page) renders every
@@ -74,28 +93,68 @@ func newDashboardServer(token string, querier TelemetryQuerier) *dashboardServer
 }
 
 func (d *dashboardServer) register(mux *http.ServeMux) {
-	mux.HandleFunc("GET /admin/telemetry/login", d.loginPage)
-	mux.HandleFunc("POST /admin/telemetry/login", d.login)
-	mux.HandleFunc("POST /admin/telemetry/logout", d.logout)
-	mux.HandleFunc("GET /admin/telemetry", d.requireAuth(servePage(dashboardHTML)))
-	mux.HandleFunc("GET /admin/telemetry/relays", d.requireAuth(servePage(relaysHTML)))
-	mux.HandleFunc("GET /admin/telemetry/dashboard.js", d.requireAuth(serveAsset("text/javascript; charset=utf-8", dashboardJS)))
-	mux.HandleFunc("GET /admin/api/telemetry/overview", d.requireAuth(d.overview))
-	mux.HandleFunc("GET /admin/api/telemetry/sessions", d.requireAuth(d.listSessions))
-	mux.HandleFunc("GET /admin/api/telemetry/relays", d.requireAuth(d.relaysPanel))
-	mux.HandleFunc("PUT /admin/api/telemetry/relays/{id}/weight", d.requireAuth(d.setRelayWeight))
-	mux.HandleFunc("DELETE /admin/api/telemetry/relays/{id}/weight", d.requireAuth(d.deleteRelayWeight))
+	mux.HandleFunc("GET /admin/dashboard/login", d.loginPage(d.renderPage(loginHTML)))
+	mux.HandleFunc("POST /admin/dashboard/login", d.login)
+	mux.HandleFunc("POST /admin/dashboard/logout", d.logout)
+	mux.HandleFunc("GET /admin/dashboard", d.requireAuth(servePage(d.renderPage(dashboardHTML))))
+	mux.HandleFunc("GET /admin/dashboard/relays", d.requireAuth(servePage(d.renderPage(relaysHTML))))
+	mux.HandleFunc("GET /admin/dashboard/dashboard.js", d.requireAuth(serveAsset("text/javascript; charset=utf-8", dashboardJS)))
+	mux.HandleFunc("GET /admin/dashboard/dashboard.css", d.requireAuth(serveAsset("text/css; charset=utf-8", dashboardCSS)))
+	mux.HandleFunc("GET /admin/api/dashboard/overview", d.requireAuth(d.overview))
+	mux.HandleFunc("GET /admin/api/dashboard/sessions", d.requireAuth(d.listSessions))
+	mux.HandleFunc("GET /admin/api/dashboard/relays", d.requireAuth(d.relaysPanel))
+	mux.HandleFunc("PUT /admin/api/dashboard/relays/{id}/weight", d.requireAuth(d.setRelayWeight))
+	mux.HandleFunc("DELETE /admin/api/dashboard/relays/{id}/weight", d.requireAuth(d.deleteRelayWeight))
 }
 
-func (d *dashboardServer) loginPage(w http.ResponseWriter, r *http.Request) {
-	if d.authenticated(r) {
-		http.Redirect(w, r, "/admin/telemetry", http.StatusSeeOther)
-		return
+// renderPage fills a page's build-identity placeholders. The values come
+// from the operator's build (ldflags or the VERSION file), but are escaped
+// regardless so an odd revision string cannot break the markup.
+func (d *dashboardServer) renderPage(page []byte) []byte {
+	version := d.version
+	if version == "" {
+		version = "dev"
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	_, _ = w.Write([]byte(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>OpenRung telemetry login</title><style>body{margin:0;background:#07100b;color:#e9f7ee;font:16px ui-monospace,SFMono-Regular,Menlo,monospace;display:grid;min-height:100vh;place-items:center}.box{width:min(88vw,390px);padding:30px;border:1px solid #245c37;background:#0b1710;box-shadow:0 18px 80px #0008}h1{font-size:22px;color:#55e27b}label,input,button{display:block;width:100%;box-sizing:border-box}label{margin:22px 0 8px;color:#a9c9b3}input{padding:12px;background:#06100a;border:1px solid #327448;color:#fff;font:inherit}button{margin-top:16px;padding:12px;border:0;background:#55e27b;color:#061008;font:700 15px inherit;cursor:pointer}.error{color:#ff7f87}</style></head><body><main class="box"><h1>OpenRung telemetry</h1><p>Administrator access</p><form method="post" action="/admin/telemetry/login"><label for="token">Dashboard token</label><input id="token" name="token" type="password" autocomplete="current-password" required autofocus><button type="submit">Sign in</button></form></main></body></html>`))
+	out := strings.ReplaceAll(string(page), versionPlaceholder, html.EscapeString(version))
+	return []byte(strings.ReplaceAll(out, revisionPlaceholder, html.EscapeString(shortRevision(d.revision))))
+}
+
+// shortRevision abbreviates a VCS hash to its first seven characters while
+// keeping buildinfo's "-dirty" suffix; non-hash values pass through.
+func shortRevision(revision string) string {
+	if revision == "" || revision == "unknown" {
+		return ""
+	}
+	hash, dirty := strings.CutSuffix(revision, "-dirty")
+	if len(hash) > 7 && isHex(hash) {
+		hash = hash[:7]
+	}
+	if dirty {
+		return hash + "-dirty"
+	}
+	return hash
+}
+
+func isHex(s string) bool {
+	for _, c := range s {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", c) {
+			return false
+		}
+	}
+	return true
+}
+
+func (d *dashboardServer) loginPage(page []byte) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if d.authenticated(r) {
+			http.Redirect(w, r, "/admin/dashboard", http.StatusSeeOther)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		_, _ = w.Write(page)
+	}
 }
 
 func (d *dashboardServer) login(w http.ResponseWriter, r *http.Request) {
@@ -132,7 +191,7 @@ func (d *dashboardServer) login(w http.ResponseWriter, r *http.Request) {
 		Secure:   requestIsHTTPS(r),
 		SameSite: http.SameSiteStrictMode,
 	})
-	http.Redirect(w, r, "/admin/telemetry", http.StatusSeeOther)
+	http.Redirect(w, r, "/admin/dashboard", http.StatusSeeOther)
 }
 
 func (d *dashboardServer) logout(w http.ResponseWriter, r *http.Request) {
@@ -145,7 +204,7 @@ func (d *dashboardServer) logout(w http.ResponseWriter, r *http.Request) {
 		Name: dashboardCookieName, Value: "", Path: "/admin", MaxAge: -1,
 		HttpOnly: true, Secure: requestIsHTTPS(r), SameSite: http.SameSiteStrictMode,
 	})
-	http.Redirect(w, r, "/admin/telemetry/login", http.StatusSeeOther)
+	http.Redirect(w, r, "/admin/dashboard/login", http.StatusSeeOther)
 }
 
 func (d *dashboardServer) requireAuth(next http.HandlerFunc) http.HandlerFunc {
@@ -162,7 +221,7 @@ func (d *dashboardServer) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			if strings.HasPrefix(r.URL.Path, "/admin/api/") {
 				writeError(w, http.StatusUnauthorized, "dashboard session expired")
 			} else {
-				http.Redirect(w, r, "/admin/telemetry/login", http.StatusSeeOther)
+				http.Redirect(w, r, "/admin/dashboard/login", http.StatusSeeOther)
 			}
 			return
 		}

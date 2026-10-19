@@ -79,7 +79,7 @@ func TestApplyRelayLabelsCoversAllRelayViews(t *testing.T) {
 
 func TestDashboardRoutesDisabledWithoutToken(t *testing.T) {
 	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed(), TelemetrySink: &dashboardTelemetryStore{}})
-	request := httptest.NewRequest(http.MethodGet, "/admin/telemetry", nil)
+	request := httptest.NewRequest(http.MethodGet, "/admin/dashboard", nil)
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
 	if response.Code != http.StatusNotFound {
@@ -104,15 +104,15 @@ func TestDashboardLoginOverviewAndLogout(t *testing.T) {
 		t.Fatalf("unexpected login cookie: %+v", cookies)
 	}
 
-	dashboardRequest := httptest.NewRequest(http.MethodGet, "/admin/telemetry", nil)
+	dashboardRequest := httptest.NewRequest(http.MethodGet, "/admin/dashboard", nil)
 	dashboardRequest.AddCookie(cookies[0])
 	dashboardResponse := httptest.NewRecorder()
 	server.ServeHTTP(dashboardResponse, dashboardRequest)
-	if dashboardResponse.Code != http.StatusOK || !strings.Contains(dashboardResponse.Body.String(), "OPENRUNG / TELEMETRY") {
+	if dashboardResponse.Code != http.StatusOK || !strings.Contains(dashboardResponse.Body.String(), "<h1>Overview</h1>") {
 		t.Fatalf("dashboard failed: %d", dashboardResponse.Code)
 	}
 
-	scriptRequest := httptest.NewRequest(http.MethodGet, "/admin/telemetry/dashboard.js", nil)
+	scriptRequest := httptest.NewRequest(http.MethodGet, "/admin/dashboard/dashboard.js", nil)
 	scriptRequest.AddCookie(cookies[0])
 	scriptResponse := httptest.NewRecorder()
 	server.ServeHTTP(scriptResponse, scriptRequest)
@@ -120,12 +120,12 @@ func TestDashboardLoginOverviewAndLogout(t *testing.T) {
 		t.Fatalf("dashboard script failed: %d %q", scriptResponse.Code, scriptResponse.Header().Get("Content-Type"))
 	}
 	anonymousScript := httptest.NewRecorder()
-	server.ServeHTTP(anonymousScript, httptest.NewRequest(http.MethodGet, "/admin/telemetry/dashboard.js", nil))
+	server.ServeHTTP(anonymousScript, httptest.NewRequest(http.MethodGet, "/admin/dashboard/dashboard.js", nil))
 	if anonymousScript.Code == http.StatusOK {
 		t.Fatal("dashboard script must require a dashboard session")
 	}
 
-	overviewRequest := httptest.NewRequest(http.MethodGet, "/admin/api/telemetry/overview?window=24h", nil)
+	overviewRequest := httptest.NewRequest(http.MethodGet, "/admin/api/dashboard/overview?window=24h", nil)
 	overviewRequest.AddCookie(cookies[0])
 	overviewResponse := httptest.NewRecorder()
 	server.ServeHTTP(overviewResponse, overviewRequest)
@@ -133,12 +133,53 @@ func TestDashboardLoginOverviewAndLogout(t *testing.T) {
 		t.Fatalf("overview failed: %d: %s", overviewResponse.Code, overviewResponse.Body.String())
 	}
 
-	logoutRequest := httptest.NewRequest(http.MethodPost, "/admin/telemetry/logout", nil)
+	logoutRequest := httptest.NewRequest(http.MethodPost, "/admin/dashboard/logout", nil)
 	logoutRequest.AddCookie(cookies[0])
 	logoutResponse := httptest.NewRecorder()
 	server.ServeHTTP(logoutResponse, logoutRequest)
 	if logoutResponse.Code != http.StatusSeeOther || logoutResponse.Result().Cookies()[0].MaxAge != -1 {
 		t.Fatalf("unexpected logout response: %d", logoutResponse.Code)
+	}
+}
+
+// Every page footer names the running build: the configured version and an
+// abbreviated revision, HTML-escaped, with "dev" standing in when unset.
+func TestDashboardPagesShowBrokerVersion(t *testing.T) {
+	store := &dashboardTelemetryStore{}
+	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed(), TelemetrySink: store, TelemetryReader: store, DashboardToken: "secret-token", Version: "1.2.3", Revision: "0123456789abcdef-dirty"})
+	cookie := postLogin(server, "secret-token").Result().Cookies()[0]
+	for _, path := range []string{"/admin/dashboard", "/admin/dashboard/relays"} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.AddCookie(cookie)
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, request)
+		body := response.Body.String()
+		if !strings.Contains(body, "<b>1.2.3</b>") || !strings.Contains(body, "0123456-dirty") || strings.Contains(body, versionPlaceholder) {
+			t.Errorf("%s footer lacks the build identity", path)
+		}
+	}
+	login := httptest.NewRecorder()
+	server.ServeHTTP(login, httptest.NewRequest(http.MethodGet, "/admin/dashboard/login", nil))
+	if !strings.Contains(login.Body.String(), "broker 1.2.3 0123456-dirty") {
+		t.Errorf("login page lacks the build identity")
+	}
+
+	unset := newDashboardServer("secret", newTelemetryReaderQuerier(store))
+	if got := string(unset.renderPage([]byte("v=" + versionPlaceholder + " r=" + revisionPlaceholder))); got != "v=dev r=" {
+		t.Errorf("unset build identity rendered %q", got)
+	}
+	escaped := newDashboardServer("secret", newTelemetryReaderQuerier(store))
+	escaped.version = "<x>"
+	if got := string(escaped.renderPage([]byte(versionPlaceholder))); got != "&lt;x&gt;" {
+		t.Errorf("version not escaped: %q", got)
+	}
+}
+
+func TestShortRevision(t *testing.T) {
+	for in, want := range map[string]string{"": "", "unknown": "", "abc": "abc", "0123456789abcdef": "0123456", "0123456789abcdef-dirty": "0123456-dirty", "release-tag": "release-tag"} {
+		if got := shortRevision(in); got != want {
+			t.Errorf("shortRevision(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 
@@ -156,8 +197,8 @@ func TestDashboardAPIResponsesSetNoStore(t *testing.T) {
 		path    string
 		handler http.HandlerFunc
 	}{
-		{"overview", "/admin/api/telemetry/overview?window=24h", dashboard.overview},
-		{"sessions", "/admin/api/telemetry/sessions?window=24h", dashboard.listSessions},
+		{"overview", "/admin/api/dashboard/overview?window=24h", dashboard.overview},
+		{"sessions", "/admin/api/dashboard/sessions?window=24h", dashboard.listSessions},
 	}
 	for _, tc := range cases {
 		request := httptest.NewRequest(http.MethodGet, tc.path, nil)
@@ -180,7 +221,7 @@ func TestDashboardRejectsExpiredSessionAndInvalidWindow(t *testing.T) {
 	dashboard.now = func() time.Time { return now }
 	dashboard.sessions["expired"] = now.Add(-time.Second)
 
-	expiredRequest := httptest.NewRequest(http.MethodGet, "/admin/api/telemetry/overview", nil)
+	expiredRequest := httptest.NewRequest(http.MethodGet, "/admin/api/dashboard/overview", nil)
 	expiredRequest.AddCookie(&http.Cookie{Name: dashboardCookieName, Value: "expired"})
 	expiredResponse := httptest.NewRecorder()
 	dashboard.requireAuth(dashboard.overview).ServeHTTP(expiredResponse, expiredRequest)
@@ -189,7 +230,7 @@ func TestDashboardRejectsExpiredSessionAndInvalidWindow(t *testing.T) {
 	}
 
 	dashboard.sessions["valid"] = now.Add(time.Hour)
-	invalidRequest := httptest.NewRequest(http.MethodGet, "/admin/api/telemetry/overview?window=30d", nil)
+	invalidRequest := httptest.NewRequest(http.MethodGet, "/admin/api/dashboard/overview?window=30d", nil)
 	invalidRequest.AddCookie(&http.Cookie{Name: dashboardCookieName, Value: "valid"})
 	invalidResponse := httptest.NewRecorder()
 	dashboard.requireAuth(dashboard.overview).ServeHTTP(invalidResponse, invalidRequest)
@@ -458,7 +499,7 @@ func TestDashboardSessionsPagination(t *testing.T) {
 	dashboard.sessions["valid"] = now.Add(time.Hour)
 
 	fetch := func(query string) (*httptest.ResponseRecorder, sessionsPage) {
-		request := httptest.NewRequest(http.MethodGet, "/admin/api/telemetry/sessions?"+query, nil)
+		request := httptest.NewRequest(http.MethodGet, "/admin/api/dashboard/sessions?"+query, nil)
 		request.AddCookie(&http.Cookie{Name: dashboardCookieName, Value: "valid"})
 		response := httptest.NewRecorder()
 		dashboard.requireAuth(dashboard.listSessions).ServeHTTP(response, request)
@@ -642,7 +683,7 @@ func countByName(counts []countSummary, name string) int {
 
 func postLogin(server http.Handler, token string) *httptest.ResponseRecorder {
 	form := url.Values{"token": {token}}
-	request := httptest.NewRequest(http.MethodPost, "/admin/telemetry/login", strings.NewReader(form.Encode()))
+	request := httptest.NewRequest(http.MethodPost, "/admin/dashboard/login", strings.NewReader(form.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
@@ -763,10 +804,14 @@ func TestRecordedRelayClassSurvivesMissingActiveDescriptor(t *testing.T) {
 }
 
 func TestDashboardRelayClassHasVisibleAccessibleMarker(t *testing.T) {
-	// Both pages style the marker; the shared script renders it.
+	// The shared stylesheet styles the marker on every page that loads it;
+	// the shared script renders it.
+	if !strings.Contains(string(dashboardCSS), ".relay-class-marker{") {
+		t.Fatal("shared stylesheet is missing the relay class marker style")
+	}
 	for name, html := range map[string]string{"overview": string(dashboardHTML), "relays": string(relaysHTML)} {
-		if !strings.Contains(html, ".relay-class-marker{") {
-			t.Fatalf("%s page is missing the relay class marker style", name)
+		if !strings.Contains(html, `href="/admin/dashboard/dashboard.css"`) {
+			t.Fatalf("%s page does not load the shared stylesheet", name)
 		}
 	}
 	script := string(dashboardJS)

@@ -200,7 +200,7 @@ Relay ranking uses recent connection telemetry, capacity, and operator-set
 weights, with heartbeat recency and IPv6 used as tie-breakers.
 
 To enable the protected telemetry dashboard, set a separate administrator token
-before starting the broker, then open `/admin/telemetry`:
+before starting the broker, then open `/admin/dashboard`:
 
 ```sh
 OPENRUNG_ALLOW_ANONYMOUS_REGISTRATION=true \

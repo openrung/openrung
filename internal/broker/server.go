@@ -41,6 +41,11 @@ type Config struct {
 	TelemetryReader  TelemetryReader
 	TelemetryQuerier TelemetryQuerier
 	DashboardToken   string
+	// Version and Revision identify the running broker build in the admin
+	// dashboard's footer; cmd/broker passes buildinfo's values. Empty renders
+	// "dev" with no revision.
+	Version  string
+	Revision string
 	// APIToken is the bearer credential for the machine-to-machine operational
 	// API (GET /admin/api/relays/inventory). It is deliberately separate from
 	// DashboardToken — that one buys an interactive browser session over the
@@ -218,6 +223,7 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 	}
 	if cfg.DashboardToken != "" && querier != nil {
 		dashboard := newDashboardServer(cfg.DashboardToken, querier)
+		dashboard.version, dashboard.revision = cfg.Version, cfg.Revision
 		dashboard.relayDisplays = relayDisplayResolver(store)
 		dashboard.relayDirectory = store
 		dashboard.relayWeights = store

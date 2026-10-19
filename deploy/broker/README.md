@@ -347,7 +347,7 @@ also the way to relist every withheld relay at once.
 ## Telemetry dashboard
 
 Set `OPENRUNG_DASHBOARD_TOKEN` to a long random string to enable the protected
-dashboard at `/admin/telemetry`. When unset, the dashboard and its data API
+dashboard at `/admin/dashboard`. When unset, the dashboard and its data API
 return 404. Always serve it over HTTPS so the admin session cookie is protected.
 
 ## Operational relay inventory
@@ -433,7 +433,7 @@ descriptor also carries its effective `ranking_weight`, so a fleet audit shows
 where load has been shifted. As with the inventory, call the **origin**, not
 the public front.
 
-The telemetry dashboard's relays page (`/admin/telemetry/relays`) exposes the
+The admin dashboard's relays page (`/admin/dashboard/relays`) exposes the
 same dial as a **Weight** column with an inline Save/Reset control per relay,
 behind the dashboard session cookie rather than the API token (mutations must be
 same-origin, judged from the browser's `Sec-Fetch-Site` so the check also holds
@@ -535,7 +535,7 @@ docker inspect openrung-broker \
 | `OPENRUNG_ACCESS_LEASE_TTL`          | no       | `1h`                                | Lifetime of a per-client relay credential (access lease) without renewal (`1m`–`24h`) |
 | `OPENRUNG_MAX_LEASES_PER_USER`       | no       | `10`                                | Live access leases one user may hold across the fleet; the least recently renewed are revoked at the cap |
 | `OPENRUNG_MAX_LEASES_PER_RELAY`      | no       | `2000`                              | Live access leases one relay may hold; a relay at the cap is skipped by issuance |
-| `OPENRUNG_DASHBOARD_TOKEN`           | no       | —                                   | Enables the protected `/admin/telemetry` dashboard             |
+| `OPENRUNG_DASHBOARD_TOKEN`           | no       | —                                   | Enables the protected `/admin/dashboard` dashboard             |
 | `OPENRUNG_API_TOKEN`                 | no       | —                                   | Enables `/admin/api/relays/inventory` and the ranking-weight endpoints; must differ from every other credential |
 | `OPENRUNG_ADDR`                      | no       | `:8080`                             | HTTP listen address                                            |
 | `OPENRUNG_TRUSTED_PROXY_CIDRS`       | no       | none                                | Proxy CIDRs trusted for forwarded client IPs                   |
