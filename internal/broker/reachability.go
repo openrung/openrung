@@ -58,6 +58,9 @@ const (
 	// heartbeat re-probes. It bounds both how long a relay that went dark
 	// stays listed and how long a repaired one stays delisted.
 	defaultRelayProbeInterval = 5 * time.Minute
+	// maxProbeAddresses caps how many resolved addresses one probe dials, so
+	// a name with a very long answer cannot turn a registration into a fan-out.
+	maxProbeAddresses = 8
 )
 
 // ErrProbeInconclusive marks a probe that could not be attempted from this
@@ -104,11 +107,14 @@ func NewTCPRelayProber(timeout time.Duration) *TCPRelayProber {
 
 // Probe resolves host, drops every address the policy refuses, and dials the
 // rest by address (never by name again, so a resolver cannot swap in a
-// refused address between the check and the dial). Any completed connection
-// is reachable. Otherwise the endpoint is unreachable if any dial failed
-// conclusively, and inconclusive if nothing could be dialled or every dial
-// failed for a reason of this broker's own. The whole probe, resolution
-// included, is bounded by one timeout: it runs inside a relay's request.
+// refused address between the check and the dial). The permitted addresses
+// are dialled concurrently under one deadline — the whole probe, resolution
+// included, runs inside a relay's request — so a slow or dead first address
+// neither hides a working second one nor spends the budget the other family
+// needs. The first completed connection is reachable and ends the probe.
+// Otherwise the endpoint is unreachable if any dial failed conclusively, and
+// inconclusive if nothing could be dialled or every dial failed for a reason
+// of this broker's own.
 func (p *TCPRelayProber) Probe(ctx context.Context, host string, port int) error {
 	ctx, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
@@ -116,15 +122,27 @@ func (p *TCPRelayProber) Probe(ctx context.Context, host string, port int) error
 	if err != nil {
 		return err
 	}
-	var failure error
+	// Buffered to len(addrs): a dial finishing after the probe has returned
+	// writes its result and exits instead of blocking forever.
+	results := make(chan error, len(addrs))
 	for _, addr := range addrs {
-		dialer := net.Dialer{Timeout: p.timeout}
-		conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(addr.String(), strconv.Itoa(port)))
+		go func(addr netip.Addr) {
+			dialer := net.Dialer{}
+			conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(addr.String(), strconv.Itoa(port)))
+			if err == nil {
+				_ = conn.Close()
+				results <- nil
+				return
+			}
+			results <- classifyProbeError(err)
+		}(addr)
+	}
+	var failure error
+	for range addrs {
+		err := <-results
 		if err == nil {
-			_ = conn.Close()
 			return nil
 		}
-		err = classifyProbeError(err)
 		if failure == nil || (errors.Is(failure, ErrProbeInconclusive) && !errors.Is(err, ErrProbeInconclusive)) {
 			failure = err
 		}
@@ -132,12 +150,11 @@ func (p *TCPRelayProber) Probe(ctx context.Context, host string, port int) error
 	return failure
 }
 
-// targets resolves host to the addresses the policy permits dialling, at
-// most one per address family in resolver order so a many-address name
-// cannot stretch the probe. An IP literal resolves to itself. No permitted
-// address is inconclusive: the endpoint is one no public client could reach
-// either, and dialling it from the broker would answer a question about the
-// broker's own network.
+// targets resolves host to the addresses the policy permits dialling, in
+// resolver order and capped at maxProbeAddresses. An IP literal resolves to
+// itself. No permitted address is inconclusive: the endpoint is one no
+// public client could reach either, and dialling it from the broker would
+// answer a question about the broker's own network.
 func (p *TCPRelayProber) targets(ctx context.Context, host string) ([]netip.Addr, error) {
 	var addrs []netip.Addr
 	if addr, err := netip.ParseAddr(host); err == nil {
@@ -150,13 +167,11 @@ func (p *TCPRelayProber) targets(ctx context.Context, host string) ([]netip.Addr
 		addrs = resolved
 	}
 	permitted := addrs[:0:0]
-	var have4, have6 bool
 	for _, addr := range addrs {
 		addr = addr.Unmap()
-		if !p.permit(addr) || (addr.Is4() && have4) || (addr.Is6() && have6) {
+		if !p.permit(addr) || len(permitted) == maxProbeAddresses {
 			continue
 		}
-		have4, have6 = have4 || addr.Is4(), have6 || addr.Is6()
 		permitted = append(permitted, addr)
 	}
 	if len(permitted) == 0 {

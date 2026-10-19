@@ -364,18 +364,22 @@ func TestTCPRelayProberRefusesNonPublicTargets(t *testing.T) {
 	if err := prober.Probe(context.Background(), "relay.test", addr.Port); err != nil {
 		t.Fatalf("hostname with one permitted address: %v", err)
 	}
-	// At most one address per family is kept, in resolver order.
+	// Every permitted address is kept, in resolver order, up to the cap.
 	prober.permit = func(netip.Addr) bool { return true }
 	targets, err := prober.targets(context.Background(), "relay.test")
-	if err != nil || len(targets) != 1 || targets[0] != netip.MustParseAddr("127.0.0.1") {
-		t.Fatalf("targets = %v, %v; want the first IPv4 only", targets, err)
+	if err != nil || len(targets) != 2 || targets[0] != netip.MustParseAddr("127.0.0.1") || targets[1] != netip.MustParseAddr("10.0.0.1") {
+		t.Fatalf("targets = %v, %v; want both in resolver order", targets, err)
 	}
 	prober.resolve = func(context.Context, string) ([]netip.Addr, error) {
-		return []netip.Addr{netip.MustParseAddr("2001:db8::1"), netip.MustParseAddr("2001:db8::2"), netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.2")}, nil
+		var many []netip.Addr
+		for i := 1; i <= maxProbeAddresses+3; i++ {
+			many = append(many, netip.AddrFrom4([4]byte{192, 0, 2, byte(i)}))
+		}
+		return many, nil
 	}
 	targets, err = prober.targets(context.Background(), "relay.test")
-	if err != nil || len(targets) != 2 || targets[0] != netip.MustParseAddr("2001:db8::1") || targets[1] != netip.MustParseAddr("192.0.2.1") {
-		t.Fatalf("targets = %v, %v; want one per family", targets, err)
+	if err != nil || len(targets) != maxProbeAddresses || targets[0] != netip.MustParseAddr("192.0.2.1") {
+		t.Fatalf("targets = %v, %v; want the first %d", targets, err, maxProbeAddresses)
 	}
 	prober.permit = probeAddressPermitted
 	// A resolver failure that may clear is inconclusive; an unknown name is
@@ -391,6 +395,56 @@ func TestTCPRelayProberRefusesNonPublicTargets(t *testing.T) {
 	}
 	if err := prober.Probe(context.Background(), "relay.test", addr.Port); err == nil || errors.Is(err, ErrProbeInconclusive) {
 		t.Fatalf("unknown host: %v, want a conclusive failure", err)
+	}
+}
+
+// TestTCPRelayProberFallsBackAcrossAddresses pins that a name whose first
+// address fails is still reachable through a later one, and that a slow
+// first address does not consume the budget the working one needs: the
+// addresses are dialled together, so the probe ends on the first success.
+func TestTCPRelayProberFallsBackAcrossAddresses(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
+	closed, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closedPort := closed.Addr().(*net.TCPAddr).Port
+	closed.Close()
+
+	const timeout = 3 * time.Second
+	prober := NewTCPRelayProber(timeout)
+	prober.permit = func(netip.Addr) bool { return true }
+	// First address refuses (IPv6 loopback has no listener on this port, or
+	// the family is absent), second accepts.
+	prober.resolve = func(context.Context, string) ([]netip.Addr, error) {
+		return []netip.Addr{netip.MustParseAddr("::1"), netip.MustParseAddr("127.0.0.1")}, nil
+	}
+	if err := prober.Probe(context.Background(), "relay.test", port); err != nil {
+		t.Fatalf("working second address: %v, want reachable", err)
+	}
+	// First address black-holes (TEST-NET-1 never answers), second accepts:
+	// reachable well within one timeout rather than after it.
+	prober.resolve = func(context.Context, string) ([]netip.Addr, error) {
+		return []netip.Addr{netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("127.0.0.1")}, nil
+	}
+	started := time.Now()
+	if err := prober.Probe(context.Background(), "relay.test", port); err != nil {
+		t.Fatalf("slow first address: %v, want reachable", err)
+	}
+	if elapsed := time.Since(started); elapsed >= timeout {
+		t.Fatalf("probe took %s, want less than the %s budget", elapsed, timeout)
+	}
+	// Every address failing conclusively is unreachable.
+	prober.resolve = func(context.Context, string) ([]netip.Addr, error) {
+		return []netip.Addr{netip.MustParseAddr("::1"), netip.MustParseAddr("127.0.0.1")}, nil
+	}
+	if err := prober.Probe(context.Background(), "relay.test", closedPort); err == nil || errors.Is(err, ErrProbeInconclusive) {
+		t.Fatalf("all addresses refusing: %v, want a conclusive failure", err)
 	}
 }
 
