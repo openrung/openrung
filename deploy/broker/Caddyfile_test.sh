@@ -66,6 +66,18 @@ http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
 EOF
 python3 "${TEST_TMP}/backend.py" "$BACKEND_PORT" &
 BACKEND_PID=$!
+# Caddy answers on its listener before the interpreter has bound the backend,
+# and a request proxied in that window is a 502 with no body — three empty
+# answers in a row on a slow runner. Wait for the backend itself first.
+backend_ready=0
+for _ in $(seq 1 100); do
+  if curl -s -o /dev/null "http://127.0.0.1:${BACKEND_PORT}/"; then backend_ready=1; break; fi
+  sleep 0.1
+done
+if [ "$backend_ready" != 1 ]; then
+  echo "test backend did not start on 127.0.0.1:${BACKEND_PORT}" >&2
+  exit 1
+fi
 
 sed -e "s|^broker-origin.openrung.org {|http://127.0.0.1:${FRONT_PORT} {|" \
   -e "s|127.0.0.1:8080|127.0.0.1:${BACKEND_PORT}|g" \
@@ -93,8 +105,11 @@ start_caddy() { # with-secrets|without-secrets
     exec "$CADDY" run --config "${TEST_TMP}/Caddyfile" --adapter caddyfile
   ) > "${TEST_TMP}/caddy-$1.log" 2>&1 &
   CADDY_PID=$!
+  # Ready means the proxied path answers successfully (-f), not merely that
+  # the listener is open: an expectation must never race the first proxied
+  # request.
   for _ in $(seq 1 50); do
-    curl -s -o /dev/null "http://127.0.0.1:${FRONT_PORT}/" && return 0
+    curl -s -f -o /dev/null "http://127.0.0.1:${FRONT_PORT}/api/v1/relays" && return 0
     sleep 0.1
   done
   echo "caddy did not start; log:" >&2
