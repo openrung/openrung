@@ -419,6 +419,42 @@ func TestAccessRelayWithStaleHeartbeatIs503WithoutExtending(t *testing.T) {
 	}
 }
 
+// relayLookupErrorStore fails RelayByID the way a store does when the
+// database is unreachable; the lease store underneath keeps working.
+type relayLookupErrorStore struct {
+	RelayStore
+	err error
+}
+
+func (s relayLookupErrorStore) RelayByID(string, time.Time) (relay.Descriptor, error) {
+	return relay.Descriptor{}, s.err
+}
+
+func TestAccessHeartbeatLookupFailureIsAStoreError(t *testing.T) {
+	h := newAccessHarness(t)
+	h.addRelay("a", 'a', "JP", nil)
+	token, _ := h.token()
+	h.handler.store = relayLookupErrorStore{RelayStore: h.store, err: errors.New("database unreachable")}
+	logs := captureLogs(t)
+
+	started := time.Now()
+	rec := h.rawRequest(token, `{}`)
+	// Not the retryable "unapplied" answer: the generic 503 with the failure
+	// logged, and no second wait on a store that cannot be read.
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") != "" {
+		t.Fatalf("heartbeat lookup failure: %d Retry-After %q %s", rec.Code, rec.Header().Get("Retry-After"), rec.Body.String())
+	}
+	if elapsed := time.Since(started); elapsed > 2*h.handler.applyTimeout {
+		t.Fatalf("waited %s after the lookup failed", elapsed)
+	}
+	if !strings.Contains(logs.String(), "level=ERROR") || !strings.Contains(logs.String(), "database unreachable") {
+		t.Fatalf("expected the store failure in the error log, got:\n%s", logs.String())
+	}
+	if got := h.handler.stats.snapshot(); got.failed != 1 || got.unapplied != 0 || got.extended != 0 {
+		t.Fatalf("stats = %+v, want one error and no extension", got)
+	}
+}
+
 func TestAccessRenewalForRelayGoneFromDirectoryIsEmpty(t *testing.T) {
 	h := newAccessHarness(t)
 	a := h.addRelayTTL("a", 'a', "JP", 2*time.Minute, nil)

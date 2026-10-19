@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -390,26 +391,41 @@ func (h *clientAccessHandler) writeAccess(w http.ResponseWriter, now time.Time, 
 // a busy xray), so the wait runs once more — bounded to one extension — while
 // a relay that has missed a heartbeat (or has expired from the directory
 // meanwhile) is most likely dead, and waiting for it would only delay the
-// client's retry or fallback.
+// client's retry or fallback. A lookup that fails for any reason other than
+// the relay being gone is a store failure and is returned as such: the caller
+// logs it and answers the generic 503, never a quiet "unapplied".
 func (h *clientAccessHandler) awaitIssued(ctx context.Context, leases []Lease) (map[string]bool, error) {
 	applied, err := h.access.awaitApplied(ctx, leases, h.applyTimeout)
 	if err != nil || len(applied) > 0 {
 		return applied, err
 	}
 	now := h.access.now().UTC()
-	alive := false
-	for _, lease := range leases {
-		desc, err := h.store.RelayByID(lease.RelayID, now)
-		if err == nil && now.Sub(desc.LastHeartbeatAt) <= relayHeartbeatInterval {
-			alive = true
-			break
-		}
-	}
-	if !alive {
-		return applied, nil
+	alive, err := h.anyRelayAlive(leases, now)
+	if err != nil || !alive {
+		return applied, err
 	}
 	h.stats.add(now, func(s *accessStats) { s.extended++ })
 	return h.access.awaitApplied(ctx, leases, h.applyTimeout)
+}
+
+// anyRelayAlive reports whether any of the leases' relays heartbeated within
+// the last heartbeat interval. A relay gone from the directory is simply not
+// alive; any other lookup failure is returned, so the first failing lookup
+// ends the check rather than each relay waiting out its own store timeout.
+func (h *clientAccessHandler) anyRelayAlive(leases []Lease, now time.Time) (bool, error) {
+	for _, lease := range leases {
+		desc, err := h.store.RelayByID(lease.RelayID, now)
+		if errors.Is(err, ErrRelayNotFound) {
+			continue
+		}
+		if err != nil {
+			return false, fmt.Errorf("read relay %s for the acknowledgement wait: %w", lease.RelayID, err)
+		}
+		if now.Sub(desc.LastHeartbeatAt) <= relayHeartbeatInterval {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // accessCandidates keeps the ranked relays that can carry a lease — an
