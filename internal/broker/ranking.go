@@ -2,6 +2,7 @@ package broker
 
 import (
 	"math"
+	"math/rand/v2"
 	"sort"
 	"time"
 
@@ -22,14 +23,26 @@ const (
 
 	// A full relay has already forfeited the entire 0.20 headroom contribution.
 	// Continue applying back-pressure above capacity, but cap it below the 0.05
-	// margin by which a 75%-reliable full relay beats a 25%-reliable idle one
-	// when their latency and speed signals are equal.
+	// margin by which a 75%-reliable full relay outscores a 25%-reliable idle
+	// one when their latency and speed signals are equal.
 	rankingMaxOverCapacityPenalty = 0.04
 
 	// defaultRankingWeight is the operator multiplier every relay carries until
 	// an override is stored: the telemetry-driven score is used as-is.
 	defaultRankingWeight = 1.0
+
+	// rankingSelectionSharpness is the exponent applied to a relay's telemetry
+	// score before it becomes a sampling weight (see sortRelayCandidates). It
+	// sets how strongly a score gap turns into a lead: a relay scoring 10%
+	// below another is drawn ahead of it about one time in five, and one
+	// scoring a third lower less than one time in a hundred.
+	rankingSelectionSharpness = 12
 )
+
+// rankingUniform is the [0, 1) source the stores draw ranking keys from. It is
+// a variable only so tests can pin the order; math/rand/v2's top-level source
+// is safe for concurrent use.
+var rankingUniform = rand.Float64
 
 type metricValue struct {
 	total float64
@@ -69,21 +82,41 @@ type relayMetricObservation struct {
 	IncludesSpeedTest bool
 }
 
-// sortRelayCandidates orders relays best-first. snapshots is the 30-minute
-// telemetry view per relay ID; weights is the operator's per-relay ranking
-// multiplier keyed the same way, with absent entries meaning
-// defaultRankingWeight (see rankingWeightFor).
-func sortRelayCandidates(relays []relay.Descriptor, snapshots map[string]RelayMetricsSnapshot, weights map[string]float64) {
-	scores := make(map[string]float64, len(relays))
+// sortRelayCandidates orders relays best-first by weighted random sampling
+// without replacement: each relay is drawn ahead of the rest with probability
+// proportional to its selection weight (relaySelectionWeight). A deterministic
+// best-score-first order would hand every client the same head of the page,
+// so two relays with near-equal scores would trade the whole load back and
+// forth as their telemetry crosses; sampling splits it between them instead,
+// while a clearly better relay still leads almost every page.
+//
+// snapshots is the 30-minute telemetry view per relay ID; weights is the
+// operator's per-relay ranking multiplier keyed the same way, with absent
+// entries meaning defaultRankingWeight (see rankingWeightFor). uniform returns
+// values in [0, 1); a constant source strictly inside (0, 1) reproduces the
+// plain best-selection-weight-first order. Relays with selection weight 0
+// (operator weight 0, or a telemetry score of 0) always sort after every
+// positive-weight relay.
+func sortRelayCandidates(relays []relay.Descriptor, snapshots map[string]RelayMetricsSnapshot, weights map[string]float64, uniform func() float64) {
+	// Efraimidis–Spirakis keys: sorting by U^(1/w) descending is weighted
+	// sampling without replacement. The log form, ln(U)/w, orders identically
+	// and stays finite for tiny weights.
+	keys := make(map[string]float64, len(relays))
 	for _, desc := range relays {
-		scores[desc.ID] = relayScore(desc, snapshots[desc.ID], rankingWeightFor(weights, desc.ID))
+		weight := relaySelectionWeight(relayScore(desc, snapshots[desc.ID]), rankingWeightFor(weights, desc.ID))
+		if weight <= 0 {
+			keys[desc.ID] = math.Inf(-1)
+			continue
+		}
+		// 1-U lies in (0, 1], so the logarithm is finite and at most 0.
+		keys[desc.ID] = math.Log1p(-uniform()) / weight
 	}
 
 	sort.SliceStable(relays, func(i, j int) bool {
 		left, right := relays[i], relays[j]
-		leftScore, rightScore := scores[left.ID], scores[right.ID]
-		if math.Abs(leftScore-rightScore) > 0.000001 {
-			return leftScore > rightScore
+		leftKey, rightKey := keys[left.ID], keys[right.ID]
+		if leftKey != rightKey {
+			return leftKey > rightKey
 		}
 		if !left.LastHeartbeatAt.Equal(right.LastHeartbeatAt) {
 			return left.LastHeartbeatAt.After(right.LastHeartbeatAt)
@@ -95,6 +128,17 @@ func sortRelayCandidates(relays []relay.Descriptor, snapshots map[string]RelayMe
 		}
 		return left.ID < right.ID
 	})
+}
+
+// relaySelectionWeight turns a relay's telemetry score and operator weight
+// into its sampling weight: score^rankingSelectionSharpness × weight. The
+// exponent applies to telemetry only, so the operator weight stays a linear
+// dial on a relay's share of page heads among its peers: weight 1 leaves the
+// telemetry ranking untouched, 0.5 halves the relay's odds of being drawn
+// ahead of an otherwise equal relay, and 0 pins it to the bottom of the list
+// without delisting it.
+func relaySelectionWeight(score, weight float64) float64 {
+	return math.Pow(clamp01(score), rankingSelectionSharpness) * clamp01(weight)
 }
 
 // rankingWeightFor resolves a relay's effective operator weight: the stored
@@ -111,13 +155,9 @@ func rankingWeightFor(weights map[string]float64, relayID string) float64 {
 	return clamp01(weight)
 }
 
-// relayScore is the telemetry-driven candidate score in [0, 1], scaled last by
-// the operator's ranking weight. The weight multiplies the whole score (after
-// the over-capacity penalty, before the clamp) rather than adding a term, so
-// it is a pure dial on top of the telemetry signals: weight 1 leaves the
-// ranking untouched, weight 0 pins the relay to the bottom of the list without
-// delisting it, and any value between shifts load away in proportion.
-func relayScore(desc relay.Descriptor, snapshot RelayMetricsSnapshot, weight float64) float64 {
+// relayScore is the telemetry-driven candidate score in [0, 1]. The operator's
+// ranking weight is applied separately, in relaySelectionWeight.
+func relayScore(desc relay.Descriptor, snapshot RelayMetricsSnapshot) float64 {
 	headroom := 0.5
 	if desc.MaxSessions > 0 {
 		headroom = clamp01(float64(desc.MaxSessions-snapshot.ActiveSessions) / float64(desc.MaxSessions))
@@ -134,7 +174,7 @@ func relayScore(desc relay.Descriptor, snapshot RelayMetricsSnapshot, weight flo
 		rankingHeadroomWeight*headroom +
 		rankingLatencyWeight*latencyScore +
 		rankingSpeedWeight*speedScore
-	return clamp01((score - overCapacityPenalty(desc, snapshot)) * clamp01(weight))
+	return clamp01(score - overCapacityPenalty(desc, snapshot))
 }
 
 func overCapacityPenalty(desc relay.Descriptor, snapshot RelayMetricsSnapshot) float64 {

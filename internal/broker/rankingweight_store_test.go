@@ -86,6 +86,7 @@ func TestStoreRankingWeightSetListDelete(t *testing.T) {
 // and re-registering the same identity (new endpoint, new lease token) leaves
 // the override in force and the relay demoted.
 func TestStoreRankingWeightSurvivesPruneAndReRegistration(t *testing.T) {
+	pinRankingOrder(t)
 	runIdentityStoreTest(t, func(t *testing.T, store RelayStore) {
 		ctx := context.Background()
 		now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)

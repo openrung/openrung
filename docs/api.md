@@ -491,10 +491,13 @@ Authorization: Bearer <OPENRUNG_API_TOKEN>
 ```
 
 An operator-set per-relay multiplier on the candidate ranking behind
-`GET /api/v1/relays`: a number in `[0, 1]`, default `1`, applied last to the
-relay's telemetry-derived score. `1` leaves the ranking untouched, values below
-`1` demote the relay in proportion, and `0` pins it to the bottom of every page
-without delisting it — and excludes the relay from the WSS-candidate
+`GET /api/v1/relays`: a number in `[0, 1]`, default `1`. The broker orders each
+response by weighted random sampling, so relays with similar telemetry-derived
+scores share the head of the page instead of one taking every client; the
+weight multiplies a relay's sampling weight. `1` leaves the ranking untouched,
+values below `1` reduce the relay's share of page heads in proportion (`0.5`
+halves its odds against an otherwise equal relay), and `0` pins it to the
+bottom of every page without delisting it — and excludes the relay from the WSS-candidate
 reservation that can otherwise promote a WSS-capable Foundation relay into a
 short page's last slot (weights above `0` keep that eligibility). Weights key on
 the relay ID, so they survive lease expiry and re-registration, and are never
@@ -1135,8 +1138,13 @@ latest [inbound reachability probe](#inbound-reachability-probe) failed is
 left out before ranking and page shaping. The broker uses recent
 connection successes/failures, active sessions, observed client latency, and
 speed-test telemetry. The latency it scores is aggregated across all clients,
-so it cannot describe any one client's path. IPv6 is only a final tie-breaker
-after score and heartbeat recency. `limit` truncates *after* ranking, so
+so it cannot describe any one client's path. The order is drawn per response by
+weighted random sampling without replacement, with each relay's weight rising
+steeply with its score: a clearly better relay leads almost every response,
+while relays with similar scores take turns at the head, so concurrent clients
+spread across them rather than all landing on the marginal leader. IPv6 is only
+a final tie-breaker after the sampled order and heartbeat recency. `limit`
+truncates *after* ranking, so
 membership of the returned set — unlike the order within it — is decided
 entirely by the broker.
 

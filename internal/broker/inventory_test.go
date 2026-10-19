@@ -232,6 +232,7 @@ func TestRelayInventoryMethodHandlingLeaksNothingAndStaysUncacheable(t *testing.
 // for existing: every active relay, past the client page size, in an order
 // that depends only on which relays exist.
 func TestRelayInventoryReturnsWholeFleetInRelayIDOrder(t *testing.T) {
+	pinRankingOrder(t)
 	const fleetSize = 25 // deliberately past the client list's limit of 20
 	store := NewStore()
 	registerInventoryFleet(t, store, fleetSize)

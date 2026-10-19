@@ -639,7 +639,7 @@ func (s *PostgresStore) ListRanked(now time.Time, limit int) ([]relay.Descriptor
 	if err != nil {
 		return nil, nil, err
 	}
-	sortRelayCandidates(relays, snapshots, weights)
+	sortRelayCandidates(relays, snapshots, weights, rankingUniform)
 	if limit > 0 && len(relays) > limit {
 		return relays[:limit], weights, nil
 	}

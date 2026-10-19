@@ -330,7 +330,7 @@ func (s *Store) ListRanked(now time.Time, limit int) ([]relay.Descriptor, map[st
 	}
 
 	snapshots, weights := s.metricSnapshotsLocked(now)
-	sortRelayCandidates(relays, snapshots, weights)
+	sortRelayCandidates(relays, snapshots, weights, rankingUniform)
 
 	if limit > 0 && len(relays) > limit {
 		return relays[:limit], weights, nil
