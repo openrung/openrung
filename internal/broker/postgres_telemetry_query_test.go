@@ -565,6 +565,79 @@ func TestPostgresTelemetryRollupMergeIsOrderIndependent(t *testing.T) {
 	}
 }
 
+// TestPostgresTelemetryRollupMergeBreaksReceiptTiesOnOccurrence covers an
+// upload split across the insert chunk boundary. Every event of one upload
+// shares a received_at, and the batch is not in occurred_at order, so the
+// later chunk can hold an event that occurred EARLIER than one in the first
+// chunk. The merge must resolve the receipt-time tie on occurred_at — the
+// canonical event order — rather than let the later chunk win, exactly as
+// the event path's single-pass aggregation of the whole upload does. (The
+// in-memory aggregator folds an upload in arrival order instead, so it is
+// not the reference here; the event path is.)
+func TestPostgresTelemetryRollupMergeBreaksReceiptTiesOnOccurrence(t *testing.T) {
+	now := time.Date(2026, 6, 24, 12, 30, 0, 0, time.UTC)
+	sink := newTestPostgresTelemetrySink(t, now)
+	received := now.Add(-time.Minute)
+	record := func(id string, occurredMinutesAgo int, event string, attributes map[string]string, relayID string) TelemetryRecord {
+		r := dashboardRecord(now.Add(-time.Duration(occurredMinutesAgo)*time.Minute), id, event, "client-t", "session-t", relayID, attributes, nil)
+		r.ReceivedAt = received
+		return r
+	}
+	// First chunk: the latest-occurring event (CA, relay-new stamped
+	// foundation) leads, then filler to reach the chunk boundary.
+	batch := []TelemetryRecord{record("lead", 2, "connection_attempted", map[string]string{"country": "CA"}, "relay-new")}
+	batch[0].RelayNodeClass = relay.NodeClassFoundation
+	for i := 1; i < postgresTelemetryInsertChunk; i++ {
+		batch = append(batch, record(fmt.Sprintf("fill-%d", i), 20+i, "session_heartbeat", nil, ""))
+	}
+	// Second chunk: an older-occurring event with a different country, relay
+	// and class (volunteer stamp on relay-old).
+	tail := record("tail", 10, "client_seen", map[string]string{"country": "DE", "city": "Bonn"}, "relay-old")
+	tail.RelayNodeClass = relay.NodeClassVolunteer
+	batch = append(batch, tail)
+	if err := sink.WriteTelemetry(context.Background(), batch); err != nil {
+		t.Fatalf("write telemetry: %v", err)
+	}
+	if err := sink.flush(); err != nil {
+		t.Fatalf("flush telemetry: %v", err)
+	}
+	for _, window := range []time.Duration{24 * time.Hour, telemetryRetention} {
+		// The event path aggregates the whole upload in one pass.
+		sink.rollupReady.Store(false)
+		wantOverview, err := sink.TelemetryOverview(now, window)
+		if err != nil {
+			t.Fatalf("event-path overview (%s): %v", window, err)
+		}
+		wantSessions, _, err := sink.TelemetrySessions(now, window, 0, 10)
+		if err != nil {
+			t.Fatalf("event-path sessions (%s): %v", window, err)
+		}
+		wantRelays, err := sink.TelemetryRelayStats(now, window, nil)
+		if err != nil {
+			t.Fatalf("event-path relay stats (%s): %v", window, err)
+		}
+		sink.rollupReady.Store(true)
+		gotOverview, err := sink.TelemetryOverview(now, window)
+		if err != nil {
+			t.Fatalf("rollup overview (%s): %v", window, err)
+		}
+		gotSessions, _, err := sink.TelemetrySessions(now, window, 0, 10)
+		if err != nil {
+			t.Fatalf("rollup sessions (%s): %v", window, err)
+		}
+		gotRelays, err := sink.TelemetryRelayStats(now, window, nil)
+		if err != nil {
+			t.Fatalf("rollup relay stats (%s): %v", window, err)
+		}
+		assertSameJSON(t, fmt.Sprintf("tie overview window=%s", window), wantOverview, gotOverview)
+		assertSameJSON(t, fmt.Sprintf("tie sessions window=%s", window), wantSessions, gotSessions)
+		assertSameJSON(t, fmt.Sprintf("tie relay stats window=%s", window), wantRelays, gotRelays)
+		if got := gotSessions[0]; got.Country != "CA" || got.City != "Bonn" || got.RelayID != "relay-new" || got.RelayNodeClass != relay.NodeClassFoundation {
+			t.Fatalf("receipt tie resolved wrongly (%s): %+v", window, got)
+		}
+	}
+}
+
 // TestPostgresTelemetryRollupRelayClassFollowsReceipt pins the retained relay
 // class to receipt order, like the accumulator: a delayed upload whose event
 // occurred in an earlier hour but arrived later carries the current stamp,
