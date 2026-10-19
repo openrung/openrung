@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -397,22 +398,40 @@ func newTestPostgresTelemetrySinkWithoutCleanup(t *testing.T, now time.Time) *Po
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	// Earlier tests leave partitions behind, which every new sink offers to
+	// backfill; run that flat out. Every sink is closed (and its backfill
+	// goroutine joined) before the next test opens one, so the write is safe.
+	unpauseRollupBackfill.Do(func() { telemetryRollupBackfillPause = 0 })
 	// An hour-long flush interval keeps the ticker out of the way; tests
 	// flush explicitly.
 	sink, err := newPostgresTelemetrySink(ctx, databaseURL, func() time.Time { return now }, time.Hour)
 	if err != nil {
 		t.Fatalf("open postgres telemetry sink: %v", err)
 	}
+	waitForRollupBackfill(t, sink)
 	return sink
 }
+
+// waitForRollupBackfill blocks until the sink serves long windows from the
+// rollup tables, so tests exercise the rollup path deterministically.
+func waitForRollupBackfill(t *testing.T, sink *PostgresTelemetrySink) {
+	t.Helper()
+	select {
+	case <-sink.backfillDone:
+	case <-time.After(30 * time.Second):
+		t.Fatal("telemetry rollup backfill did not complete")
+	}
+}
+
+var unpauseRollupBackfill sync.Once
 
 func cleanupPostgresTelemetry(t *testing.T, sink *PostgresTelemetrySink) {
 	t.Helper()
 	if _, err := sink.pool.Exec(context.Background(), `TRUNCATE telemetry_events`); err != nil {
 		t.Fatalf("cleanup telemetry events: %v", err)
 	}
-	if _, err := sink.pool.Exec(context.Background(), `TRUNCATE telemetry_app_counts`); err != nil {
-		t.Fatalf("cleanup telemetry app counts: %v", err)
+	if _, err := sink.pool.Exec(context.Background(), `TRUNCATE telemetry_app_counts, telemetry_sessions, telemetry_event_counts`); err != nil {
+		t.Fatalf("cleanup telemetry rollups: %v", err)
 	}
 	sink.mu.Lock()
 	sink.pending = nil

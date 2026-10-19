@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"testing"
 	"time"
 
@@ -226,9 +227,14 @@ func TestPostgresTelemetryQuerierMatchesInMemoryOverview(t *testing.T) {
 		t.Fatalf("write telemetry to in-memory store: %v", err)
 	}
 	memory := newTelemetryReaderQuerier(memoryStore)
+	rollupReference := newTelemetryReaderQuerier(rollupReferenceStore(t, records, now))
 
 	for _, window := range []time.Duration{time.Hour, 24 * time.Hour, telemetryRetention} {
-		want, err := memory.TelemetryOverview(now, window)
+		reference := memory
+		if sink.useRollup(window) {
+			reference = rollupReference
+		}
+		want, err := reference.TelemetryOverview(now, window)
 		if err != nil {
 			t.Fatalf("in-memory overview (%s): %v", window, err)
 		}
@@ -247,13 +253,14 @@ func TestPostgresTelemetryQuerierMatchesInMemorySessions(t *testing.T) {
 	if err := sink.WriteTelemetry(context.Background(), records); err != nil {
 		t.Fatalf("write telemetry: %v", err)
 	}
-	memoryStore := &dashboardTelemetryStore{}
-	if err := memoryStore.WriteTelemetry(context.Background(), records); err != nil {
-		t.Fatalf("write telemetry to in-memory store: %v", err)
-	}
-	memory := newTelemetryReaderQuerier(memoryStore)
+	// The 24h window is served from the rollup, so the reference is the
+	// rollup's reading of the fixture (see rollupReferenceStore).
+	memory := newTelemetryReaderQuerier(rollupReferenceStore(t, records, now))
 
 	window := 24 * time.Hour
+	if !sink.useRollup(window) {
+		t.Fatal("expected the 24h window to be served from the rollup")
+	}
 	for _, page := range []struct{ offset, limit int }{
 		{0, 3},    // first page
 		{3, 3},    // middle page
@@ -288,12 +295,17 @@ func TestPostgresTelemetryQuerierMatchesInMemoryRelayStats(t *testing.T) {
 		t.Fatalf("write telemetry to in-memory store: %v", err)
 	}
 	memory := newTelemetryReaderQuerier(memoryStore)
+	rollupReference := newTelemetryReaderQuerier(rollupReferenceStore(t, records, now))
 
 	// relay-current is trusted only through this set; relay-ghost is in
 	// neither the set nor stamped, so it must vanish from both backends.
 	registered := []string{"relay-current"}
 	for _, window := range []time.Duration{time.Hour, 24 * time.Hour, telemetryRetention} {
-		want, err := memory.TelemetryRelayStats(now, window, registered)
+		reference := memory
+		if sink.useRollup(window) {
+			reference = rollupReference
+		}
+		want, err := reference.TelemetryRelayStats(now, window, registered)
 		if err != nil {
 			t.Fatalf("in-memory relay stats (%s): %v", window, err)
 		}
@@ -310,6 +322,240 @@ func TestPostgresTelemetryQuerierMatchesInMemoryRelayStats(t *testing.T) {
 		if !kept["relay-current"] || kept["relay-ghost"] {
 			t.Fatalf("trust gate wrong (window=%s): relay-current kept=%t, relay-ghost kept=%t", window, kept["relay-current"], kept["relay-ghost"])
 		}
+	}
+}
+
+// rollupReferenceStore is the in-memory store the rollup-served windows (24h
+// and 7d) are held to. The rollup folds every event into its session the
+// moment it is ingested, so an event dated up to maxTelemetryFutureSkew ahead
+// of the broker clock counts at once, whereas the per-event path (and the 1h
+// window, which still uses it) hides it until the window reaches it. The
+// reference therefore reads a future-dated event as occurring now, which is
+// what the rollup shows for one landing in the current hour. Everything else
+// in the fixture lies well inside both long windows, so the rollup's
+// per-session window membership and hour-granular event edge are not
+// exercised here — only its field-merge semantics.
+func rollupReferenceStore(t *testing.T, records []TelemetryRecord, now time.Time) *dashboardTelemetryStore {
+	t.Helper()
+	clamped := make([]TelemetryRecord, 0, len(records))
+	for _, record := range records {
+		if record.Event.OccurredAt.After(now) {
+			record.Event.OccurredAt = now
+		}
+		clamped = append(clamped, record)
+	}
+	store := &dashboardTelemetryStore{}
+	if err := store.WriteTelemetry(context.Background(), clamped); err != nil {
+		t.Fatalf("write telemetry to in-memory reference store: %v", err)
+	}
+	return store
+}
+
+// TestPostgresTelemetryRollupMergesAcrossFlushes writes the parity fixture in
+// several chronological flushes, so sessions straddle batches and the rollup's
+// ON CONFLICT merge — rather than one batch's array_agg — has to reproduce the
+// latest-non-empty-wins, first-client, maxima and flag semantics.
+func TestPostgresTelemetryRollupMergesAcrossFlushes(t *testing.T) {
+	now := time.Date(2026, 6, 24, 12, 30, 0, 0, time.UTC)
+	sink := newTestPostgresTelemetrySink(t, now)
+	records := parityTelemetryRecords(now)
+	chronological := append([]TelemetryRecord{}, records...)
+	sort.SliceStable(chronological, func(i, j int) bool {
+		a, b := chronological[i], chronological[j]
+		if !a.ReceivedAt.Equal(b.ReceivedAt) {
+			return a.ReceivedAt.Before(b.ReceivedAt)
+		}
+		return a.Event.OccurredAt.Before(b.Event.OccurredAt)
+	})
+	const flushes = 4
+	for i := 0; i < flushes; i++ {
+		batch := chronological[i*len(chronological)/flushes : (i+1)*len(chronological)/flushes]
+		if err := sink.WriteTelemetry(context.Background(), batch); err != nil {
+			t.Fatalf("write telemetry batch %d: %v", i, err)
+		}
+		if err := sink.flush(); err != nil {
+			t.Fatalf("flush telemetry batch %d: %v", i, err)
+		}
+	}
+	assertRollupMatchesReference(t, sink, records, now)
+}
+
+// TestPostgresTelemetryRollupBackfill stores the parity fixture the way an
+// older broker left it — event rows only, no rollup — then opens a new sink
+// whose startup backfill must fold those rows into the rollup, chunk by chunk
+// under the watermark, before the long windows switch over to it.
+func TestPostgresTelemetryRollupBackfill(t *testing.T) {
+	now := time.Date(2026, 6, 24, 12, 30, 0, 0, time.UTC)
+	sink := newTestPostgresTelemetrySink(t, now)
+	ctx := context.Background()
+	records := parityTelemetryRecords(now)
+	var stored []TelemetryRecord
+	for _, record := range records {
+		if record.Event.Event == telemetryAppConnectionEvent {
+			continue // never a row in any broker version
+		}
+		stored = append(stored, record)
+		if err := sink.ensurePartition(ctx, insertReceivedAt(record, now)); err != nil {
+			t.Fatalf("ensure partition: %v", err)
+		}
+	}
+	var args []any
+	for _, record := range stored {
+		args = append(args, telemetryInsertArgs(record, now)...)
+	}
+	if _, err := sink.pool.Exec(ctx, telemetryInsertStatement(len(stored)), args...); err != nil {
+		t.Fatalf("insert rows without rollup: %v", err)
+	}
+	if got := countRollupSessions(t, sink); got != 0 {
+		t.Fatalf("expected no rollup rows before backfill, found %d", got)
+	}
+	// Forget the completed backfill so the next start redoes it from the
+	// oldest partition up to its own start time.
+	if _, err := sink.pool.Exec(ctx, `DELETE FROM telemetry_rollup_state`); err != nil {
+		t.Fatalf("reset rollup state: %v", err)
+	}
+
+	reopened := newTestPostgresTelemetrySinkWithoutCleanup(t, now.Add(time.Minute))
+	t.Cleanup(func() { reopened.Close() })
+	if got := countRollupSessions(t, sink); got == 0 {
+		t.Fatal("expected the backfill to populate the rollup")
+	}
+	var until, through time.Time
+	if err := sink.pool.QueryRow(ctx, `
+		SELECT u.value, d.value FROM telemetry_rollup_state u, telemetry_rollup_state d
+		WHERE u.key = 'backfill_until' AND d.key = 'backfill_done_through'`).Scan(&until, &through); err != nil {
+		t.Fatalf("read rollup state: %v", err)
+	}
+	if !until.Equal(now.Add(time.Minute)) || through.Before(until) {
+		t.Fatalf("backfill watermark did not reach its end: until=%s done_through=%s", until, through)
+	}
+	// The top-apps rollup is fed by ingestion, not the backfill, and the
+	// application_connection records above were never stored; feed them so
+	// the overview's top_applications panel has its usual input.
+	var appRecords []TelemetryRecord
+	for _, record := range records {
+		if record.Event.Event == telemetryAppConnectionEvent {
+			appRecords = append(appRecords, record)
+		}
+	}
+	if err := reopened.WriteTelemetry(ctx, appRecords); err != nil {
+		t.Fatalf("write application records: %v", err)
+	}
+	assertRollupMatchesReference(t, reopened, records, now)
+}
+
+// assertRollupMatchesReference holds every rollup-served query (overview,
+// every sessions page, relay stats) for the 24h and 7d windows to the
+// in-memory reading of the fixture.
+func assertRollupMatchesReference(t *testing.T, sink *PostgresTelemetrySink, records []TelemetryRecord, now time.Time) {
+	t.Helper()
+	reference := newTelemetryReaderQuerier(rollupReferenceStore(t, records, now))
+	for _, window := range []time.Duration{24 * time.Hour, telemetryRetention} {
+		if !sink.useRollup(window) {
+			t.Fatalf("expected the %s window to be served from the rollup", window)
+		}
+		want, err := reference.TelemetryOverview(now, window)
+		if err != nil {
+			t.Fatalf("reference overview (%s): %v", window, err)
+		}
+		got, err := sink.TelemetryOverview(now, window)
+		if err != nil {
+			t.Fatalf("rollup overview (%s): %v", window, err)
+		}
+		assertSameJSON(t, fmt.Sprintf("rollup overview window=%s", window), want, got)
+
+		wantSessions, wantTotal, err := reference.TelemetrySessions(now, window, 0, 100)
+		if err != nil {
+			t.Fatalf("reference sessions (%s): %v", window, err)
+		}
+		gotSessions, gotTotal, err := sink.TelemetrySessions(now, window, 0, 100)
+		if err != nil {
+			t.Fatalf("rollup sessions (%s): %v", window, err)
+		}
+		if wantTotal != gotTotal {
+			t.Fatalf("rollup sessions total (%s): reference %d, rollup %d", window, wantTotal, gotTotal)
+		}
+		assertSameJSON(t, fmt.Sprintf("rollup sessions window=%s", window), wantSessions, gotSessions)
+
+		registered := []string{"relay-current"}
+		wantRelays, err := reference.TelemetryRelayStats(now, window, registered)
+		if err != nil {
+			t.Fatalf("reference relay stats (%s): %v", window, err)
+		}
+		gotRelays, err := sink.TelemetryRelayStats(now, window, registered)
+		if err != nil {
+			t.Fatalf("rollup relay stats (%s): %v", window, err)
+		}
+		assertSameJSON(t, fmt.Sprintf("rollup relay stats window=%s", window), wantRelays, gotRelays)
+	}
+}
+
+func countRollupSessions(t *testing.T, sink *PostgresTelemetrySink) int {
+	t.Helper()
+	var count int
+	if err := sink.pool.QueryRow(context.Background(), `SELECT COUNT(*) FROM telemetry_sessions`).Scan(&count); err != nil {
+		t.Fatalf("count rollup sessions: %v", err)
+	}
+	return count
+}
+
+// TestPostgresTelemetryRollupWindowSelection pins which windows the rollup
+// serves: never the 1h window, and nothing until the backfill has completed.
+func TestPostgresTelemetryRollupWindowSelection(t *testing.T) {
+	sink := &PostgresTelemetrySink{backfillDone: make(chan struct{})}
+	for _, window := range []time.Duration{time.Hour, 24 * time.Hour, telemetryRetention} {
+		if sink.useRollup(window) {
+			t.Fatalf("window %s must not use the rollup before the backfill completes", window)
+		}
+	}
+	sink.markRollupReady()
+	if sink.useRollup(time.Hour) {
+		t.Fatal("the 1h window must keep aggregating events directly")
+	}
+	for _, window := range []time.Duration{24 * time.Hour, telemetryRetention} {
+		if !sink.useRollup(window) {
+			t.Fatalf("window %s must use the rollup once ready", window)
+		}
+	}
+}
+
+// TestPostgresTelemetryRollupPrune ages rollup rows out with the retention
+// cutoff: sessions by their latest event, hourly counts by their hour.
+func TestPostgresTelemetryRollupPrune(t *testing.T) {
+	now := time.Date(2026, 6, 24, 12, 30, 0, 0, time.UTC)
+	sink := newTestPostgresTelemetrySink(t, now)
+	ctx := context.Background()
+	old := now.Add(-telemetryRetention - 2*time.Hour)
+	recent := now.Add(-time.Hour)
+	records := []TelemetryRecord{
+		dashboardRecord(old, "old-1", "connection_succeeded", "client-old", "session-old", "relay-1", nil, nil),
+		dashboardRecord(recent, "new-1", "connection_succeeded", "client-new", "session-new", "relay-1", nil, nil),
+	}
+	if err := sink.WriteTelemetry(ctx, records); err != nil {
+		t.Fatalf("write telemetry: %v", err)
+	}
+	if err := sink.flush(); err != nil {
+		t.Fatalf("flush telemetry: %v", err)
+	}
+	if got := countRollupSessions(t, sink); got != 2 {
+		t.Fatalf("expected 2 rollup sessions before prune, got %d", got)
+	}
+	if _, err := sink.PruneTelemetry(now); err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if got := countRollupSessions(t, sink); got != 1 {
+		t.Fatalf("expected 1 rollup session after prune, got %d", got)
+	}
+	var kept string
+	if err := sink.pool.QueryRow(ctx, `SELECT session_id FROM telemetry_sessions`).Scan(&kept); err != nil || kept != "session-new" {
+		t.Fatalf("kept session = %q (%v), want session-new", kept, err)
+	}
+	var hours int
+	if err := sink.pool.QueryRow(ctx, `SELECT COUNT(DISTINCT hour) FROM telemetry_event_counts`).Scan(&hours); err != nil {
+		t.Fatalf("count event-count hours: %v", err)
+	}
+	if hours != 1 {
+		t.Fatalf("expected only the recent hour's counts after prune, got %d hours", hours)
 	}
 }
 

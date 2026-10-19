@@ -120,6 +120,17 @@ top-applications panel, whose window edge is consequently hour-granular. These
 were historically by far the highest-volume events, so client aggregation and
 the broker rollup keep dashboard queries bounded by session-grade volume.
 
+In Postgres mode the 24-hour and seven-day dashboard windows are likewise
+served from a rollup the broker maintains as it ingests — one row per session
+plus hourly event-grain counts — rather than from the window's event rows, so
+their cost tracks the number of sessions, not events. The response shape is
+unchanged. Two edges differ from the one-hour window, which still aggregates
+events directly: a session is in a rollup-served window when its latest event
+is (its fields reflect the whole session), and event-grain counts such as the
+hourly trend and failure reasons have an hour-granular window edge, like the
+top-applications panel. A future-dated event (within the accepted clock skew)
+counts in its session as soon as it is ingested.
+
 Before starting the tunnel, Android also resolves its public IP metadata and
 adds `client_ip`, `country`, `country_code`, `city`, `asn`, `isp`, and
 `organization` to subsequent session events. A failed metadata lookup does not

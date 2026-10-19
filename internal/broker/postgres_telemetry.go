@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -37,12 +38,32 @@ const (
 	// in memory instead of spilling to disk (see newPostgresTelemetrySink).
 	telemetryDashboardWorkMem = "32MB"
 
+	// telemetryRollupMinWindow is the shortest dashboard window served from
+	// the session/event-count rollup tables; shorter windows (1h) aggregate
+	// the window's events directly, where the exact per-event window edge is
+	// cheap and the rollup's per-session membership would be coarse.
+	telemetryRollupMinWindow = 24 * time.Hour
+
+	// The rollup backfill folds stored events into the rollup tables one
+	// received_at hour at a time, backing off on errors.
+	telemetryRollupBackfillChunk = time.Hour
+	telemetryRollupBackfillRetry = 10 * time.Second
+
+	// maxTelemetrySessionClientIDs caps the distinct client IDs one
+	// telemetry_sessions row retains for the headline clients total.
+	maxTelemetrySessionClientIDs = 32
+
 	// telemetryPartitionPrefix is the fixed prefix of a daily partition's
 	// table name; the suffix is the UTC day as YYYYMMDD. Both creating a
 	// partition and finding aged-out ones to drop route through it, so the
 	// naming scheme lives in exactly one place.
 	telemetryPartitionPrefix = "telemetry_events_"
 )
+
+// telemetryRollupBackfillPause separates backfill chunks so the two production
+// vCPUs keep serving relay polls while the rollup catches up. A variable so
+// tests can run the backfill flat out.
+var telemetryRollupBackfillPause = 250 * time.Millisecond
 
 // PostgresTelemetrySink drops whole aged-out daily partitions rather than
 // pruning on write, so it satisfies TelemetryPruner for the maintenance loop.
@@ -91,6 +112,68 @@ CREATE TABLE IF NOT EXISTS telemetry_app_counts (
 	connections bigint NOT NULL,
 	PRIMARY KEY (hour, application)
 );
+
+-- The dashboard rollup (see telemetryRollupStatement): one row per session
+-- carrying the sessions CTE's raw accumulation, and hourly event-grain counts
+-- keyed by (hour, kind, k1, k2). Both are maintained in the same statement
+-- that inserts a batch's events, and backfilled from stored partitions on the
+-- first start after their introduction (telemetry_rollup_state tracks it).
+-- telemetry_sessions deliberately carries no secondary index: every heartbeat
+-- updates its row, and the lower fillfactor keeps those updates HOT so the
+-- table does not bloat; the dashboard's whole-window scans of ~sessions rows
+-- are cheap without one.
+CREATE TABLE IF NOT EXISTS telemetry_sessions (
+	session_id text PRIMARY KEY,
+	client_id text NOT NULL,
+	client_ids text[] NOT NULL,
+	started_at timestamptz NOT NULL,
+	last_occurred_at timestamptz NOT NULL,
+	last_seen_at timestamptz NOT NULL,
+	relay_id text NOT NULL,
+	relay_node_class text NOT NULL,
+	operating_system text NOT NULL,
+	device_manufacturer text NOT NULL,
+	device_model text NOT NULL,
+	app_version text NOT NULL,
+	country text NOT NULL,
+	city text NOT NULL,
+	organization text NOT NULL,
+	asn text NOT NULL,
+	isp text NOT NULL,
+	failure_stage text NOT NULL,
+	failure_reason text NOT NULL,
+	failure_detail text NOT NULL,
+	observed_client_ip text NOT NULL,
+	reported_client_ip text NOT NULL,
+	fallback_source_ip text NOT NULL,
+	last_heartbeat_at timestamptz,
+	running_duration_ms bigint NOT NULL,
+	ended_duration_ms bigint NOT NULL,
+	bytes_sent bigint NOT NULL,
+	bytes_received bigint NOT NULL,
+	attempted boolean NOT NULL,
+	succeeded boolean NOT NULL,
+	failed boolean NOT NULL,
+	terminal boolean NOT NULL
+) WITH (fillfactor = 80);
+
+CREATE TABLE IF NOT EXISTS telemetry_event_counts (
+	hour timestamptz NOT NULL,
+	kind text NOT NULL,
+	k1 text NOT NULL,
+	k2 text NOT NULL,
+	n bigint NOT NULL,
+	s1 bigint NOT NULL,
+	s2 bigint NOT NULL,
+	last_at timestamptz,
+	v text,
+	PRIMARY KEY (hour, kind, k1, k2)
+);
+
+CREATE TABLE IF NOT EXISTS telemetry_rollup_state (
+	key text PRIMARY KEY,
+	value timestamptz NOT NULL
+);
 `
 
 const telemetryInsertColumns = `received_at, source_ip, event_id, event, occurred_at, client_id, session_id, relay_id, relay_node_class, payload`
@@ -132,6 +215,15 @@ type PostgresTelemetrySink struct {
 	partitions map[string]struct{}
 	closed     bool
 
+	// rollupReady reports that telemetry_sessions / telemetry_event_counts
+	// cover every stored event, i.e. the one-off backfill has completed (this
+	// process or an earlier one ran it to the end); until then the dashboard
+	// aggregates every window from events. backfillDone is closed at that
+	// point; backfillExited when the backfill goroutine has returned.
+	rollupReady    atomic.Bool
+	backfillDone   chan struct{}
+	backfillExited chan struct{}
+
 	// flushMu serialises flushes so a ticker flush and a threshold flush
 	// cannot reorder or interleave batches.
 	flushMu   sync.Mutex
@@ -168,12 +260,14 @@ func newPostgresTelemetrySink(ctx context.Context, databaseURL string, now func(
 		return nil, fmt.Errorf("open telemetry database: %w", err)
 	}
 	sink := &PostgresTelemetrySink{
-		pool:         pool,
-		now:          now,
-		pendingLimit: maxTelemetryPendingBytes,
-		partitions:   make(map[string]struct{}),
-		stop:         make(chan struct{}),
-		done:         make(chan struct{}),
+		pool:           pool,
+		now:            now,
+		pendingLimit:   maxTelemetryPendingBytes,
+		partitions:     make(map[string]struct{}),
+		stop:           make(chan struct{}),
+		done:           make(chan struct{}),
+		backfillDone:   make(chan struct{}),
+		backfillExited: make(chan struct{}),
 	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
@@ -192,6 +286,17 @@ func newPostgresTelemetrySink(ctx context.Context, databaseURL string, now func(
 			pool.Close()
 			return nil, err
 		}
+	}
+	complete, err := sink.initRollupBackfill(ctx)
+	if err != nil {
+		pool.Close()
+		return nil, err
+	}
+	if complete {
+		sink.markRollupReady()
+		close(sink.backfillExited)
+	} else {
+		go sink.backfillLoop()
 	}
 	go sink.flushLoop(flushInterval)
 	return sink, nil
@@ -355,7 +460,8 @@ func (s *PostgresTelemetrySink) flushLoop(flushInterval time.Duration) {
 // On failure each is put back (records at the front of the buffer, capped by
 // pendingLimit; counts re-merged into the rollup, capped by its entry limit)
 // so the next flush retries it — a chunk that had already been written before
-// a later chunk failed is retried too and may duplicate rows or double-count,
+// a later chunk failed is retried too and may duplicate rows or double-count
+// (its rollup included: the rollup rides in the chunk's insert statement),
 // which the store tolerates by design (no unique constraint spans partitions,
 // and the counts are dashboard-grade aggregates).
 func (s *PostgresTelemetrySink) flush() error {
@@ -479,7 +585,9 @@ func (s *PostgresTelemetrySink) insertBatch(ctx context.Context, batch []storedT
 		for _, stored := range chunk {
 			args = append(args, telemetryInsertArgs(stored.record, now)...)
 		}
-		if _, err := s.pool.Exec(ctx, telemetryInsertStatement(len(chunk)), args...); err != nil {
+		// One statement inserts the chunk and folds it into the dashboard
+		// rollup, so the events and their rollup land (or fail) together.
+		if _, err := s.pool.Exec(ctx, telemetryRollupInsertStatement(len(chunk)), args...); err != nil {
 			return fmt.Errorf("insert telemetry events: %w", err)
 		}
 	}
@@ -655,6 +763,15 @@ func (s *PostgresTelemetrySink) PruneTelemetry(now time.Time) ([]string, error) 
 	if _, err := s.pool.Exec(ctx, `DELETE FROM telemetry_app_counts WHERE hour < $1`, cutoff.UTC().Truncate(time.Hour)); err != nil {
 		return dropped, fmt.Errorf("prune telemetry app counts: %w", err)
 	}
+	// The dashboard rollup ages out the same way: event-grain hours like the
+	// app counts, and a session once its latest event is older than the
+	// cutoff (no window can still include it).
+	if _, err := s.pool.Exec(ctx, `DELETE FROM telemetry_event_counts WHERE hour < $1`, cutoff.UTC().Truncate(time.Hour)); err != nil {
+		return dropped, fmt.Errorf("prune telemetry event counts: %w", err)
+	}
+	if _, err := s.pool.Exec(ctx, `DELETE FROM telemetry_sessions WHERE last_seen_at < $1`, cutoff.UTC()); err != nil {
+		return dropped, fmt.Errorf("prune telemetry sessions: %w", err)
+	}
 	return dropped, nil
 }
 
@@ -662,6 +779,21 @@ func (s *PostgresTelemetrySink) PruneTelemetry(now time.Time) ([]string, error) 
 // than cutoff. It enumerates the catalog rather than the in-process cache so
 // partitions left behind by an earlier broker process are collected too.
 func (s *PostgresTelemetrySink) expiredPartitions(ctx context.Context, cutoff time.Time) ([]string, error) {
+	names, err := s.listPartitions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var expired []string
+	for _, name := range names {
+		if day, ok := telemetryPartitionNameDay(name); ok && !day.Add(24*time.Hour).After(cutoff) {
+			expired = append(expired, name)
+		}
+	}
+	return expired, nil
+}
+
+// listPartitions names every child table of telemetry_events in the catalog.
+func (s *PostgresTelemetrySink) listPartitions(ctx context.Context) ([]string, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT c.relname
 		FROM pg_inherits i
@@ -673,23 +805,141 @@ func (s *PostgresTelemetrySink) expiredPartitions(ctx context.Context, cutoff ti
 	}
 	defer rows.Close()
 
-	var expired []string
+	var names []string
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
 			return nil, fmt.Errorf("scan telemetry partition: %w", err)
 		}
-		if day, ok := telemetryPartitionNameDay(name); ok && !day.Add(24*time.Hour).After(cutoff) {
-			expired = append(expired, name)
+		names = append(names, name)
+	}
+	return names, rows.Err()
+}
+
+// useRollup reports whether a dashboard window is served from the rollup
+// tables: long enough to want it, and backfilled so it covers the window.
+func (s *PostgresTelemetrySink) useRollup(window time.Duration) bool {
+	return window >= telemetryRollupMinWindow && s.rollupReady.Load()
+}
+
+func (s *PostgresTelemetrySink) markRollupReady() {
+	if s.rollupReady.CompareAndSwap(false, true) {
+		close(s.backfillDone)
+	}
+}
+
+// initRollupBackfill records, once per database, the range of stored events
+// the rollup tables must be backfilled from: everything received before this
+// start (`backfill_until`), walked upwards from the oldest partition's day
+// (`backfill_done_through`). Rows this process inserts from now on are rolled
+// up as they land, so the two ranges never overlap. A later start finds the
+// rows already present and resumes (or, when done_through has reached until,
+// reports completion at once); a fresh database with no partitions completes
+// immediately. The state is deliberately never cleared, so a redeploy does
+// not re-fold events that are already in the rollup.
+func (s *PostgresTelemetrySink) initRollupBackfill(ctx context.Context) (complete bool, err error) {
+	now := s.now().UTC()
+	names, err := s.listPartitions(ctx)
+	if err != nil {
+		return false, err
+	}
+	from := now
+	for _, name := range names {
+		if day, ok := telemetryPartitionNameDay(name); ok && day.Before(from) {
+			from = day
 		}
 	}
-	return expired, rows.Err()
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO telemetry_rollup_state (key, value)
+		VALUES ('backfill_until', $1), ('backfill_done_through', $2)
+		ON CONFLICT (key) DO NOTHING
+	`, now, from); err != nil {
+		return false, fmt.Errorf("initialise telemetry rollup state: %w", err)
+	}
+	var until, through time.Time
+	if err := s.pool.QueryRow(ctx, `
+		SELECT u.value, d.value
+		FROM telemetry_rollup_state u, telemetry_rollup_state d
+		WHERE u.key = 'backfill_until' AND d.key = 'backfill_done_through'
+	`).Scan(&until, &through); err != nil {
+		return false, fmt.Errorf("read telemetry rollup state: %w", err)
+	}
+	return !through.Before(until), nil
+}
+
+// backfillLoop drives rollupBackfillChunk until the watermark reaches the
+// end, then switches the dashboard's long windows over to the rollup.
+func (s *PostgresTelemetrySink) backfillLoop() {
+	defer close(s.backfillExited)
+	slog.Info("telemetry rollup backfill started")
+	for {
+		done, err := s.rollupBackfillChunk()
+		wait := telemetryRollupBackfillPause
+		switch {
+		case err != nil:
+			slog.Error("could not backfill telemetry rollup", "error", err)
+			wait = telemetryRollupBackfillRetry
+		case done:
+			slog.Info("telemetry rollup backfill complete")
+			s.markRollupReady()
+			return
+		}
+		select {
+		case <-time.After(wait):
+		case <-s.stop:
+			return
+		}
+	}
+}
+
+// rollupBackfillChunk folds the next hour of stored events into the rollup in
+// one short transaction. The watermark row is locked for the transaction, so
+// two brokers sharing a database take turns and never fold the same hour
+// twice; the chunk statement and the watermark advance commit together, so a
+// crash between them re-runs nothing. It reports done once the watermark has
+// reached the end of the backfill range.
+func (s *PostgresTelemetrySink) rollupBackfillChunk() (done bool, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), postgresTelemetryQueryTimeout)
+	defer cancel()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("begin telemetry rollup backfill: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var until, through time.Time
+	if err := tx.QueryRow(ctx, `
+		SELECT u.value, d.value
+		FROM telemetry_rollup_state u, telemetry_rollup_state d
+		WHERE u.key = 'backfill_until' AND d.key = 'backfill_done_through'
+		FOR UPDATE OF d
+	`).Scan(&until, &through); err != nil {
+		return false, fmt.Errorf("read telemetry rollup state: %w", err)
+	}
+	if !through.Before(until) {
+		return true, nil
+	}
+	end := through.Add(telemetryRollupBackfillChunk)
+	if end.After(until) {
+		end = until
+	}
+	if _, err := tx.Exec(ctx, telemetryRollupBackfillStatement, through, end); err != nil {
+		return false, fmt.Errorf("backfill telemetry rollup %s..%s: %w", through.Format(time.RFC3339), end.Format(time.RFC3339), err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE telemetry_rollup_state SET value = $1 WHERE key = 'backfill_done_through'`, end); err != nil {
+		return false, fmt.Errorf("advance telemetry rollup backfill: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit telemetry rollup backfill: %w", err)
+	}
+	return !end.Before(until), nil
 }
 
 func (s *PostgresTelemetrySink) Close() error {
 	s.closeOnce.Do(func() {
 		close(s.stop)
 		<-s.done
+		<-s.backfillExited
 		s.mu.Lock()
 		s.closed = true
 		s.mu.Unlock()
