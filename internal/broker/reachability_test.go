@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -302,6 +303,9 @@ func TestTCPRelayProber(t *testing.T) {
 	defer listener.Close()
 	addr := listener.Addr().(*net.TCPAddr)
 	prober := NewTCPRelayProber(2 * time.Second)
+	// The real policy refuses loopback, so the dial path is exercised with a
+	// permissive one; the policy itself is tested below.
+	prober.permit = func(netip.Addr) bool { return true }
 
 	if err := prober.Probe(context.Background(), addr.IP.String(), addr.Port); err != nil {
 		t.Fatalf("listening endpoint: %v", err)
@@ -322,6 +326,135 @@ func TestTCPRelayProber(t *testing.T) {
 	cancel()
 	if err := prober.Probe(cancelled, addr.IP.String(), addr.Port); !errors.Is(err, ErrProbeInconclusive) {
 		t.Fatalf("cancelled probe: %v, want inconclusive", err)
+	}
+}
+
+// TestTCPRelayProberRefusesNonPublicTargets pins the policy that closes the
+// connect oracle: a registration naming a loopback, private, link-local or
+// broker-local endpoint is never dialled, so its result is inconclusive
+// whether or not something listens there.
+func TestTCPRelayProberRefusesNonPublicTargets(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	addr := listener.Addr().(*net.TCPAddr)
+	prober := NewTCPRelayProber(2 * time.Second)
+
+	// A loopback literal with a live listener: refused, not reachable.
+	if err := prober.Probe(context.Background(), addr.IP.String(), addr.Port); !errors.Is(err, ErrProbeInconclusive) {
+		t.Fatalf("loopback literal: %v, want inconclusive", err)
+	}
+	for _, host := range []string{"10.1.2.3", "192.168.1.1", "172.16.0.9", "169.254.169.254", "100.64.0.1", "0.0.0.0", "255.255.255.255", "::1", "fe80::1", "fd00::1", "::ffff:127.0.0.1", "ff02::1"} {
+		if err := prober.Probe(context.Background(), host, addr.Port); !errors.Is(err, ErrProbeInconclusive) {
+			t.Fatalf("%s: %v, want inconclusive", host, err)
+		}
+	}
+
+	// A hostname is judged by what it resolves to, and dialled by address.
+	prober.resolve = func(context.Context, string) ([]netip.Addr, error) {
+		return []netip.Addr{netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("10.0.0.1")}, nil
+	}
+	if err := prober.Probe(context.Background(), "relay.test", addr.Port); !errors.Is(err, ErrProbeInconclusive) {
+		t.Fatalf("hostname resolving to non-public addresses: %v, want inconclusive", err)
+	}
+	// Only the permitted address of a mixed answer is dialled.
+	prober.permit = func(a netip.Addr) bool { return a.IsLoopback() }
+	if err := prober.Probe(context.Background(), "relay.test", addr.Port); err != nil {
+		t.Fatalf("hostname with one permitted address: %v", err)
+	}
+	// At most one address per family is kept, in resolver order.
+	prober.permit = func(netip.Addr) bool { return true }
+	targets, err := prober.targets(context.Background(), "relay.test")
+	if err != nil || len(targets) != 1 || targets[0] != netip.MustParseAddr("127.0.0.1") {
+		t.Fatalf("targets = %v, %v; want the first IPv4 only", targets, err)
+	}
+	prober.resolve = func(context.Context, string) ([]netip.Addr, error) {
+		return []netip.Addr{netip.MustParseAddr("2001:db8::1"), netip.MustParseAddr("2001:db8::2"), netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.2")}, nil
+	}
+	targets, err = prober.targets(context.Background(), "relay.test")
+	if err != nil || len(targets) != 2 || targets[0] != netip.MustParseAddr("2001:db8::1") || targets[1] != netip.MustParseAddr("192.0.2.1") {
+		t.Fatalf("targets = %v, %v; want one per family", targets, err)
+	}
+	prober.permit = probeAddressPermitted
+	// A resolver failure that may clear is inconclusive; an unknown name is
+	// a conclusive failure, as it is for every client.
+	prober.resolve = func(context.Context, string) ([]netip.Addr, error) {
+		return nil, &net.DNSError{Err: "server misbehaving", IsTemporary: true}
+	}
+	if err := prober.Probe(context.Background(), "relay.test", addr.Port); !errors.Is(err, ErrProbeInconclusive) {
+		t.Fatalf("temporary resolver failure: %v, want inconclusive", err)
+	}
+	prober.resolve = func(context.Context, string) ([]netip.Addr, error) {
+		return nil, &net.DNSError{Err: "no such host", IsNotFound: true}
+	}
+	if err := prober.Probe(context.Background(), "relay.test", addr.Port); err == nil || errors.Is(err, ErrProbeInconclusive) {
+		t.Fatalf("unknown host: %v, want a conclusive failure", err)
+	}
+}
+
+func TestProbeAddressPermitted(t *testing.T) {
+	refused := []string{
+		"127.0.0.1", "127.8.8.8", "10.0.0.1", "172.31.255.255", "192.168.0.1", "169.254.169.254",
+		"100.127.0.1", "0.0.0.0", "0.1.2.3", "192.0.0.8", "192.0.2.1", "198.18.0.1", "198.51.100.1",
+		"203.0.113.7", "224.0.0.1", "240.0.0.1", "255.255.255.255",
+		"::", "::1", "fe80::1", "fc00::1", "fd12::1", "ff02::1", "64:ff9b::7f00:1", "2001:db8::1",
+		"2002:7f00:1::1", "::ffff:10.0.0.1", "::ffff:127.0.0.1",
+	}
+	for _, raw := range refused {
+		if probeAddressPermitted(netip.MustParseAddr(raw)) {
+			t.Errorf("%s permitted, want refused", raw)
+		}
+	}
+	permitted := []string{"8.8.8.8", "1.1.1.1", "51.15.0.1", "2606:4700::1111", "2001:4860:4860::8888", "::ffff:8.8.8.8"}
+	for _, raw := range permitted {
+		if !probeAddressPermitted(netip.MustParseAddr(raw)) {
+			t.Errorf("%s refused, want permitted", raw)
+		}
+	}
+	if probeAddressPermitted(netip.Addr{}) {
+		t.Error("zero address permitted")
+	}
+	// This host's own addresses are refused whatever range they fall in.
+	interfaceAddrs, err := net.InterfaceAddrs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, interfaceAddr := range interfaceAddrs {
+		ipNet, ok := interfaceAddr.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		local, _ := netip.AddrFromSlice(ipNet.IP)
+		if probeAddressPermitted(local) {
+			t.Errorf("local address %s permitted", local)
+		}
+	}
+}
+
+// TestDisabledProbingIgnoresStoredFailures is the retained-store regression:
+// a broker restarted with probing off must relist relays a previous run
+// marked unreachable, since nothing will ever re-probe them.
+func TestDisabledProbingIgnoresStoredFailures(t *testing.T) {
+	store := NewStore()
+	now := time.Now().UTC()
+	desc := registerRelayForRanking(t, store, now, "203.0.113.7", 8, 20)
+	if err := store.UpdateReachability(desc.ID, "", false, now); err != nil {
+		t.Fatal(err)
+	}
+
+	withProbe := NewServer(store, Config{SigningSeed: testSigningSeed(), APIToken: testAPIToken, RelayProber: &stubProber{}})
+	if ids := listedIDs(t, withProbe); len(ids) != 0 {
+		t.Fatalf("relay with a stored failure listed while probing is on: %v", ids)
+	}
+	withoutProbe := NewServer(store, Config{SigningSeed: testSigningSeed(), APIToken: testAPIToken})
+	if ids := listedIDs(t, withoutProbe); len(ids) != 1 || ids[0] != desc.ID {
+		t.Fatalf("relay with a stored failure not relisted with probing off: %v", ids)
+	}
+	// The stale result is still visible to operators.
+	if got := inventoryReachability(t, withoutProbe, desc.ID); got != "false" {
+		t.Fatalf("inventory reachable = %s, want the stored false", got)
 	}
 }
 

@@ -229,9 +229,16 @@ func TestAccessWithholdsRelaysWhoseProbeFailed(t *testing.T) {
 	if err := h.store.UpdateReachability(b.ID, b.LeaseToken, false, h.now); err != nil {
 		t.Fatal(err)
 	}
-
 	token, _ := h.token()
+
+	// With probing off a stored failure is stale and changes nothing.
 	rec, resp := h.request(token, `{}`)
+	if rec.Code != http.StatusOK || len(resp.Relays) != 2 {
+		t.Fatalf("access with probing off: %d %+v, want both relays", rec.Code, resp.Relays)
+	}
+
+	h.handler.withholdUnreachable = true
+	rec, resp = h.request(token, `{}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("access: %d %s", rec.Code, rec.Body.String())
 	}

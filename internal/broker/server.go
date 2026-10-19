@@ -165,7 +165,7 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 		mux.HandleFunc("GET /api/v1/relays/{id}/leases", rateLimited(relayRegistrationLimiter, clientIP, 10, access.leasePollHandler()))
 		mux.HandleFunc("POST /api/v1/relays/{id}/leases/ack", rateLimited(relayRegistrationLimiter, clientIP, 10, access.leaseAckHandler()))
 	}
-	mux.HandleFunc("GET /api/v1/relays", rateLimited(relayListLimiter, clientIP, 10, listRelaysHandler(store, cfg.TelemetrySink, clientIP, clientSeen, relaySigner)))
+	mux.HandleFunc("GET /api/v1/relays", rateLimited(relayListLimiter, clientIP, 10, listRelaysHandler(store, cfg.TelemetrySink, clientIP, clientSeen, relaySigner, cfg.RelayProber != nil)))
 	if wssIssuer != nil {
 		mux.HandleFunc("POST /api/v1/wss/tickets", rateLimitedBy(wssTicketLimiter, wssTicketRateKey(clientIP), 10, wssTicketHandler(store, wssIssuer)))
 	}
@@ -198,6 +198,7 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 	// Client access issues per-user relay credentials; it needs both the
 	// token key (users) and a store that can hold leases (access).
 	if clientAccess := newClientAccessHandler(store, users, access, relaySigner); clientAccess != nil {
+		clientAccess.withholdUnreachable = cfg.RelayProber != nil
 		accessLimiter := newIPRateLimiter(accessRatePerSecond, accessBurst, rateLimiterMaxTrackedIPs)
 		mux.HandleFunc("POST /api/v1/access", clientAccess.counted(rateLimitedBy(accessLimiter, clientAccess.rateKey(clientIP), 10, clientAccess.handler())))
 	}
@@ -464,7 +465,9 @@ func geoLookupHost(desc *relay.Descriptor) string {
 	return desc.PublicHost
 }
 
-func listRelaysHandler(store RelayStore, telemetrySink TelemetrySink, clientIP *clientIPResolver, clientSeen *clientSeenDeduper, s signer) http.HandlerFunc {
+// withholdUnreachable is whether reachability probing is enabled, and so
+// whether a stored failed probe keeps a relay off the page.
+func listRelaysHandler(store RelayStore, telemetrySink TelemetrySink, clientIP *clientIPResolver, clientSeen *clientSeenDeduper, s signer, withholdUnreachable bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Relay availability is real-time: shared caches (Cloudflare's edge in
 		// production) must never store a copy, and clients cannot bust an edge
@@ -492,7 +495,7 @@ func listRelaysHandler(store RelayStore, telemetrySink TelemetrySink, clientIP *
 			writeError(w, http.StatusServiceUnavailable, "could not list relays")
 			return
 		}
-		relays = reserveWSSCandidate(withoutUnreachable(relays), limit, weights)
+		relays = reserveWSSCandidate(withoutUnreachable(relays, withholdUnreachable), limit, weights)
 		s.writeSigned(w, relay.ListResponse{
 			Count:      len(relays),
 			ServerTime: now,

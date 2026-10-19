@@ -81,6 +81,9 @@ type clientAccessHandler struct {
 	signer       signer
 	applyTimeout time.Duration
 	stats        *accessStats
+	// withholdUnreachable is whether reachability probing is enabled, and so
+	// whether a stored failed probe excludes a relay (see reachability.go).
+	withholdUnreachable bool
 }
 
 func newClientAccessHandler(store RelayStore, users *userAuthService, access *accessService, s signer) *clientAccessHandler {
@@ -277,7 +280,7 @@ func (h *clientAccessHandler) handler() http.HandlerFunc {
 			writeError(w, http.StatusServiceUnavailable, "could not list relays")
 			return
 		}
-		page := reserveWSSCandidate(accessCandidates(relays, relayID, country), limit, weights)
+		page := reserveWSSCandidate(accessCandidates(withoutUnreachable(relays, h.withholdUnreachable), relayID, country), limit, weights)
 		if len(page) == 0 || (relayID != "" && !relay.WellFormedRelayID(relayID)) {
 			h.writeAccess(w, now, nil, time.Time{})
 			return
@@ -429,14 +432,14 @@ func (h *clientAccessHandler) anyRelayAlive(leases []Lease, now time.Time) (bool
 }
 
 // accessCandidates keeps the ranked relays that can carry a lease — an
-// identity-bearing, lease-capable, direct-transport registration whose
-// endpoint did not fail its latest reachability probe — narrowed to the
-// target: an exact relay ID, or a country code (case-insensitive, as clients
-// match it). Order is preserved; it is the ranking.
+// identity-bearing, lease-capable, direct-transport registration — narrowed
+// to the target: an exact relay ID, or a country code (case-insensitive, as
+// clients match it). Order is preserved; it is the ranking. The caller has
+// already applied withoutUnreachable.
 func accessCandidates(relays []relay.Descriptor, relayID, country string) []relay.Descriptor {
 	out := make([]relay.Descriptor, 0, len(relays))
 	for _, desc := range relays {
-		if !desc.LeaseCapable || desc.IdentityPublicKey == "" || desc.Transport != relay.TransportDirect || relayUnreachable(desc) {
+		if !desc.LeaseCapable || desc.IdentityPublicKey == "" || desc.Transport != relay.TransportDirect {
 			continue
 		}
 		if relayID != "" && desc.ID != relayID {

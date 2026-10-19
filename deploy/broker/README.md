@@ -313,8 +313,12 @@ OPENRUNG_RELAY_PROBE_INTERVAL=5m   # re-probe on heartbeat once the result is th
 The probe runs from the broker host's own network, so the host needs egress to
 every address family the fleet advertises; a family the host has no route for
 is skipped (the relay keeps its previous result) rather than counted as
-unreachable. After deploying a broker, check the inventory for `"reachable":
-false` rows before assuming a relay is at fault.
+unreachable. Only public unicast addresses are ever dialled — never loopback,
+private, link-local or the broker host's own — so an anonymous registration
+cannot use the broker to test ports near it. After deploying a broker, check
+the inventory for `"reachable": false` rows before assuming a relay is at
+fault. Switching the probe off ignores stored results immediately, so it is
+also the way to relist every withheld relay at once.
 
 ## Telemetry dashboard
 

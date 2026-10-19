@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"strconv"
 	"syscall"
 	"time"
@@ -36,6 +37,18 @@ import (
 // the registering relay hanging up — is inconclusive and changes nothing: the
 // relay keeps whatever state it had, which for a fresh registration is
 // "unprobed" and listed.
+//
+// The endpoint is relay-supplied, and registration may be anonymous, so the
+// broker dials only addresses a client on the public internet could reach
+// itself: the host is resolved first and every resolved address must be
+// public unicast and not one of this host's own (see probeAddressPermitted).
+// Anything else is not dialled and is inconclusive, so a registration can
+// never be used to learn whether a loopback, private, link-local or
+// broker-local port accepts connections.
+//
+// The withholding is a consequence of probing: with probing disabled the
+// stored results are ignored, so switching it off relists every relay at
+// once even when a retained store still holds earlier failures.
 
 const (
 	// defaultRelayProbeTimeout bounds one dial. Reality listeners answer a
@@ -66,6 +79,12 @@ type RelayProber interface {
 // broker having to speak Reality.
 type TCPRelayProber struct {
 	timeout time.Duration
+	// permit decides which resolved addresses may be dialled; it is
+	// probeAddressPermitted outside tests.
+	permit func(netip.Addr) bool
+	// resolve turns the advertised host into candidate addresses; it is the
+	// default resolver outside tests.
+	resolve func(ctx context.Context, host string) ([]netip.Addr, error)
 }
 
 // NewTCPRelayProber returns a prober whose dials time out after timeout
@@ -74,17 +93,133 @@ func NewTCPRelayProber(timeout time.Duration) *TCPRelayProber {
 	if timeout <= 0 {
 		timeout = defaultRelayProbeTimeout
 	}
-	return &TCPRelayProber{timeout: timeout}
+	return &TCPRelayProber{
+		timeout: timeout,
+		permit:  probeAddressPermitted,
+		resolve: func(ctx context.Context, host string) ([]netip.Addr, error) {
+			return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+		},
+	}
 }
 
+// Probe resolves host, drops every address the policy refuses, and dials the
+// rest by address (never by name again, so a resolver cannot swap in a
+// refused address between the check and the dial). Any completed connection
+// is reachable. Otherwise the endpoint is unreachable if any dial failed
+// conclusively, and inconclusive if nothing could be dialled or every dial
+// failed for a reason of this broker's own. The whole probe, resolution
+// included, is bounded by one timeout: it runs inside a relay's request.
 func (p *TCPRelayProber) Probe(ctx context.Context, host string, port int) error {
-	dialer := net.Dialer{Timeout: p.timeout}
-	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+	ctx, cancel := context.WithTimeout(ctx, p.timeout)
+	defer cancel()
+	addrs, err := p.targets(ctx, host)
 	if err != nil {
-		return classifyProbeError(err)
+		return err
 	}
-	_ = conn.Close()
-	return nil
+	var failure error
+	for _, addr := range addrs {
+		dialer := net.Dialer{Timeout: p.timeout}
+		conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(addr.String(), strconv.Itoa(port)))
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+		err = classifyProbeError(err)
+		if failure == nil || (errors.Is(failure, ErrProbeInconclusive) && !errors.Is(err, ErrProbeInconclusive)) {
+			failure = err
+		}
+	}
+	return failure
+}
+
+// targets resolves host to the addresses the policy permits dialling, at
+// most one per address family in resolver order so a many-address name
+// cannot stretch the probe. An IP literal resolves to itself. No permitted
+// address is inconclusive: the endpoint is one no public client could reach
+// either, and dialling it from the broker would answer a question about the
+// broker's own network.
+func (p *TCPRelayProber) targets(ctx context.Context, host string) ([]netip.Addr, error) {
+	var addrs []netip.Addr
+	if addr, err := netip.ParseAddr(host); err == nil {
+		addrs = []netip.Addr{addr}
+	} else {
+		resolved, err := p.resolve(ctx, host)
+		if err != nil {
+			return nil, classifyProbeError(err)
+		}
+		addrs = resolved
+	}
+	permitted := addrs[:0:0]
+	var have4, have6 bool
+	for _, addr := range addrs {
+		addr = addr.Unmap()
+		if !p.permit(addr) || (addr.Is4() && have4) || (addr.Is6() && have6) {
+			continue
+		}
+		have4, have6 = have4 || addr.Is4(), have6 || addr.Is6()
+		permitted = append(permitted, addr)
+	}
+	if len(permitted) == 0 {
+		return nil, fmt.Errorf("%w: %s resolves to no public address", ErrProbeInconclusive, host)
+	}
+	return permitted, nil
+}
+
+// probeAddressPermitted is the dial policy: public unicast only — not
+// loopback, private, link-local (the cloud metadata address included),
+// carrier-grade NAT, multicast, unspecified, documentation, benchmark,
+// reserved or IPv4-mapped-in-IPv6 space — and not an address of this host
+// itself, whose firewall may trust loopback-originated connections that an
+// outside client never gets to make.
+func probeAddressPermitted(addr netip.Addr) bool {
+	addr = addr.Unmap()
+	if !addr.IsValid() || !addr.IsGlobalUnicast() || addr.IsPrivate() {
+		return false
+	}
+	for _, prefix := range refusedProbePrefixes {
+		if prefix.Contains(addr) {
+			return false
+		}
+	}
+	return !isLocalAddress(addr)
+}
+
+// refusedProbePrefixes are the non-routable or special-purpose ranges that
+// netip's IsGlobalUnicast and IsPrivate do not already exclude.
+var refusedProbePrefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"), // carrier-grade NAT
+	netip.MustParsePrefix("192.0.0.0/24"),  // IETF protocol assignments
+	netip.MustParsePrefix("192.0.2.0/24"),  // documentation
+	netip.MustParsePrefix("198.18.0.0/15"), // benchmarking
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("240.0.0.0/4"),  // reserved, includes broadcast
+	netip.MustParsePrefix("64:ff9b::/96"), // NAT64 well-known prefix
+	netip.MustParsePrefix("2001:db8::/32"),
+	netip.MustParsePrefix("2002::/16"), // 6to4 embeds an arbitrary IPv4
+}
+
+// isLocalAddress reports whether addr is assigned to one of this host's own
+// interfaces. Interfaces are read on every call; probes are rare and the
+// set must not go stale when an address is added after start-up.
+func isLocalAddress(addr netip.Addr) bool {
+	interfaceAddrs, err := net.InterfaceAddrs()
+	if err != nil {
+		// Unknown is treated as local: refusing a dial is the safe failure.
+		return true
+	}
+	for _, interfaceAddr := range interfaceAddrs {
+		ipNet, ok := interfaceAddr.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		local, ok := netip.AddrFromSlice(ipNet.IP)
+		if ok && local.Unmap() == addr {
+			return true
+		}
+	}
+	return false
 }
 
 // classifyProbeError separates "the endpoint did not answer" from "this
@@ -149,16 +284,21 @@ func probeRelayReachability(ctx context.Context, store RelayStore, prober RelayP
 }
 
 // relayUnreachable reports whether desc's most recent probe failed. A relay
-// that has never been probed (tunnel transport, probing disabled, or a result
-// not yet written) is not unreachable.
+// that has never been probed (tunnel transport, or a result not yet written)
+// is not unreachable.
 func relayUnreachable(desc relay.Descriptor) bool {
 	return !desc.ReachabilityCheckedAt.IsZero() && !desc.Reachable
 }
 
 // withoutUnreachable drops relays whose latest probe failed, preserving the
-// ranking order of the rest. The client-facing channels apply it after
-// ranking and before page shaping; the operator views never do.
-func withoutUnreachable(relays []relay.Descriptor) []relay.Descriptor {
+// ranking order of the rest, when probing is enabled; with it disabled the
+// stored results are stale by definition (nothing will refresh them) and
+// every relay is kept. The client-facing channels apply it after ranking and
+// before page shaping; the operator views never do.
+func withoutUnreachable(relays []relay.Descriptor, probing bool) []relay.Descriptor {
+	if !probing {
+		return relays
+	}
 	out := relays[:0:0]
 	for _, desc := range relays {
 		if relayUnreachable(desc) {

@@ -661,11 +661,20 @@ endpoint is the relay hub. A probe the broker could not attempt — no route or
 local address for the endpoint's address family, a transient resolver
 failure — is inconclusive and changes nothing.
 
+The broker dials only endpoints a client on the public internet could reach
+itself: the host is resolved first, and an address that is loopback, private,
+link-local, carrier-grade NAT, multicast, documentation or otherwise
+non-routable space — or one of the broker host's own — is never dialled. Such
+a registration is inconclusive (unprobed and listed, as before), so
+registering an endpoint can never reveal whether a port on or near the broker
+accepts connections.
+
 `OPENRUNG_RELAY_PROBE` switches the probe `off` (default `on`);
 `OPENRUNG_RELAY_PROBE_TIMEOUT` bounds one dial (default `5s`) and
 `OPENRUNG_RELAY_PROBE_INTERVAL` is how old a result may be before a heartbeat
 re-probes (default `5m`). With the probe off every relay is listed on its
-lease alone.
+lease alone: results a previous run stored are ignored (they still show in
+the inventory), so switching it off relists every withheld relay at once.
 
 `relay_version` identifies the relay runtime artifact, independently of the
 broker, relay hub, and client app versions. Standalone images report values such
