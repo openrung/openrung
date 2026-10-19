@@ -339,6 +339,7 @@ func TestTunnelPeriodicReprobeUsesCandidateOrderAndPromotesLiveSession(t *testin
 		ListenPort:              alternate,
 		AutomaticPortCandidates: []int{443, alternate},
 		Identity:                testIdentity,
+		ObserveConnections:      true, // the observer is the dialable listener
 		DisableXray:             true,
 		ConfigDir:               t.TempDir(),
 	}, Events{})
@@ -407,6 +408,7 @@ func TestSelectedAutomaticPortPropagatesThroughDirectSession(t *testing.T) {
 		ListenPort:              alternate,
 		AutomaticPortCandidates: []int{443, alternate},
 		Identity:                testIdentity,
+		ObserveConnections:      true, // the observer is the dialable listener
 		DisableXray:             true,
 		ConfigDir:               t.TempDir(),
 	}

@@ -262,6 +262,9 @@ func (s *Service) engineConfigLocked() engine.Config {
 		MaxMbps:                 settings.MaxMbps,
 		Version:                 s.relayVersion,
 		PunchCapable:            true,
+		// The UI shows live connection and byte counters, which only the
+		// engine's connection observer produces for direct sessions.
+		ObserveConnections: true,
 	}
 }
 

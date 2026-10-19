@@ -46,6 +46,9 @@ func runConnLogSession(t *testing.T, output *syncBuffer, engineLog *syncBuffer) 
 		Identity:    testIdentity,
 		DisableXray: true,
 		ConfigDir:   t.TempDir(),
+		// Observing without a log is the volunteer app's posture; a log
+		// implies observing on its own.
+		ObserveConnections: output == nil,
 	}
 	if output != nil {
 		cfg.ConnectionLogOutput = output

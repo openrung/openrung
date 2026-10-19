@@ -47,9 +47,11 @@ func TestRenderXrayConfigDirect(t *testing.T) {
 		Identity:   testIdentity,
 	}, Events{OnIdentity: func(Identity) { identityReports++ }})
 
+	// The direct-only default "::" names both families; xray binds them as
+	// one dual-stack wildcard.
 	parsed := renderAndParse(t, eng)
-	if parsed.Inbounds[0].Listen != directOnlyListenHost || parsed.Inbounds[0].Port != 8443 {
-		t.Fatalf("inbound = %s:%d, want %s:8443", parsed.Inbounds[0].Listen, parsed.Inbounds[0].Port, directOnlyListenHost)
+	if parsed.Inbounds[0].Listen != "0.0.0.0" || parsed.Inbounds[0].Port != 8443 {
+		t.Fatalf("inbound = %s:%d, want 0.0.0.0:8443", parsed.Inbounds[0].Listen, parsed.Inbounds[0].Port)
 	}
 	// A complete identity renders as-is; nothing is generated or re-reported.
 	if identityReports != 0 {

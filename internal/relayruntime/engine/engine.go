@@ -164,12 +164,21 @@ type Config struct {
 	// the public listener directly — no per-connection observer runs, so
 	// relay-local WSS streams produce no address or byte-count records.
 	WSSFronts []relay.WSSFrontDescriptor
+	// ObserveConnections puts the engine's ConnectionObserver, a TCP proxy, in
+	// front of xray in a direct session, so Status reports active connections,
+	// totals and bytes. It adds a loopback hop and per-byte copies, so server
+	// relays leave it off and xray owns the public port directly; Status then
+	// counts only tunnel streams. A non-nil ConnectionLogOutput implies it. WSS
+	// relays are never observed: validation rejects it together with
+	// WSSFronts.
+	ObserveConnections bool
 	// ConnectionLogOutput, when non-nil, receives the observer's colored
 	// per-connection connect/disconnect lines — which include client IPs — as
-	// cmd/relay prints to stdout. Nil (the default, and the GUI posture) keeps
-	// them out of every log; aggregate counters remain in Status either way.
-	// The engine serializes writes (one line per Write call), so the writer
-	// itself does not need to be goroutine-safe.
+	// cmd/relay prints to stdout, and implies ObserveConnections. Nil (the
+	// default, and the GUI posture) keeps them out of every log; an observed
+	// session still keeps aggregate counters in Status. The engine serializes
+	// writes (one line per Write call), so the writer itself does not need to
+	// be goroutine-safe.
 	ConnectionLogOutput io.Writer
 	// Identity seeds the relay identity; missing parts are generated.
 	Identity Identity
@@ -308,8 +317,8 @@ func (c Config) validateWSSFronts() error {
 	if !wssListenHostReachesIPv4Loopback(c.ListenHost) {
 		return errors.New("WSS fronts require an IPv4-loopback-reachable listen host: 0.0.0.0 (production) or 127.0.0.1 (testing)")
 	}
-	if c.ConnectionLogOutput != nil {
-		return errors.New("WSS fronts require connection logging disabled so relay-local WSS streams produce no per-connection address or byte-count records")
+	if c.observeConnections() {
+		return errors.New("WSS fronts require connection logging and connection observing disabled so relay-local WSS streams produce no per-connection address or byte-count records")
 	}
 	if strings.TrimSpace(c.Identity.IdentitySeed) == "" {
 		return errors.New("WSS fronts require an explicit stable identity seed")
@@ -461,7 +470,10 @@ type Status struct {
 	// identity key, so re-registering after an expired lease returns the same
 	// one — which is why a caller that reports each registration must watch
 	// this rather than diffing RelayID.
-	Registrations     uint64 `json:"registrations"`
+	Registrations uint64 `json:"registrations"`
+	// The connection and byte counters cover tunnel streams and, only when
+	// Config.ObserveConnections is in effect, direct connections; an
+	// unobserved direct session's xray serves clients the engine never sees.
 	ActiveConnections int64  `json:"activeConnections"`
 	TotalConnections  uint64 `json:"totalConnections"`
 	// BytesFromClients/BytesToClients count relayed traffic in both directions
@@ -800,15 +812,28 @@ func (c Config) publicPort() int {
 	return c.ListenPort
 }
 
-// isDualListenHost reports whether host is one of the aliases the connection
-// listener expands into a separate IPv6 and IPv4 listener. Xray binds exactly
-// one address, so these never reach it.
-func isDualListenHost(host string) bool {
+// observeConnections reports whether a direct session puts the connection
+// observer in front of xray. A connection log needs the observer to exist, so
+// it implies observing.
+func (c Config) observeConnections() bool {
+	return c.ObserveConnections || c.ConnectionLogOutput != nil
+}
+
+// xrayPublicListenHost is where an unobserved direct session's xray binds the
+// public port. The connection observer expands "::", "dual" and "both" into
+// separate IPv6 and IPv4 listeners, but xray binds exactly one address, so
+// those aliases (and the empty automatic-probe wildcard) map to "0.0.0.0":
+// xray listens through Go's generic "tcp" network, where an unspecified
+// address opens one dual-stack socket and falls back to whichever family the
+// host has — the same strategy as the automatic probe's ":port". "::" would
+// behave the same except on a host with IPv6 disabled, where it fails to bind.
+// Any other host is a literal address and binds as given.
+func xrayPublicListenHost(host string) string {
 	switch strings.ToLower(strings.TrimSpace(host)) {
-	case "dual", "both":
-		return true
+	case "", "::", "dual", "both":
+		return "0.0.0.0"
 	default:
-		return false
+		return strings.TrimSpace(host)
 	}
 }
 
@@ -1124,16 +1149,18 @@ func (e *Engine) startXray(ctx context.Context, cfg Config, identity Identity, l
 // anything — the engine form of cmd/relay's -print-config-only. Missing
 // identity parts are generated (and reported through OnIdentity) exactly as a
 // real session would, so the rendered config matches a subsequent Start. Like
-// cmd/relay, it renders the canonical direct-form binding: a live direct
-// session actually rebinds xray to a reserved loopback port behind the
-// observer, which is resolved at runtime and not knowable at render time.
+// cmd/relay, it renders the canonical direct-form binding: the public port on
+// the host an unobserved session's xray binds (dual-family aliases map to one
+// wildcard, see xrayPublicListenHost). An observed session instead rebinds
+// xray to a reserved loopback port behind the observer, which is resolved at
+// runtime and not knowable at render time.
 // Tunnel mode renders a freshly reserved loopback binding for the same reason
 // cmd/relay does. The render always carries the static client and no
 // management inbound: a rotating session's credentials exist only at runtime.
 func (e *Engine) RenderXrayConfig() ([]byte, error) {
 	// Refuse while running. Identity forking is prevented structurally by
-	// prepareIdentity's serialization, but a live direct session binds xray to
-	// a runtime-reserved loopback port, so a mid-session render would describe
+	// prepareIdentity's serialization, but a live observed session binds xray
+	// to a runtime-reserved loopback port, so a mid-session render would describe
 	// a binding the running relay does not use; refusing keeps the method's
 	// "matches a subsequent Start" promise unambiguous.
 	if e.Running() {
@@ -1160,10 +1187,8 @@ func (e *Engine) RenderXrayConfig() ([]byte, error) {
 		listenHost, listenPort = host, port
 	case len(cfg.WSSFronts) > 0:
 		listenHost = cfg.wssListenHost()
-	case isDualListenHost(listenHost):
-		// The dual-family aliases name two listeners, which only the connection
-		// listener can open; xray binds exactly one address.
-		return nil, fmt.Errorf("cannot render an xray config for listen host %q: it names two listeners", cfg.ListenHost)
+	default:
+		listenHost = xrayPublicListenHost(listenHost)
 	}
 	return relayruntime.BuildXrayConfig(relayruntime.XrayConfigInput{
 		ListenHost:        listenHost,
@@ -1195,15 +1220,17 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 	}
 
 	wss := len(cfg.WSSFronts) > 0
+	observe := !wss && cfg.observeConnections()
 	var xrayListenHost string
 	var xrayListenPort int
-	if wss {
+	switch {
+	case wss:
 		// WSS relays bypass the per-connection observer entirely (mirroring
 		// cmd/relay): opaque fallback streams must never create address or
 		// byte-count records, so xray owns the public listener directly and the
 		// engine's per-connection counters stay at zero.
 		xrayListenHost, xrayListenPort = cfg.wssListenHost(), cfg.ListenPort
-	} else {
+	case observe:
 		// The observer owns the public port and forwards to xray on loopback; it
 		// is also the traffic-counter source.
 		targetHost, targetPort, err := relayruntime.ReserveLoopbackTCPPort()
@@ -1211,6 +1238,9 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 			return err
 		}
 		xrayListenHost, xrayListenPort = targetHost, targetPort
+	default:
+		// Unobserved: xray owns the public port itself, with no proxy hop.
+		xrayListenHost, xrayListenPort = xrayPublicListenHost(listenHost), cfg.ListenPort
 	}
 
 	// Rotating credentials need xray's management inbound; a static session
@@ -1261,7 +1291,7 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 	}
 
 	var observerErr <-chan error
-	if !wss {
+	if observe {
 		// Per-connection lines include client IPs; unless the caller opted into
 		// console connection logging (ConnectionLogOutput) they go nowhere, and
 		// the engine surfaces aggregate counters instead. The observer writes
@@ -1296,6 +1326,8 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 			return fmt.Errorf("listen on port %d: %w", cfg.ListenPort, err)
 		}
 		e.logf("listening for direct connections on TCP %d", cfg.ListenPort)
+	} else {
+		e.logf("xray is listening for direct connections on TCP %d", cfg.ListenPort)
 	}
 
 	e.setStatus(func() { e.phase = PhaseRegistering })

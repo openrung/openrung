@@ -150,7 +150,7 @@ func (f *cliFlags) register(fs *flag.FlagSet, identitySeed string) {
 	fs.StringVar(&f.nodeClass, "node-class", os.Getenv("OPENRUNG_NODE_CLASS"), "relay operator class: volunteer (default) or foundation. For a foundation relay prefer -foundation-token, which sets this and forces direct mode / https automatically; a bare -node-class=foundation still needs direct mode, the foundation token as the bearer, and an https broker")
 	fs.StringVar(&f.foundationToken, "foundation-token", os.Getenv("OPENRUNG_FOUNDATION_TOKEN"), "foundation registration token; presenting it runs this as a foundation relay — it forces foundation class, direct mode, an https broker, and redirect refusal, so no separate -node-class is needed")
 	fs.StringVar(&f.xrayPath, "xray", "xray", "path to xray binary")
-	fs.StringVar(&f.listenHost, "listen-host", "::", "local listen host; with connection logging, :: listens on both IPv6 and IPv4 through the observer")
+	fs.StringVar(&f.listenHost, "listen-host", "::", "local listen host; :: (also dual or both) serves IPv6 and IPv4: xray binds one dual-stack wildcard, or with -connection-log the observer opens one listener per family")
 	fs.IntVar(&f.listenPort, "listen-port", 443, "local listen port")
 	fs.StringVar(&f.publicHost, "public-host", "", "public hostname or IP clients can reach; defaults to the relay host's first global IPv6 address")
 	fs.IntVar(&f.publicPort, "public-port", 443, "public port clients can reach")
@@ -166,7 +166,7 @@ func (f *cliFlags) register(fs *flag.FlagSet, identitySeed string) {
 	fs.IntVar(&f.maxMbps, "max-mbps", relayruntime.DefaultMaxMbps, "advertised max Mbps")
 	fs.DurationVar(&f.heartbeatInterval, "heartbeat-interval", 30*time.Second, "broker heartbeat interval")
 	fs.StringVar(&f.configOut, "config-out", "", "write generated Xray config to this path")
-	fs.BoolVar(&f.connectionLog, "connection-log", true, "print colored client connect and disconnect events")
+	fs.BoolVar(&f.connectionLog, "connection-log", false, "print colored client connect and disconnect events (with client IPs); puts a counting TCP proxy in front of xray, which otherwise binds the public port directly")
 	fs.BoolVar(&f.printConfigOnly, "print-config-only", false, "print generated Xray config and exit")
 	fs.BoolVar(&f.skipXrayRun, "skip-xray-run", false, "register and heartbeat without launching xray")
 	fs.StringVar(&f.mode, "mode", os.Getenv("OPENRUNG_MODE"), "connection mode: auto (probe reachability and pick direct/tunnel), direct, or tunnel; defaults to auto when -hub is set, else direct")
@@ -200,7 +200,8 @@ func (f *cliFlags) engineConfig() (engine.Config, error) {
 		}
 	}
 	// Per-connection lines carry client addresses, so -connection-log=false
-	// must leave the engine with nowhere to write them at all.
+	// must leave the engine with nowhere to write them at all. Only the log
+	// needs the observer proxy; without it xray owns the public port.
 	var connectionLog io.Writer
 	if f.connectionLog {
 		connectionLog = os.Stdout
@@ -232,6 +233,7 @@ func (f *cliFlags) engineConfig() (engine.Config, error) {
 		MaxMbps:             f.maxMbps,
 		HeartbeatInterval:   f.heartbeatInterval,
 		WSSFronts:           fronts,
+		ObserveConnections:  f.connectionLog,
 		ConnectionLogOutput: connectionLog,
 		Identity: engine.Identity{
 			ClientID:          f.clientID,

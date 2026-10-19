@@ -94,13 +94,14 @@ func TestWSSValidationGates(t *testing.T) {
 	}
 
 	for name, mutate := range map[string]func(*Config){
-		"volunteer class":    func(c *Config) { c.NodeClass = relay.NodeClassVolunteer },
-		"tunnel mode":        func(c *Config) { c.Mode, c.HubAddr = ModeTunnel, "hub.example:9443" },
-		"auto mode with hub": func(c *Config) { c.Mode, c.HubAddr = ModeAuto, "hub.example:9443" },
-		"non-443 port":       func(c *Config) { c.ListenPort = 8443 },
-		"connection logging": func(c *Config) { c.ConnectionLogOutput = &syncBuffer{} },
-		"ephemeral identity": func(c *Config) { c.Identity.IdentitySeed = "" },
-		"invalid identity":   func(c *Config) { c.Identity.IdentitySeed = "not-base64" },
+		"volunteer class":      func(c *Config) { c.NodeClass = relay.NodeClassVolunteer },
+		"tunnel mode":          func(c *Config) { c.Mode, c.HubAddr = ModeTunnel, "hub.example:9443" },
+		"auto mode with hub":   func(c *Config) { c.Mode, c.HubAddr = ModeAuto, "hub.example:9443" },
+		"non-443 port":         func(c *Config) { c.ListenPort = 8443 },
+		"connection logging":   func(c *Config) { c.ConnectionLogOutput = &syncBuffer{} },
+		"connection observing": func(c *Config) { c.ObserveConnections = true },
+		"ephemeral identity":   func(c *Config) { c.Identity.IdentitySeed = "" },
+		"invalid identity":     func(c *Config) { c.Identity.IdentitySeed = "not-base64" },
 		"malformed front": func(c *Config) {
 			c.WSSFronts = []relay.WSSFrontDescriptor{{ID: "front-a", URL: "https://cdn.example/api/v1/wss-bridge", ProtocolVersion: relay.WSSProtocolVersion}}
 		},

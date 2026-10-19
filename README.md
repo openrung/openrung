@@ -99,7 +99,7 @@ interfaces remain in their owning applications.
   user traffic.
 - 🗄️ **Production-friendly broker** — optional shared PostgreSQL state for safe
   restarts and load-balanced deployments.
-- 📊 **Operational visibility** — colored per-connection logs for relay
+- 📊 **Operational visibility** — opt-in colored per-connection logs for relay
   operators and an opt-in, token-protected telemetry dashboard.
 
 ## Quick start
@@ -239,16 +239,18 @@ go run ./cmd/relay \
 
 Useful to know:
 
-- With connection logging enabled (the default), `-listen-host ::` opens both
-  the IPv6 and IPv4 wildcard listeners. When `-public-host` is omitted, the
+- `-listen-host ::` (the default) serves both IPv6 and IPv4: Xray binds one
+  dual-stack wildcard socket. When `-public-host` is omitted, the
   relay advertises the first global IPv6 address it finds. Set `-public-host`
   to advertise a DNS name, IPv4 address, or specific IPv6 address, and set
   `-listen-host` when the local bind address should differ.
 - A global IPv6 address still needs inbound firewall/router rules that allow
   clients to reach the relay port.
-- Client connection events print in color by default — green on open, red on
-  close, with client IP, duration, and byte counts. Pass
-  `-connection-log=false` to let Xray bind the public port directly.
+- Xray binds the public port directly by default. Pass `-connection-log` to
+  print client connection events in color — green on open, red on close, with
+  client IP, duration, and byte counts. The log puts a counting TCP proxy in
+  front of Xray, which costs CPU per byte; with it, `-listen-host ::` opens
+  separate IPv6 and IPv4 listeners.
 - The broker currently advertises one `public_host` per relay. For both
   IPv4 and IPv6 discovery, advertise a DNS name with A and AAAA records, or
   run separate registrations.

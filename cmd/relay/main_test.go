@@ -93,7 +93,7 @@ func TestFlagSurfaceAndDefaultsAreStable(t *testing.T) {
 		"max-mbps":             strconv.Itoa(relayruntime.DefaultMaxMbps),
 		"heartbeat-interval":   "30s",
 		"config-out":           "",
-		"connection-log":       "true",
+		"connection-log":       "false",
 		"print-config-only":    "false",
 		"skip-xray-run":        "false",
 		"mode":                 "",
@@ -183,6 +183,9 @@ func TestDeployedDirectFlagsMapOntoEngineConfig(t *testing.T) {
 	// per-connection client addresses at all, not merely a quiet writer.
 	if cfg.ConnectionLogOutput != nil {
 		t.Error("connection-log=false still handed the engine a log writer")
+	}
+	if cfg.ObserveConnections {
+		t.Error("connection-log=false still put the connection observer in front of xray")
 	}
 	if cfg.ServerName != "www.example.com" || cfg.RealityDest != "www.example.com:443" {
 		t.Errorf("camouflage = %q/%q", cfg.ServerName, cfg.RealityDest)
@@ -806,5 +809,24 @@ func TestAccessLeasesFlagMapsOntoEngineConfig(t *testing.T) {
 		if cfg.DisableAccessLeases != wantDisabled {
 			t.Errorf("OPENRUNG_ACCESS_LEASES=%q: leases disabled = %v, want %v", value, cfg.DisableAccessLeases, wantDisabled)
 		}
+	}
+}
+
+// Server relays let xray own the public port: only an explicit -connection-log
+// puts the observer proxy in front of it, and then with stdout to write to.
+func TestConnectionLogFlagMapsOntoObserving(t *testing.T) {
+	cfg, err := parseFlags(t, "-mode", "direct").engineConfig()
+	if err != nil {
+		t.Fatalf("engineConfig: %v", err)
+	}
+	if cfg.ObserveConnections || cfg.ConnectionLogOutput != nil {
+		t.Fatalf("default config observes connections (observe=%v, log=%v)", cfg.ObserveConnections, cfg.ConnectionLogOutput != nil)
+	}
+	cfg, err = parseFlags(t, "-mode", "direct", "-connection-log").engineConfig()
+	if err != nil {
+		t.Fatalf("engineConfig: %v", err)
+	}
+	if !cfg.ObserveConnections || cfg.ConnectionLogOutput != os.Stdout {
+		t.Fatalf("-connection-log: observe=%v, log is stdout=%v; want both", cfg.ObserveConnections, cfg.ConnectionLogOutput == os.Stdout)
 	}
 }

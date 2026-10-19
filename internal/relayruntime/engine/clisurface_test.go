@@ -74,6 +74,8 @@ func TestPublicPortIsAdvertisedIndependentlyOfListenPort(t *testing.T) {
 		Identity:    testIdentity,
 		DisableXray: true,
 		ConfigDir:   t.TempDir(),
+		// The observer stands in for the xray this test does not run.
+		ObserveConnections: true,
 	}, Events{})
 	if err := eng.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -188,28 +190,29 @@ func TestUnsetListenHostKeepsPerModeDefaults(t *testing.T) {
 	}
 }
 
-// The dual-family aliases open two listeners, which only the connection
-// listener can do — so they must serve a direct session and be refused by the
-// renderer rather than reaching xray, which binds one address.
-func TestDualListenHostServesButCannotBeRendered(t *testing.T) {
+// The dual-family aliases open two listeners through the connection observer;
+// xray binds one address, so the renderer (like an unobserved session) maps
+// them to its one dual-stack wildcard.
+func TestDualListenHostServesObservedAndRendersOneWildcard(t *testing.T) {
 	broker := &fakeBroker{}
 	ts := httptest.NewServer(broker.handler())
 	defer ts.Close()
 
 	listenPort := freePort(t)
 	eng := New(Config{
-		BrokerURL:   ts.URL,
-		Mode:        ModeDirect,
-		PublicHost:  "203.0.113.7",
-		ListenHost:  "dual",
-		ListenPort:  listenPort,
-		Identity:    testIdentity,
-		DisableXray: true,
-		ConfigDir:   t.TempDir(),
+		BrokerURL:          ts.URL,
+		Mode:               ModeDirect,
+		PublicHost:         "203.0.113.7",
+		ListenHost:         "dual",
+		ListenPort:         listenPort,
+		Identity:           testIdentity,
+		ObserveConnections: true,
+		DisableXray:        true,
+		ConfigDir:          t.TempDir(),
 	}, Events{})
 
-	if _, err := eng.RenderXrayConfig(); err == nil {
-		t.Fatal("RenderXrayConfig() error = nil, want a refusal: xray binds one address")
+	if parsed := renderAndParse(t, eng); parsed.Inbounds[0].Listen != "0.0.0.0" || parsed.Inbounds[0].Port != listenPort {
+		t.Fatalf("rendered inbound = %s:%d, want 0.0.0.0:%d", parsed.Inbounds[0].Listen, parsed.Inbounds[0].Port, listenPort)
 	}
 
 	if err := eng.Start(); err != nil {

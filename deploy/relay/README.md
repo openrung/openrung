@@ -307,7 +307,7 @@ Use `foundation-up.sh update` for every subsequent Foundation-managed update.
 [`docker-compose.yml`](docker-compose.yml) uses **host networking**, drops all
 Linux capabilities except `NET_BIND_SERVICE`, and runs read-only. Host networking
 is the right default for an exit relay: it exposes the server's real IPv6/IPv4 and
-lets the connection log show real client IPs (Docker's bridge NAT would mask them).
+lets the optional connection log show real client IPs (Docker's bridge NAT would mask them).
 
 ```sh
 docker compose up -d --build

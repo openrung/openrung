@@ -18,7 +18,7 @@ services:
 
     # An exit relay needs a real, reachable public address. Host networking:
     #   - exposes the server's real IPv6/IPv4 (no Docker NAT in the way)
-    #   - lets the connection log record real client IPs
+    #   - lets the optional connection log record real client IPs
     # IPv4-only host and prefer bridge networking instead? Comment out
     # network_mode below, set OPENRUNG_LISTEN_HOST=0.0.0.0 in .env, and add:
     #   ports: ["443:443"]

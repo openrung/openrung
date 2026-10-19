@@ -193,6 +193,13 @@ func TestEngineConfigDerivesModeFromHub(t *testing.T) {
 	if !cfg.PunchCapable {
 		t.Fatal("punch should be offered")
 	}
+	// The UI's live connection and byte counters come from the observer.
+	if !cfg.ObserveConnections {
+		t.Fatal("the volunteer app must observe connections for its counters")
+	}
+	if cfg.ConnectionLogOutput != nil {
+		t.Fatal("the volunteer app must not log per-connection client addresses")
+	}
 	if cfg.Version != "desktop-volunteer/"+testComponentVersion {
 		t.Fatalf("relay version = %q, want desktop-volunteer/%s", cfg.Version, testComponentVersion)
 	}

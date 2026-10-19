@@ -40,11 +40,14 @@ The broker does:
 The relay CLI (`cmd/relay`) runs on desktop systems. It starts an
 Xray-core inbound listener and registers the relay with the broker. It defaults
 to an IPv6 listener and auto-advertises the first global IPv6 address it can
-find unless the operator supplies `-public-host`. With connection logging
-enabled, `-listen-host dual` opens both IPv6 and IPv4 public listeners and
-forwards both to one loopback Xray listener. The CLI also wraps Xray with a
-local TCP observer by default so it can print client connect and disconnect
-events without changing the broker descriptor.
+find unless the operator supplies `-public-host`. By default Xray owns the
+public port; the dual-family listen hosts (`::`, `dual`, `both`) bind one
+dual-stack wildcard. With `-connection-log`, the CLI instead wraps Xray with a
+local TCP observer so it can print client connect and disconnect events
+without changing the broker descriptor; the observer opens separate IPv6 and
+IPv4 public listeners for those hosts and forwards both to one loopback Xray
+listener. The desktop volunteer app always runs the observer for its live
+connection counters.
 
 The same executable serves both operator classes. Community-run relays register
 as `node_class: "volunteer"`; relays presenting the Foundation credential

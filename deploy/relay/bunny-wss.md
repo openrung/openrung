@@ -263,28 +263,30 @@ A relay with fronts lets xray own `443` directly and accepts only `0.0.0.0` or
 loopback. `entrypoint.sh` defaults an unset listen host to `::`, which that
 check rejects: `advertise` then rolls back and exits **1 with no message**. Set
 `OPENRUNG_LISTEN_HOST=0.0.0.0` first. xray's `0.0.0.0` listener is dual-stack,
-so the relay keeps serving its advertised IPv6 address. When the front is
-removed, restore the listen host to unset or `::`: without fronts the
-connection listener honours `0.0.0.0` literally and stops answering on IPv6.
+so the relay keeps serving its advertised IPv6 address. Without fronts xray
+also binds `0.0.0.0` dual-stack, so the listen host can stay; only a relay
+that turns `OPENRUNG_CONNECTION_LOG` on must restore it to unset or `::`,
+because the connection observer honours `0.0.0.0` literally and stops
+answering on IPv6.
 
 ### The relay must have connection logging off first
 
-`OPENRUNG_CONNECTION_LOG` defaults to **true**, and a relay refuses to advertise
-any front while it is on:
+`OPENRUNG_CONNECTION_LOG` defaults to **false**; older relay images defaulted it
+to **true**. A relay refuses to advertise any front while it is on:
 
 ```text
-wss-fronts require connection-log=false so relay-local WSS streams produce no
-per-connection address or byte-count records
+WSS fronts require connection logging and connection observing disabled so
+relay-local WSS streams produce no per-connection address or byte-count records
 ```
 
 This is a privacy gate, not a nuisance: WSS streams arrive over loopback, so the
 per-connection observer would turn every bridged session into an address and
-byte-count record on the relay. Set `OPENRUNG_CONNECTION_LOG=false` in
-`relay.env` before `advertise`, otherwise the relay fails to register, and
-`advertise` rolls the environment back and exits **1 with no message** — its
-remote preconditions are bare `test`s. It also leaves
-`relay.env.pre-wss-advertise` behind, which blocks the next attempt on its
-`! test -e` precondition until it is removed.
+byte-count record on the relay. Make sure `relay.env` leaves
+`OPENRUNG_CONNECTION_LOG` unset or `false` before `advertise`, otherwise the
+relay fails to register, and `advertise` rolls the environment back and exits
+**1 with no message** — its remote preconditions are bare `test`s. It also
+leaves `relay.env.pre-wss-advertise` behind, which blocks the next attempt on
+its `! test -e` precondition until it is removed.
 
 ## Rollback
 
