@@ -10,7 +10,8 @@
 #
 # Overridable via env: OPENRUNG_REGION, OPENRUNG_AZ, OPENRUNG_BUNDLE,
 # OPENRUNG_BLUEPRINT, OPENRUNG_IMAGE, OPENRUNG_BROKER_URL, OPENRUNG_SHAPE_RATE,
-# OPENRUNG_NEW_DEST_RATE.
+# OPENRUNG_NEW_DEST_RATE, OPENRUNG_FOUNDATION_CONTACT (operator contact the relay
+# sends privately at registration as OPENRUNG_OPERATOR_CONTACT; default empty).
 #
 # This helper deliberately provisions only unauthenticated volunteer-class
 # relays. Lightsail retains user-data and the bootstrap log, so registration
@@ -41,6 +42,17 @@ SHAPE_RATE="${OPENRUNG_SHAPE_RATE:-400mbit}"
 # destination addresses per second the host may open connections to. The
 # relay image carries the limit itself (deploy/relay/egress-limit.sh).
 NEW_DEST_RATE="${OPENRUNG_NEW_DEST_RATE:-10}"
+# Operator contact: not a credential, so user-data may carry it. Interpolated
+# into the boot script, hence the strict email charset.
+FOUNDATION_CONTACT="${OPENRUNG_FOUNDATION_CONTACT:-}"
+CONTACT_ENV_ARG=""
+if [ -n "$FOUNDATION_CONTACT" ]; then
+  if ! [[ "$FOUNDATION_CONTACT" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9-][A-Za-z0-9.-]*\.[A-Za-z0-9-]+$ ]] || [ "${#FOUNDATION_CONTACT}" -gt 128 ]; then
+    echo "error: OPENRUNG_FOUNDATION_CONTACT must be an email address of at most 128 characters" >&2
+    exit 2
+  fi
+  CONTACT_ENV_ARG="-e OPENRUNG_OPERATOR_CONTACT=${FOUNDATION_CONTACT}"
+fi
 
 if [ "${OPENRUNG_VOLUNTEER_TOKEN+x}" = x ] || [ "${OPENRUNG_FOUNDATION_TOKEN+x}" = x ] || [ "${OPENRUNG_NODE_CLASS+x}" = x ]; then
   echo "error: this helper does not accept registration tokens (including the foundation token) or node-class overrides because Lightsail user-data persists; configure them post-boot in a root-owned env file" >&2
@@ -155,7 +167,7 @@ docker run -d --name openrung-relay --restart unless-stopped \\
   -e OPENRUNG_BROKER_URL=${BROKER_URL} \\
   -e OPENRUNG_PUBLIC_HOST=${STATIC_IP} \\
   -e OPENRUNG_LISTEN_HOST=0.0.0.0 \\
-  -e OPENRUNG_LABEL=${NAME} \\
+  -e OPENRUNG_LABEL=${NAME} ${CONTACT_ENV_ARG} \\
   -e OPENRUNG_IDENTITY_SEED="\$IDENTITY_SEED" \\
   ${IMAGE}
 EOF

@@ -48,7 +48,8 @@ const descriptorColumns = `
 	wss_fronts,
 	lease_capable,
 	reachable,
-	reachability_checked_at
+	reachability_checked_at,
+	operator_contact
 `
 
 const postgresOperationTimeout = 5 * time.Second
@@ -210,6 +211,9 @@ ALTER TABLE relay_descriptors
 ALTER TABLE relay_descriptors
 	ADD COLUMN IF NOT EXISTS reachability_checked_at timestamptz;
 
+ALTER TABLE relay_descriptors
+	ADD COLUMN IF NOT EXISTS operator_contact text NOT NULL DEFAULT '';
+
 CREATE TABLE IF NOT EXISTS access_leases (
 	id text PRIMARY KEY,
 	user_id text NOT NULL REFERENCES users (id),
@@ -300,6 +304,7 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 		LeaseToken:        leaseToken,
 		LeaseCapable:      req.AccessLeases && identityKey != nil,
 		Label:             req.Label,
+		OperatorContact:   req.OperatorContact,
 		NodeClass:         normalizeNodeClass(req.NodeClass),
 		PublicHost:        req.PublicHost,
 		PublicPort:        req.PublicPort,
@@ -405,9 +410,10 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 			identity_public_key,
 			lease_token,
 			wss_fronts,
-			lease_capable
+			lease_capable,
+			operator_contact
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $28
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $28, $29
 		)
 		ON CONFLICT (public_host, public_port) DO UPDATE SET
 			id = EXCLUDED.id,
@@ -440,6 +446,7 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 			lease_token = EXCLUDED.lease_token,
 			wss_fronts = EXCLUDED.wss_fronts,
 			lease_capable = EXCLUDED.lease_capable,
+			operator_contact = EXCLUDED.operator_contact,
 			reachable = false,
 			reachability_checked_at = NULL
 		WHERE relay_descriptors.node_class <> $27
@@ -474,6 +481,7 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 		wssFrontsJSON,
 		relay.NodeClassFoundation,
 		desc.LeaseCapable,
+		desc.OperatorContact,
 	))
 	if errors.Is(err, pgx.ErrNoRows) {
 		// The upsert matched an existing row but the WHERE suppressed the
@@ -1116,6 +1124,7 @@ func scanDescriptor(row pgx.Row) (relay.Descriptor, error) {
 		&desc.LeaseCapable,
 		&desc.Reachable,
 		&reachabilityCheckedAt,
+		&desc.OperatorContact,
 	)
 	if err != nil {
 		return relay.Descriptor{}, err

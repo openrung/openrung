@@ -5,8 +5,11 @@
 # The helper is deliberately a POSIX-sh, curl-to-sh entry point rather than a
 # sourceable library.  These tests therefore exercise it as an operator would:
 # under dash (when available), with a file-backed Docker stub.  A temporary
-# copy changes only the two absolute /etc paths so the suite never needs root
-# and never touches the host's real relay configuration.
+# copy changes only the absolute host paths (/etc, /sys, the terminal device)
+# so the suite never needs root, never touches the host's real relay
+# configuration, and never blocks on the developer's own terminal.  A
+# regular file stands in for the terminal: its lines are the operator's
+# answers and the script appends its question to it.
 set -u
 
 HERE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
@@ -39,6 +42,10 @@ DOCKER_LOG=$TEST_TMP/docker.log
 FIREWALL_LOG=$TEST_TMP/firewall.log
 DMI_DIR=$TEST_TMP/dmi
 OUTPUT=$TEST_TMP/output
+TTY_FILE=$TEST_TMP/tty
+PASSWD_FILE=$TEST_TMP/passwd
+OPERATOR_HOME=$TEST_TMP/home/alice
+CONTACT_QUESTION='volunteer-up: contact email for this relay (Optional, we will only contact you if there is an issue with your relay)'
 
 mkdir -p "$FAKE_BIN" "$CONTAINERS" || exit 1
 
@@ -53,13 +60,34 @@ fi
 sed \
     -e "s|^    ENV_FILE=/etc/openrung/relay.env$|    ENV_FILE='$ENV_FILE'|" \
     -e "s|^    DMI_DIR=/sys/class/dmi/id$|    DMI_DIR='$DMI_DIR'|" \
+    -e "s|^    TTY_DEVICE=/dev/tty$|    TTY_DEVICE='$TTY_FILE'|" \
+    -e "s|^    PASSWD_FILE=/etc/passwd$|    PASSWD_FILE='$PASSWD_FILE'|" \
     -e "s|/etc/openrung/volunteer.env|$LEGACY_ENV_FILE|g" \
     "$SCRIPT" >"$RUN_SCRIPT" || exit 1
 grep -q "DMI_DIR='$DMI_DIR'" "$RUN_SCRIPT" || {
     echo "FAIL: volunteer-up.sh no longer assigns DMI_DIR where the suite expects" >&2
     exit 1
 }
+for expected in "TTY_DEVICE='$TTY_FILE'" "PASSWD_FILE='$PASSWD_FILE'"; do
+    grep -qF "$expected" "$RUN_SCRIPT" || {
+        echo "FAIL: volunteer-up.sh no longer assigns ${expected%%=*} where the suite expects" >&2
+        exit 1
+    }
+done
 sed '$d' "$RUN_SCRIPT" >"$LIB_SCRIPT" || exit 1
+
+# The sudo user whose git email the contact question may suggest.
+mkdir -p "$OPERATOR_HOME" || exit 1
+printf 'alice:x:1000:1000::%s:/bin/sh\n' "$OPERATOR_HOME" >"$PASSWD_FILE" || exit 1
+printf '[user]\n\tname = Alice\n\temail = alice@example.org\n' >"$OPERATOR_HOME/.gitconfig" || exit 1
+
+# Deterministic git: only the one read the helper performs.
+cat >"$FAKE_BIN/git" <<'EOF'
+#!/bin/sh
+[ "$1" = config ] && [ "$2" = --file ] && [ "$4" = --get ] && [ "$5" = user.email ] || exit 2
+sed -n 's/^[[:space:]]*email[[:space:]]*=[[:space:]]*//p' "$3" | head -n 1 | grep .
+EOF
+chmod +x "$FAKE_BIN/git" || exit 1
 
 cat >"$FAKE_BIN/id" <<'EOF'
 #!/bin/sh
@@ -468,7 +496,7 @@ reset_simulation() {
     printf 'true 0 yes prior id-prior\n' >"$CONTAINERS/openrung-relay"
     : >"$DOCKER_LOG"
     : >"$FIREWALL_LOG"
-    rm -f "$LEGACY_ENV_FILE" "$SIM_DIR/logs_calls"
+    rm -f "$LEGACY_ENV_FILE" "$SIM_DIR/logs_calls" "$TTY_FILE"
     rm -rf "$DMI_DIR"
     mkdir -p "$DMI_DIR"
 }
@@ -503,8 +531,8 @@ run_volunteer_up() {
 
 run_volunteer_up_first_run() {
     # First-run path: no env file, no prior container. OPENRUNG_PUBLIC_HOST
-    # skips public-IP detection; the script never prompts, so no terminal
-    # handling is needed.
+    # skips public-IP detection. The contact question is asked only when
+    # $TTY_FILE exists (a test writes the answers into it first).
     run_scenario=$1
     shift
     if env "$@" \
@@ -785,6 +813,217 @@ test_first_run_honors_explicit_label() {
     fi
 }
 
+contact_in_env() {
+    sed -n 's/^OPENRUNG_OPERATOR_CONTACT=//p' "$ENV_FILE" | tail -1
+}
+
+first_run_with_terminal() { # answers [env assignments...]
+    reset_simulation
+    rm -f "$CONTAINERS/openrung-relay" "$ENV_FILE"
+    printf '%b' "$1" >"$TTY_FILE"
+    shift
+    run_volunteer_up_first_run ok "$@"
+}
+
+test_contact_prompt_stores_typed_answer() {
+    first_run_with_terminal 'ops@example.net\n' HOME="$TEST_TMP/nohome" SUDO_USER=
+    if [ "$RUN_RC" -eq 0 ] && [ "$(contact_in_env)" = ops@example.net ]; then
+        pass
+    else
+        fail "contact prompt: typed answer was not stored (exit $RUN_RC, contact '$(contact_in_env)')"
+    fi
+    if grep -qF "$CONTACT_QUESTION: " "$TTY_FILE"; then
+        pass
+    else
+        fail "contact prompt: the exact question was not asked on the terminal"
+    fi
+    if grep -q 'ops@example.net' "$OUTPUT" && grep -q 'never published' "$OUTPUT"; then
+        pass
+    else
+        fail "contact prompt: the stored contact and its privacy are not reported"
+    fi
+    assert_candidate_is_live "contact prompt"
+}
+
+test_contact_prompt_enter_confirms_suggestion() {
+    first_run_with_terminal '\n' SUDO_USER=alice
+    if grep -qF "$CONTACT_QUESTION [alice@example.org]: " "$TTY_FILE"; then
+        pass
+    else
+        fail "contact suggestion: the sudo user's git email was not shown in brackets"
+    fi
+    if [ "$RUN_RC" -eq 0 ] && [ "$(contact_in_env)" = alice@example.org ]; then
+        pass
+    else
+        fail "contact suggestion: Enter did not confirm the suggestion (exit $RUN_RC, contact '$(contact_in_env)')"
+    fi
+}
+
+test_contact_prompt_typed_answer_replaces_suggestion() {
+    first_run_with_terminal 'relay-ops@example.com\n' SUDO_USER=alice
+    if [ "$RUN_RC" -eq 0 ] && [ "$(contact_in_env)" = relay-ops@example.com ]; then
+        pass
+    else
+        fail "contact replacement: typed answer did not replace the suggestion (contact '$(contact_in_env)')"
+    fi
+}
+
+test_contact_prompt_empty_answer_skips() {
+    first_run_with_terminal '\n' HOME="$TEST_TMP/nohome" SUDO_USER=
+    if [ "$RUN_RC" -eq 0 ] && grep -qF "$CONTACT_QUESTION: " "$TTY_FILE" \
+        && ! grep -q '^OPENRUNG_OPERATOR_CONTACT' "$ENV_FILE"; then
+        pass
+    else
+        fail "contact skip: Enter without a suggestion must skip and store nothing (exit $RUN_RC)"
+    fi
+    assert_candidate_is_live "contact skip"
+}
+
+test_contact_prompt_end_of_input_ignores_suggestion() {
+    # Closing the terminal input is not a confirmation: the suggestion is
+    # never stored unless the operator saw it and pressed Enter.
+    first_run_with_terminal '' SUDO_USER=alice
+    if [ "$RUN_RC" -eq 0 ] && ! grep -q '^OPENRUNG_OPERATOR_CONTACT' "$ENV_FILE"; then
+        pass
+    else
+        fail "contact end of input: the unconfirmed suggestion was stored (contact '$(contact_in_env)')"
+    fi
+}
+
+test_contact_prompt_reasks_after_invalid_answer() {
+    first_run_with_terminal 'not an email\nops@example.net\n' HOME="$TEST_TMP/nohome" SUDO_USER=
+    if [ "$RUN_RC" -eq 0 ] && [ "$(contact_in_env)" = ops@example.net ] \
+        && grep -q 'does not look like an email address' "$TTY_FILE"; then
+        pass
+    else
+        fail "contact re-ask: an invalid answer was not refused and re-asked (contact '$(contact_in_env)')"
+    fi
+}
+
+test_contact_prompt_gives_up_after_three_invalid_answers() {
+    first_run_with_terminal 'a b\nc d\ne f\nops@example.net\n' HOME="$TEST_TMP/nohome" SUDO_USER=
+    if [ "$RUN_RC" -eq 0 ] && ! grep -q '^OPENRUNG_OPERATOR_CONTACT' "$ENV_FILE" \
+        && grep -q 'skipping the contact' "$TTY_FILE"; then
+        pass
+    else
+        fail "contact give-up: three invalid answers must skip the contact (exit $RUN_RC, contact '$(contact_in_env)')"
+    fi
+    assert_candidate_is_live "contact give-up"
+}
+
+test_contact_from_env_is_not_asked() {
+    first_run_with_terminal '' SUDO_USER=alice OPENRUNG_OPERATOR_CONTACT=env-ops@example.net
+    if [ "$RUN_RC" -eq 0 ] && [ "$(contact_in_env)" = env-ops@example.net ] && [ ! -s "$TTY_FILE" ]; then
+        pass
+    else
+        fail "contact env: OPENRUNG_OPERATOR_CONTACT must be stored without asking (exit $RUN_RC, contact '$(contact_in_env)')"
+    fi
+    first_run_with_terminal '' SUDO_USER=alice OPENRUNG_OPERATOR_CONTACT=
+    if [ "$RUN_RC" -eq 0 ] && ! grep -q '^OPENRUNG_OPERATOR_CONTACT' "$ENV_FILE" && [ ! -s "$TTY_FILE" ]; then
+        pass
+    else
+        fail "contact env: an empty OPENRUNG_OPERATOR_CONTACT must skip the question"
+    fi
+}
+
+test_contact_without_terminal_is_not_asked() {
+    # No terminal (cloud-init, pipes): nothing is asked and nothing found on
+    # the host is stored on the operator's behalf.
+    reset_simulation
+    rm -f "$CONTAINERS/openrung-relay" "$ENV_FILE"
+    run_volunteer_up_first_run ok SUDO_USER=alice
+    if [ "$RUN_RC" -eq 0 ] && ! grep -q '^OPENRUNG_OPERATOR_CONTACT' "$ENV_FILE" \
+        && ! grep -q 'contact email' "$OUTPUT"; then
+        pass
+    else
+        fail "contact without terminal: expected no question and no stored contact (exit $RUN_RC)"
+    fi
+}
+
+test_contact_is_never_asked_again() {
+    reset_simulation
+    write_env 'OPENRUNG_LABEL=amber-alpaca'
+    printf 'later@example.net\n' >"$TTY_FILE"
+    run_volunteer_up ok SUDO_USER=alice
+    if [ "$RUN_RC" -eq 0 ] && ! grep -q 'contact email' "$TTY_FILE" \
+        && ! grep -q '^OPENRUNG_OPERATOR_CONTACT' "$ENV_FILE"; then
+        pass
+    else
+        fail "contact re-run: an existing relay.env must not trigger the question (exit $RUN_RC)"
+    fi
+    assert_candidate_is_live "contact re-run"
+
+    # A relay set up before contacts existed takes the override once...
+    reset_simulation
+    write_env 'OPENRUNG_LABEL=amber-alpaca'
+    run_volunteer_up ok OPENRUNG_OPERATOR_CONTACT=late@example.net
+    if [ "$RUN_RC" -eq 0 ] && [ "$(contact_in_env)" = late@example.net ]; then
+        pass
+    else
+        fail "contact re-run: OPENRUNG_OPERATOR_CONTACT was not pinned into a contactless relay.env (contact '$(contact_in_env)')"
+    fi
+    # ...and an existing contact is authoritative.
+    reset_simulation
+    write_env 'OPENRUNG_LABEL=amber-alpaca' 'OPENRUNG_OPERATOR_CONTACT=first@example.net'
+    run_volunteer_up ok OPENRUNG_OPERATOR_CONTACT=second@example.net
+    if [ "$RUN_RC" -eq 0 ] && [ "$(contact_in_env)" = first@example.net ] \
+        && grep -q 'does not change an existing contact' "$OUTPUT"; then
+        pass
+    else
+        fail "contact re-run: an existing contact was changed or the note is missing (contact '$(contact_in_env)')"
+    fi
+}
+
+test_invalid_contact_is_refused_before_mutation() {
+    for bad_contact in 'two words@example.net' 'no-at-sign.example.net' \
+        'ops@example' 'ops@.example.net' 'ops@example.net.' 'a@b@example.net' \
+        '@example.net' 'opérateur@example.net' \
+        "$(printf 'ops@example.net\tx')" "$(printf 'ops@example.net\rx')" \
+        "$(printf '%0129d' 0 | tr 0 a)@example.net"; do
+        reset_simulation
+        write_env
+        run_volunteer_up ok "OPENRUNG_OPERATOR_CONTACT=$bad_contact"
+        assert_nonzero "$RUN_RC" "invalid contact '$bad_contact'"
+        assert_no_mutating_docker_calls "invalid contact '$bad_contact'"
+        assert_prior_is_live "invalid contact '$bad_contact'"
+    done
+}
+
+test_contact_with_embedded_newline_cannot_inject_settings() {
+    # Every line of this value is valid on its own; a line-by-line check
+    # would let the second line land in relay.env as its own setting.
+    injected='ops@example.net
+OPENRUNG_EXTRA=injected'
+    reset_simulation
+    write_env 'OPENRUNG_LABEL=amber-alpaca'
+    run_volunteer_up ok "OPENRUNG_OPERATOR_CONTACT=$injected"
+    assert_nonzero "$RUN_RC" "newline contact on re-run"
+    assert_no_mutating_docker_calls "newline contact on re-run"
+    assert_prior_is_live "newline contact on re-run"
+    if grep -q 'OPENRUNG_EXTRA\|OPENRUNG_OPERATOR_CONTACT' "$ENV_FILE"; then
+        fail "newline contact on re-run: relay.env was modified"
+    else
+        pass
+    fi
+
+    reset_simulation
+    rm -f "$CONTAINERS/openrung-relay" "$ENV_FILE"
+    run_volunteer_up_first_run ok "OPENRUNG_OPERATOR_CONTACT=$injected"
+    assert_nonzero "$RUN_RC" "newline contact on first run"
+    if [ -e "$ENV_FILE" ]; then
+        fail "newline contact on first run: relay.env was written"
+    else
+        pass
+    fi
+
+    # shellcheck disable=SC2016
+    if "$TEST_SHELL" -c '. "$1"; validate_contact "$2"' sh "$LIB_SCRIPT" "$injected" >"$OUTPUT" 2>&1; then
+        fail "validate_contact accepted a value with an embedded newline"
+    else
+        pass
+    fi
+}
+
 expect_public_ipv4() {
     # The selected child shell, not this harness, must expand its positional
     # parameters after sourcing the helper library.
@@ -1019,6 +1258,18 @@ test_overlong_label_is_refused_before_mutation
 test_first_run_generates_label_and_promotes
 test_first_run_falls_back_for_flagless_image
 test_first_run_honors_explicit_label
+test_contact_prompt_stores_typed_answer
+test_contact_prompt_enter_confirms_suggestion
+test_contact_prompt_typed_answer_replaces_suggestion
+test_contact_prompt_empty_answer_skips
+test_contact_prompt_end_of_input_ignores_suggestion
+test_contact_prompt_reasks_after_invalid_answer
+test_contact_prompt_gives_up_after_three_invalid_answers
+test_contact_from_env_is_not_asked
+test_contact_without_terminal_is_not_asked
+test_contact_is_never_asked_again
+test_invalid_contact_is_refused_before_mutation
+test_contact_with_embedded_newline_cannot_inject_settings
 test_special_ipv4_ranges
 test_host_firewall_opened_only_when_active
 test_accepted_registration_is_reported_as_serving

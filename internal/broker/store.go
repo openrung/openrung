@@ -169,6 +169,7 @@ func (s *Store) Register(req relay.RegisterRequest, now time.Time, ttl time.Dura
 		LeaseToken:        leaseToken,
 		LeaseCapable:      req.AccessLeases && identityKey != nil,
 		Label:             req.Label,
+		OperatorContact:   req.OperatorContact,
 		NodeClass:         normalizeNodeClass(req.NodeClass),
 		PublicHost:        req.PublicHost,
 		PublicPort:        req.PublicPort,

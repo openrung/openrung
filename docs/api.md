@@ -367,7 +367,7 @@ registered (`offline_relays`), live sessions across the fleet, and the distinct
 count of clients currently connected through any relay.
 
 Each relay row carries the registry half for online relays — label, class,
-public endpoint, transport, exit location (city/country as resolved by the
+public endpoint, operator contact (when the relay registered one), transport, exit location (city/country as resolved by the
 broker), relay software version, capacity, punch/WSS capability, registration
 and last-heartbeat times — merged with per-relay telemetry for the window:
 currently connected clients and active sessions, unique clients and sessions,
@@ -453,9 +453,11 @@ reachability probe](#inbound-reachability-probe): `reachable` is `null` until
 the broker has probed the relay (tunnel transport, probing off, or not yet),
 otherwise `true` or `false`, with `reachability_checked_at` giving the probe
 time when there is one. A `false` relay is registered but withheld from
-clients. Lease tokens, stable-identity keys and proofs, hub-observed exit
-addresses, telemetry, and signing seeds never appear here; the endpoint
-exposes fleet membership, not credentials.
+clients. `operator_contact` is the contact the relay registered with (see
+[Register Relay](#register-relay)), omitted when it sent none. Lease
+tokens, stable-identity keys and proofs, hub-observed exit addresses,
+telemetry, and signing seeds never appear here; the endpoint exposes fleet
+membership, not credentials.
 
 Response:
 
@@ -467,7 +469,7 @@ Response:
   "key_id": "3097e2dee2cb4a34",
   "channel": "inventory",
   "relays": [
-    { "id": "relay_0a1b...", "public_host": "203.0.113.7", "public_port": 443, "node_class": "foundation", "...": "...", "ranking_weight": 1, "reachable": true, "reachability_checked_at": "2026-06-09T06:58:00Z" }
+    { "id": "relay_0a1b...", "public_host": "203.0.113.7", "public_port": 443, "node_class": "foundation", "...": "...", "ranking_weight": 1, "reachable": true, "reachability_checked_at": "2026-06-09T06:58:00Z", "operator_contact": "ops@example.org" }
   ]
 }
 ```
@@ -630,9 +632,21 @@ Request:
   "relay_version": "relay/0.1.0",
   "transport": "direct",
   "node_class": "volunteer",
-  "access_leases": true
+  "access_leases": true,
+  "operator_contact": "ops@example.org"
 }
 ```
+
+`operator_contact` (optional) is the email address the relay's operator asked
+to be reached at about the relay. It must be at most 128 printable ASCII
+characters without whitespace, with exactly one `@`, a non-empty local part and
+a domain containing a dot that neither starts nor ends it; anything else is
+refused with `400`.
+Registrations without it are accepted unchanged. The broker stores it with the
+registration and shows it only in the [operational relay
+inventory](#operational-relay-inventory) and the admin relays page: it is not
+bound by the identity statement and never appears in the registration response,
+relay lists, or any signed client-facing body.
 
 `access_leases` (optional, default `false`) declares that the relay installs
 broker-issued per-client credentials through the [relay lease

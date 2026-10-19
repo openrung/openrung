@@ -120,10 +120,11 @@ type inventoryResponse struct {
 
 // inventoryDescriptor is a public descriptor plus the operator-only state the
 // broker holds about it: the effective ranking weight it is applying right
-// now (defaultRankingWeight when no override is stored) and the latest
-// inbound reachability probe. Both are operational state — they exist so
-// fleet tooling can see where an operator has shifted load and which relays
-// the broker is withholding from clients — and never appear in the
+// now (defaultRankingWeight when no override is stored), the latest inbound
+// reachability probe, and the operator contact the relay registered with.
+// All are operational state — they exist so fleet tooling can see where an
+// operator has shifted load, which relays the broker is withholding from
+// clients, and whom to reach about one — and never appear in the
 // client-facing channels.
 type inventoryDescriptor struct {
 	relay.Descriptor
@@ -133,11 +134,13 @@ type inventoryDescriptor struct {
 // inventoryState is the trailing operator-only block of an inventory
 // descriptor. reachable is null until the broker has probed the relay (tunnel
 // transport, probing disabled, or not yet), then the latest outcome;
-// reachability_checked_at is omitted in the same case.
+// reachability_checked_at is omitted in the same case. operator_contact is
+// omitted when the registration carried none.
 type inventoryState struct {
 	RankingWeight         float64    `json:"ranking_weight"`
 	Reachable             *bool      `json:"reachable"`
 	ReachabilityCheckedAt *time.Time `json:"reachability_checked_at,omitempty"`
+	OperatorContact       string     `json:"operator_contact,omitempty"`
 }
 
 // MarshalJSON emits the descriptor exactly as the public channels do (through
@@ -157,6 +160,7 @@ func (d inventoryDescriptor) MarshalJSON() ([]byte, error) {
 		RankingWeight:         d.RankingWeight,
 		Reachable:             reachablePointer(d.Descriptor),
 		ReachabilityCheckedAt: timePointer(d.ReachabilityCheckedAt),
+		OperatorContact:       d.OperatorContact,
 	})
 	if err != nil {
 		return nil, err

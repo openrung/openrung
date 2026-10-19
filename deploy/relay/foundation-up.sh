@@ -31,7 +31,10 @@
 # OPENRUNG_SSH_KEY, OPENRUNG_SSH_USER, OPENRUNG_REGION (host-key pinning lookups),
 # OPENRUNG_ALLOW_TOFU=1 (explicitly accept an unverifiable first-contact host key),
 # OPENRUNG_NEW_DEST_RATE (the host new-destination limit `convert` and `update`
-# load from the relay image: new destinations per second, default 10, or off).
+# load from the relay image: new destinations per second, default 10, or off),
+# OPENRUNG_FOUNDATION_CONTACT (the operator contact `convert` and `create` write
+# as OPENRUNG_OPERATOR_CONTACT, sent privately at registration; default empty,
+# which keeps whatever contact the host already has).
 # `create` also forwards OPENRUNG_BUNDLE and the rest of lightsail-up.sh's knobs.
 set -euo pipefail
 
@@ -58,6 +61,7 @@ SSH_KEY="${OPENRUNG_SSH_KEY:-$HOME/.ssh/id_ed25519_openrung}"
 SSH_USER="${OPENRUNG_SSH_USER:-ubuntu}"
 REGION="${OPENRUNG_REGION:-ap-northeast-1}"
 NEW_DEST_RATE="${OPENRUNG_NEW_DEST_RATE:-10}"
+FOUNDATION_CONTACT="${OPENRUNG_FOUNDATION_CONTACT:-}"
 
 CONTAINER="openrung-relay"
 OLD_CONTAINER="${CONTAINER}-old"
@@ -119,6 +123,7 @@ ssh_run() {
 
 NAME_RE='^[A-Za-z0-9][A-Za-z0-9._-]*$'      # instance names, labels, container names
 HOST_RE='^[A-Za-z0-9][A-Za-z0-9.:-]*$'      # IPv4, IPv6, DNS names
+CONTACT_RE='^[A-Za-z0-9._%+-]+@[A-Za-z0-9-][A-Za-z0-9.-]*\.[A-Za-z0-9-]+$'   # operator contact (email)
 
 assert_matches() { # value regex what
   local val="$1" re="$2" what="$3"
@@ -143,6 +148,10 @@ validate_config() {
   assert_matches "$ENV_FILE" '^/[A-Za-z0-9/._-]+$' "OPENRUNG_ENV_FILE"
   assert_matches "$IMAGE" '^[A-Za-z0-9][A-Za-z0-9:/@._-]*$' "OPENRUNG_IMAGE"
   assert_matches "$NEW_DEST_RATE" '^([1-9][0-9]*|off)$' "OPENRUNG_NEW_DEST_RATE"
+  if [ -n "$FOUNDATION_CONTACT" ]; then
+    assert_matches "$FOUNDATION_CONTACT" "$CONTACT_RE" "OPENRUNG_FOUNDATION_CONTACT"
+    [ "${#FOUNDATION_CONTACT}" -le 128 ] || die "OPENRUNG_FOUNDATION_CONTACT must be at most 128 characters"
+  fi
   [ "$ENV_FILE" != "$LEGACY_ENV_FILE" ] \
     || die "OPENRUNG_ENV_FILE may not use the legacy path ${LEGACY_ENV_FILE}; migrate it to a canonical path first"
 }
@@ -429,7 +438,14 @@ require_env_has_token() {
 #   XRAY_PATH / CONFIG_OUT — image/entrypoint internals that docker inspect
 #     reports from the image's own ENV; pinning them in the host env file would
 #     permanently override future images that relocate those paths.
-PRESERVE_DROP='/^OPENRUNG_(BROKER_URL|FOUNDATION_TOKEN|VOLUNTEER_TOKEN|NODE_CLASS|XRAY_PATH|CONFIG_OUT)=/d'
+# OPERATOR_CONTACT is managed only when OPENRUNG_FOUNDATION_CONTACT is set;
+# otherwise the host's existing contact is preserved like any other setting.
+PRESERVE_DROP_KEYS='BROKER_URL|FOUNDATION_TOKEN|VOLUNTEER_TOKEN|NODE_CLASS|XRAY_PATH|CONFIG_OUT'
+preserve_drop() {
+  local keys="$PRESERVE_DROP_KEYS"
+  [ -z "$FOUNDATION_CONTACT" ] || keys+='|OPERATOR_CONTACT'
+  printf '/^OPENRUNG_(%s)=/d' "$keys"
+}
 
 # Stage the preserved settings into ENV_FILE.tmp on the host. The only accepted
 # sources are the canonical env file, when present, or the canonical running
@@ -447,7 +463,7 @@ stage_preserved_env() { # host container
     && { test -d ${ENV_FILE%/*} || install -d -m 700 -o root -g root ${ENV_FILE%/*}; } \
     && { if test -f ${ENV_FILE}; then cat ${ENV_FILE}; \
          else docker inspect ${container} --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null || true; fi; } \
-       | sed -n '/^OPENRUNG_[A-Za-z0-9_]*=/p' | sed -E '${PRESERVE_DROP}' > ${ENV_FILE}.tmp \
+       | sed -n '/^OPENRUNG_[A-Za-z0-9_]*=/p' | sed -E '$(preserve_drop)' > ${ENV_FILE}.tmp \
     && grep -q '^OPENRUNG_PUBLIC_HOST=..*' ${ENV_FILE}.tmp \
     || { rm -f ${ENV_FILE}.tmp; exit 1; }\"" \
     || die "${host}: could not stage the relay's existing settings (is OPENRUNG_PUBLIC_HOST set in its env file or container?)"
@@ -464,6 +480,7 @@ install_env_file() { # host   (managed values from $TOKEN / $BROKER_URL; preserv
   {
     printf 'OPENRUNG_BROKER_URL=%s\n' "$BROKER_URL"
     printf 'OPENRUNG_FOUNDATION_TOKEN=%s\n' "$TOKEN"
+    if [ -n "$FOUNDATION_CONTACT" ]; then printf 'OPENRUNG_OPERATOR_CONTACT=%s\n' "$FOUNDATION_CONTACT"; fi
   } | ssh_run "$host" \
       "sudo sh -c 'trap \"rm -f ${ENV_FILE}.tmp\" EXIT; set -e; umask 077; cat >> ${ENV_FILE}.tmp; mv -f ${ENV_FILE}.tmp ${ENV_FILE}'"
 }

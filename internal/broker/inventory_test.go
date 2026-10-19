@@ -407,9 +407,10 @@ func TestRelayInventoryOmitsPrivateDescriptorFields(t *testing.T) {
 		"transport": true, "punch_capable": true, "punch_endpoint": true, "wss_fronts": true,
 		"registered_at": true, "last_heartbeat_at": true, "expires_at": true,
 		// Operator-only, but not private: the inventory decorates each
-		// descriptor with the ranking weight the broker applies to it and
-		// the latest inbound reachability probe.
+		// descriptor with the ranking weight the broker applies to it, the
+		// latest inbound reachability probe and the operator contact.
 		"ranking_weight": true, "reachable": true, "reachability_checked_at": true,
+		"operator_contact": true,
 	}
 	for field := range envelope.Relays[0] {
 		if !publicFields[field] {

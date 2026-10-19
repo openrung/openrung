@@ -108,6 +108,7 @@ type cliFlags struct {
 	registrationToken  string
 	foundationToken    string
 	label              string
+	operatorContact    string
 	nodeClass          string
 	xrayPath           string
 	listenHost         string
@@ -147,6 +148,7 @@ func (f *cliFlags) register(fs *flag.FlagSet, identitySeed string) {
 	fs.StringVar(&f.broker, "broker", "http://localhost:8080", "broker base URL")
 	fs.StringVar(&f.registrationToken, "registration-token", os.Getenv("OPENRUNG_VOLUNTEER_TOKEN"), "volunteer-class relay registration token")
 	fs.StringVar(&f.label, "label", os.Getenv("OPENRUNG_LABEL"), "human-readable relay label shown in the broker; a random adjective-noun is generated when empty")
+	fs.StringVar(&f.operatorContact, "operator-contact", os.Getenv("OPENRUNG_OPERATOR_CONTACT"), "optional email address the broker operator can use to reach you about this relay; stored privately by the broker and never published in the relay directory")
 	fs.StringVar(&f.nodeClass, "node-class", os.Getenv("OPENRUNG_NODE_CLASS"), "relay operator class: volunteer (default) or foundation. For a foundation relay prefer -foundation-token, which sets this and forces direct mode / https automatically; a bare -node-class=foundation still needs direct mode, the foundation token as the bearer, and an https broker")
 	fs.StringVar(&f.foundationToken, "foundation-token", os.Getenv("OPENRUNG_FOUNDATION_TOKEN"), "foundation registration token; presenting it runs this as a foundation relay — it forces foundation class, direct mode, an https broker, and redirect refusal, so no separate -node-class is needed")
 	fs.StringVar(&f.xrayPath, "xray", "xray", "path to xray binary")
@@ -216,6 +218,7 @@ func (f *cliFlags) engineConfig() (engine.Config, error) {
 		FoundationToken:     f.foundationToken,
 		NodeClass:           f.nodeClass,
 		Label:               f.label,
+		OperatorContact:     f.operatorContact,
 		PublicHost:          f.publicHost,
 		PublicPort:          f.publicPort,
 		XrayPath:            f.xrayPath,

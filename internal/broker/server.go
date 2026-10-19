@@ -259,6 +259,13 @@ func registerHandler(store RelayStore, cfg Config, clientIP *clientIPResolver, l
 		}
 		req.Label = label
 
+		contact, err := relay.NormalizeOperatorContact(req.OperatorContact)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		req.OperatorContact = contact
+
 		nodeClass, err := relay.NormalizeNodeClass(req.NodeClass)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())

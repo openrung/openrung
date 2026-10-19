@@ -280,6 +280,32 @@ test_new_dest_rate_validation() {
 # Run the exact remote command apply_egress_limit sends, against stubs, so the
 # quoting, the container flags, and the install order are what reach the host.
 # The stub docker hands out a fake egress-limit that records how the host runs it.
+test_foundation_contact_is_managed_only_when_set() {
+  reset_script_functions
+  local contact
+  for contact in ops@openrung.example ops+relay@sub.openrung.example; do
+    if (FOUNDATION_CONTACT="$contact"; validate_config) >/dev/null 2>&1; then pass; else fail "contact ${contact} rejected"; fi
+  done
+  for contact in 'two words@example.org' 'no-at-sign' 'ops@.example.org' "ops@example.org;reboot" "\$(id)@example.org"; do
+    if (FOUNDATION_CONTACT="$contact"; validate_config) >/dev/null 2>&1; then fail "contact '${contact}' accepted"; else pass; fi
+  done
+
+  FOUNDATION_CONTACT=""
+  assert_eq '/^OPENRUNG_(BROKER_URL|FOUNDATION_TOKEN|VOLUNTEER_TOKEN|NODE_CLASS|XRAY_PATH|CONFIG_OUT)=/d' "$(preserve_drop)" "unset contact preserves the host's contact"
+  FOUNDATION_CONTACT=ops@openrung.example
+  assert_contains "$(preserve_drop)" '|OPERATOR_CONTACT)=' "set contact replaces the host's contact"
+
+  local sent="$TEST_TMP/install-stdin"
+  ssh_run() { cat > "$sent"; }
+  TOKEN=test-token
+  install_env_file 203.0.113.10
+  assert_contains "$(<"$sent")" 'OPENRUNG_OPERATOR_CONTACT=ops@openrung.example' "convert writes the Foundation contact"
+  FOUNDATION_CONTACT=""
+  install_env_file 203.0.113.10
+  if grep -q OPERATOR_CONTACT "$sent"; then fail "empty Foundation contact was written"; else pass; fi
+  TOKEN=""
+}
+
 test_apply_egress_limit_remote_command() {
   reset_script_functions
   local stub="${TEST_TMP}/egress-stub" calls="${TEST_TMP}/egress-calls" root="${TEST_TMP}/egress-root" out
@@ -734,6 +760,7 @@ test_roll_order_and_failure_boundaries
 test_convert_prepares_image_before_env_write
 test_egress_limit_follows_verified_roll
 test_new_dest_rate_validation
+test_foundation_contact_is_managed_only_when_set
 test_apply_egress_limit_remote_command
 test_audit_remote_command
 test_real_transaction_and_rollback_commands
