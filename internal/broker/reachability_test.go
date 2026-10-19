@@ -160,7 +160,7 @@ func inventoryCount(t *testing.T, server http.Handler) int {
 }
 
 // A registration whose endpoint the broker cannot reach is refused with the
-// reason and a Retry-After, and nothing is stored: the relay's own retries
+// reason, and nothing is stored: the relay's own retries
 // re-probe it, and the first reachable attempt registers it probed. A relay
 // that registered reachable and later goes dark is withheld by the heartbeat
 // re-probe, which is unchanged.
@@ -175,8 +175,10 @@ func TestRegisterRefusesUnreachableEndpoint(t *testing.T) {
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("unreachable registration: expected 422, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if got := rec.Header().Get("Retry-After"); got != "30" {
-		t.Fatalf("Retry-After = %q, want 30", got)
+	// No Retry-After: the relay would wait it out silently between its
+	// startup attempts and delay the logged refusal the installer reads.
+	if got := rec.Header().Get("Retry-After"); got != "" {
+		t.Fatalf("Retry-After = %q, want none", got)
 	}
 	var refusal struct {
 		Error string `json:"error"`

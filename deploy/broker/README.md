@@ -299,9 +299,10 @@ is discarded.
 The broker checks that every direct-transport relay's advertised
 `public_host:public_port` accepts inbound connections with a bounded TCP
 connect from the broker host. At registration the check gates admission: a
-relay whose port cannot be reached is refused (`422`, `Retry-After: 30`,
-body `public endpoint unreachable: ...`), nothing is stored, and the relay's
-own retries re-run the check until the port opens; the relay logs the
+relay whose port cannot be reached is refused (`422`, body `public endpoint
+unreachable: ...`, no `Retry-After` so the relay's quick startup retries log
+the refusal within seconds), nothing is stored, and the relay's own retries
+re-run the check until the port opens; the relay logs the
 refusal verbatim, which is what `volunteer-up.sh` reads to tell its operator
 which firewall to open. A relay that registered reachable is re-checked on a
 heartbeat once its result is five minutes old, and one whose latest check

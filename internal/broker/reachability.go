@@ -24,10 +24,13 @@ import (
 // listener bound to the wrong address) still looks healthy to the broker
 // while every client attempt against it times out. The broker therefore dials
 // the advertised endpoint itself. At registration the probe gates admission:
-// a conclusive failure is refused with the reason (422, Retry-After), nothing
-// is stored, and the relay's own registration retries re-probe it until the
-// port opens — the relay logs the refusal verbatim, which is how the
-// volunteer installer tells its operator which firewall to open. A relay
+// a conclusive failure is refused with the reason (422), nothing is stored,
+// and the relay's own registration retries re-probe it until the port opens
+// — the relay logs the refusal verbatim, which is how the volunteer installer
+// tells its operator which firewall to open. The refusal deliberately
+// carries no Retry-After: the relay would honour one between its three
+// silent startup attempts, delaying the logged refusal the installer waits
+// for; its supervisor already backs off between attempt rounds. A relay
 // that registered reachable is re-probed on a heartbeat once its result is
 // older than RelayProbeInterval; one whose latest probe then failed is left
 // out of the public directory and of access answers until a later probe
@@ -258,11 +261,6 @@ func classifyProbeError(err error) error {
 		return err
 	}
 }
-
-// unreachableRetryAfterSeconds is the Retry-After a rejected registration
-// carries. The relay honours it between its registration attempts, so a
-// closed port costs one probe per interval rather than one per backoff step.
-const unreachableRetryAfterSeconds = 30
 
 // probeRegistration runs the registration-time probe of req's advertised
 // endpoint. probed reports that a conclusive probe succeeded (the caller

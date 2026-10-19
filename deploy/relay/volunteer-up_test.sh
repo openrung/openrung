@@ -296,6 +296,16 @@ case "$op" in
                 unreachable)
                     printf '%s\n' "$refusal"
                     ;;
+                refused_after:*)
+                    # The relay makes three silent registration attempts
+                    # before it logs a refusal; model that delay in logs
+                    # calls (the suite's sleep is instant).
+                    if [ "$logs_calls" -ge "${SIM_REACHABILITY#refused_after:}" ]; then
+                        printf '%s\n' "$refusal"
+                    else
+                        printf 'simulated relay awaiting registration\n'
+                    fi
+                    ;;
                 opens_after:*)
                     printf '%s\n' "$refusal"
                     if [ "$logs_calls" -ge "${SIM_REACHABILITY#opens_after:}" ]; then
@@ -941,6 +951,34 @@ test_unreachable_wait_sees_the_port_open() {
     assert_output_lacks "wait times out" 'now serving'
 }
 
+# The relay logs a refusal only after its startup registration attempts, so
+# candidate verification must outlast them: a refusal that appears late in
+# the window still ends in promotion and the provider fix, never a rollback.
+test_late_refusal_is_still_promoted() {
+    reset_simulation
+    write_env
+    # The verification loop reads the log once per iteration for up to 60
+    # iterations; a refusal first visible on the 45th would have been past
+    # the old 30-iteration window.
+    run_volunteer_up ok SIM_REACHABILITY=refused_after:45 OPENRUNG_REACHABILITY_WAIT=0
+    if [ "$RUN_RC" -eq 0 ]; then
+        pass
+    else
+        fail "late refusal: expected success, got exit $RUN_RC"
+    fi
+    assert_candidate_is_live "late refusal"
+    assert_output_has "late refusal" 'the broker refused its registration because its public port is unreachable'
+    assert_output_lacks "late refusal" 'did not register within'
+
+    # Past the window with neither answer, the update still rolls back.
+    reset_simulation
+    write_env
+    run_volunteer_up ok SIM_REACHABILITY=refused_after:70
+    assert_nonzero "$RUN_RC" "refusal past the window"
+    assert_prior_is_live "refusal past the window"
+    assert_output_has "refusal past the window" 'did not register within 120s'
+}
+
 test_bad_wait_value_is_refused_before_mutation() {
     reset_simulation
     write_env
@@ -986,6 +1024,7 @@ test_host_firewall_opened_only_when_active
 test_accepted_registration_is_reported_as_serving
 test_unreachable_prints_provider_fix_and_promotes
 test_unreachable_wait_sees_the_port_open
+test_late_refusal_is_still_promoted
 test_bad_wait_value_is_refused_before_mutation
 
 if [ "$FAIL" -ne 0 ]; then

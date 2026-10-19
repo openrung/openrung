@@ -418,8 +418,9 @@ not need to match.
   port). On AWS, add an inbound rule for TCP 443 from `0.0.0.0/0` **and** `::/0`.
   With `ufw`: `sudo ufw allow 443/tcp`. The broker connects to the port
   before it accepts a registration and refuses one it cannot reach (`public
-  endpoint unreachable`, which the relay logs verbatim while it retries about
-  every half minute); a relay that registered and later went dark is kept
+  endpoint unreachable`, which the relay logs verbatim while it retries, in
+  rounds backed off to a minute apart); a relay that registered and later
+  went dark is kept
   registered but withheld from clients. `volunteer-up.sh` opens ufw/firewalld
   itself, prints the provider's fix when the registration is refused, and
   waits for the port to open (`OPENRUNG_REACHABILITY_WAIT`, default 600 s on

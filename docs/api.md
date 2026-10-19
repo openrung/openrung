@@ -651,11 +651,12 @@ endpoint itself (a bounded plain TCP connect, no Reality handshake) in the
 registration request, before anything is stored. The relay listens before it
 registers, so a failed connect means the endpoint is not accepting connections
 from the broker's network, and the registration is **refused**: `422` with
-`Retry-After: 30` and the body
+the body
 `{"error": "public endpoint unreachable: the broker could not connect to <host>:<port>; ..."}`.
-Nothing is stored. The relay's own registration retries re-run the probe, so
-the relay admits itself as soon as the port opens; it logs the refusal
-verbatim, and `deploy/relay/volunteer-up.sh` reads that log line to tell the
+Nothing is stored and no `Retry-After` is sent: the relay's own registration
+retries (seconds apart at startup, then rounds backed off to a minute) re-run
+the probe, so the relay admits itself as soon as the port opens and logs the
+refusal within seconds of starting; and `deploy/relay/volunteer-up.sh` reads that log line to tell the
 operator which firewall to open. The leading phrase `public endpoint
 unreachable` is therefore a contract. A successful probe registers the relay
 and reports `"reachable": true` in the response (absent when the broker did

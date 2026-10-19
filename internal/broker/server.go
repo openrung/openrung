@@ -320,7 +320,6 @@ func registerHandler(store RelayStore, cfg Config, clientIP *clientIPResolver, l
 		probed, probeErr := probeRegistration(r.Context(), cfg.RelayProber, req)
 		if probeErr != nil {
 			slog.Warn("relay registration rejected: endpoint unreachable", "node_class", maxClass, "public", req.PublicHost, "port", req.PublicPort, "version", req.RelayVersion, "error", probeErr)
-			w.Header().Set("Retry-After", strconv.Itoa(unreachableRetryAfterSeconds))
 			writeError(w, http.StatusUnprocessableEntity, unreachableRegistrationMessage(req))
 			return
 		}

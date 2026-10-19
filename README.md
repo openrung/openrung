@@ -144,8 +144,8 @@ opens.
 Afterwards:
 
 - **Check later** with `docker logs openrung-relay 2>&1 | grep -E 'registered
-  relay|public endpoint'`: the relay retries registration about every half
-  minute until the broker can reach it.
+  relay|public endpoint'`: the relay retries registration about every minute
+  until the broker can reach it.
 - **Update** by re-running the same command — your relay keeps its identity,
   and a failed update rolls back to the running version automatically.
 - **Watch it**: `docker logs -f openrung-relay`

@@ -403,9 +403,10 @@ reachability_verdict() { # container
 
 # Reports whether the broker accepted the relay and, while the port is closed,
 # prints the provider's fix and keeps re-reading the answer for up to
-# REACHABILITY_WAIT seconds: the relay re-registers on its own about every
-# half minute and the broker probes the port each time, so a port opened in
-# another window turns the answer within a minute. The relay stays installed
+# REACHABILITY_WAIT seconds: the relay re-registers on its own (rounds of
+# attempts backed off to a minute apart) and the broker probes the port each
+# time, so a port opened in another window turns the answer within about a
+# minute. The relay stays installed
 # either way — it registers by itself once the port opens — so this never
 # fails the run.
 report_reachability() { # container
@@ -451,7 +452,9 @@ report_reachability() { # container
 # broker refused its registration because the port is unreachable (the
 # candidate is healthy — the relay keeps retrying by itself — so an update
 # must still promote it rather than roll back to a version with the same
-# closed port), 1 when it stopped, restarted or did neither within 60s.
+# closed port), 1 when it stopped, restarted or did neither within 120s. The
+# window covers the relay's three startup registration attempts (each a
+# bounded broker probe, seconds apart) before it logs a refusal.
 verify_candidate() {
     verify_container=$1
     log "waiting for the relay candidate to register with the broker"
@@ -481,8 +484,8 @@ verify_candidate() {
         esac
 
         verify_i=$((verify_i + 1))
-        if [ "$verify_i" -ge 30 ]; then
-            echo "volunteer-up: error: the relay candidate did not register within 60s; recent logs:" >&2
+        if [ "$verify_i" -ge 60 ]; then
+            echo "volunteer-up: error: the relay candidate did not register within 120s; recent logs:" >&2
             docker logs --tail 25 "$verify_container" >&2 || true
             return 1
         fi
