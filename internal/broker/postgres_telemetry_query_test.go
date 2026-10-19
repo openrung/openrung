@@ -499,6 +499,117 @@ func countRollupSessions(t *testing.T, sink *PostgresTelemetrySink) int {
 	return count
 }
 
+// TestPostgresTelemetryRollupMergeIsOrderIndependent pins the merge against
+// the interleaving the backfill produces in practice: a live event for a
+// session lands first (the broker is already ingesting while it backfills),
+// then the session's older history arrives chunk by chunk. The later history
+// chunk must still override the earlier one — a merge keyed on the whole
+// session's last_seen_at would freeze the first chunk's value because the
+// live row stays "newer" — while neither may override what the live event
+// itself supplied. Whichever order the chunks are applied in, the result
+// must equal a single-pass aggregation of the same events.
+func TestPostgresTelemetryRollupMergeIsOrderIndependent(t *testing.T) {
+	now := time.Date(2026, 6, 24, 12, 30, 0, 0, time.UTC)
+	sink := newTestPostgresTelemetrySink(t, now)
+	ctx := context.Background()
+	history := []TelemetryRecord{
+		// 09:xx: first chunk, country DE, city Berlin, relay-1 stamped.
+		dashboardRecord(now.Add(-3*time.Hour), "h1", "connection_attempted", "client-first", "session-x", "relay-1",
+			map[string]string{"country": "DE", "city": "Berlin", "app_version": "1.0"}, nil),
+		// 10:xx: second chunk, country CA, no city, relay-2.
+		dashboardRecord(now.Add(-2*time.Hour), "h2", "connection_succeeded", "client-second", "session-x", "relay-2",
+			map[string]string{"country": "CA"}, map[string]int64{"bytes_sent": 10}),
+	}
+	history[0].RelayNodeClass = relay.NodeClassFoundation
+	live := dashboardRecord(now.Add(-time.Minute), "l1", "session_heartbeat", "client-second", "session-x", "",
+		map[string]string{"app_version": "1.1"}, map[string]int64{"session_duration_ms": 5000, "bytes_sent": 5})
+
+	for _, order := range [][]int{{0, 1}, {1, 0}} {
+		cleanupPostgresTelemetry(t, sink)
+		for _, record := range history {
+			if err := sink.ensurePartition(ctx, record.ReceivedAt); err != nil {
+				t.Fatalf("ensure partition: %v", err)
+			}
+			if _, err := sink.pool.Exec(ctx, telemetryInsertStatement(1), telemetryInsertArgs(record, now)...); err != nil {
+				t.Fatalf("insert history row: %v", err)
+			}
+		}
+		// Live ingestion first, then the history in the given chunk order.
+		if err := sink.WriteTelemetry(ctx, []TelemetryRecord{live}); err != nil {
+			t.Fatalf("write live record: %v", err)
+		}
+		if err := sink.flush(); err != nil {
+			t.Fatalf("flush live record: %v", err)
+		}
+		for _, i := range order {
+			from := history[i].ReceivedAt.Truncate(time.Hour)
+			if _, err := sink.pool.Exec(ctx, telemetryRollupBackfillStatement, from, from.Add(time.Hour)); err != nil {
+				t.Fatalf("backfill chunk %d: %v", i, err)
+			}
+		}
+		sessions, _, err := sink.TelemetrySessions(now, 24*time.Hour, 0, 10)
+		if err != nil {
+			t.Fatalf("rollup sessions: %v", err)
+		}
+		memory := newTelemetryReaderQuerier(rollupReferenceStore(t, append(append([]TelemetryRecord{}, history...), live), now))
+		want, _, err := memory.TelemetrySessions(now, 24*time.Hour, 0, 10)
+		if err != nil {
+			t.Fatalf("reference sessions: %v", err)
+		}
+		assertSameJSON(t, fmt.Sprintf("merge order %v", order), want, sessions)
+		got := sessions[0]
+		if got.Country != "CA" || got.City != "Berlin" || got.AppVersion != "1.1" || got.ClientID != "client-first" ||
+			got.RelayID != "relay-2" || got.RelayNodeClass != "" || got.BytesSent != 10 || got.DurationMS != 5000 {
+			t.Fatalf("merge order %v produced %+v", order, got)
+		}
+	}
+}
+
+// TestPostgresTelemetryRollupRelayClassFollowsReceipt pins the retained relay
+// class to receipt order, like the accumulator: a delayed upload whose event
+// occurred in an earlier hour but arrived later carries the current stamp,
+// and must win over the stamp received earlier, on both query paths.
+func TestPostgresTelemetryRollupRelayClassFollowsReceipt(t *testing.T) {
+	now := time.Date(2026, 6, 24, 11, 0, 0, 0, time.UTC)
+	sink := newTestPostgresTelemetrySink(t, now)
+	prompt := dashboardRecord(now.Add(-30*time.Minute), "p", "connection_succeeded", "client-a", "session-a", "relay-x", nil, nil)
+	prompt.RelayNodeClass = relay.NodeClassVolunteer
+	// Occurred at 09:50 (the previous hour bucket) but received at 10:40,
+	// after the volunteer stamp — the relay was re-registered as foundation
+	// in between, and that is the class the dashboard must show.
+	delayed := dashboardRecord(now.Add(-70*time.Minute), "d", "connection_succeeded", "client-b", "session-b", "relay-x", nil, nil)
+	delayed.ReceivedAt = now.Add(-20 * time.Minute)
+	delayed.RelayNodeClass = relay.NodeClassFoundation
+	records := []TelemetryRecord{prompt, delayed}
+	if err := sink.WriteTelemetry(context.Background(), records); err != nil {
+		t.Fatalf("write telemetry: %v", err)
+	}
+	memory := newTelemetryReaderQuerier(rollupReferenceStore(t, records, now))
+	// 1h: only the prompt event occurred in-window, so volunteer; 24h: both,
+	// and the later-received foundation stamp wins.
+	for window, wantClass := range map[time.Duration]string{time.Hour: relay.NodeClassVolunteer, 24 * time.Hour: relay.NodeClassFoundation} {
+		overview, err := sink.TelemetryOverview(now, window)
+		if err != nil {
+			t.Fatalf("overview (%s): %v", window, err)
+		}
+		if len(overview.TopRelays) != 1 || overview.TopRelays[0].NodeClass != wantClass {
+			t.Fatalf("window %s top relays = %+v, want class %s", window, overview.TopRelays, wantClass)
+		}
+		want, err := memory.TelemetryOverview(now, window)
+		if err != nil {
+			t.Fatalf("reference overview (%s): %v", window, err)
+		}
+		assertSameJSON(t, fmt.Sprintf("class overview window=%s", window), want, overview)
+		stats, err := sink.TelemetryRelayStats(now, window, nil)
+		if err != nil {
+			t.Fatalf("relay stats (%s): %v", window, err)
+		}
+		if len(stats.Relays) != 1 || stats.Relays[0].NodeClass != wantClass {
+			t.Fatalf("window %s relay stats = %+v, want class %s", window, stats.Relays, wantClass)
+		}
+	}
+}
+
 // TestPostgresTelemetryRollupWindowSelection pins which windows the rollup
 // serves: never the 1h window, and nothing until the backfill has completed.
 func TestPostgresTelemetryRollupWindowSelection(t *testing.T) {

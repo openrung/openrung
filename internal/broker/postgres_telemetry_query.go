@@ -117,8 +117,8 @@ const telemetryWindowEventsWhere = `
 
 var telemetryEventsCTE = telemetryEventsCTEFrom(`FROM telemetry_events e` + telemetryWindowEventsWhere)
 
-// telemetrySessionColumns is the column set of telemetry_sessions, which is
-// also exactly what the session_rows CTE produces from events: the raw
+// telemetrySessionColumns is the column set the session_rows CTE produces
+// from events and the rollup path reads back from telemetry_sessions: the raw
 // per-session accumulation that sessionAccumulator.finalize turns into a
 // sessionSummary. client_ids (every distinct client the session named, for
 // the headline clients total) and last_occurred_at (window membership) exist
@@ -130,13 +130,60 @@ const telemetrySessionColumns = `session_id, client_id, client_ids, started_at, 
 	last_heartbeat_at, running_duration_ms, ended_duration_ms, bytes_sent, bytes_received,
 	attempted, succeeded, failed, terminal`
 
-// The `latest non-empty wins` aggregations order by (received_at, occurred_at)
-// as the canonical event order. The in-memory accumulator iterates records in
-// arrival order; rows from one uploaded batch share a received_at, so
-// occurred_at breaks those ties. bytes_sent/bytes_received are cumulative per
-// session, hence MAX; the GREATEST(..., 0) mirrors the accumulator never
-// letting a negative report beat its zero initial value.
-const telemetrySessionRowsCTE = `
+// telemetrySessionLatestField is one "latest non-empty wins" column of the
+// session accumulation: the latest (by received_at, then occurred_at) event
+// satisfying filter supplies expr. The rollup also keeps, per field, the
+// received_at of that supplying event (<column>_at), which is what lets two
+// partial aggregates of one session merge exactly whatever order they arrive
+// in (see telemetryRollupStatement).
+type telemetrySessionLatestField struct {
+	column, expr, filter string
+}
+
+var telemetrySessionLatestFields = []telemetrySessionLatestField{
+	{"operating_system", "os_label", "os_label IS NOT NULL"},
+	{"device_manufacturer", "device_manufacturer", "device_manufacturer IS NOT NULL"},
+	{"device_model", "device_model", "device_model IS NOT NULL"},
+	{"app_version", "app_version", "app_version IS NOT NULL"},
+	{"country", "country", "country IS NOT NULL"},
+	{"city", "city", "city IS NOT NULL"},
+	{"organization", "organization", "organization IS NOT NULL"},
+	{"asn", "asn", "asn IS NOT NULL"},
+	{"isp", "isp", "isp IS NOT NULL"},
+	// Failure fields come only from connection_failed events; latest
+	// non-empty wins, matching sessionSummary's per-field accumulation.
+	{"failure_stage", "failure_stage", "event = 'connection_failed' AND failure_stage IS NOT NULL"},
+	{"failure_reason", "failure_reason", "event = 'connection_failed' AND failure_reason IS NOT NULL"},
+	{"failure_detail", "failure_detail", "event = 'connection_failed' AND failure_detail IS NOT NULL"},
+	{"observed_client_ip", "source_ip", "event = 'client_seen' AND source_ip IS NOT NULL"},
+	{"reported_client_ip", "reported_client_ip", "reported_client_ip IS NOT NULL"},
+	{"fallback_source_ip", "source_ip", "source_ip IS NOT NULL"},
+}
+
+// telemetrySessionOrderColumns are the rollup-only ordering columns of
+// telemetry_sessions: first_seen_at keys the first-client rule, relay_at the
+// relay/class pair, ended_at the final duration, and <field>_at each latest
+// field. NULL wherever the corresponding value is blank.
+var telemetrySessionOrderColumns = func() string {
+	columns := []string{"first_seen_at", "relay_at", "ended_at"}
+	for _, field := range telemetrySessionLatestFields {
+		columns = append(columns, field.column+"_at")
+	}
+	return strings.Join(columns, ", ")
+}()
+
+// telemetrySessionRowsCTEWith builds the per-session accumulation over the
+// events CTE. The `latest non-empty wins` aggregations order by (received_at,
+// occurred_at) as the canonical event order: the in-memory accumulator
+// iterates records in arrival order, and rows from one uploaded batch share a
+// received_at, so occurred_at breaks those ties. bytes_sent/bytes_received are
+// cumulative per session, hence MAX; the GREATEST(..., 0) mirrors the
+// accumulator never letting a negative report beat its zero initial value.
+// With ordering, the CTE also emits telemetrySessionOrderColumns for the
+// rollup merge; the dashboard queries do without them.
+func telemetrySessionRowsCTEWith(ordering bool) string {
+	var b strings.Builder
+	b.WriteString(`
 session_rows AS (
 	SELECT
 		session_id,
@@ -149,24 +196,11 @@ session_rows AS (
 		-- Keep the class paired with the same latest relay-bearing event. An empty
 		-- class on that event must not borrow the class of an earlier failover relay.
 		COALESCE((array_agg(relay_node_class ORDER BY received_at DESC, occurred_at DESC) FILTER (WHERE relay_id <> ''))[1], '') AS relay_node_class,
-		COALESCE((array_agg(os_label ORDER BY received_at DESC, occurred_at DESC) FILTER (WHERE os_label IS NOT NULL))[1], '') AS operating_system,
-		COALESCE((array_agg(device_manufacturer ORDER BY received_at DESC, occurred_at DESC) FILTER (WHERE device_manufacturer IS NOT NULL))[1], '') AS device_manufacturer,
-		COALESCE((array_agg(device_model ORDER BY received_at DESC, occurred_at DESC) FILTER (WHERE device_model IS NOT NULL))[1], '') AS device_model,
-		COALESCE((array_agg(app_version ORDER BY received_at DESC, occurred_at DESC) FILTER (WHERE app_version IS NOT NULL))[1], '') AS app_version,
-		COALESCE((array_agg(country ORDER BY received_at DESC, occurred_at DESC) FILTER (WHERE country IS NOT NULL))[1], '') AS country,
-		COALESCE((array_agg(city ORDER BY received_at DESC, occurred_at DESC) FILTER (WHERE city IS NOT NULL))[1], '') AS city,
-		COALESCE((array_agg(organization ORDER BY received_at DESC, occurred_at DESC) FILTER (WHERE organization IS NOT NULL))[1], '') AS organization,
-		COALESCE((array_agg(asn ORDER BY received_at DESC, occurred_at DESC) FILTER (WHERE asn IS NOT NULL))[1], '') AS asn,
-		COALESCE((array_agg(isp ORDER BY received_at DESC, occurred_at DESC) FILTER (WHERE isp IS NOT NULL))[1], '') AS isp,
-		-- Failure fields come only from connection_failed events; latest
-		-- non-empty wins, matching sessionSummary's per-field accumulation.
-		COALESCE((array_agg(failure_stage ORDER BY received_at DESC, occurred_at DESC) FILTER (WHERE event = 'connection_failed' AND failure_stage IS NOT NULL))[1], '') AS failure_stage,
-		COALESCE((array_agg(failure_reason ORDER BY received_at DESC, occurred_at DESC) FILTER (WHERE event = 'connection_failed' AND failure_reason IS NOT NULL))[1], '') AS failure_reason,
-		COALESCE((array_agg(failure_detail ORDER BY received_at DESC, occurred_at DESC) FILTER (WHERE event = 'connection_failed' AND failure_detail IS NOT NULL))[1], '') AS failure_detail,
-		COALESCE((array_agg(source_ip ORDER BY received_at DESC, occurred_at DESC) FILTER (WHERE event = 'client_seen' AND source_ip IS NOT NULL))[1], '') AS observed_client_ip,
-		COALESCE((array_agg(reported_client_ip ORDER BY received_at DESC, occurred_at DESC) FILTER (WHERE reported_client_ip IS NOT NULL))[1], '') AS reported_client_ip,
-		COALESCE((array_agg(source_ip ORDER BY received_at DESC, occurred_at DESC) FILTER (WHERE source_ip IS NOT NULL))[1], '') AS fallback_source_ip,
-		MAX(received_at) FILTER (WHERE event = 'session_heartbeat') AS last_heartbeat_at,
+`)
+	for _, field := range telemetrySessionLatestFields {
+		fmt.Fprintf(&b, "\t\tCOALESCE((array_agg(%s ORDER BY received_at DESC, occurred_at DESC) FILTER (WHERE %s))[1], '') AS %s,\n", field.expr, field.filter, field.column)
+	}
+	b.WriteString(`		MAX(received_at) FILTER (WHERE event = 'session_heartbeat') AS last_heartbeat_at,
 		GREATEST(COALESCE(MAX(session_duration_ms) FILTER (WHERE event = 'session_heartbeat'), 0), 0) AS running_duration_ms,
 		COALESCE((array_agg(COALESCE(session_duration_ms, 0) ORDER BY received_at DESC, occurred_at DESC) FILTER (WHERE event = 'connection_ended'))[1], 0) AS ended_duration_ms,
 		GREATEST(COALESCE(MAX(bytes_sent), 0), 0) AS bytes_sent,
@@ -174,10 +208,29 @@ session_rows AS (
 		bool_or(event = 'connection_attempted') AS attempted,
 		bool_or(event = 'connection_succeeded') AS succeeded,
 		bool_or(event = 'connection_failed') AS failed,
-		bool_or(event IN ('connection_failed', 'connection_ended', 'tunnel_stopped')) AS terminal
+		bool_or(event IN ('connection_failed', 'connection_ended', 'tunnel_stopped')) AS terminal`)
+	if ordering {
+		// MAX(received_at) under a field's filter is exactly the received_at of
+		// the event its array_agg ordering picked.
+		b.WriteString(`,
+		MIN(received_at) AS first_seen_at,
+		MAX(received_at) FILTER (WHERE relay_id <> '') AS relay_at,
+		MAX(received_at) FILTER (WHERE event = 'connection_ended') AS ended_at`)
+		for _, field := range telemetrySessionLatestFields {
+			fmt.Fprintf(&b, ",\n\t\tMAX(received_at) FILTER (WHERE %s) AS %s_at", field.filter, field.column)
+		}
+	}
+	b.WriteString(`
 	FROM events
 	GROUP BY session_id
-)`
+)`)
+	return b.String()
+}
+
+var (
+	telemetrySessionRowsCTE       = telemetrySessionRowsCTEWith(false)
+	telemetrySessionRollupRowsCTE = telemetrySessionRowsCTEWith(true)
+)
 
 // telemetrySessionsCTE derives the window-dependent activity flag on top of
 // session_rows, whichever source produced them.
@@ -208,38 +261,43 @@ const (
 //	relay_fail  k1 = relay_id, k2 = reason label n = relay_attempt_failed
 //	speed       k1 = relay_id                    n = tests, s1 = Σ download_mbps_milli, s2 = Σ ttfb_ms
 //	relay_seen  k1 = relay_id                    n = relay-bearing events, last_at = latest
-//	                                             received_at, v = latest non-empty node class
+//	                                             received_at, v = latest non-empty node class,
+//	                                             v_at = received_at of the event that stamped it
 //
 // The stage/reason labels fall back to 'unknown' exactly as the in-memory
 // firstNonEmpty(..., "unknown") does, so panels can group on them directly.
+// v_at is what orders the retained class across hours — by receipt, exactly
+// as the accumulator's latest-non-empty rule, not by the hour an event
+// claims to have occurred in.
 const telemetryEventCountsCTE = `
 event_counts AS (
 	SELECT ` + telemetryOccurredHour + ` AS hour, 'trend'::text AS kind, event AS k1, ''::text AS k2,
-		COUNT(*)::bigint AS n, 0::bigint AS s1, 0::bigint AS s2, NULL::timestamptz AS last_at, NULL::text AS v
+		COUNT(*)::bigint AS n, 0::bigint AS s1, 0::bigint AS s2, NULL::timestamptz AS last_at, NULL::text AS v, NULL::timestamptz AS v_at
 	FROM events WHERE event IN ('connection_attempted', 'connection_succeeded', 'connection_failed') GROUP BY 1, 3
 	UNION ALL
 	SELECT ` + telemetryOccurredHour + `, 'failure', ` + telemetryFailureStageLabel + `, ` + telemetryFailureReasonLabel + `,
-		COUNT(*), 0, 0, NULL, NULL
+		COUNT(*), 0, 0, NULL, NULL, NULL
 	FROM events WHERE event = 'connection_failed' GROUP BY 1, 3, 4
 	UNION ALL
-	SELECT ` + telemetryOccurredHour + `, 'access', access_outcome, '', COUNT(*), 0, 0, NULL, NULL
+	SELECT ` + telemetryOccurredHour + `, 'access', access_outcome, '', COUNT(*), 0, 0, NULL, NULL, NULL
 	FROM events WHERE event IN ('connection_succeeded', 'connection_failed') AND access_outcome IS NOT NULL GROUP BY 1, 3
 	UNION ALL
-	SELECT ` + telemetryOccurredHour + `, 'relay_source', relay_source, '', COUNT(*), 0, 0, NULL, NULL
+	SELECT ` + telemetryOccurredHour + `, 'relay_source', relay_source, '', COUNT(*), 0, 0, NULL, NULL, NULL
 	FROM events WHERE event = 'connection_succeeded' AND relay_source IS NOT NULL GROUP BY 1, 3
 	UNION ALL
-	SELECT ` + telemetryOccurredHour + `, 'relay_ok', relay_id, '', COUNT(*), 0, 0, NULL, NULL
+	SELECT ` + telemetryOccurredHour + `, 'relay_ok', relay_id, '', COUNT(*), 0, 0, NULL, NULL, NULL
 	FROM events WHERE event IN ('connection_succeeded', 'relay_failover') AND relay_id <> '' GROUP BY 1, 3
 	UNION ALL
-	SELECT ` + telemetryOccurredHour + `, 'relay_fail', relay_id, ` + telemetryFailureReasonLabel + `, COUNT(*), 0, 0, NULL, NULL
+	SELECT ` + telemetryOccurredHour + `, 'relay_fail', relay_id, ` + telemetryFailureReasonLabel + `, COUNT(*), 0, 0, NULL, NULL, NULL
 	FROM events WHERE event = 'relay_attempt_failed' AND relay_id <> '' GROUP BY 1, 3, 4
 	UNION ALL
 	SELECT ` + telemetryOccurredHour + `, 'speed', relay_id, '', COUNT(*),
-		SUM(COALESCE(download_mbps_milli, 0))::bigint, SUM(COALESCE(ttfb_ms, 0))::bigint, NULL, NULL
+		SUM(COALESCE(download_mbps_milli, 0))::bigint, SUM(COALESCE(ttfb_ms, 0))::bigint, NULL, NULL, NULL
 	FROM events WHERE event = 'speed_test_completed' AND relay_id <> '' GROUP BY 1, 3
 	UNION ALL
 	SELECT ` + telemetryOccurredHour + `, 'relay_seen', relay_id, '', COUNT(*), 0, 0, MAX(received_at),
-		(array_agg(relay_node_class ORDER BY received_at DESC, occurred_at DESC) FILTER (WHERE relay_node_class <> ''))[1]
+		(array_agg(relay_node_class ORDER BY received_at DESC, occurred_at DESC) FILTER (WHERE relay_node_class <> ''))[1],
+		MAX(received_at) FILTER (WHERE relay_node_class <> '')
 	FROM events WHERE relay_id <> '' GROUP BY 1, 3
 )`
 
@@ -264,7 +322,7 @@ session_rows AS (
 	` + telemetryRollupSessionsWhere + `
 ),
 event_counts AS (
-	SELECT hour, kind, k1, k2, n, s1, s2, last_at, v
+	SELECT hour, kind, k1, k2, n, s1, s2, last_at, v, v_at
 	FROM telemetry_event_counts
 	WHERE hour >= date_trunc('hour', $2::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AND hour <= $3
 ), ` + telemetrySessionsCTE
@@ -389,7 +447,7 @@ UNION ALL
 -- immutable relay ID. The latest non-empty value covers mixed legacy/new
 -- telemetry without splitting the relay's aggregate counts.
 SELECT 'relay_classes', k1,
-	(array_agg(v ORDER BY hour DESC) FILTER (WHERE v IS NOT NULL))[1],
+	(array_agg(v ORDER BY v_at DESC, hour DESC) FILTER (WHERE v IS NOT NULL))[1],
 	NULL, NULL, NULL, NULL
 FROM event_counts WHERE kind = 'relay_seen' GROUP BY k1
 UNION ALL
@@ -494,7 +552,7 @@ relay_events AS (
 		COALESCE(SUM(s1) FILTER (WHERE kind = 'speed'), 0)::bigint AS mbps_milli_sum,
 		COALESCE(SUM(s2) FILTER (WHERE kind = 'speed'), 0)::bigint AS ttfb_ms_sum,
 		MAX(last_at) AS last_seen_at,
-		COALESCE((array_agg(v ORDER BY hour DESC) FILTER (WHERE kind = 'relay_seen' AND v IS NOT NULL))[1], '') AS node_class
+		COALESCE((array_agg(v ORDER BY v_at DESC, hour DESC) FILTER (WHERE kind = 'relay_seen' AND v IS NOT NULL))[1], '') AS node_class
 	FROM event_counts
 	WHERE kind IN ('relay_ok', 'relay_fail', 'speed', 'relay_seen')
 	GROUP BY k1
@@ -562,24 +620,26 @@ var (
 // completion whether or not the main INSERT reads it.
 //
 // The session merge reproduces the per-field "latest non-empty wins" rule
-// incrementally. Batches reach it in chronological order (flushes are
-// serialised and the backfill walks received_at upwards), so comparing the
-// incoming aggregate's last_seen_at against the stored row's decides which side
-// is newer; the newer side's non-empty value wins and the older side's only
-// fills a blank. That is exact for every real interleaving: a backfill chunk
-// (older) never clobbers what live ingestion (newer) already stored. Monotone
-// fields (first client, started/last seen, heartbeat, maxima, flags) need no
-// ordering. ended_duration_ms keeps the latest non-zero value, where the
-// accumulator keeps the latest value: a second connection_ended reporting a
-// zero duration after a non-zero one is the only (never observed) divergence.
-// client_ids is capped so anonymous telemetry naming fresh client IDs under
-// one session cannot grow a row without bound; beyond the cap the headline
-// clients total undercounts that session.
+// incrementally and exactly, whatever order a session's partial aggregates
+// arrive in: every such field carries the received_at of the event that
+// supplied it (telemetrySessionOrderColumns), and the merge keeps whichever
+// side's value is later-received (ties go to the incoming side, which within
+// one flush is the later chunk). So a backfill chunk never clobbers what live
+// ingestion stored after it, and a later backfill chunk still overrides an
+// earlier one even when a live event has already landed for the session.
+// Monotone fields (started/last seen, heartbeat, maxima, flags) need no
+// ordering; the first client follows the earliest first_seen_at. client_ids
+// is capped so anonymous telemetry naming fresh client IDs under one session
+// cannot grow a row without bound; beyond the cap the headline clients total
+// undercounts that session.
 func telemetryRollupStatement(prefix, eventsFrom string) string {
-	newer := `EXCLUDED.last_seen_at >= t.last_seen_at`
-	latestNonEmpty := func(column string) string {
-		return fmt.Sprintf(`%s = CASE WHEN %s THEN COALESCE(NULLIF(EXCLUDED.%s, ''), t.%s) ELSE COALESCE(NULLIF(t.%s, ''), EXCLUDED.%s) END`,
-			column, newer, column, column, column, column)
+	// later reports that the incoming side supplied the field more recently
+	// than the stored row did (or the stored row never did).
+	later := func(at string) string {
+		return fmt.Sprintf(`EXCLUDED.%s IS NOT NULL AND (t.%s IS NULL OR EXCLUDED.%s >= t.%s)`, at, at, at, at)
+	}
+	pick := func(column, at string) string {
+		return fmt.Sprintf(`%s = CASE WHEN %s THEN EXCLUDED.%s ELSE t.%s END`, column, later(at), column, column)
 	}
 	greatest := func(column string) string {
 		return fmt.Sprintf(`%s = GREATEST(t.%s, EXCLUDED.%s)`, column, column, column)
@@ -588,32 +648,26 @@ func telemetryRollupStatement(prefix, eventsFrom string) string {
 		return fmt.Sprintf(`%s = t.%s OR EXCLUDED.%s`, column, column, column)
 	}
 	sets := []string{
-		`client_id = CASE WHEN ` + newer + ` THEN t.client_id ELSE EXCLUDED.client_id END`,
+		`client_id = CASE WHEN EXCLUDED.first_seen_at < t.first_seen_at THEN EXCLUDED.client_id ELSE t.client_id END`,
+		`first_seen_at = LEAST(t.first_seen_at, EXCLUDED.first_seen_at)`,
 		fmt.Sprintf(`client_ids = CASE WHEN cardinality(t.client_ids) >= %d THEN t.client_ids
 			ELSE ARRAY(SELECT DISTINCT c FROM unnest(t.client_ids || EXCLUDED.client_ids) AS c) END`, maxTelemetrySessionClientIDs),
 		`started_at = LEAST(t.started_at, EXCLUDED.started_at)`,
 		greatest("last_occurred_at"),
 		greatest("last_seen_at"),
-		latestNonEmpty("relay_id"),
-		// The class stays paired with whichever relay_id wins above.
-		`relay_node_class = CASE WHEN ` + newer + `
-			THEN (CASE WHEN EXCLUDED.relay_id <> '' THEN EXCLUDED.relay_node_class ELSE t.relay_node_class END)
-			ELSE (CASE WHEN t.relay_id <> '' THEN t.relay_node_class ELSE EXCLUDED.relay_node_class END) END`,
+		// The class stays paired with the relay_id that wins.
+		pick("relay_id", "relay_at"),
+		pick("relay_node_class", "relay_at"),
+		greatest("relay_at"),
 	}
-	for _, column := range []string{
-		"operating_system", "device_manufacturer", "device_model", "app_version",
-		"country", "city", "organization", "asn", "isp",
-		"failure_stage", "failure_reason", "failure_detail",
-		"observed_client_ip", "reported_client_ip", "fallback_source_ip",
-	} {
-		sets = append(sets, latestNonEmpty(column))
+	for _, field := range telemetrySessionLatestFields {
+		sets = append(sets, pick(field.column, field.column+"_at"), greatest(field.column+"_at"))
 	}
 	sets = append(sets,
 		greatest("last_heartbeat_at"),
 		greatest("running_duration_ms"),
-		`ended_duration_ms = CASE WHEN `+newer+`
-			THEN (CASE WHEN EXCLUDED.ended_duration_ms <> 0 THEN EXCLUDED.ended_duration_ms ELSE t.ended_duration_ms END)
-			ELSE (CASE WHEN t.ended_duration_ms <> 0 THEN t.ended_duration_ms ELSE EXCLUDED.ended_duration_ms END) END`,
+		pick("ended_duration_ms", "ended_at"),
+		greatest("ended_at"),
 		greatest("bytes_sent"),
 		greatest("bytes_received"),
 		either("attempted"),
@@ -621,23 +675,25 @@ func telemetryRollupStatement(prefix, eventsFrom string) string {
 		either("failed"),
 		either("terminal"),
 	)
-	return prefix + telemetryEventsCTEFrom(eventsFrom) + `, ` + telemetrySessionRowsCTE + `, ` + telemetryEventCountsCTE + `,
+	columns := telemetrySessionColumns + `, ` + telemetrySessionOrderColumns
+	return prefix + telemetryEventsCTEFrom(eventsFrom) + `, ` + telemetrySessionRollupRowsCTE + `, ` + telemetryEventCountsCTE + `,
 rolled_sessions AS (
-	INSERT INTO telemetry_sessions AS t (` + telemetrySessionColumns + `)
-	SELECT ` + telemetrySessionColumns + ` FROM session_rows
+	INSERT INTO telemetry_sessions AS t (` + columns + `)
+	SELECT ` + columns + ` FROM session_rows
 	ON CONFLICT (session_id) DO UPDATE SET
 		` + strings.Join(sets, ",\n\t\t") + `
 	RETURNING 1
 )
-INSERT INTO telemetry_event_counts AS c (hour, kind, k1, k2, n, s1, s2, last_at, v)
-SELECT hour, kind, k1, k2, n, s1, s2, last_at, v FROM event_counts
+INSERT INTO telemetry_event_counts AS c (hour, kind, k1, k2, n, s1, s2, last_at, v, v_at)
+SELECT hour, kind, k1, k2, n, s1, s2, last_at, v, v_at FROM event_counts
 ON CONFLICT (hour, kind, k1, k2) DO UPDATE SET
 	n = c.n + EXCLUDED.n,
 	s1 = c.s1 + EXCLUDED.s1,
 	s2 = c.s2 + EXCLUDED.s2,
 	last_at = GREATEST(c.last_at, EXCLUDED.last_at),
-	-- The retained class follows the same newer-wins rule as session fields.
-	v = CASE WHEN COALESCE(EXCLUDED.last_at >= c.last_at, true) THEN COALESCE(EXCLUDED.v, c.v) ELSE COALESCE(c.v, EXCLUDED.v) END`
+	-- The retained class follows the later stamp, like the session fields.
+	v = CASE WHEN EXCLUDED.v_at IS NOT NULL AND (c.v_at IS NULL OR EXCLUDED.v_at >= c.v_at) THEN EXCLUDED.v ELSE c.v END,
+	v_at = GREATEST(c.v_at, EXCLUDED.v_at)`
 }
 
 // telemetryRollupInsertStatement wraps the multi-row event INSERT so the same

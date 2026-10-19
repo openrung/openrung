@@ -154,7 +154,27 @@ CREATE TABLE IF NOT EXISTS telemetry_sessions (
 	attempted boolean NOT NULL,
 	succeeded boolean NOT NULL,
 	failed boolean NOT NULL,
-	terminal boolean NOT NULL
+	terminal boolean NOT NULL,
+	-- Per-field receipt times the incremental merge orders on (see
+	-- telemetrySessionOrderColumns); NULL where the value is blank.
+	first_seen_at timestamptz NOT NULL,
+	relay_at timestamptz,
+	ended_at timestamptz,
+	operating_system_at timestamptz,
+	device_manufacturer_at timestamptz,
+	device_model_at timestamptz,
+	app_version_at timestamptz,
+	country_at timestamptz,
+	city_at timestamptz,
+	organization_at timestamptz,
+	asn_at timestamptz,
+	isp_at timestamptz,
+	failure_stage_at timestamptz,
+	failure_reason_at timestamptz,
+	failure_detail_at timestamptz,
+	observed_client_ip_at timestamptz,
+	reported_client_ip_at timestamptz,
+	fallback_source_ip_at timestamptz
 ) WITH (fillfactor = 80);
 
 CREATE TABLE IF NOT EXISTS telemetry_event_counts (
@@ -167,6 +187,7 @@ CREATE TABLE IF NOT EXISTS telemetry_event_counts (
 	s2 bigint NOT NULL,
 	last_at timestamptz,
 	v text,
+	v_at timestamptz,
 	PRIMARY KEY (hour, kind, k1, k2)
 );
 
