@@ -43,6 +43,7 @@
       <article class="panel"><h2>Countries</h2><div id="countries"></div></article>
       <article class="panel"><h2>Cities</h2><div id="cities"></div></article>
       <article class="panel"><h2>ISPs</h2><div id="isps"></div></article>
+      <article class="panel"><h2>Per-user access</h2><div id="access"></div></article>
       <article class="panel"><h2>Top applications</h2><div id="apps"></div></article>
       <article class="panel"><h2>Top relays</h2><div class="scroll"><table><thead><tr><th>Relay</th><th>Success</th><th>Failed attempts</th><th>Top failure</th></tr></thead><tbody id="relays"></tbody></table></div></article>
       <article class="panel"><h2>Speed tests by relay</h2><div class="scroll"><table><thead><tr><th>Relay</th><th>Tests</th><th>Avg Mbps</th><th>Avg TTFB</th></tr></thead><tbody id="speeds"></tbody></table></div></article>
@@ -109,6 +110,8 @@
       $('activeRelays').innerHTML=donut(data.active_by_relay,{limit:RANK_LIMIT,empty:'No active sessions',unit:'active'});
       $('activeOs').innerHTML=donut(data.active_by_os,{slices:osSlices,empty:'No active sessions',unit:'active'});
       for(const [id,active,windowed] of [['countries','active_by_country','top_countries'],['cities','active_by_city','top_cities'],['isps','active_by_isp','top_isps']])$(id).innerHTML=pair([{title:'Active now',items:data[active],empty:'None active now',limit:RANK_LIMIT,unit:'active'},{title:windowLabel,items:data[windowed],limit:RANK_LIMIT,unit:'sessions'}]);
+      // Two independent closed token sets, so each donut keeps its own colours.
+      $('access').innerHTML=data.access_outcomes?.length||data.relay_sources?.length?`<div class="pair"><div><div class="pie-title">Outcome</div>${donut(data.access_outcomes,{empty:'No access-capable connects',unit:'connects'})}</div><div><div class="pie-title">Relay source</div>${donut(data.relay_sources,{empty:'No access-capable successes',unit:'successes'})}</div></div>`:'<div class="empty">No access-capable connects in this window</div>';
       $('apps').innerHTML=donut(data.top_applications,{limit:RANK_LIMIT});
       $('relays').innerHTML=data.top_relays?.length?data.top_relays.map(x=>`<tr><td class="truncate" title="${esc(x.relay_id)}${nodeTitle(x.node_class)}">${relayName(esc(x.label||x.relay_id),x.node_class)}</td><td>${number(x.successes)}</td><td>${number(x.failures)}</td><td>${esc(x.top_failure_reason||'—')}</td></tr>`).join(''):empty(4);
       $('speeds').innerHTML=data.speed_tests?.length?data.speed_tests.map(x=>`<tr><td class="truncate" title="${esc(x.relay_id)}${nodeTitle(x.node_class)}">${relayName(esc(x.label||x.relay_id),x.node_class)}</td><td>${number(x.tests)}</td><td>${x.average_mbps.toFixed(2)}</td><td>${x.average_ttfb_ms.toFixed(0)} ms</td></tr>`).join(''):empty(4);

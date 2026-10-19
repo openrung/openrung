@@ -13,7 +13,7 @@ var knownSuites = []string{"go", "kotlin", "swift", "ts"}
 
 // vectorFiles is every file in vectors/. A file added there without an entry
 // here fails TestVectorFilesAreDeclared, so it cannot ship unchecked.
-var vectorFiles = []string{ClassificationVectors, RelayDecodeVectors, BrokerFrontsVectors, EventSequenceVectors}
+var vectorFiles = []string{ClassificationVectors, RelayDecodeVectors, BrokerFrontsVectors, EventSequenceVectors, AccessOutcomeVectors}
 
 // vectorHeader is the part of every vector file's shape that is common to all
 // of them, whatever their rows look like. Version is deliberately not here:
@@ -123,6 +123,10 @@ func runsInGo(name string) bool {
 	case EventSequenceVectors:
 		// connectcore/sequence_vectors_test.go — inside the engine package,
 		// because the scripted transport outcomes drive its unexported seams.
+		return true
+	case AccessOutcomeVectors:
+		// connectcore/access_outcome_vectors_test.go — inside the engine
+		// package too, against its unexported token constants.
 		return true
 	}
 	return false

@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "contract": "openrung-access-outcome-v1",
+  "suites": ["go"],
+  "comment": "Golden cross-repo vectors for the per-user access telemetry contract (ADR-006): the closed token sets of the access_outcome and relay_source attributes the engine stamps on its terminal connect events, which the broker dashboard groups by. Consumed by the Go suite (connectcore/access_outcome_vectors_test.go, against connectcore/access_outcome.go). The engine is the only emitter — the mobile apps bind connectcore rather than reimplementing the access path, so there is no Kotlin, Swift or TypeScript producer to run these rows against (see no_mobile_suites_note). The file still lives here, versioned like its siblings, because the broker and the dashboard sit downstream of every client build: a token that changes meaning re-labels history, so an existing token may change only together with a bump of 'version' here and in the Go suite's pinned constant, and the mobile repo vendors the file so a pin bump carries the change to the one place the bound engine is tested.",
+  "no_mobile_suites_note": "There is deliberately no kotlin, swift or ts suite. The access path runs inside connectcore on every platform: Android and iOS drive the bound engine, and the React Native layer renders its state. Nothing outside this module produces an access_outcome or relay_source value, so a mobile suite would have nothing to assert. If a native client ever reimplements the access path, it must claim this file like classification.json's consumers do.",
+  "attributes": {
+    "access_outcome": {
+      "events": ["connection_succeeded", "connection_failed"],
+      "absent_when": "The connect ended before the relay fetch decided the access path (a local setup failure, a user cancel during discovery), so neither the public list nor the access answer was chosen.",
+      "tokens": [
+        "granted",
+        "no_key",
+        "not_requested",
+        "unsupported",
+        "front_unbound",
+        "denied",
+        "unapplied",
+        "rate_limited",
+        "empty",
+        "error",
+        "fallback_public"
+      ],
+      "meaning": {
+        "granted": "The access answer was the candidate list the connect used.",
+        "no_key": "The installation has no key; the public list was used without asking.",
+        "not_requested": "A key exists but the target cannot be expressed to the access endpoint (a label-only target); the public list was used without asking.",
+        "unsupported": "The broker has no user/access endpoints (an older broker); the public list was used.",
+        "front_unbound": "The reachable front cannot carry an authenticated request (the endpoint-unbound no-SNI mode); the public list was used.",
+        "denied": "The broker refused the installation (403); the connect ended there with failure_stage access_denied.",
+        "unapplied": "Leases were issued but no relay installed them within the bounded retries (503); the public list was used.",
+        "rate_limited": "The access request was rate limited (429); the public list was used.",
+        "empty": "The answer named no relay the ladder could use for the target; the public list was used.",
+        "error": "Any other failure of the access request (transport, another status, authentication); the public list was used.",
+        "fallback_public": "Access was granted, every leased candidate failed remotely, and a public-list relay carried the connect."
+      }
+    },
+    "relay_source": {
+      "events": ["connection_succeeded"],
+      "tokens": ["access", "public"],
+      "meaning": {
+        "access": "The connected relay's descriptor and credential came from the access answer (a per-user lease).",
+        "public": "The connected relay's descriptor and credential came from the public relay list (the shared credential)."
+      }
+    }
+  }
+}

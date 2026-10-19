@@ -107,7 +107,8 @@ type fakeAccessBroker struct {
 	mutateAccess func(*brokerapi.RelayDescriptor) // applied to every relay the access route returns
 	rejectTokens int                              // answer this many access requests with 401 first
 	tokenPrefix  string
-	bearers      []string // every Authorization header the access route saw
+	bearers      []string                   // every Authorization header the access route saw
+	events       []brokerapi.TelemetryEvent // every telemetry event uploaded to this broker
 }
 
 func newFakeAccessBroker(t *testing.T, clock func() time.Time, relays ...brokerapi.RelayDescriptor) *fakeAccessBroker {
@@ -156,6 +157,16 @@ func newFakeAccessBroker(t *testing.T, clock func() time.Time, relays ...brokera
 	})
 	mux.HandleFunc("POST /api/v1/access", b.access)
 	mux.HandleFunc("POST /api/v1/telemetry/events", func(w http.ResponseWriter, r *http.Request) {
+		var batch struct {
+			Events []brokerapi.TelemetryEvent `json:"events"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&batch); err != nil {
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		b.mu.Lock()
+		b.events = append(b.events, batch.Events...)
+		b.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	})
 	b.srv = httptest.NewServer(mux)
@@ -268,6 +279,38 @@ func (b *fakeAccessBroker) set(fn func()) {
 	fn()
 }
 
+// event returns the first uploaded telemetry event with that name.
+func (b *fakeAccessBroker) event(name string) (brokerapi.TelemetryEvent, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, e := range b.events {
+		if e.Event == name {
+			return e, true
+		}
+	}
+	return brokerapi.TelemetryEvent{}, false
+}
+
+// awaitEvent waits for the engine to upload the named event (connect events
+// are flushed right after they are recorded) and checks the access-path
+// attributes it carries; "" for relaySource means the key must be absent.
+func awaitEvent(t *testing.T, broker *fakeAccessBroker, name, accessOutcome, relaySource string) brokerapi.TelemetryEvent {
+	t.Helper()
+	var event brokerapi.TelemetryEvent
+	waitUntil(t, "the "+name+" event", func() bool {
+		var ok bool
+		event, ok = broker.event(name)
+		return ok
+	})
+	if got := event.Attributes["access_outcome"]; got != accessOutcome {
+		t.Fatalf("%s access_outcome = %q, want %q (attributes %v)", name, got, accessOutcome, event.Attributes)
+	}
+	if got := event.Attributes["relay_source"]; got != relaySource {
+		t.Fatalf("%s relay_source = %q, want %q (attributes %v)", name, got, relaySource, event.Attributes)
+	}
+	return event
+}
+
 // accessEngine is a ladder engine with an installation key whose public
 // list fetches report the fake broker as the winning front. It records the
 // credential every tunnel run was configured with.
@@ -365,6 +408,7 @@ func TestAccessConnectUsesLeaseCredentialFromTheRaceWinner(t *testing.T) {
 	if persist.get() != "user_test" {
 		t.Fatalf("persisted user ID = %q", persist.get())
 	}
+	awaitEvent(t, broker, "connection_succeeded", accessOutcomeGranted, relaySourceAccess)
 	if err := e.Disconnect(); err != nil {
 		t.Fatal(err)
 	}
@@ -460,17 +504,20 @@ func TestAccessRetriesUnappliedAndExpiredToken(t *testing.T) {
 
 func TestAccessFallsBackToThePublicList(t *testing.T) {
 	relays := []brokerapi.RelayDescriptor{publicRelay("relay-a", "JP")}
-	for name, setup := range map[string]func(*fakeAccessBroker, *accessEngine){
-		"no key":            func(_ *fakeAccessBroker, e *accessEngine) { e.Key = nil },
-		"older broker":      func(b *fakeAccessBroker, _ *accessEngine) { b.noEndpoints = true },
-		"no access relays":  func(b *fakeAccessBroker, _ *accessEngine) { b.emptyAccess = true },
-		"access error":      func(b *fakeAccessBroker, _ *accessEngine) { b.failAccess = true },
-		"label target only": func(*fakeAccessBroker, *accessEngine) {},
+	for name, tc := range map[string]struct {
+		setup   func(*fakeAccessBroker, *accessEngine)
+		outcome string
+	}{
+		"no key":            {func(_ *fakeAccessBroker, e *accessEngine) { e.Key = nil }, accessOutcomeNoKey},
+		"older broker":      {func(b *fakeAccessBroker, _ *accessEngine) { b.noEndpoints = true }, accessOutcomeUnsupported},
+		"no access relays":  {func(b *fakeAccessBroker, _ *accessEngine) { b.emptyAccess = true }, accessOutcomeEmpty},
+		"access error":      {func(b *fakeAccessBroker, _ *accessEngine) { b.failAccess = true }, accessOutcomeError},
+		"label target only": {func(*fakeAccessBroker, *accessEngine) {}, accessOutcomeNotRequested},
 	} {
 		t.Run(name, func(t *testing.T) {
 			broker := newFakeAccessBroker(t, time.Now, relays...)
 			e := newAccessEngine(t, broker, relays...)
-			setup(broker, e)
+			tc.setup(broker, e)
 			target := RelayTarget{}
 			if name == "label target only" {
 				target.Label = relays[0].Label
@@ -488,6 +535,9 @@ func TestAccessFallsBackToThePublicList(t *testing.T) {
 			if runs := e.tunnelRuns(); len(runs) != 1 || runs[0] != "shared-relay-a" {
 				t.Fatalf("tunnel credentials = %v, want the public credential", runs)
 			}
+			// The fallback is visible to the broker: the outcome names why
+			// the public list was used, and the relay came from it.
+			awaitEvent(t, broker, "connection_succeeded", tc.outcome, relaySourcePublic)
 			_ = e.Disconnect()
 			waitIdle(t, e.Engine)
 			if name == "no key" || name == "label target only" {
@@ -519,6 +569,87 @@ func TestAccessDisabledUserIsTerminal(t *testing.T) {
 	if !hasNotice(e.sink, NoticeAccessDenied) {
 		t.Fatal("no access_denied notice")
 	}
+	failed := awaitEvent(t, broker, "connection_failed", accessOutcomeDenied, "")
+	if failed.Attributes["failure_stage"] != "access_denied" {
+		t.Fatalf("failure_stage = %q", failed.Attributes["failure_stage"])
+	}
+}
+
+// Exhausting the bounded 503 retries falls back to the public list and
+// reports it as unapplied, distinct from any other access error.
+func TestAccessUnappliedBeyondRetriesFallsBack(t *testing.T) {
+	clock := newFakeClock()
+	relays := []brokerapi.RelayDescriptor{publicRelay("relay-a", "JP")}
+	broker := newFakeAccessBroker(t, clock.Now, relays...)
+	broker.unapplied = accessUnappliedRetries + 1
+	e := newAccessEngine(t, broker, relays...)
+	e.useClock(clock)
+
+	if err := e.Connect("https://configured.example", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < accessUnappliedRetries; i++ {
+		waitUntil(t, "the unapplied retry wait", func() bool { return clock.pending() > 0 })
+		clock.Advance(accessUnappliedMaxWait)
+	}
+	waitForStatus(t, e.Engine, StatusConnected)
+	if runs := e.tunnelRuns(); len(runs) != 1 || runs[0] != "shared-relay-a" {
+		t.Fatalf("tunnel credentials = %v, want the public credential", runs)
+	}
+	if len(broker.accessRequests()) != accessUnappliedRetries+1 {
+		t.Fatalf("access requests = %d, want the bounded retries", len(broker.accessRequests()))
+	}
+	awaitEvent(t, broker, "connection_succeeded", accessOutcomeUnapplied, relaySourcePublic)
+	_ = e.Disconnect()
+	waitIdle(t, e.Engine)
+}
+
+// A renewal the broker answers with no relays means the connected relay has
+// left the directory: the session recovers at once (here onto the public
+// list, which still carries the relay) instead of retrying until expiry.
+func TestAccessRenewalWithEmptyAnswerReconnects(t *testing.T) {
+	clock := newFakeClock()
+	relays := []brokerapi.RelayDescriptor{publicRelay("relay-a", "JP")}
+	broker := newFakeAccessBroker(t, clock.Now, relays...)
+	e := newAccessEngine(t, broker, relays...)
+	e.useClock(clock)
+
+	if err := e.Connect("https://configured.example", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForStatus(t, e.Engine, StatusConnected)
+	first := broker.lease("relay-a").credential
+	broker.set(func() { broker.emptyAccess = true })
+
+	// The renewer fires once, between a quarter and three quarters of the
+	// lease; it must not wait for anything after the empty answer.
+	for !hasNotice(e.sink, NoticeFailoverStarted) {
+		waitUntil(t, "the lease renewer to wait or give up", func() bool {
+			return clock.pending() > 0 || hasNotice(e.sink, NoticeFailoverStarted)
+		})
+		clock.Advance(30 * time.Second)
+	}
+	waitUntil(t, "the recovered tunnel", func() bool { return len(e.tunnelRuns()) == 2 })
+	waitForStatus(t, e.Engine, StatusConnected)
+	if runs := e.tunnelRuns(); runs[0] != first || runs[1] != "shared-relay-a" {
+		t.Fatalf("tunnel credentials = %v, want the lease then the public credential", runs)
+	}
+	renewals := 0
+	for _, request := range broker.accessRequests() {
+		if request.RelayID == "relay-a" && request.Limit == 1 {
+			renewals++
+		}
+	}
+	if renewals != 1 {
+		t.Fatalf("renewal requests = %d, want exactly one (no retry against a vanished relay)", renewals)
+	}
+	for _, notice := range e.sink.noticesSnapshot() {
+		if notice.Kind == NoticeFailoverStarted && notice.Reason != "relay no longer listed" {
+			t.Fatalf("failover reason = %q", notice.Reason)
+		}
+	}
+	_ = e.Disconnect()
+	waitIdle(t, e.Engine)
 }
 
 func hasNotice(sink *testSink, kind NoticeKind) bool {
@@ -749,7 +880,7 @@ func mixedFleet(t *testing.T) (*fakeAccessBroker, *accessEngine, *atomic.Value) 
 // During the compatibility phase a public-only relay still carries the
 // connect when every leased candidate fails.
 func TestAccessFallsBackToPublicCandidatesWhenLeasedOnesFail(t *testing.T) {
-	_, e, dead := mixedFleet(t)
+	broker, e, dead := mixedFleet(t)
 	dead.Store("198.51.100.1")
 
 	if err := e.Connect("https://configured.example", "", ""); err != nil {
@@ -765,6 +896,7 @@ func TestAccessFallsBackToPublicCandidatesWhenLeasedOnesFail(t *testing.T) {
 	if info, ok := e.ActiveConnectionInfo(); !ok || info.Relay.ID != "relay-p" {
 		t.Fatalf("active relay = %+v", info)
 	}
+	awaitEvent(t, broker, "connection_succeeded", accessOutcomeFallbackPublic, relaySourcePublic)
 	_ = e.Disconnect()
 	waitIdle(t, e.Engine)
 }

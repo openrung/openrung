@@ -60,7 +60,7 @@ func parityTelemetryRecords(now time.Time) []TelemetryRecord {
 		record(84, 84, "connection_attempted", "client-android", "session-android", "relay-1", "203.0.113.10",
 			map[string]string{"client_ip": "10.1.2.3"}, nil),
 		record(83, 83, "connection_succeeded", "client-android", "session-android", "relay-1", "203.0.113.10",
-			map[string]string{"_app": "org.mozilla.firefox"}, map[string]int64{"bytes_sent": 100, "bytes_received": 200}),
+			map[string]string{"_app": "org.mozilla.firefox", "access_outcome": "granted", "relay_source": "access"}, map[string]int64{"bytes_sent": 100, "bytes_received": 200}),
 		record(1, 1, "session_heartbeat", "client-android", "session-android", "relay-1", "203.0.113.10",
 			nil, map[string]int64{"session_duration_ms": 500000, "bytes_sent": 5000, "bytes_received": 9000}),
 
@@ -74,7 +74,7 @@ func parityTelemetryRecords(now time.Time) []TelemetryRecord {
 		// failure_detail rides along — both surface on the session and the
 		// failure_reasons panel keys on "tcp_connect · connection_refused".
 		record(78, 78, "connection_failed", "client-ios", "session-ios", "", "198.51.100.20",
-			map[string]string{"failure_stage": "tcp_connect", "error_type": "connection_refused", "failure_detail": "ECONNREFUSED"}, nil),
+			map[string]string{"failure_stage": "tcp_connect", "error_type": "connection_refused", "failure_detail": "ECONNREFUSED", "access_outcome": "fallback_public"}, nil),
 
 		// session-desktop: full lifecycle plus a measured relay failover. The
 		// failover credits relay-4 without adding another connection-trend success.
@@ -85,7 +85,7 @@ func parityTelemetryRecords(now time.Time) []TelemetryRecord {
 			map[string]string{"operating_system": "macOS (arm64)", "organization": "Example Org", "asn": "AS64500", "app_version": "0.9.0"}, nil),
 		record(29, 29, "connection_attempted", "client-desktop", "session-desktop", "relay-2", "198.51.100.7", nil, nil),
 		record(28, 28, "connection_succeeded", "client-desktop", "session-desktop", "relay-2", "198.51.100.7",
-			map[string]string{"_app": "com.brave.browser"}, map[string]int64{"bytes_sent": 700}),
+			map[string]string{"_app": "com.brave.browser", "access_outcome": "no_key", "relay_source": "public"}, map[string]int64{"bytes_sent": 700}),
 		record(27, 27, "relay_failover", "client-desktop", "session-desktop", "relay-4", "198.51.100.7",
 			map[string]string{"from_relay_id": "relay-2"}, map[string]int64{"relay_tcp_ms": 75, "internet_probe_ms": 140}),
 		record(25, 25, "session_heartbeat", "client-desktop", "session-desktop", "relay-2", "198.51.100.7",

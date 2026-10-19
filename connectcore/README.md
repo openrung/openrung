@@ -21,8 +21,9 @@ the client policy layer:
 - `proxyconfig` — the stable local proxy endpoint policy and the opt-in shell
   integration.
 - `contract` — the embedded cross-repo contract vectors (failure
-  classification, relay decoding, broker fronts) and their Go loaders; the
-  mobile repository vendors the JSON files under `contract/vectors/`.
+  classification, relay decoding, broker fronts, event sequences, access
+  outcome tokens) and their Go loaders; the mobile repository vendors the JSON
+  files under `contract/vectors/`.
 
 Everything platform-specific reaches the engine through narrow interfaces
 (`interfaces.go`): event sink, persistence, OS proxy control, elevation, the

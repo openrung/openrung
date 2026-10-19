@@ -57,6 +57,8 @@ events AS (
 		-- already treats '' as 'unknown'.
 		NULLIF(e.payload->'attributes'->>'failure_stage', '') AS failure_stage,
 		NULLIF(e.payload->'attributes'->>'failure_detail', '') AS failure_detail,
+		NULLIF(e.payload->'attributes'->>'access_outcome', '') AS access_outcome,
+		NULLIF(e.payload->'attributes'->>'relay_source', '') AS relay_source,
 		-- failure_reason mirrors firstNonEmpty(failure_reason, error_type):
 		-- the btrim CASE tests the trimmed value but keeps the original, and
 		-- yields NULL when both are empty (like country above).
@@ -251,6 +253,15 @@ SELECT 'failure_reasons',
 		(CASE WHEN btrim(COALESCE(failure_reason, '')) <> '' THEN failure_reason ELSE 'unknown' END),
 	NULL, COUNT(*), NULL, NULL, NULL
 FROM events WHERE event = 'connection_failed' GROUP BY 2
+UNION ALL
+-- access_outcomes / relay_sources: the per-user access path, counted over the
+-- terminal connect events exactly as the in-memory accumulator does (an
+-- event without the attribute — a client predating it — counts nowhere).
+SELECT 'access_outcomes', access_outcome, NULL, COUNT(*), NULL, NULL, NULL
+FROM events WHERE event IN ('connection_succeeded', 'connection_failed') AND access_outcome IS NOT NULL GROUP BY access_outcome
+UNION ALL
+SELECT 'relay_sources', relay_source, NULL, COUNT(*), NULL, NULL, NULL
+FROM events WHERE event = 'connection_succeeded' AND relay_source IS NOT NULL GROUP BY relay_source
 UNION ALL
 SELECT 'relay_successes', relay_id, NULL, COUNT(*), NULL, NULL, NULL
 FROM events WHERE event IN ('connection_succeeded', 'relay_failover') AND relay_id <> '' GROUP BY relay_id
@@ -467,6 +478,8 @@ func (s *PostgresTelemetrySink) TelemetryOverview(now time.Time, window time.Dur
 	overview.ActiveOS = sortedCounts(osFamilyCounts(counts["active_by_os"]), 10)
 	overview.FailureStages = sortedCounts(counts["failure_stages"], 10)
 	overview.FailureReasons = sortedCounts(counts["failure_reasons"], 10)
+	overview.AccessOutcomes = sortedCounts(counts["access_outcomes"], accessPanelLimit)
+	overview.RelaySources = sortedCounts(counts["relay_sources"], accessPanelLimit)
 	overview.TopRelays = topRelaySummaries(counts["relay_successes"], counts["relay_failures"], relayFailureReasons)
 	overview.SpeedTests = speedTests
 	applyTelemetryRelayClasses(&overview, relayClasses)

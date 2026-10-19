@@ -219,6 +219,41 @@ cohort.
 | `recovery` | The WSS monitor re-running the ladder after a session ended. |
 | `network_epoch` | A connectivity-change reconnect. |
 
+#### Per-user access attributes
+
+Clients that carry the access flow (connectcore 0.7.1 and later) stamp two
+attributes on their terminal connect events, so the broker can see how the
+per-user access path went without a dedicated event. Both are closed token
+sets, pinned by `connectcore/contract/vectors/access_outcome.json`; the
+dashboard's "Per-user access" panel groups by them.
+
+`access_outcome` rides on `connection_succeeded` and `connection_failed` and
+names what the connect did about per-user access. It is absent when the
+connect ended before the relay fetch decided (a local setup failure, a cancel
+during discovery) and on clients that predate it.
+
+| Value | Meaning |
+| --- | --- |
+| `granted` | The access answer was the candidate list the connect used. |
+| `no_key` | The installation has no key; the public list was used without asking. |
+| `not_requested` | A key exists but the target cannot be expressed to the access endpoint (a label-only target); the public list was used. |
+| `unsupported` | The broker has no user/access endpoints; the public list was used. |
+| `front_unbound` | The reachable front cannot carry an authenticated request (the no-SNI mode); the public list was used. |
+| `denied` | The broker refused the installation (`403`); the connect failed with `failure_stage` `access_denied`. |
+| `unapplied` | Leases were issued but no relay installed them within the bounded retries (`503`); the public list was used. |
+| `rate_limited` | The access request was rate limited (`429`); the public list was used. |
+| `empty` | The answer named no relay the ladder could use for the target; the public list was used. |
+| `error` | Any other failure of the access request; the public list was used. |
+| `fallback_public` | Access was granted, every leased candidate failed remotely, and a public-list relay carried the connect. |
+
+`relay_source` rides on `connection_succeeded` only: `access` when the
+connected relay's descriptor and credential came from the access answer (a
+per-user lease), `public` when they came from the public list (the shared
+credential). The share of `access` among successes is the adoption measure
+enforcement waits on; every value other than `granted`/`fallback_public` in
+`access_outcome` is a connect the public list carried and enforcement would
+have failed.
+
 #### Reading these rows
 
 Aggregate before reading: per country, ASN, front, and app-version **shares** —
@@ -1265,6 +1300,29 @@ slot like the public list, and then issues or extends one lease per relay. It
 waits up to five seconds for each relay to acknowledge the lease through its
 [lease sync](#relay-lease-sync) and answers with the relays that did.
 
+**Acknowledgement.** The answer is whatever subset acknowledged in time: a
+relay that stays silent beside one that acknowledged is simply left out. When
+no relay acknowledged, the broker re-reads the relays it is waiting for. One
+whose last heartbeat is still within the relay heartbeat interval is alive and
+merely slow, so the wait runs once more (one extension; a request therefore
+takes at most ten seconds). A relay that has missed a heartbeat is treated as
+gone and the answer is `503` at once, so the client's retry or fallback is not
+delayed by a relay that will never install the lease. A relay that has left
+the directory altogether is not a candidate at all: a request naming it as
+`relay_id` gets `200` with an empty list (nothing is issued).
+
+**Empty answers.** `200` with `"relays": []` means no lease-capable relay
+matches the request right now. Clients treat it by context: at connect time
+the shared public list is used instead (until enforcement), and at renewal
+time it means the connected relay is gone, so the client reconnects through
+its ladder immediately rather than retrying a dead relay until the lease
+expires. The broker logs one `INFO` summary of access answers per ten-minute
+window (counts by outcome: granted, empty, unapplied, extended, denied,
+unauthorized, rate limited, malformed, cancelled, errors), so access health
+remains readable from the broker log after the origin access log has rolled
+over; a request its client abandoned mid-flight is logged at `INFO`, never as
+an error.
+
 Success is `200 OK`, signed exactly like a relay list (same key, same
 `X-OpenRung-Relays-Signature` header, same wire schema) but on the `access`
 channel, without `limit`, and with the lease expiry:
@@ -1294,12 +1352,12 @@ existing lease and returns the same `client_id` with a later
 
 | Status | Meaning |
 | --- | --- |
-| `200` with `"relays": []` | No relay matches the target (or every match is at its lease capacity); nothing was issued |
+| `200` with `"relays": []` | No relay matches the target — including a `relay_id` that has expired from the directory — or every match is at its lease capacity; nothing was issued |
 | `400` | Malformed body, unknown field, `limit` out of range, both targets, invalid country |
 | `401` | Missing, invalid or expired access token, or an unknown user: authenticate again |
 | `403` | The user is disabled |
 | `429` | Rate limit (per client address and user) |
-| `503` + `Retry-After: 2` | Leases were issued but no relay acknowledged them in time; the retry returns the same credentials |
+| `503` + `Retry-After: 2` | Leases were issued but no relay acknowledged them in time (after one extended wait if a relay was still heartbeating); the retry returns the same credentials |
 
 Access requests carry no telemetry identifiers, never follow redirects, and are
 refused by clients on endpoint-unbound fronts (the Azure no-SNI mode); the

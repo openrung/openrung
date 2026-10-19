@@ -148,6 +148,9 @@ func (s *Engine) supervise(ctx context.Context, conn *connection, cur *candidate
 				trigger = leaseErr
 				accessLost = true
 				triggerReason = "relay access expired"
+				if errors.Is(leaseErr, errLeaseRelayGone) {
+					triggerReason = "relay no longer listed"
+				}
 				s.appendLog("relay access could not be renewed; reconnecting")
 				break watchTrigger
 			case <-conn.netNotify:

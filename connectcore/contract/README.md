@@ -10,6 +10,7 @@ of all of them:
 | `relay_decode.json` | Decoding a signed relay directory, and the usability filter over it | go, kotlin, swift, ts | `brokerapi`'s wire validation and exported relay schema, `connectcore/client`'s selector, `src/model/relay.ts` |
 | `broker_fronts.json` | The advertised broker fronts and the order discovery races them in | go, kotlin, swift, ts | `brokerapi.DefaultBrokerURLs`, `BrokerCandidates`, `EndpointUnboundBrokerFront`, and each client's hardcoded front list |
 | `event_sequence.json` | The engine state machine's observable behavior: scripted connect scenarios and the ordered status/notice/telemetry streams they must produce | go, kotlin, swift | `connectcore`'s connect ladder, supervisor, and lifecycle, via `connectcore/sequence_vectors_test.go` |
+| `access_outcome.json` | The closed `access_outcome` and `relay_source` token sets the engine stamps on its terminal connect events (per-user access, ADR-006) | go | `connectcore/access_outcome.go`, via `connectcore/access_outcome_vectors_test.go` |
 
 Each file carries its own doc header naming its consumers and describing the
 shape of its rows. Read that header before editing one.
@@ -20,7 +21,11 @@ Four suites consume this directory, but **not every file has every suite**, and
 the `suites` field at the top of each file is what says which — the table above
 just repeats it. `classification.json` has no `ts` suite because the React
 Native layer never classifies a connect failure; the native tunnel providers do,
-and there is no TypeScript classifier to run those rows against. Declaring a
+and there is no TypeScript classifier to run those rows against.
+`access_outcome.json` has only a `go` suite: the engine is the one emitter of
+those attributes on every platform (the mobile apps bind connectcore), so there
+is no native producer for a mobile suite to check — the file is vendored for
+the version coordination alone. Declaring a
 suite that no row is claimed by is worse than omitting it: that suite iterates
 the file, asserts nothing, and passes green forever, which reads as coverage.
 `TestClassificationVectorsSuiteDeclaration` fails on exactly that.
