@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -178,6 +179,39 @@ func TestSourceClassifierUnavailableAndStale(t *testing.T) {
 	files.touch(t, now)
 	if !c.Reload() || c.classify("203.0.113.10", now.Add(2*time.Hour)) != sourceUnlisted {
 		t.Fatal("refreshed data was not picked up")
+	}
+}
+
+// The broker side of the refresh script's validation
+// (deploy/broker/refresh-source-asn_test.sh refuses the same lines): any one
+// malformed line rejects the whole table.
+func TestReadDatacenterRangesRejectsMalformedTables(t *testing.T) {
+	valid := "192.0.2.0\t192.0.2.127\t64500\tZZ\tA\n2001:db8::\t2001:db8::ff\t64501\tZZ\tB\n"
+	for name, line := range map[string]string{
+		"no asn":              "192.0.2.0\t192.0.2.255",
+		"non-numeric asn":     "192.0.2.0\t192.0.2.255\tAS64500\tZZ\tX",
+		"asn above 32 bits":   "192.0.2.0\t192.0.2.255\t4294967296\tZZ\tX",
+		"negative asn":        "192.0.2.0\t192.0.2.255\t-1\tZZ\tX",
+		"octet above 255":     "192.0.2.0\t192.0.2.256\t64500\tZZ\tX",
+		"leading zero octet":  "192.0.2.0\t192.0.2.099\t64500\tZZ\tX",
+		"three octets":        "192.0.2\t192.0.2.255\t64500\tZZ\tX",
+		"not an address":      "example\t192.0.2.255\t64500\tZZ\tX",
+		"reversed IPv4 range": "192.0.2.255\t192.0.2.0\t64500\tZZ\tX",
+		"reversed IPv6 range": "2001:db8::ff\t2001:db8::1\t64500\tZZ\tX",
+		"mixed families":      "192.0.2.0\t2001:db8::ff\t64500\tZZ\tX",
+		"two ellipses":        "2001:db8::1::2\t2001:db8::ff\t64500\tZZ\tX",
+		"five-digit group":    "2001:db8::12345\t2001:db8::fffff\t64500\tZZ\tX",
+		"nine groups":         "1:2:3:4:5:6:7:8:9\t1:2:3:4:5:6:7:8:a\t64500\tZZ\tX",
+		"leading space":       "  192.0.2.0\t192.0.2.255\t64500\tZZ\tX",
+		"overlong line":       "192.0.2.0\t192.0.2.255\t64500\tZZ\t" + strings.Repeat("x", 70000),
+	} {
+		path := filepath.Join(t.TempDir(), "ip2asn.tsv")
+		if err := os.WriteFile(path, []byte(valid+line+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := readDatacenterRanges(path, map[uint32]bool{64500: true}); err == nil {
+			t.Errorf("%s: table accepted", name)
+		}
 	}
 }
 

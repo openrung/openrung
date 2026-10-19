@@ -254,9 +254,11 @@ OPENRUNG_DATACENTER_ASN_LIST=/var/lib/openrung-source/datacenter-asns.txt
 #OPENRUNG_ENROLLMENT_EXEMPT_CIDRS=
 ```
 
-The script validates each download (every table line parsed, minimum row and
-ASN counts) and replaces a file atomically only when it passes, so a failed
-refresh leaves the previous data in place. The broker re-reads the files
+The script validates both downloads before replacing either file: every
+table line must hold two addresses of one family in ascending order and a
+32-bit ASN (it refuses anything the broker's loader would reject), and both
+files must meet minimum row and ASN counts. Files are replaced atomically and
+only when both pass, so a failed refresh leaves the previous data in place. The broker re-reads the files
 within a minute of a change, logs the number of datacenter ASNs and ranges it
 loaded, and keeps its previous data if a new file fails to parse. The table's
 modification time dates the data: once it is older than
