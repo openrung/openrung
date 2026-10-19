@@ -44,6 +44,12 @@ const (
 	// cheap and the rollup's per-session membership would be coarse.
 	telemetryRollupMinWindow = 24 * time.Hour
 
+	// telemetryRollupRetention is how long the rollup tables outlive the raw
+	// events (telemetryRetention), so the long dashboard windows keep counts
+	// and trends after the partitions are dropped. Rollup sessions older than
+	// telemetryRetention keep no IP-level fields (see PruneTelemetry).
+	telemetryRollupRetention = 31 * 24 * time.Hour
+
 	// The rollup backfill folds stored events into the rollup tables one
 	// received_at hour at a time, backing off on errors.
 	telemetryRollupBackfillChunk = time.Hour
@@ -118,10 +124,14 @@ CREATE TABLE IF NOT EXISTS telemetry_app_counts (
 -- keyed by (hour, kind, k1, k2). Both are maintained in the same statement
 -- that inserts a batch's events, and backfilled from stored partitions on the
 -- first start after their introduction (telemetry_rollup_state tracks it).
--- telemetry_sessions deliberately carries no secondary index: every heartbeat
--- updates its row, and the lower fillfactor keeps those updates HOT so the
--- table does not bloat; the dashboard's whole-window scans of ~sessions rows
--- are cheap without one.
+-- telemetry_sessions deliberately carries no B-tree secondary index: every
+-- heartbeat updates its row, and the lower fillfactor keeps those updates HOT
+-- so the table does not bloat. The one exception is a BRIN index on
+-- last_seen_at: the rollup keeps 31 days, so the short windows would otherwise
+-- scan the whole table, and since Postgres 16 an update that changes only
+-- BRIN-indexed columns stays HOT. Rows land roughly in last_seen_at order, so
+-- the 24h window reads a small slice of the table; the long windows still
+-- (cheaply) scan it all.
 CREATE TABLE IF NOT EXISTS telemetry_sessions (
 	session_id text PRIMARY KEY,
 	client_id text NOT NULL,
@@ -195,6 +205,9 @@ CREATE TABLE IF NOT EXISTS telemetry_sessions (
 	fallback_source_ip_at timestamptz,
 	fallback_source_ip_occurred_at timestamptz
 ) WITH (fillfactor = 80);
+
+CREATE INDEX IF NOT EXISTS telemetry_sessions_last_seen_brin
+	ON telemetry_sessions USING brin (last_seen_at) WITH (autosummarize = on);
 
 CREATE TABLE IF NOT EXISTS telemetry_event_counts (
 	hour timestamptz NOT NULL,
@@ -772,7 +785,9 @@ func (s *PostgresTelemetrySink) ensurePartition(ctx context.Context, at time.Tim
 // TABLE rather than a bulk DELETE. It returns the names of the partitions it
 // dropped. Today's and any partition still holding a row inside the window are
 // left untouched, so the dashboard's 7-day view and the status-log reader
-// never lose data they would query.
+// never lose data they would query. The dashboard rollup is kept for the
+// longer telemetryRollupRetention, minus the IP-level fields of every session
+// older than telemetryRetention.
 func (s *PostgresTelemetrySink) PruneTelemetry(now time.Time) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), postgresTelemetryQueryTimeout)
 	defer cancel()
@@ -804,14 +819,21 @@ func (s *PostgresTelemetrySink) PruneTelemetry(now time.Time) ([]string, error) 
 	if _, err := s.pool.Exec(ctx, `DELETE FROM telemetry_app_counts WHERE hour < $1`, cutoff.UTC().Truncate(time.Hour)); err != nil {
 		return dropped, fmt.Errorf("prune telemetry app counts: %w", err)
 	}
-	// The dashboard rollup ages out the same way: event-grain hours like the
-	// app counts, and a session once its latest event is older than the
-	// cutoff (no window can still include it).
-	if _, err := s.pool.Exec(ctx, `DELETE FROM telemetry_event_counts WHERE hour < $1`, cutoff.UTC().Truncate(time.Hour)); err != nil {
+	// The dashboard rollup ages out the same way at its own, longer cutoff:
+	// event-grain hours like the app counts, and a session once its latest
+	// event is older than the cutoff (no window can still include it).
+	rollupCutoff := now.UTC().Add(-telemetryRollupRetention)
+	if _, err := s.pool.Exec(ctx, `DELETE FROM telemetry_event_counts WHERE hour < $1`, rollupCutoff.Truncate(time.Hour)); err != nil {
 		return dropped, fmt.Errorf("prune telemetry event counts: %w", err)
 	}
-	if _, err := s.pool.Exec(ctx, `DELETE FROM telemetry_sessions WHERE last_seen_at < $1`, cutoff.UTC()); err != nil {
+	if _, err := s.pool.Exec(ctx, `DELETE FROM telemetry_sessions WHERE last_seen_at < $1`, rollupCutoff); err != nil {
 		return dropped, fmt.Errorf("prune telemetry sessions: %w", err)
+	}
+	// Sessions past the raw-event retention keep their counts but not their
+	// IP-level fields, so per-client network detail is held no longer than the
+	// events it came from.
+	if _, err := s.pool.Exec(ctx, telemetrySessionBlankIPStatement, cutoff); err != nil {
+		return dropped, fmt.Errorf("blank aged telemetry session IPs: %w", err)
 	}
 	return dropped, nil
 }

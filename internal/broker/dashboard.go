@@ -283,7 +283,7 @@ func serveAsset(contentType string, body []byte) http.HandlerFunc {
 func (d *dashboardServer) overview(w http.ResponseWriter, r *http.Request) {
 	window, ok := dashboardWindow(r.URL.Query().Get("window"))
 	if !ok {
-		writeError(w, http.StatusBadRequest, "window must be 1h, 24h, or 7d")
+		writeError(w, http.StatusBadRequest, dashboardWindowError)
 		return
 	}
 	now := d.now().UTC()
@@ -312,7 +312,7 @@ func (d *dashboardServer) listSessions(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	window, ok := dashboardWindow(query.Get("window"))
 	if !ok {
-		writeError(w, http.StatusBadRequest, "window must be 1h, 24h, or 7d")
+		writeError(w, http.StatusBadRequest, dashboardWindowError)
 		return
 	}
 	offset, err := queryInt(query.Get("offset"), 0)
@@ -352,6 +352,12 @@ func queryInt(raw string, fallback int) (int, error) {
 	return strconv.Atoi(raw)
 }
 
+// dashboardWindowError is the 400 message for a window dashboardWindow rejects.
+const dashboardWindowError = "window must be 1h, 24h, 7d, 14d, or 31d"
+
+// dashboardWindow parses the dashboard's history window. The windows past 7d
+// outlast the raw events, so only the Postgres rollup serves them in full; an
+// in-memory store answers them with what it retains.
 func dashboardWindow(raw string) (time.Duration, bool) {
 	switch raw {
 	case "", "24h":
@@ -359,10 +365,23 @@ func dashboardWindow(raw string) (time.Duration, bool) {
 	case "1h":
 		return time.Hour, true
 	case "7d":
-		return telemetryRetention, true
+		return 7 * 24 * time.Hour, true
+	case "14d":
+		return 14 * 24 * time.Hour, true
+	case "31d":
+		return 31 * 24 * time.Hour, true
 	default:
 		return 0, false
 	}
+}
+
+// telemetryTrendBucket is the trend's bucket width: hourly up to a week, daily
+// (UTC days) beyond, so the long windows' payload stays a few dozen points.
+func telemetryTrendBucket(window time.Duration) time.Duration {
+	if window > 7*24*time.Hour {
+		return 24 * time.Hour
+	}
+	return time.Hour
 }
 
 type telemetryOverview struct {
@@ -547,8 +566,9 @@ func buildTelemetryOverview(records []TelemetryRecord, appCounts map[string]int,
 	}
 	speeds := make(map[string]*speedAccumulator)
 	buckets := make(map[time.Time]*trendPoint)
+	bucketWidth := telemetryTrendBucket(window)
 
-	for bucket := start.Truncate(time.Hour); !bucket.After(now); bucket = bucket.Add(time.Hour) {
+	for bucket := start.Truncate(bucketWidth); !bucket.After(now); bucket = bucket.Add(bucketWidth) {
 		buckets[bucket] = &trendPoint{Time: bucket}
 	}
 	for _, record := range records {
@@ -633,7 +653,7 @@ func buildTelemetryOverview(records []TelemetryRecord, appCounts map[string]int,
 		if received := event.Measurements["bytes_received"]; received > session.summary.BytesReceived {
 			session.summary.BytesReceived = received
 		}
-		bucket := buckets[event.OccurredAt.Truncate(time.Hour)]
+		bucket := buckets[event.OccurredAt.Truncate(bucketWidth)]
 		switch event.Event {
 		case "connection_attempted":
 			session.attempted = true

@@ -17,7 +17,7 @@ import (
 //     CTE extracts the payload fields the aggregator reads, `session_rows`
 //     groups them per session with the same semantics as sessionAccumulator,
 //     and `event_counts` reduces them to hourly event-grain counts.
-//   - The rollup path (24h and 7d) reads the same two shapes straight from
+//   - The rollup path (24h through 31d) reads the same two shapes straight from
 //     telemetry_sessions and telemetry_event_counts, which ingestion maintains
 //     incrementally (see telemetryRollupStatement), so a window costs one scan
 //     over ~sessions rows rather than over every event. Window membership is
@@ -177,6 +177,26 @@ var telemetrySessionOrderColumns = func() string {
 	return strings.Join(columns, ", ")
 }()
 
+// telemetrySessionIPFields are the IP-level latest fields of
+// telemetry_sessions; PruneTelemetry blanks them on sessions older than the
+// raw-event retention (telemetrySessionBlankIPStatement).
+var telemetrySessionIPFields = []string{"observed_client_ip", "reported_client_ip", "fallback_source_ip", "city", "isp"}
+
+// telemetrySessionBlankIPStatement clears every IP-level field, and the
+// ordering pair that supplied it, on sessions whose latest event was received
+// before $1. A blank value carries NULL ordering columns exactly as one that
+// was never reported, so a later event for the session still merges in. Rows
+// already blank are skipped, so the daily prune rewrites only the newly aged.
+var telemetrySessionBlankIPStatement = func() string {
+	var set, nonEmpty []string
+	for _, column := range telemetrySessionIPFields {
+		set = append(set, column+" = ''", column+"_at = NULL", column+"_occurred_at = NULL")
+		nonEmpty = append(nonEmpty, column+" <> ''")
+	}
+	return `UPDATE telemetry_sessions SET ` + strings.Join(set, ", ") +
+		` WHERE last_seen_at < $1 AND (` + strings.Join(nonEmpty, " OR ") + `)`
+}()
+
 // telemetrySessionRowsCTEWith builds the per-session accumulation over the
 // events CTE. The `latest non-empty wins` aggregations order by (received_at,
 // occurred_at) as the canonical event order: the in-memory accumulator
@@ -322,13 +342,20 @@ var telemetryEventPathCTEs = `WITH ` + telemetryEventsCTE + `, ` + telemetrySess
 // event satisfies).
 const telemetryRollupSessionsWhere = `WHERE last_seen_at > $1 AND last_occurred_at >= $2 AND started_at <= $3`
 
+// telemetryRollupAggregateColumns are the session columns the overview and
+// relay-stats bodies read. The rollup preamble selects only these: the
+// sessions CTE is materialized and rescanned once per panel, which on a 31-day
+// window dominates the query unless its rows stay narrow.
+const telemetryRollupAggregateColumns = `client_id, client_ids, relay_id, operating_system,
+	country, city, organization, asn, isp, last_heartbeat_at, attempted, succeeded, failed, terminal`
+
 // telemetryRollupPathCTEs is the rollup path's preamble, reading the same two
 // shapes from the tables ingestion maintains. The event-grain window edge is
 // hour-granular: the truncated start hour is included whole, as for
 // top_applications.
 var telemetryRollupPathCTEs = `WITH
 session_rows AS (
-	SELECT ` + telemetrySessionColumns + `
+	SELECT ` + telemetryRollupAggregateColumns + `
 	FROM telemetry_sessions
 	` + telemetryRollupSessionsWhere + `
 ),
@@ -369,9 +396,12 @@ const telemetryOverviewBody = `
 -- any in-window session named (a client seen only outside a session still
 -- keys its own session), matching the in-memory clients set; the rest reduce
 -- the sessions CTE, and active_clients is the distinct-client count among
--- active sessions.
+-- active sessions. Both distinct counts are written so the planner can hash
+-- (SELECT DISTINCT) and filter first (WHERE, not FILTER) rather than sort every
+-- session of a 31-day window, and clients reads sessions rather than
+-- session_rows so session_rows is not materialized a second time.
 SELECT 'totals'::text AS kind, 'clients'::text AS k1, NULL::text AS k2,
-	(SELECT COUNT(DISTINCT c) FROM session_rows CROSS JOIN LATERAL unnest(session_rows.client_ids) AS c)::bigint AS v1,
+	(SELECT COUNT(*) FROM (SELECT DISTINCT c FROM sessions CROSS JOIN LATERAL unnest(sessions.client_ids) AS c) AS distinct_clients)::bigint AS v1,
 	NULL::bigint AS v2, NULL::bigint AS v3, NULL::bigint AS v4
 UNION ALL
 SELECT 'totals', 'sessions', NULL, COUNT(*), NULL, NULL, NULL FROM sessions
@@ -382,7 +412,7 @@ SELECT 'totals', 'successes', NULL, COUNT(*) FILTER (WHERE succeeded), NULL, NUL
 UNION ALL
 SELECT 'totals', 'failures', NULL, COUNT(*) FILTER (WHERE failed), NULL, NULL, NULL FROM sessions
 UNION ALL
-SELECT 'totals', 'active_clients', NULL, COUNT(DISTINCT client_id) FILTER (WHERE active), NULL, NULL, NULL FROM sessions
+SELECT 'totals', 'active_clients', NULL, COUNT(DISTINCT client_id), NULL, NULL, NULL FROM sessions WHERE active
 UNION ALL
 SELECT 'totals', 'active_sessions', NULL, COUNT(*) FILTER (WHERE active), NULL, NULL, NULL FROM sessions
 UNION ALL
@@ -406,9 +436,9 @@ FROM sessions WHERE active AND btrim(` + telemetrySessionISPLabel + `) <> '' GRO
 UNION ALL
 SELECT 'active_by_os', operating_system, NULL, COUNT(*), NULL, NULL, NULL FROM sessions WHERE active AND btrim(operating_system) <> '' GROUP BY operating_system
 UNION ALL
--- trend: hourly attempt/success/failure counts. The bucket key rides in v1 as
--- epoch seconds; the caller rebuilds the hour and slots it by index into the
--- pre-filled bucket slice.
+-- trend: hourly attempt/success/failure counts. The hour rides in v1 as epoch
+-- seconds; the caller rebuilds it and adds it by index into the pre-filled
+-- bucket slice, folding hours into days on the long windows.
 SELECT 'trend', NULL, NULL,
 	extract(epoch FROM hour)::bigint,
 	COALESCE(SUM(n) FILTER (WHERE k1 = 'connection_attempted'), 0)::bigint,
@@ -892,14 +922,16 @@ func (s *PostgresTelemetrySink) TelemetryRelayStats(now time.Time, window time.D
 
 // queryTelemetryOverviewAggregates runs the single overview statement and
 // demultiplexes its kind-tagged rows back into the shapes the overview builder
-// expects: the hourly trend (pre-filled with empty buckets so gaps render as
+// expects: the trend (pre-filled with empty buckets so gaps render as
 // zeros), the totals and count groups, per-relay failure-reason counts and
 // retained classes, and the speed-test summaries.
 func (s *PostgresTelemetrySink) queryTelemetryOverviewAggregates(ctx context.Context, query string, args []any, now time.Time, window time.Duration) (trend []trendPoint, counts, relayFailureReasons map[string]map[string]int, relayClasses map[string]string, speedTests []speedTestSummary, err error) {
-	// Pre-fill every hour bucket like the in-memory path so the trend spans the
-	// whole window even where no events landed; matching rows overwrite by index.
-	first := now.Add(-window).Truncate(time.Hour)
-	for bucket := first; !bucket.After(now); bucket = bucket.Add(time.Hour) {
+	// Pre-fill every bucket like the in-memory path so the trend spans the
+	// whole window even where no events landed; the hourly rows add into their
+	// bucket by index (one each, or a UTC day's worth on the long windows).
+	width := telemetryTrendBucket(window)
+	first := now.Add(-window).Truncate(width)
+	for bucket := first; !bucket.After(now); bucket = bucket.Add(width) {
 		trend = append(trend, trendPoint{Time: bucket})
 	}
 	counts = make(map[string]map[string]int)
@@ -922,16 +954,16 @@ func (s *PostgresTelemetrySink) queryTelemetryOverviewAggregates(ctx context.Con
 		}
 		switch kind {
 		case "trend":
-			// v1 is the bucket hour as epoch seconds; reconstruct the instant and
-			// place it by index into the pre-filled bucket slice.
+			// v1 is the hour as epoch seconds; reconstruct the instant and add it
+			// by index into its pre-filled bucket.
 			hour := time.Unix(int64Value(v1), 0).UTC()
-			index := int(hour.Sub(first) / time.Hour)
+			index := int(hour.Truncate(width).Sub(first) / width)
 			if index < 0 || index >= len(trend) {
 				continue
 			}
-			trend[index].Attempts = int(int64Value(v2))
-			trend[index].Successes = int(int64Value(v3))
-			trend[index].Failures = int(int64Value(v4))
+			trend[index].Attempts += int(int64Value(v2))
+			trend[index].Successes += int(int64Value(v3))
+			trend[index].Failures += int(int64Value(v4))
 		case "relay_failure_reasons":
 			addCount(relayFailureReasons, stringValue(k1), stringValue(k2), int(int64Value(v1)))
 		case "relay_classes":

@@ -229,7 +229,7 @@ func TestPostgresTelemetryQuerierMatchesInMemoryOverview(t *testing.T) {
 	memory := newTelemetryReaderQuerier(memoryStore)
 	rollupReference := newTelemetryReaderQuerier(rollupReferenceStore(t, records, now))
 
-	for _, window := range []time.Duration{time.Hour, 24 * time.Hour, telemetryRetention} {
+	for _, window := range []time.Duration{time.Hour, 24 * time.Hour, telemetryRetention, 14 * 24 * time.Hour, telemetryRollupRetention} {
 		reference := memory
 		if sink.useRollup(window) {
 			reference = rollupReference
@@ -300,7 +300,7 @@ func TestPostgresTelemetryQuerierMatchesInMemoryRelayStats(t *testing.T) {
 	// relay-current is trusted only through this set; relay-ghost is in
 	// neither the set nor stamped, so it must vanish from both backends.
 	registered := []string{"relay-current"}
-	for _, window := range []time.Duration{time.Hour, 24 * time.Hour, telemetryRetention} {
+	for _, window := range []time.Duration{time.Hour, 24 * time.Hour, telemetryRetention, 14 * 24 * time.Hour, telemetryRollupRetention} {
 		reference := memory
 		if sink.useRollup(window) {
 			reference = rollupReference
@@ -326,7 +326,7 @@ func TestPostgresTelemetryQuerierMatchesInMemoryRelayStats(t *testing.T) {
 }
 
 // rollupReferenceStore is the in-memory store the rollup-served windows (24h
-// and 7d) are held to. The rollup folds every event into its session the
+// through 31d) are held to. The rollup folds every event into its session the
 // moment it is ingested, so an event dated up to maxTelemetryFutureSkew ahead
 // of the broker clock counts at once, whereas the per-event path (and the 1h
 // window, which still uses it) hides it until the window reaches it. The
@@ -445,12 +445,12 @@ func TestPostgresTelemetryRollupBackfill(t *testing.T) {
 }
 
 // assertRollupMatchesReference holds every rollup-served query (overview,
-// every sessions page, relay stats) for the 24h and 7d windows to the
-// in-memory reading of the fixture.
+// every sessions page, relay stats) for every rollup window to the in-memory
+// reading of the fixture.
 func assertRollupMatchesReference(t *testing.T, sink *PostgresTelemetrySink, records []TelemetryRecord, now time.Time) {
 	t.Helper()
 	reference := newTelemetryReaderQuerier(rollupReferenceStore(t, records, now))
-	for _, window := range []time.Duration{24 * time.Hour, telemetryRetention} {
+	for _, window := range []time.Duration{24 * time.Hour, telemetryRetention, 14 * 24 * time.Hour, telemetryRollupRetention} {
 		if !sink.useRollup(window) {
 			t.Fatalf("expected the %s window to be served from the rollup", window)
 		}
@@ -687,7 +687,7 @@ func TestPostgresTelemetryRollupRelayClassFollowsReceipt(t *testing.T) {
 // serves: never the 1h window, and nothing until the backfill has completed.
 func TestPostgresTelemetryRollupWindowSelection(t *testing.T) {
 	sink := &PostgresTelemetrySink{backfillDone: make(chan struct{})}
-	for _, window := range []time.Duration{time.Hour, 24 * time.Hour, telemetryRetention} {
+	for _, window := range []time.Duration{time.Hour, 24 * time.Hour, telemetryRetention, 14 * 24 * time.Hour, telemetryRollupRetention} {
 		if sink.useRollup(window) {
 			t.Fatalf("window %s must not use the rollup before the backfill completes", window)
 		}
@@ -696,24 +696,31 @@ func TestPostgresTelemetryRollupWindowSelection(t *testing.T) {
 	if sink.useRollup(time.Hour) {
 		t.Fatal("the 1h window must keep aggregating events directly")
 	}
-	for _, window := range []time.Duration{24 * time.Hour, telemetryRetention} {
+	for _, window := range []time.Duration{24 * time.Hour, telemetryRetention, 14 * 24 * time.Hour, telemetryRollupRetention} {
 		if !sink.useRollup(window) {
 			t.Fatalf("window %s must use the rollup once ready", window)
 		}
 	}
 }
 
-// TestPostgresTelemetryRollupPrune ages rollup rows out with the retention
-// cutoff: sessions by their latest event, hourly counts by their hour.
+// TestPostgresTelemetryRollupPrune ages rollup rows out at the rollup's own
+// retention (sessions by their latest event, hourly counts by their hour) and
+// blanks the IP-level fields of sessions older than the raw-event retention,
+// which the long windows then still count.
 func TestPostgresTelemetryRollupPrune(t *testing.T) {
 	now := time.Date(2026, 6, 24, 12, 30, 0, 0, time.UTC)
 	sink := newTestPostgresTelemetrySink(t, now)
 	ctx := context.Background()
-	old := now.Add(-telemetryRetention - 2*time.Hour)
+	expired := now.Add(-telemetryRollupRetention - 2*time.Hour)
+	aged := now.Add(-telemetryRetention - 2*time.Hour)
 	recent := now.Add(-time.Hour)
+	located := map[string]string{"city": "Berlin", "isp": "ExampleNet", "client_ip": "198.51.100.7", "country": "DE"}
 	records := []TelemetryRecord{
-		dashboardRecord(old, "old-1", "connection_succeeded", "client-old", "session-old", "relay-1", nil, nil),
-		dashboardRecord(recent, "new-1", "connection_succeeded", "client-new", "session-new", "relay-1", nil, nil),
+		dashboardRecord(expired, "expired-1", "connection_succeeded", "client-expired", "session-expired", "relay-1", nil, nil),
+		dashboardRecord(aged, "aged-1", "client_seen", "client-aged", "session-aged", "", located, nil),
+		dashboardRecord(aged.Add(time.Minute), "aged-2", "connection_succeeded", "client-aged", "session-aged", "relay-1", located, nil),
+		dashboardRecord(recent, "recent-1", "client_seen", "client-recent", "session-recent", "", located, nil),
+		dashboardRecord(recent.Add(time.Minute), "recent-2", "connection_succeeded", "client-recent", "session-recent", "relay-1", located, nil),
 	}
 	if err := sink.WriteTelemetry(ctx, records); err != nil {
 		t.Fatalf("write telemetry: %v", err)
@@ -721,25 +728,125 @@ func TestPostgresTelemetryRollupPrune(t *testing.T) {
 	if err := sink.flush(); err != nil {
 		t.Fatalf("flush telemetry: %v", err)
 	}
-	if got := countRollupSessions(t, sink); got != 2 {
-		t.Fatalf("expected 2 rollup sessions before prune, got %d", got)
+	if got := countRollupSessions(t, sink); got != 3 {
+		t.Fatalf("expected 3 rollup sessions before prune, got %d", got)
 	}
-	if _, err := sink.PruneTelemetry(now); err != nil {
-		t.Fatalf("prune: %v", err)
+	// Twice: the second pass must find nothing left to blank or delete.
+	for pass := 0; pass < 2; pass++ {
+		if _, err := sink.PruneTelemetry(now); err != nil {
+			t.Fatalf("prune: %v", err)
+		}
 	}
-	if got := countRollupSessions(t, sink); got != 1 {
-		t.Fatalf("expected 1 rollup session after prune, got %d", got)
+
+	rows, err := sink.pool.Query(ctx, `SELECT session_id, observed_client_ip, reported_client_ip, fallback_source_ip, city, isp, country,
+		observed_client_ip_at IS NULL AND reported_client_ip_at IS NULL AND fallback_source_ip_at IS NULL AND city_at IS NULL AND isp_at IS NULL
+			AND observed_client_ip_occurred_at IS NULL AND reported_client_ip_occurred_at IS NULL AND fallback_source_ip_occurred_at IS NULL
+			AND city_occurred_at IS NULL AND isp_occurred_at IS NULL
+		FROM telemetry_sessions ORDER BY session_id`)
+	if err != nil {
+		t.Fatalf("read rollup sessions: %v", err)
 	}
-	var kept string
-	if err := sink.pool.QueryRow(ctx, `SELECT session_id FROM telemetry_sessions`).Scan(&kept); err != nil || kept != "session-new" {
-		t.Fatalf("kept session = %q (%v), want session-new", kept, err)
+	type kept struct {
+		observed, reported, fallback, city, isp, country string
+		orderingBlank                                    bool
+	}
+	got := make(map[string]kept)
+	for rows.Next() {
+		var id string
+		var row kept
+		if err := rows.Scan(&id, &row.observed, &row.reported, &row.fallback, &row.city, &row.isp, &row.country, &row.orderingBlank); err != nil {
+			t.Fatalf("scan rollup session: %v", err)
+		}
+		got[id] = row
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read rollup sessions: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("rollup sessions after prune = %v, want session-aged and session-recent", got)
+	}
+	if aged := got["session-aged"]; aged != (kept{country: "DE", orderingBlank: true}) {
+		t.Fatalf("aged session = %+v, want IP fields, city and ISP blanked and country kept", aged)
+	}
+	if recent := got["session-recent"]; recent != (kept{observed: "203.0.113.20", reported: "198.51.100.7", fallback: "203.0.113.20", city: "Berlin", isp: "ExampleNet", country: "DE"}) {
+		t.Fatalf("recent session = %+v, want its IP-level fields intact", recent)
 	}
 	var hours int
 	if err := sink.pool.QueryRow(ctx, `SELECT COUNT(DISTINCT hour) FROM telemetry_event_counts`).Scan(&hours); err != nil {
 		t.Fatalf("count event-count hours: %v", err)
 	}
-	if hours != 1 {
-		t.Fatalf("expected only the recent hour's counts after prune, got %d hours", hours)
+	if hours != 2 {
+		t.Fatalf("expected the aged and recent hours' counts after prune, got %d hours", hours)
+	}
+
+	// The 14d window still counts the aged session, without its location.
+	overview, err := sink.TelemetryOverview(now, 14*24*time.Hour)
+	if err != nil {
+		t.Fatalf("14d overview: %v", err)
+	}
+	if overview.Totals.Sessions != 2 || overview.Totals.Successes != 2 {
+		t.Fatalf("14d totals = %+v, want both surviving sessions", overview.Totals)
+	}
+	if len(overview.TopCities) != 1 || overview.TopCities[0] != (countSummary{Name: "Berlin", Count: 1}) {
+		t.Fatalf("14d top cities = %+v, want only the recent session's city", overview.TopCities)
+	}
+	sessions, total, err := sink.TelemetrySessions(now, 14*24*time.Hour, 0, 10)
+	if err != nil {
+		t.Fatalf("14d sessions: %v", err)
+	}
+	if total != 2 || len(sessions) != 2 || sessions[1].SessionID != "session-aged" {
+		t.Fatalf("14d sessions = %+v (total %d), want recent then aged", sessions, total)
+	}
+	if aged := sessions[1]; aged.SourceIP != "" || aged.City != "" || aged.ISP != "" || aged.Country != "DE" {
+		t.Fatalf("aged session summary = %+v, want no source IP, city or ISP", aged)
+	}
+}
+
+// TestPostgresTelemetryLongWindowTrendIsDaily pins the long windows' daily
+// trend buckets: UTC-day aligned, spanning the window, with each day summing
+// its hours.
+func TestPostgresTelemetryLongWindowTrendIsDaily(t *testing.T) {
+	now := time.Date(2026, 6, 24, 12, 30, 0, 0, time.UTC)
+	sink := newTestPostgresTelemetrySink(t, now)
+	ctx := context.Background()
+	day := 24 * time.Hour
+	tenDaysAgo := now.Add(-10 * day)
+	records := []TelemetryRecord{
+		dashboardRecord(tenDaysAgo, "old-1", "connection_attempted", "client-1", "session-1", "relay-1", nil, nil),
+		dashboardRecord(tenDaysAgo.Add(2*time.Hour), "old-2", "connection_attempted", "client-2", "session-2", "relay-1", nil, nil),
+		dashboardRecord(tenDaysAgo.Add(2*time.Hour), "old-3", "connection_succeeded", "client-2", "session-2", "relay-1", nil, nil),
+		dashboardRecord(now.Add(-time.Minute), "new-1", "connection_failed", "client-3", "session-3", "relay-1", nil, nil),
+	}
+	if err := sink.WriteTelemetry(ctx, records); err != nil {
+		t.Fatalf("write telemetry: %v", err)
+	}
+	for _, window := range []time.Duration{14 * day, 31 * day} {
+		overview, err := sink.TelemetryOverview(now, window)
+		if err != nil {
+			t.Fatalf("overview (%s): %v", window, err)
+		}
+		first := now.Add(-window).Truncate(day)
+		if len(overview.Trend) != int(window/day)+1 || !overview.Trend[0].Time.Equal(first) {
+			t.Fatalf("window %s trend has %d buckets from %s, want %d daily buckets from %s",
+				window, len(overview.Trend), overview.Trend[0].Time, int(window/day)+1, first)
+		}
+		for i, point := range overview.Trend {
+			if want := first.Add(time.Duration(i) * day); !point.Time.Equal(want) {
+				t.Fatalf("window %s bucket %d at %s, want %s", window, i, point.Time, want)
+			}
+			var want trendPoint
+			switch point.Time {
+			case tenDaysAgo.Truncate(day):
+				want = trendPoint{Time: point.Time, Attempts: 2, Successes: 1}
+			case now.Truncate(day):
+				want = trendPoint{Time: point.Time, Failures: 1}
+			default:
+				want = trendPoint{Time: point.Time}
+			}
+			if point != want {
+				t.Fatalf("window %s bucket %s = %+v, want %+v", window, point.Time, point, want)
+			}
+		}
 	}
 }
 

@@ -239,6 +239,41 @@ func TestDashboardRejectsExpiredSessionAndInvalidWindow(t *testing.T) {
 	}
 }
 
+func TestDashboardWindow(t *testing.T) {
+	day := 24 * time.Hour
+	for raw, want := range map[string]time.Duration{"": day, "1h": time.Hour, "24h": day, "7d": 7 * day, "14d": 14 * day, "31d": 31 * day} {
+		if got, ok := dashboardWindow(raw); !ok || got != want {
+			t.Fatalf("dashboardWindow(%q) = %s, %t; want %s", raw, got, ok, want)
+		}
+	}
+	for _, raw := range []string{"30d", "2h", "1d", "32d"} {
+		if _, ok := dashboardWindow(raw); ok {
+			t.Fatalf("dashboardWindow(%q) accepted", raw)
+		}
+	}
+}
+
+// The windows past a week bucket the trend by UTC day; the in-memory store
+// answers them with the days it retains.
+func TestBuildTelemetryOverviewLongWindowTrendIsDaily(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+	day := 24 * time.Hour
+	records := []TelemetryRecord{
+		dashboardRecord(now.Add(-3*day), "a", "connection_attempted", "client-1", "session-1", "relay-1", nil, nil),
+		dashboardRecord(now.Add(-3*day+5*time.Hour), "b", "connection_attempted", "client-2", "session-2", "relay-1", nil, nil),
+	}
+	overview := buildTelemetryOverview(records, nil, now, 14*day)
+	if len(overview.Trend) != 15 || !overview.Trend[0].Time.Equal(now.Add(-14*day).Truncate(day)) {
+		t.Fatalf("14d trend = %d buckets from %v, want 15 daily buckets", len(overview.Trend), overview.Trend[0].Time)
+	}
+	if got := overview.Trend[11]; !got.Time.Equal(now.Add(-3*day).Truncate(day)) || got.Attempts != 2 {
+		t.Fatalf("bucket 11 = %+v, want both attempts on their UTC day", got)
+	}
+	if hourly := buildTelemetryOverview(records, nil, now, 7*day); len(hourly.Trend) != 7*24+1 {
+		t.Fatalf("7d trend = %d buckets, want hourly", len(hourly.Trend))
+	}
+}
+
 func TestBuildTelemetryOverview(t *testing.T) {
 	now := time.Date(2026, 6, 21, 12, 30, 0, 0, time.UTC)
 	clientOneAttributes := map[string]string{

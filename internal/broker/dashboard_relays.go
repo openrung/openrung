@@ -478,7 +478,7 @@ func timePointer(value time.Time) *time.Time {
 func (d *dashboardServer) relaysPanel(w http.ResponseWriter, r *http.Request) {
 	window, ok := dashboardWindow(r.URL.Query().Get("window"))
 	if !ok {
-		writeError(w, http.StatusBadRequest, "window must be 1h, 24h, or 7d")
+		writeError(w, http.StatusBadRequest, dashboardWindowError)
 		return
 	}
 	now := d.now().UTC()

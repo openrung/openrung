@@ -31,7 +31,7 @@
         <div><h1>Overview</h1><div class="subtitle">Client connections, failures and reach across the network</div></div>
         <div class="actions">
           <span class="updated" id="updated"></span>
-          <select id="window" aria-label="History window"><option value="1h">Last hour</option><option value="24h" selected>Last 24 hours</option><option value="7d">Last 7 days</option></select>
+          <select id="window" aria-label="History window"><option value="1h">Last hour</option><option value="24h" selected>Last 24 hours</option><option value="7d">Last 7 days</option><option value="14d">Last 14 days</option><option value="31d">Last 31 days</option></select>
           <select id="autoRefresh" aria-label="Auto-refresh"><option value="0">Auto-refresh off</option><option value="60">Every minute</option><option value="300">Every 5 minutes</option></select>
           <button class="primary" id="refresh" type="button">Refresh</button>
         </div>
@@ -76,34 +76,38 @@
       const of=stage=>reasons.filter(x=>x.name.startsWith(stage.name+' · ')).map(x=>({name:x.name.slice(stage.name.length+3),count:x.count}));
       return stage=>stage.members?stage.members.flatMap(m=>of(m).map(x=>({...x,name:`${m.name} · ${x.name}`}))):of(stage);
     }
-    // The broker returns hourly buckets; long windows are merged into wider
-    // bars so every bar stays readable, and the axes are labelled to match.
+    // The broker returns hourly buckets (daily ones past a week); long windows
+    // are merged into wider bars so every bar stays readable, and the axes are
+    // labelled to match.
     // Each bar stacks successes, failures and the attempts that resolved to
     // neither within the bucket.
     const HOUR=3600e3,MAX_BARS=48;
     function niceStep(max,ticks){const raw=max/ticks,mag=10**Math.floor(Math.log10(raw));return [1,2,5,10].map(m=>m*mag).find(s=>s>=raw)}
     // Time axis: ticks sit on local clock hours ("4pm", "12am"), two hours
-    // apart when they fit, widening to 4/6/12/24/48 hours as space shrinks.
+    // apart when they fit, widening to 4/6/12 hours and 1/2/4/7 days as space
+    // shrinks; multi-day steps count local days, so they stay even across
+    // month ends.
     // Multi-day windows label midnight with the date instead.
     const measure=document.createElement('canvas').getContext('2d'),dayFmt=new Intl.DateTimeFormat(undefined,{month:'short',day:'numeric'});
     function renderTimeAxis(start,end){
       const axis=$('trendX'),width=axis.clientWidth,span=end-start;
       if(!span||!width){axis.innerHTML='';return}
       const multiDay=span>26*HOUR,label=t=>{const d=new Date(t),h=d.getHours();return multiDay&&h===0?dayFmt.format(d):`${h%12||12}${h<12?'am':'pm'}`};
-      const ticksEvery=step=>{const out=[];for(let t=Math.ceil(start/HOUR)*HOUR;t<=end;t+=HOUR){const d=new Date(t),h=d.getHours();if(step<24?h%step===0:h===0&&(step===24||d.getDate()%2===0))out.push(t)}return out};
+      const ticksEvery=step=>{const out=[];for(let t=Math.ceil(start/HOUR)*HOUR;t<=end;t+=HOUR){const d=new Date(t),h=d.getHours();if(step<24?h%step===0:h===0&&Math.round((t-d.getTimezoneOffset()*6e4)/864e5)%(step/24)===0)out.push(t)}return out};
       measure.font=getComputedStyle(axis).font;
       const widest=Math.max(measure.measureText('12am').width,multiDay?measure.measureText(dayFmt.format(new Date(end))).width:0)+14;
-      const step=[...(span<=6*HOUR?[1]:[]),2,4,6,12,24,48].find(h=>h*HOUR/span*width>=widest)||48;
+      const step=[...(span<=6*HOUR?[1]:[]),2,4,6,12,24,48,96,168].find(h=>h*HOUR/span*width>=widest)||168;
       axis.innerHTML=ticksEvery(step).map(t=>{const x=(t-start)/span*width,w=measure.measureText(label(t)).width;return x-w/2<0||x+w/2>width?'':`<span style="left:${x}px"><b>${esc(label(t))}</b></span>`}).join('');
     }
-    function renderTrend(hourly){
-      lastTrend=hourly;
-      const size=Math.max(1,Math.ceil(hourly.length/MAX_BARS)),points=[];
-      for(let i=0;i<hourly.length;i+=size){const chunk=hourly.slice(i,i+size),start=new Date(chunk[0].time),sum=key=>chunk.reduce((n,x)=>n+x[key],0),attempts=sum('attempts'),successes=sum('successes'),failures=sum('failures');points.push({start,end:new Date(start.getTime()+chunk.length*HOUR),attempts,successes,failures,unresolved:Math.max(0,attempts-successes-failures)})}
+    function renderTrend(buckets){
+      lastTrend=buckets;
+      const width=buckets.length>1?new Date(buckets[1].time)-new Date(buckets[0].time):HOUR,unit=width>=24*HOUR?'day':'hour';
+      const size=Math.max(1,Math.ceil(buckets.length/MAX_BARS)),points=[];
+      for(let i=0;i<buckets.length;i+=size){const chunk=buckets.slice(i,i+size),start=new Date(chunk[0].time),sum=key=>chunk.reduce((n,x)=>n+x[key],0),attempts=sum('attempts'),successes=sum('successes'),failures=sum('failures');points.push({start,end:new Date(start.getTime()+chunk.length*width),attempts,successes,failures,unresolved:Math.max(0,attempts-successes-failures)})}
       const peak=Math.max(1,...points.map(x=>x.successes+x.failures+x.unresolved)),step=Math.max(1,niceStep(peak,4)),top=step*Math.ceil(peak/step);
       const ticks=[];for(let v=0;v<=top;v+=step)ticks.push(v);
       $('trend').style.gap=points.length>24?'2px':'4px';
-      $('trendYTitle').textContent=size===1?'Connections per hour':`Connections per ${size} hours`;
+      $('trendYTitle').textContent=size===1?`Connections per ${unit}`:`Connections per ${size} ${unit}s`;
       $('trendY').style.width=Math.max(...ticks.map(v=>number(v).length))+1+'ch';
       $('trendY').innerHTML=ticks.map(v=>`<span style="bottom:${v/top*100}%">${number(v)}</span>`).join('');
       const seg=(cls,n)=>n?`<i class="seg ${cls}" style="height:max(1px,calc(${n/top*100}% - 2px))"></i>`:'';

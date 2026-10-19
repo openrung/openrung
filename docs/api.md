@@ -295,12 +295,12 @@ GET /admin/dashboard
 The dashboard requires the configured token (sign-in at
 `/admin/dashboard/login`) and creates an HttpOnly administrator session lasting
 12 hours. A left sidebar switches between the Overview and Relays pages and
-names the running broker version; the top bar picks the one-hour, 24-hour, or
-seven-day window (carried in the URL as `?window=`) and an optional
-auto-refresh. The JSONL file remains the durable telemetry store; the broker
-retains the most recent seven days in memory for dashboard queries, capped at a
-64 MiB budget that discards the oldest records first if a burst of telemetry
-would exceed it.
+names the running broker version; the top bar picks the one-hour, 24-hour,
+seven-day, 14-day, or 31-day window (carried in the URL as `?window=`) and an
+optional auto-refresh. The JSONL file remains the durable telemetry store; the
+broker retains the most recent seven days in memory for dashboard queries,
+capped at a 64 MiB budget that discards the oldest records first if a burst of
+telemetry would exceed it.
 
 The authenticated dashboard reads its data from:
 
@@ -308,9 +308,16 @@ The authenticated dashboard reads its data from:
 GET /admin/api/dashboard/overview?window=24h
 ```
 
-Valid windows are `1h`, `24h`, and `7d`. When the dashboard token is unset, all
-dashboard routes return 404. Production deployments should use HTTPS directly
-or through a reverse proxy.
+Valid windows are `1h`, `24h`, `7d`, `14d`, and `31d`. The trend is bucketed
+by hour up to `7d` and by UTC day beyond. Raw events are kept for seven days, so
+only the Postgres telemetry store serves the two longer windows in full: its
+dashboard rollup (one row per session plus hourly event counts) is kept for 31
+days, and sessions older than seven days keep their counts but lose their
+client IPs, city, and ISP, which then render blank. Top applications cover at
+most the last seven days. The JSONL store answers every window with the seven
+days it retains. When the dashboard token is unset, all dashboard routes return
+404. Production deployments should use HTTPS directly or through a reverse
+proxy.
 
 The overview embeds only the 25 most recent sessions; the full session list for
 a window is paged through:
