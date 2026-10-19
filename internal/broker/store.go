@@ -57,6 +57,11 @@ type RelayStore interface {
 	// renew leases replace a legacy relay's UUID with one nobody accepts.
 	Heartbeat(id, leaseToken, maxClass, clientID string, now time.Time, ttl time.Duration) (relay.Descriptor, error)
 	UpdateGeo(id, leaseToken string, geo relay.GeoLocation) error
+	// UpdateReachability records the outcome of an inbound probe of the
+	// relay's advertised endpoint, scoped like UpdateGeo to the registration
+	// holding leaseToken so a late result never describes a replacement
+	// descriptor. See reachability.go.
+	UpdateReachability(id, leaseToken string, reachable bool, checkedAt time.Time) error
 	List(time.Time, int) ([]relay.Descriptor, error)
 	// ListRanked is List plus the operator ranking weights the ranking applied,
 	// so page-shaping steps after the sort (the WSS reservation) and the
@@ -286,6 +291,23 @@ func (s *Store) UpdateGeo(id, leaseToken string, geo relay.GeoLocation) error {
 		return ErrRelayNotFound
 	}
 	desc.GeoLocation = geo
+	s.relays[id] = desc
+	return nil
+}
+
+func (s *Store) UpdateReachability(id, leaseToken string, reachable bool, checkedAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	desc, ok := s.relays[id]
+	if !ok {
+		return ErrRelayNotFound
+	}
+	if desc.IdentityPublicKey != "" && (desc.LeaseToken == "" || subtle.ConstantTimeCompare([]byte(desc.LeaseToken), []byte(leaseToken)) != 1) {
+		return ErrRelayNotFound
+	}
+	desc.Reachable = reachable
+	desc.ReachabilityCheckedAt = checkedAt
 	s.relays[id] = desc
 	return nil
 }

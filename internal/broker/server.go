@@ -70,6 +70,14 @@ type Config struct {
 	// can show where relays are located. Nil disables lookups;
 	// descriptors then carry empty geo fields.
 	GeoIP GeoIPResolver
+	// RelayProber checks that a direct-transport relay's advertised endpoint
+	// accepts inbound connections, at registration and again on heartbeat
+	// every RelayProbeInterval (zero applies defaultRelayProbeInterval). A
+	// relay whose latest probe failed stays registered but is withheld from
+	// the public directory and access answers until a probe succeeds. Nil
+	// disables probing: every relay is listed on its lease alone.
+	RelayProber        RelayProber
+	RelayProbeInterval time.Duration
 	// SigningSeed is the 32-byte Ed25519 seed that signs every relay-list
 	// response body. Required: cmd/broker validates OPENRUNG_RELAY_SIGNING_KEY
 	// with ParseSigningSeed and refuses to start without it, because serving
@@ -111,6 +119,9 @@ type Config struct {
 func NewServer(store RelayStore, cfg Config) http.Handler {
 	if cfg.RelayLeaseTTL == 0 {
 		cfg.RelayLeaseTTL = 3 * time.Minute
+	}
+	if cfg.RelayProbeInterval == 0 {
+		cfg.RelayProbeInterval = defaultRelayProbeInterval
 	}
 	relaySigner := newSigner(cfg.SigningSeed)
 	wssIssuer := newWSSTicketIssuer(cfg)
@@ -154,7 +165,7 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 		mux.HandleFunc("GET /api/v1/relays/{id}/leases", rateLimited(relayRegistrationLimiter, clientIP, 10, access.leasePollHandler()))
 		mux.HandleFunc("POST /api/v1/relays/{id}/leases/ack", rateLimited(relayRegistrationLimiter, clientIP, 10, access.leaseAckHandler()))
 	}
-	mux.HandleFunc("GET /api/v1/relays", rateLimited(relayListLimiter, clientIP, 10, listRelaysHandler(store, cfg.TelemetrySink, clientIP, clientSeen, relaySigner)))
+	mux.HandleFunc("GET /api/v1/relays", rateLimited(relayListLimiter, clientIP, 10, listRelaysHandler(store, cfg.TelemetrySink, clientIP, clientSeen, relaySigner, cfg.RelayProber != nil)))
 	if wssIssuer != nil {
 		mux.HandleFunc("POST /api/v1/wss/tickets", rateLimitedBy(wssTicketLimiter, wssTicketRateKey(clientIP), 10, wssTicketHandler(store, wssIssuer)))
 	}
@@ -187,8 +198,9 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 	// Client access issues per-user relay credentials; it needs both the
 	// token key (users) and a store that can hold leases (access).
 	if clientAccess := newClientAccessHandler(store, users, access, relaySigner); clientAccess != nil {
+		clientAccess.withholdUnreachable = cfg.RelayProber != nil
 		accessLimiter := newIPRateLimiter(accessRatePerSecond, accessBurst, rateLimiterMaxTrackedIPs)
-		mux.HandleFunc("POST /api/v1/access", rateLimitedBy(accessLimiter, clientAccess.rateKey(clientIP), 10, clientAccess.handler()))
+		mux.HandleFunc("POST /api/v1/access", clientAccess.counted(rateLimitedBy(accessLimiter, clientAccess.rateKey(clientIP), 10, clientAccess.handler())))
 	}
 	// Client user endpoints exist only with an access token key configured.
 	// One limiter spans both: a challenge is worthless without the auth call
@@ -331,7 +343,11 @@ func registerHandler(store RelayStore, cfg Config, clientIP *clientIPResolver, l
 		// identity can never drain more than one unit of an address's budget.
 		keepReservation = ledger.rememberIfNew(desc.ID, desc.NodeClass, now)
 		resolveRelayGeo(r.Context(), store, cfg.GeoIP, &desc)
-		slog.Info("relay registered", "relay_id", desc.ID, "node_class", desc.NodeClass, "public", desc.PublicHost, "port", desc.PublicPort, "city", desc.City, "country", desc.Country, "max_sessions", desc.MaxSessions, "version", desc.RelayVersion)
+		// The relay listens before it registers, so its endpoint is probed in
+		// the same request and the response reports the result; a relay that
+		// fails it is registered but not listed (see reachability.go).
+		probeRelayReachability(r.Context(), store, cfg.RelayProber, cfg.RelayProbeInterval, &desc, now)
+		slog.Info("relay registered", "relay_id", desc.ID, "node_class", desc.NodeClass, "public", desc.PublicHost, "port", desc.PublicPort, "city", desc.City, "country", desc.Country, "max_sessions", desc.MaxSessions, "version", desc.RelayVersion, "reachable", reachabilityLogValue(desc))
 
 		writeJSON(w, http.StatusCreated, relay.RegisterResponse{Descriptor: desc})
 	}
@@ -399,6 +415,10 @@ func heartbeatHandler(store RelayStore, cfg Config, ledger *relayIDLedger) http.
 		// Backfill relays whose registration-time lookup failed (or that
 		// registered before the broker resolved locations at all).
 		resolveRelayGeo(r.Context(), store, cfg.GeoIP, &desc)
+		// Re-probe the endpoint once the stored result is old enough, so a
+		// relay that went dark is withheld and a repaired one is relisted
+		// without waiting for a re-registration.
+		probeRelayReachability(r.Context(), store, cfg.RelayProber, cfg.RelayProbeInterval, &desc, now)
 
 		// Echo the credential now being served so a rotating relay can retire
 		// its predecessor only once the directory has moved on (a legacy
@@ -445,7 +465,9 @@ func geoLookupHost(desc *relay.Descriptor) string {
 	return desc.PublicHost
 }
 
-func listRelaysHandler(store RelayStore, telemetrySink TelemetrySink, clientIP *clientIPResolver, clientSeen *clientSeenDeduper, s signer) http.HandlerFunc {
+// withholdUnreachable is whether reachability probing is enabled, and so
+// whether a stored failed probe keeps a relay off the page.
+func listRelaysHandler(store RelayStore, telemetrySink TelemetrySink, clientIP *clientIPResolver, clientSeen *clientSeenDeduper, s signer, withholdUnreachable bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Relay availability is real-time: shared caches (Cloudflare's edge in
 		// production) must never store a copy, and clients cannot bust an edge
@@ -473,7 +495,7 @@ func listRelaysHandler(store RelayStore, telemetrySink TelemetrySink, clientIP *
 			writeError(w, http.StatusServiceUnavailable, "could not list relays")
 			return
 		}
-		relays = reserveWSSCandidate(relays, limit, weights)
+		relays = reserveWSSCandidate(withoutUnreachable(relays, withholdUnreachable), limit, weights)
 		s.writeSigned(w, relay.ListResponse{
 			Count:      len(relays),
 			ServerTime: now,

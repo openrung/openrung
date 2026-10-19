@@ -207,7 +207,7 @@ func TestBuildTelemetryOverview(t *testing.T) {
 	}
 	records := []TelemetryRecord{
 		dashboardRecord(now.Add(-30*time.Minute), "attempt-1", "connection_attempted", "client-1", "session-1", "", clientOneAttributes, nil),
-		dashboardRecord(now.Add(-29*time.Minute), "success-1", "connection_succeeded", "client-1", "session-1", "relay-1", clientOneAttributes, nil),
+		dashboardRecord(now.Add(-29*time.Minute), "success-1", "connection_succeeded", "client-1", "session-1", "relay-1", withAccess(clientOneAttributes, "granted", "access"), nil),
 		dashboardRecord(now.Add(-15*time.Minute), "failover-1", "relay_failover", "client-1", "session-1", "relay-2", clientOneAttributes, map[string]int64{"relay_tcp_ms": 25}),
 		// A legacy stored application_connection record under its own client and
 		// session: it must be skipped entirely (not stored anymore, and skipped
@@ -215,22 +215,34 @@ func TestBuildTelemetryOverview(t *testing.T) {
 		dashboardRecord(now.Add(-20*time.Minute), "app-1", "application_connection", "client-legacy", "session-legacy", "relay-1", clientOneAttributes, nil),
 		dashboardRecord(now.Add(-time.Minute), "heartbeat-1", "session_heartbeat", "client-1", "session-1", "relay-1", clientOneAttributes, map[string]int64{"connected_duration_ms": 60_000, "session_duration_ms": 1_740_000}),
 		dashboardRecord(now.Add(-10*time.Minute), "attempt-2", "connection_attempted", "client-2", "session-2", "", map[string]string{"android_api": "35", "country": "CA", "city": "Toronto", "organization": "Fallback Network", "asn": "AS64500"}, nil),
-		dashboardRecord(now.Add(-9*time.Minute), "failure-2", "connection_failed", "client-2", "session-2", "", map[string]string{"failure_stage": "broker_fetch", "country": "CA", "city": "Toronto", "organization": "Fallback Network", "asn": "AS64500"}, nil),
+		dashboardRecord(now.Add(-9*time.Minute), "failure-2", "connection_failed", "client-2", "session-2", "", map[string]string{"failure_stage": "broker_fetch", "country": "CA", "city": "Toronto", "organization": "Fallback Network", "asn": "AS64500", "access_outcome": "unsupported"}, nil),
+		// A third session from a client that predates the access attributes:
+		// it counts in neither access panel.
+		dashboardRecord(now.Add(-8*time.Minute), "attempt-3", "connection_attempted", "client-3", "session-3", "", nil, nil),
+		dashboardRecord(now.Add(-7*time.Minute), "success-3", "connection_succeeded", "client-3", "session-3", "relay-1", nil, nil),
 		dashboardRecord(now.Add(-5*time.Minute), "speed-1", "speed_test_completed", "client-1", "session-1", "relay-1", nil, map[string]int64{"download_mbps_milli": 42500, "time_to_first_byte_ms": 100}),
 	}
 	overview := buildTelemetryOverview(records, map[string]int{"com.example.app": 1}, now, time.Hour)
-	if overview.Totals.Clients != 2 || overview.Totals.Sessions != 2 || overview.Totals.Attempts != 2 || overview.Totals.Successes != 1 || overview.Totals.Failures != 1 {
+	if overview.Totals.Clients != 3 || overview.Totals.Sessions != 3 || overview.Totals.Attempts != 3 || overview.Totals.Successes != 2 || overview.Totals.Failures != 1 {
 		t.Fatalf("unexpected totals: %+v", overview.Totals)
 	}
-	if overview.Totals.SuccessRate != 0.5 {
-		t.Fatalf("expected 50%% success rate, got %f", overview.Totals.SuccessRate)
+	if overview.Totals.SuccessRate != 2.0/3.0 {
+		t.Fatalf("expected a two-thirds success rate, got %f", overview.Totals.SuccessRate)
 	}
 	var trendSuccesses int
 	for _, point := range overview.Trend {
 		trendSuccesses += point.Successes
 	}
-	if trendSuccesses != 1 {
+	if trendSuccesses != 2 {
 		t.Fatalf("failover must not inflate connection trend successes: %+v", overview.Trend)
+	}
+	// Access panels: one granted success, one unsupported failure, and the
+	// attribute-less session counts in neither; sources cover successes only.
+	if countByName(overview.AccessOutcomes, "granted") != 1 || countByName(overview.AccessOutcomes, "unsupported") != 1 || len(overview.AccessOutcomes) != 2 {
+		t.Fatalf("unexpected access outcomes: %+v", overview.AccessOutcomes)
+	}
+	if countByName(overview.RelaySources, "access") != 1 || len(overview.RelaySources) != 1 {
+		t.Fatalf("unexpected relay sources: %+v", overview.RelaySources)
 	}
 	if overview.Totals.ActiveClients != 1 || overview.Totals.ActiveSessions != 1 {
 		t.Fatalf("unexpected active totals: %+v", overview.Totals)
@@ -288,6 +300,19 @@ func TestBuildTelemetryOverview(t *testing.T) {
 	if err != nil || strings.Contains(string(encoded), "recent_sessions") {
 		t.Fatalf("recent_sessions must be omitted from overview JSON: %v %s", err, encoded)
 	}
+}
+
+// withAccess copies attrs with the access-path attributes added.
+func withAccess(attrs map[string]string, outcome, source string) map[string]string {
+	out := make(map[string]string, len(attrs)+2)
+	for k, v := range attrs {
+		out[k] = v
+	}
+	out["access_outcome"] = outcome
+	if source != "" {
+		out["relay_source"] = source
+	}
+	return out
 }
 
 func TestOSFamilyCountsMergesVersions(t *testing.T) {

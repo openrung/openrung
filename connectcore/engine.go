@@ -154,6 +154,10 @@ type connection struct {
 	accessAzureSNI    bool
 	accessUnsupported bool
 	lease             accessLease
+	// accessOutcome is how the access path went for the latest fetch (an
+	// access_outcome token, see access_outcome.go); empty until the fetch
+	// decided it. Touched only by the runConnect goroutine.
+	accessOutcome string
 	// publicFallback is the public list the discovery race returned when
 	// per-user access then succeeded: the candidates tried after the leased
 	// ones fail (see runPublicFallback). Nil when no race ran.
@@ -948,7 +952,18 @@ func (s *Engine) fetchCandidates(ctx context.Context, conn *connection, brokerUR
 	// winner. The public answer stays the fallback either way.
 	conn.lease = accessLease{}
 	conn.publicFallback = nil
+	conn.accessOutcome = ""
 	wantAccess := s.accessWanted(conn, target)
+	if !wantAccess {
+		switch {
+		case s.installationKey() == nil:
+			conn.accessOutcome = accessOutcomeNoKey
+		case conn.accessUnsupported:
+			conn.accessOutcome = accessOutcomeUnsupported
+		default:
+			conn.accessOutcome = accessOutcomeNotRequested
+		}
+	}
 	triedFront := ""
 	if wantAccess && conn.accessFront != "" {
 		triedFront = conn.accessFront
@@ -1389,6 +1404,7 @@ func (s *Engine) promote(ctx context.Context, conn *connection, res *candidateRe
 			if res.frontID != "" {
 				attrs["front_id"] = res.frontID
 			}
+			conn.accessAttributes(attrs, true)
 			conn.mgr.Record("connection_succeeded", res.relay.ID, attrs, connectMeasurements(res, brokerFetchMS))
 			_ = conn.mgr.Flush(ctx)
 		}
@@ -1569,6 +1585,7 @@ func (s *Engine) finalizeConn(conn *connection, stage string, err error) {
 			if detail := clienttelemetry.ErrorDetail(err); detail != "" {
 				attrs["failure_detail"] = detail
 			}
+			conn.accessAttributes(attrs, false)
 			conn.mgr.Record("connection_failed", "", attrs, nil)
 			conn.mgr.EndSession("connection_failed")
 			s.terminalFlush(conn)

@@ -139,6 +139,20 @@ func run() error {
 		return err
 	}
 	geoResolver := newGeoIPResolver(*geoIPEndpoint)
+	// Inbound reachability probe of direct relays' advertised endpoints: on
+	// by default; empty durations apply broker.Config's built-in defaults.
+	relayProbeTimeout, err := parseOptionalDuration("OPENRUNG_RELAY_PROBE_TIMEOUT")
+	if err != nil {
+		return err
+	}
+	relayProbeInterval, err := parseOptionalDuration("OPENRUNG_RELAY_PROBE_INTERVAL")
+	if err != nil {
+		return err
+	}
+	relayProber, err := newRelayProber(os.Getenv("OPENRUNG_RELAY_PROBE"), relayProbeTimeout, relayProbeInterval)
+	if err != nil {
+		return err
+	}
 	store, err := newRelayStore(*relayStore, *relayDatabaseURL)
 	if err != nil {
 		return err
@@ -170,6 +184,8 @@ func run() error {
 		MaxNewRelayIDsPerIPPerDay:  maxNewRelayIDs,
 		RegistrationCapExemptCIDRs: splitAndTrim(os.Getenv("OPENRUNG_REGISTRATION_CAP_EXEMPT_CIDRS")),
 		GeoIP:                      geoResolver,
+		RelayProber:                relayProber,
+		RelayProbeInterval:         relayProbeInterval,
 		SigningSeed:                signingSeed,
 		WSSTicketSigningSeed:       wssTicketSeed,
 		UserTokenKey:               userTokenKey,
@@ -224,7 +240,7 @@ func run() error {
 		close(shutdownDone)
 	}()
 
-	slog.Info("starting broker", "version", buildinfo.Version(baseVersion), "revision", buildinfo.Revision(), "addr", *addr, "lease_ttl", leaseTTL.String(), "telemetry_store", *telemetryStore, "telemetry_file", *telemetryFile, "relay_store", *relayStore, "dashboard_enabled", dashboardToken != "", "operational_api_enabled", apiToken != "", "foundation_registration_enabled", foundationToken != "", "wss_ticket_issuance_enabled", len(wssTicketSeed) != 0, "status_interval", statusInterval.String(), "geoip_enabled", geoResolver != nil)
+	slog.Info("starting broker", "version", buildinfo.Version(baseVersion), "revision", buildinfo.Revision(), "addr", *addr, "lease_ttl", leaseTTL.String(), "telemetry_store", *telemetryStore, "telemetry_file", *telemetryFile, "relay_store", *relayStore, "dashboard_enabled", dashboardToken != "", "operational_api_enabled", apiToken != "", "foundation_registration_enabled", foundationToken != "", "wss_ticket_issuance_enabled", len(wssTicketSeed) != 0, "status_interval", statusInterval.String(), "geoip_enabled", geoResolver != nil, "relay_probe_enabled", relayProber != nil)
 	err = server.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {
 		<-shutdownDone
@@ -286,6 +302,28 @@ func newGeoIPResolver(endpoint string) broker.GeoIPResolver {
 	default:
 		return broker.NewHTTPGeoIPResolver(endpoint)
 	}
+}
+
+// newRelayProber builds the inbound reachability prober from
+// OPENRUNG_RELAY_PROBE, or nil (probing disabled, every relay listed on its
+// lease alone) for an "off"-style mode. Zero durations mean the built-in
+// defaults; anything else malformed refuses to start rather than silently
+// running without the check or with a nonsensical bound.
+func newRelayProber(mode string, timeout, interval time.Duration) (broker.RelayProber, error) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "off", "disabled", "none", "false", "0":
+		return nil, nil
+	case "", "on", "enabled", "true", "1":
+	default:
+		return nil, errors.New("OPENRUNG_RELAY_PROBE must be on or off")
+	}
+	if timeout < 0 {
+		return nil, errors.New("OPENRUNG_RELAY_PROBE_TIMEOUT must be a positive duration like 5s")
+	}
+	if interval < 0 {
+		return nil, errors.New("OPENRUNG_RELAY_PROBE_INTERVAL must be a positive duration like 5m")
+	}
+	return broker.NewTCPRelayProber(timeout), nil
 }
 
 // parseNewRelayIDCap maps OPENRUNG_MAX_NEW_RELAY_IDS_PER_IP_PER_DAY onto

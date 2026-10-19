@@ -230,6 +230,41 @@ cohort.
 | `recovery` | The WSS monitor re-running the ladder after a session ended. |
 | `network_epoch` | A connectivity-change reconnect. |
 
+#### Per-user access attributes
+
+Clients that carry the access flow (connectcore 0.7.1 and later) stamp two
+attributes on their terminal connect events, so the broker can see how the
+per-user access path went without a dedicated event. Both are closed token
+sets, pinned by `connectcore/contract/vectors/access_outcome.json`; the
+dashboard's "Per-user access" panel groups by them.
+
+`access_outcome` rides on `connection_succeeded` and `connection_failed` and
+names what the connect did about per-user access. It is absent when the
+connect ended before the relay fetch decided (a local setup failure, a cancel
+during discovery) and on clients that predate it.
+
+| Value | Meaning |
+| --- | --- |
+| `granted` | The access answer was the candidate list the connect used. |
+| `no_key` | The installation has no key; the public list was used without asking. |
+| `not_requested` | A key exists but the target cannot be expressed to the access endpoint (a label-only target); the public list was used. |
+| `unsupported` | The broker has no user/access endpoints; the public list was used. |
+| `front_unbound` | The reachable front cannot carry an authenticated request (the no-SNI mode); the public list was used. |
+| `denied` | The broker refused the installation (`403`); the connect failed with `failure_stage` `access_denied`. |
+| `unapplied` | Leases were issued but no relay installed them within the bounded retries (`503`); the public list was used. |
+| `rate_limited` | The access request was rate limited (`429`); the public list was used. |
+| `empty` | The answer named no relay the ladder could use for the target; the public list was used. |
+| `error` | Any other failure of the access request; the public list was used. |
+| `fallback_public` | Access was granted, every leased candidate failed remotely, and a public-list relay carried the connect. |
+
+`relay_source` rides on `connection_succeeded` only: `access` when the
+connected relay's descriptor and credential came from the access answer (a
+per-user lease), `public` when they came from the public list (the shared
+credential). The share of `access` among successes is the adoption measure
+enforcement waits on; every value other than `granted`/`fallback_public` in
+`access_outcome` is a connect the public list carried and enforcement would
+have failed.
+
 #### Reading these rows
 
 Aggregate before reading: per country, ASN, front, and app-version **shares** —
@@ -418,12 +453,17 @@ replayed into a client's API slot. `not_after` is `server_time` + 5
 minutes, far tighter than the API channel's 30: a relay lease lives about three
 minutes, so a stale inventory describes a fleet that no longer exists.
 
-The relay objects are the public directory descriptors plus one operator-only
-key, `ranking_weight` — the effective ranking weight the broker is applying to
+The relay objects are the public directory descriptors plus operator-only
+keys: `ranking_weight` — the effective ranking weight the broker is applying to
 that relay right now (`1` unless an override is stored; see
-[Relay ranking weights](#relay-ranking-weights)). Lease tokens, stable-identity
-keys and proofs, hub-observed exit addresses, telemetry, and signing seeds never
-appear here; the endpoint exposes fleet membership, not credentials.
+[Relay ranking weights](#relay-ranking-weights)) — and the latest [inbound
+reachability probe](#inbound-reachability-probe): `reachable` is `null` until
+the broker has probed the relay (tunnel transport, probing off, or not yet),
+otherwise `true` or `false`, with `reachability_checked_at` giving the probe
+time when there is one. A `false` relay is registered but withheld from
+clients. Lease tokens, stable-identity keys and proofs, hub-observed exit
+addresses, telemetry, and signing seeds never appear here; the endpoint
+exposes fleet membership, not credentials.
 
 Response:
 
@@ -435,7 +475,7 @@ Response:
   "key_id": "3097e2dee2cb4a34",
   "channel": "inventory",
   "relays": [
-    { "id": "relay_0a1b...", "public_host": "203.0.113.7", "public_port": 443, "node_class": "foundation", "...": "...", "ranking_weight": 1 }
+    { "id": "relay_0a1b...", "public_host": "203.0.113.7", "public_port": 443, "node_class": "foundation", "...": "...", "ranking_weight": 1, "reachable": true, "reachability_checked_at": "2026-06-09T06:58:00Z" }
   ]
 }
 ```
@@ -609,6 +649,43 @@ echoes the recorded value as `access_leases` (absent when `false`); a relay
 starts its lease syncer only when the echo is present, so a broker that
 predates leases leaves the relay serving the shared credential alone. The
 capability is private registration state and never appears in relay lists.
+
+### Inbound reachability probe
+
+A direct-transport relay registers and heartbeats over connections it opens
+itself, which proves nothing about whether its advertised
+`public_host:public_port` accepts connections. The broker therefore dials that
+endpoint itself (a bounded plain TCP connect, no Reality handshake) in the
+registration request and reports the outcome in the response as `reachable`
+(`true` or `false`; absent when the broker did not probe). The relay listens
+before it registers, so a `false` here means the endpoint is not accepting
+connections from the broker's network: the relay stays registered, heartbeats
+and syncs leases normally, but is **withheld from [`GET
+/api/v1/relays`](#list-relays) and [`POST /api/v1/access`](#client-access)**
+until a later probe succeeds. The operator views show the result (see
+[inventory](#operational-relay-inventory)).
+
+Heartbeats re-probe once the stored result is older than the probe interval,
+so a relay that goes dark is withheld and a repaired one relisted without
+re-registering. Only direct transport is probed; a tunnel relay's advertised
+endpoint is the relay hub. A probe the broker could not attempt — no route or
+local address for the endpoint's address family, a transient resolver
+failure — is inconclusive and changes nothing.
+
+The broker dials only endpoints a client on the public internet could reach
+itself: the host is resolved first, and an address that is loopback, private,
+link-local, carrier-grade NAT, multicast, documentation or otherwise
+non-routable space — or one of the broker host's own — is never dialled. Such
+a registration is inconclusive (unprobed and listed, as before), so
+registering an endpoint can never reveal whether a port on or near the broker
+accepts connections.
+
+`OPENRUNG_RELAY_PROBE` switches the probe `off` (default `on`);
+`OPENRUNG_RELAY_PROBE_TIMEOUT` bounds one dial (default `5s`) and
+`OPENRUNG_RELAY_PROBE_INTERVAL` is how old a result may be before a heartbeat
+re-probes (default `5m`). With the probe off every relay is listed on its
+lease alone: results a previous run stored are ignored (they still show in
+the inventory), so switching it off relists every withheld relay at once.
 
 `relay_version` identifies the relay runtime artifact, independently of the
 broker, relay hub, and client app versions. Standalone images report values such
@@ -896,6 +973,11 @@ through a pre-`node_class` broker binary) or interfering with a foundation
 relay: a refused heartbeat changes nothing, and an unattended foundation row
 expires from the origin store within one lease TTL.
 
+A heartbeat also re-runs the [inbound reachability
+probe](#inbound-reachability-probe) of a direct relay's endpoint once the
+stored result is older than `OPENRUNG_RELAY_PROBE_INTERVAL`; the heartbeat
+response is unaffected, but the outcome decides whether the relay is listed.
+
 An identity-bearing registration also requires its current `lease_token` on
 heartbeat. The broker rotates this opaque token on every successful
 registration and returns `404 relay not found` for a missing or superseded
@@ -1023,7 +1105,9 @@ limiter and exists when `OPENRUNG_API_TOKEN` is configured.
 GET /api/v1/relays?limit=5
 ```
 
-The order of `relays` is the broker's candidate ranking. The broker uses recent
+The order of `relays` is the broker's candidate ranking. A direct relay whose
+latest [inbound reachability probe](#inbound-reachability-probe) failed is
+left out before ranking and page shaping. The broker uses recent
 connection successes/failures, active sessions, observed client latency, and
 speed-test telemetry. The latency it scores is aggregated across all clients,
 so it cannot describe any one client's path. IPv6 is only a final tie-breaker
@@ -1271,10 +1355,34 @@ best-ranked relays.
 
 The broker ranks relays exactly as for `GET /api/v1/relays`, keeps only relays
 that can install per-user credentials (identity-bearing, lease-capable,
-direct-transport registrations), narrows them to the target, reserves the WSS
+direct-transport registrations whose latest [inbound reachability
+probe](#inbound-reachability-probe) did not fail), narrows them to the target, reserves the WSS
 slot like the public list, and then issues or extends one lease per relay. It
 waits up to five seconds for each relay to acknowledge the lease through its
 [lease sync](#relay-lease-sync) and answers with the relays that did.
+
+**Acknowledgement.** The answer is whatever subset acknowledged in time: a
+relay that stays silent beside one that acknowledged is simply left out. When
+no relay acknowledged, the broker re-reads the relays it is waiting for. One
+whose last heartbeat is still within the relay heartbeat interval is alive and
+merely slow, so the wait runs once more (one extension; a request therefore
+takes at most ten seconds). A relay that has missed a heartbeat is treated as
+gone and the answer is `503` at once, so the client's retry or fallback is not
+delayed by a relay that will never install the lease. A relay that has left
+the directory altogether is not a candidate at all: a request naming it as
+`relay_id` gets `200` with an empty list (nothing is issued).
+
+**Empty answers.** `200` with `"relays": []` means no lease-capable relay
+matches the request right now. Clients treat it by context: at connect time
+the shared public list is used instead (until enforcement), and at renewal
+time it means the connected relay is gone, so the client reconnects through
+its ladder immediately rather than retrying a dead relay until the lease
+expires. The broker logs one `INFO` summary of access answers per ten-minute
+window (counts by outcome: granted, empty, unapplied, extended, denied,
+unauthorized, rate limited, malformed, cancelled, errors), so access health
+remains readable from the broker log after the origin access log has rolled
+over; a request its client abandoned mid-flight is logged at `INFO`, never as
+an error.
 
 Success is `200 OK`, signed exactly like a relay list (same key, same
 `X-OpenRung-Relays-Signature` header, same wire schema) but on the `access`
@@ -1305,12 +1413,12 @@ existing lease and returns the same `client_id` with a later
 
 | Status | Meaning |
 | --- | --- |
-| `200` with `"relays": []` | No relay matches the target (or every match is at its lease capacity); nothing was issued |
+| `200` with `"relays": []` | No relay matches the target — including a `relay_id` that has expired from the directory — or every match is at its lease capacity; nothing was issued |
 | `400` | Malformed body, unknown field, `limit` out of range, both targets, invalid country |
 | `401` | Missing, invalid or expired access token, or an unknown user: authenticate again |
 | `403` | The user is disabled |
 | `429` | Rate limit (per client address and user) |
-| `503` + `Retry-After: 2` | Leases were issued but no relay acknowledged them in time; the retry returns the same credentials |
+| `503` + `Retry-After: 2` | Leases were issued but no relay acknowledged them in time (after one extended wait if a relay was still heartbeating); the retry returns the same credentials |
 
 Access requests carry no telemetry identifiers, never follow redirects, and are
 refused by clients on endpoint-unbound fronts (the Azure no-SNI mode); the

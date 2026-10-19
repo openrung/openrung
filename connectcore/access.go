@@ -29,7 +29,11 @@ import (
 // Until relays enforce leases the public list still works, so every failure
 // short of an operator disable falls back to it: no key, a broker without the
 // access endpoints, an endpoint-unbound front, an error, or no relay with
-// per-user access for the target.
+// per-user access for the target. An empty answer therefore means "no leased
+// relay for this target" at connect time (fall back) and "the connected relay
+// is gone" at renewal time (reconnect through the ladder); the broker's
+// contract for the empty answer is in docs/api.md. How each connect's access
+// path went is reported through telemetry (access_outcome.go).
 
 var (
 	// ErrAccessDisabled reports that the broker refused this installation
@@ -42,6 +46,10 @@ var (
 	// relay no longer accepts (or soon will not); recovery fetches a new one.
 	errLeaseExpired  = errors.New("relay access expired")
 	errLeaseReplaced = errors.New("relay access was replaced by the broker")
+	// errLeaseRelayGone ends a session whose relay the broker no longer
+	// lists: a renewal answered with no relays. The relay is most likely
+	// gone, so recovery re-ladders at once instead of retrying it.
+	errLeaseRelayGone = errors.New("the connected relay is no longer listed by the broker")
 )
 
 const (
@@ -125,6 +133,7 @@ func (s *Engine) accessWanted(conn *connection, target RelayTarget) bool {
 // fetch (an operator disable, or cancellation).
 func (s *Engine) fetchAccess(ctx context.Context, conn *connection, front string, azureSNI bool, target RelayTarget) (discovery.Fetch, bool, error) {
 	if brokerapi.EndpointUnboundBrokerFront(front) && !azureSNI {
+		conn.accessOutcome = accessOutcomeFrontUnbound
 		s.appendLog("this broker front cannot carry per-user relay access; using the public relay list")
 		return discovery.Fetch{}, false, nil
 	}
@@ -140,15 +149,18 @@ func (s *Engine) fetchAccess(ctx context.Context, conn *connection, front string
 	case ctx.Err() != nil:
 		return discovery.Fetch{}, false, ctx.Err()
 	case errors.Is(err, ErrAccessDisabled):
+		conn.accessOutcome = accessOutcomeDenied
 		s.reportAccessDisabled()
 		return discovery.Fetch{}, false, err
 	case errors.Is(err, errAccessUnsupported):
 		conn.accessUnsupported = true
+		conn.accessOutcome = accessOutcomeUnsupported
 		s.appendLog("broker does not issue per-user relay access; using the public relay list")
 		return discovery.Fetch{}, false, nil
 	default:
 		// The next fetch races the fronts again instead of trusting this one.
 		conn.accessFront = ""
+		conn.accessOutcome = accessFailureOutcome(err)
 		s.appendLog(fmt.Sprintf("per-user relay access failed (%v); using the public relay list", err))
 		return discovery.Fetch{}, false, nil
 	}
@@ -158,13 +170,31 @@ func (s *Engine) fetchAccess(ctx context.Context, conn *connection, front string
 	// usable is treated like an empty one.
 	usable := usableRelays(resp.RelayListResponse)
 	if cands, _, err := FilterCandidates(usable, target); err != nil || len(cands) == 0 {
+		conn.accessOutcome = accessOutcomeEmpty
 		s.appendLog("no usable relay with per-user access matches; using the public relay list")
 		return discovery.Fetch{}, false, nil
 	}
 	lifetime := resp.LeaseExpiresAt.Sub(resp.ServerTime)
 	conn.lease = accessLease{expiresAt: received.Add(lifetime), lifetime: lifetime, front: front, azureSNI: azureSNI}
+	conn.accessOutcome = accessOutcomeGranted
 	s.appendLog(fmt.Sprintf("received per-user access to %d relay(s) for %s", len(resp.Relays), lifetime.Round(time.Second)))
 	return discovery.Fetch{BrokerURL: front, AzureSNI: azureSNI, Response: resp.RelayListResponse}, true, nil
+}
+
+// accessFailureOutcome maps a failed access request onto its outcome token:
+// the broker's unapplied (503) and rate-limited (429) answers are told apart
+// from every other failure (transport, other statuses, authentication).
+func accessFailureOutcome(err error) string {
+	var status *brokerapi.AccessStatusError
+	if errors.As(err, &status) {
+		switch status.StatusCode {
+		case 503:
+			return accessOutcomeUnapplied
+		case 429:
+			return accessOutcomeRateLimited
+		}
+	}
+	return accessOutcomeError
 }
 
 // runPublicFallback walks the public list after every leased candidate
@@ -217,6 +247,7 @@ func (s *Engine) runPublicFallback(ctx context.Context, conn *connection, broker
 	if len(remaining) == 0 {
 		return nil, ladderOrder{}, false, nil
 	}
+	conn.accessOutcome = accessOutcomeFallbackPublic
 	s.appendLog(fmt.Sprintf("relays with per-user access failed; trying %d relay(s) from the public list", len(remaining)))
 	order := s.rankLadder(ctx, remaining, target)
 	ladder := demoteRelay(order.candidates(), failedRelayID)
@@ -417,6 +448,15 @@ func (s *Engine) renewLease(ctx context.Context, relay brokerapi.RelayDescriptor
 			failures = 0
 			s.appendLog(fmt.Sprintf("renewed access to relay %s for %s", relay.ID, lifetime.Round(time.Second)))
 			continue
+		}
+		if err == nil && len(resp.Relays) == 0 {
+			// The broker answered and lists no relay for this ID: the relay
+			// left the directory (it stopped heartbeating or was replaced).
+			// Its lease cannot be renewed and the relay is probably dead, so
+			// recover now rather than retrying it until the lease expires.
+			s.appendLog(fmt.Sprintf("relay %s is no longer listed by the broker; reconnecting", relay.ID))
+			out <- errLeaseRelayGone
+			return
 		}
 		if err == nil {
 			err = errors.New("the broker did not return the connected relay")

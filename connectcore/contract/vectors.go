@@ -3,7 +3,8 @@
 //
 // The vectors describe load-bearing behavior that suites across two repos
 // must agree on — failure classification, relay-directory decoding, the
-// broker-front list, and the engine's event sequences — and the mobile repo
+// broker-front list, the engine's event sequences, and the access-path
+// telemetry tokens — and the mobile repo
 // vendors the same files for its own suites. Each file names its consumers in
 // a suites field (declared consumers a repo does not run yet are accounted
 // for in the mobile repo's pin.json) and carries its own doc header stating
@@ -24,13 +25,15 @@ import (
 //go:embed vectors/*.json
 var vectorFS embed.FS
 
-// ClassificationVectors, RelayDecodeVectors, BrokerFrontsVectors, and
-// EventSequenceVectors name the vector files. Callers pass one to Load.
+// ClassificationVectors, RelayDecodeVectors, BrokerFrontsVectors,
+// EventSequenceVectors and AccessOutcomeVectors name the vector files.
+// Callers pass one to Load.
 const (
 	ClassificationVectors = "classification.json"
 	RelayDecodeVectors    = "relay_decode.json"
 	BrokerFrontsVectors   = "broker_fronts.json"
 	EventSequenceVectors  = "event_sequence.json"
+	AccessOutcomeVectors  = "access_outcome.json"
 )
 
 // Raw returns the exact bytes of one vector file.

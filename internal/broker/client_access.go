@@ -8,10 +8,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/openrung/openrung/brokerapi"
@@ -29,20 +31,36 @@ import (
 // access channel whose client_id values are the lease credentials. Relays that
 // do not acknowledge in time are left out; when none did, the answer is 503
 // with Retry-After so the client retries (the leases persist, so the retry
-// extends the same credentials). A renewal is the same call naming the
-// connected relay: the lease is extended and keeps its credential.
+// extends the same credentials) — unless a relay that has not acknowledged
+// is still heartbeating, in which case the wait is extended once first (see
+// awaitIssued). A renewal is the same call naming the connected relay: the
+// lease is extended and keeps its credential; a connected relay that has left
+// the directory yields an empty 200 so the client reconnects at once.
 
 const (
 	maxAccessRequestBytes = 8 << 10
 
 	// defaultAccessApplyTimeout bounds the wait for relays to install issued
 	// leases. A lease-capable relay holds a long poll open, so it normally
-	// acknowledges within one round trip.
+	// acknowledges within one round trip. When nothing acknowledged but a
+	// relay is demonstrably alive the wait runs once more, so a request
+	// takes at most twice this — well inside the fronts' origin timeouts.
 	defaultAccessApplyTimeout = 5 * time.Second
 
 	// accessRetryAfterSeconds is what a client waits after an unapplied
 	// issuance before asking again.
 	accessRetryAfterSeconds = 2
+
+	// relayHeartbeatInterval is the direct-mode relay's default broker
+	// heartbeat cadence (internal/relayruntime/engine Config.HeartbeatInterval).
+	// A relay whose last heartbeat is older than this has missed one: it is
+	// treated as gone rather than slow, and nothing waits for it.
+	relayHeartbeatInterval = 30 * time.Second
+
+	// accessSummaryInterval spaces the periodic INFO summary of access
+	// answers, so access health is readable from the broker log after the
+	// short-lived origin access log has rolled over.
+	accessSummaryInterval = 10 * time.Minute
 )
 
 // accessResponse is the access-channel body: the public relay-list envelope
@@ -62,13 +80,123 @@ type clientAccessHandler struct {
 	access       *accessService
 	signer       signer
 	applyTimeout time.Duration
+	stats        *accessStats
+	// withholdUnreachable is whether reachability probing is enabled, and so
+	// whether a stored failed probe excludes a relay (see reachability.go).
+	withholdUnreachable bool
 }
 
 func newClientAccessHandler(store RelayStore, users *userAuthService, access *accessService, s signer) *clientAccessHandler {
 	if users == nil || access == nil {
 		return nil
 	}
-	return &clientAccessHandler{store: store, users: users, access: access, signer: s, applyTimeout: defaultAccessApplyTimeout}
+	return &clientAccessHandler{
+		store: store, users: users, access: access, signer: s,
+		applyTimeout: defaultAccessApplyTimeout,
+		stats:        &accessStats{every: accessSummaryInterval},
+	}
+}
+
+// accessStats counts access answers by outcome and emits one INFO summary
+// line per interval. Counting is driven by the requests themselves (the
+// summary is written by the first request after the interval has elapsed,
+// covering the window since the previous one), so it needs no goroutine and
+// a broker with no access traffic logs nothing. The counts are aggregates
+// only: no user, relay or address appears in the line.
+type accessStats struct {
+	every time.Duration
+
+	mu    sync.Mutex
+	since time.Time
+	accessCounts
+}
+
+// accessCounts are one window's counters. granted / empty split the 200
+// answers by whether they carried relays; the rest are keyed by status.
+// extended counts answers that waited a second time for a slow relay
+// (whatever they then answered), cancelled the requests the client abandoned
+// before an answer was written.
+type accessCounts struct {
+	granted, empty, badRequest, unauthorized, denied, rateLimited int
+	unapplied, failed, other, cancelled, extended                 int
+}
+
+func (s *accessStats) add(now time.Time, bump func(*accessStats)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.since.IsZero() {
+		s.since = now
+	}
+	bump(s)
+	if now.Sub(s.since) < s.every {
+		return
+	}
+	slog.Info("access requests",
+		"window", now.Sub(s.since).Round(time.Second).String(),
+		"granted", s.granted, "empty", s.empty, "unapplied", s.unapplied, "extended", s.extended,
+		"denied", s.denied, "unauthorized", s.unauthorized, "rate_limited", s.rateLimited,
+		"bad_request", s.badRequest, "cancelled", s.cancelled, "error", s.failed, "other", s.other)
+	s.accessCounts, s.since = accessCounts{}, now
+}
+
+// statusRecorder remembers the status a handler wrote; zero means it wrote
+// nothing (the client went away first).
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	if r.status == 0 {
+		r.status = status
+	}
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	return r.ResponseWriter.Write(b)
+}
+
+// counted wraps the complete access route (rate limiter included) so every
+// non-200 answer is counted by status, 200s being counted where they are
+// written (writeAccess knows whether relays were returned).
+func (h *clientAccessHandler) counted(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rec := &statusRecorder{ResponseWriter: w}
+		next(rec, r)
+		h.stats.add(h.access.now(), func(s *accessStats) {
+			switch {
+			case rec.status == 0:
+				s.cancelled++
+			case rec.status == http.StatusOK:
+			case rec.status == http.StatusBadRequest:
+				s.badRequest++
+			case rec.status == http.StatusUnauthorized:
+				s.unauthorized++
+			case rec.status == http.StatusForbidden:
+				s.denied++
+			case rec.status == http.StatusTooManyRequests:
+				s.rateLimited++
+			case rec.status == http.StatusServiceUnavailable && rec.Header().Get("Retry-After") != "":
+				s.unapplied++
+			case rec.status >= 500:
+				s.failed++
+			default:
+				s.other++
+			}
+		})
+	}
+}
+
+// requestCancelled reports whether an access request failed because the
+// client abandoned it: the request context is done, or the failure wraps the
+// cancellation. Such a failure is the client's doing, not the broker's, and
+// is logged at INFO so the error log keeps meaning store failures.
+func requestCancelled(r *http.Request, err error) bool {
+	return r.Context().Err() != nil || errors.Is(err, context.Canceled)
 }
 
 // rateKey budgets per client address and user: users behind one carrier-
@@ -152,7 +280,7 @@ func (h *clientAccessHandler) handler() http.HandlerFunc {
 			writeError(w, http.StatusServiceUnavailable, "could not list relays")
 			return
 		}
-		page := reserveWSSCandidate(accessCandidates(relays, relayID, country), limit, weights)
+		page := reserveWSSCandidate(accessCandidates(withoutUnreachable(relays, h.withholdUnreachable), relayID, country), limit, weights)
 		if len(page) == 0 || (relayID != "" && !relay.WellFormedRelayID(relayID)) {
 			h.writeAccess(w, now, nil, time.Time{})
 			return
@@ -170,6 +298,14 @@ func (h *clientAccessHandler) handler() http.HandlerFunc {
 		case errors.Is(err, ErrUserNotFound):
 			writeError(w, http.StatusUnauthorized, "missing, invalid or expired access token")
 			return
+		case requestCancelled(r, err):
+			// The client's doing, not a store failure. A caller that is
+			// somehow still connected gets the ordinary retryable refusal.
+			slog.Info("access request cancelled by the client before issuance", "error", err)
+			if r.Context().Err() == nil {
+				writeError(w, http.StatusServiceUnavailable, "could not issue access")
+			}
+			return
 		case err != nil:
 			slog.Error("could not issue access leases", "user_id", userID, "error", err)
 			writeError(w, http.StatusServiceUnavailable, "could not issue access")
@@ -181,9 +317,13 @@ func (h *clientAccessHandler) handler() http.HandlerFunc {
 			return
 		}
 
-		applied, err := h.access.awaitApplied(r.Context(), leases, h.applyTimeout)
+		applied, err := h.awaitIssued(r.Context(), leases)
 		if err != nil {
-			if r.Context().Err() != nil {
+			if requestCancelled(r, err) {
+				slog.Info("access request cancelled by the client before relays acknowledged", "error", err)
+				if r.Context().Err() == nil {
+					writeError(w, http.StatusServiceUnavailable, "could not confirm access")
+				}
 				return
 			}
 			slog.Error("could not read relay lease acknowledgements", "error", err)
@@ -237,13 +377,65 @@ func (h *clientAccessHandler) writeAccess(w http.ResponseWriter, now time.Time, 
 		expiry := leaseExpiresAt.UTC().Truncate(time.Second)
 		resp.LeaseExpiresAt = &expiry
 	}
+	h.stats.add(now, func(s *accessStats) {
+		if len(relays) == 0 {
+			s.empty++
+		} else {
+			s.granted++
+		}
+	})
 	h.signer.writeSignedJSON(w, resp)
+}
+
+// awaitIssued waits for the relays holding the issued leases to acknowledge
+// them and reports which did. Whatever subset acknowledged within the apply
+// timeout is the answer. When none did, the relays are re-read: one whose
+// heartbeat is still current is alive and merely slow (a long poll in flight,
+// a busy xray), so the wait runs once more — bounded to one extension — while
+// a relay that has missed a heartbeat (or has expired from the directory
+// meanwhile) is most likely dead, and waiting for it would only delay the
+// client's retry or fallback. A lookup that fails for any reason other than
+// the relay being gone is a store failure and is returned as such: the caller
+// logs it and answers the generic 503, never a quiet "unapplied".
+func (h *clientAccessHandler) awaitIssued(ctx context.Context, leases []Lease) (map[string]bool, error) {
+	applied, err := h.access.awaitApplied(ctx, leases, h.applyTimeout)
+	if err != nil || len(applied) > 0 {
+		return applied, err
+	}
+	now := h.access.now().UTC()
+	alive, err := h.anyRelayAlive(leases, now)
+	if err != nil || !alive {
+		return applied, err
+	}
+	h.stats.add(now, func(s *accessStats) { s.extended++ })
+	return h.access.awaitApplied(ctx, leases, h.applyTimeout)
+}
+
+// anyRelayAlive reports whether any of the leases' relays heartbeated within
+// the last heartbeat interval. A relay gone from the directory is simply not
+// alive; any other lookup failure is returned, so the first failing lookup
+// ends the check rather than each relay waiting out its own store timeout.
+func (h *clientAccessHandler) anyRelayAlive(leases []Lease, now time.Time) (bool, error) {
+	for _, lease := range leases {
+		desc, err := h.store.RelayByID(lease.RelayID, now)
+		if errors.Is(err, ErrRelayNotFound) {
+			continue
+		}
+		if err != nil {
+			return false, fmt.Errorf("read relay %s for the acknowledgement wait: %w", lease.RelayID, err)
+		}
+		if now.Sub(desc.LastHeartbeatAt) <= relayHeartbeatInterval {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // accessCandidates keeps the ranked relays that can carry a lease — an
 // identity-bearing, lease-capable, direct-transport registration — narrowed
 // to the target: an exact relay ID, or a country code (case-insensitive, as
-// clients match it). Order is preserved; it is the ranking.
+// clients match it). Order is preserved; it is the ranking. The caller has
+// already applied withoutUnreachable.
 func accessCandidates(relays []relay.Descriptor, relayID, country string) []relay.Descriptor {
 	out := make([]relay.Descriptor, 0, len(relays))
 	for _, desc := range relays {
@@ -271,7 +463,8 @@ func asciiLetters(value string) bool {
 }
 
 // awaitApplied waits up to timeout for each lease's relay to acknowledge a
-// revision at or past the lease's, and reports which relays did. Each round
+// revision at or past the lease's, and reports which relays did (the map
+// holds only those; a relay that did not acknowledge is absent). Each round
 // subscribes before reading so an ack landing between the read and the wait
 // still wakes it; every subscription is released on the way out.
 func (a *accessService) awaitApplied(ctx context.Context, leases []Lease, timeout time.Duration) (map[string]bool, error) {

@@ -323,6 +323,13 @@ type telemetryOverview struct {
 	ActiveOS        []countSummary `json:"active_by_os"`
 	FailureStages   []countSummary `json:"failure_stages"`
 	FailureReasons  []countSummary `json:"failure_reasons"`
+	// AccessOutcomes counts connects by how the per-user access path went
+	// (the access_outcome attribute on connection_succeeded and
+	// connection_failed); RelaySources counts successful connects by where
+	// the relay came from (relay_source). Both token sets are closed, pinned
+	// by connectcore's access_outcome contract vectors.
+	AccessOutcomes []countSummary `json:"access_outcomes"`
+	RelaySources   []countSummary `json:"relay_sources"`
 	// Recent is the window's full session list, ordered newest-last-seen first.
 	// It is not serialized (the dashboard reads sessions from the dedicated
 	// endpoint): it exists only so the in-memory querier can paginate its
@@ -456,6 +463,10 @@ func (a *sessionAccumulator) finalize(now time.Time) sessionSummary {
 	return summary
 }
 
+// accessPanelLimit caps the access panels; the token sets are closed and
+// smaller than this, so the panels are never truncated.
+const accessPanelLimit = 16
+
 // buildTelemetryOverview aggregates stored records; appCounts is the hourly
 // application-connection rollup slice for the window (top-apps comes only from
 // there — application_connection events are never stored as records, and any
@@ -466,6 +477,8 @@ func buildTelemetryOverview(records []TelemetryRecord, appCounts map[string]int,
 	sessions := make(map[string]*sessionAccumulator)
 	failures := make(map[string]int)
 	failureReasons := make(map[string]int)
+	accessOutcomes := make(map[string]int)
+	relaySources := make(map[string]int)
 	relays := make(map[string]*relaySummary)
 	relayClasses := make(map[string]string)
 	relayFailureReasons := make(map[string]map[string]int)
@@ -576,6 +589,12 @@ func buildTelemetryOverview(records []TelemetryRecord, appCounts map[string]int,
 			if event.RelayID != "" {
 				relayFor(relays, event.RelayID).Successes++
 			}
+			if outcome := event.Attributes["access_outcome"]; outcome != "" {
+				accessOutcomes[outcome]++
+			}
+			if source := event.Attributes["relay_source"]; source != "" {
+				relaySources[source]++
+			}
 		case "relay_failover":
 			// A failover is a successful relay observation, but not another
 			// session-level success or connection-trend success.
@@ -587,6 +606,9 @@ func buildTelemetryOverview(records []TelemetryRecord, appCounts map[string]int,
 			session.terminal = true
 			if bucket != nil {
 				bucket.Failures++
+			}
+			if outcome := event.Attributes["access_outcome"]; outcome != "" {
+				accessOutcomes[outcome]++
 			}
 			stageLabel := firstNonEmpty(event.Attributes["failure_stage"], "unknown")
 			// New-style classified reason preferred; fall back to the error_type
@@ -713,6 +735,8 @@ func buildTelemetryOverview(records []TelemetryRecord, appCounts map[string]int,
 	overview.ActiveOS = sortedCounts(activeOS, 10)
 	overview.FailureStages = sortedCounts(failures, 10)
 	overview.FailureReasons = sortedCounts(failureReasons, 10)
+	overview.AccessOutcomes = sortedCounts(accessOutcomes, accessPanelLimit)
+	overview.RelaySources = sortedCounts(relaySources, accessPanelLimit)
 	for relayID, speed := range speeds {
 		overview.SpeedTests = append(overview.SpeedTests, speedTestSummary{RelayID: relayID, Tests: speed.tests, AverageMbps: float64(speed.mbps) / float64(speed.tests) / 1000, AverageTTFBMS: float64(speed.ttfb) / float64(speed.tests)})
 	}

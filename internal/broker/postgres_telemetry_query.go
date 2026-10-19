@@ -71,6 +71,8 @@ events AS (
 		-- already treats '' as 'unknown'.
 		NULLIF(e.payload->'attributes'->>'failure_stage', '') AS failure_stage,
 		NULLIF(e.payload->'attributes'->>'failure_detail', '') AS failure_detail,
+		NULLIF(e.payload->'attributes'->>'access_outcome', '') AS access_outcome,
+		NULLIF(e.payload->'attributes'->>'relay_source', '') AS relay_source,
 		-- failure_reason mirrors firstNonEmpty(failure_reason, error_type):
 		-- the btrim CASE tests the trimmed value but keeps the original, and
 		-- yields NULL when both are empty (like country above).
@@ -200,6 +202,8 @@ const (
 //
 //	trend       k1 = event                       n = events in the hour
 //	failure     k1 = stage, k2 = reason labels   n = connection_failed events
+//	access      k1 = access_outcome              n = terminal connect events carrying it
+//	relay_source k1 = relay_source               n = connection_succeeded events carrying it
 //	relay_ok    k1 = relay_id                    n = connection_succeeded + relay_failover
 //	relay_fail  k1 = relay_id, k2 = reason label n = relay_attempt_failed
 //	speed       k1 = relay_id                    n = tests, s1 = Σ download_mbps_milli, s2 = Σ ttfb_ms
@@ -217,6 +221,12 @@ event_counts AS (
 	SELECT ` + telemetryOccurredHour + `, 'failure', ` + telemetryFailureStageLabel + `, ` + telemetryFailureReasonLabel + `,
 		COUNT(*), 0, 0, NULL, NULL
 	FROM events WHERE event = 'connection_failed' GROUP BY 1, 3, 4
+	UNION ALL
+	SELECT ` + telemetryOccurredHour + `, 'access', access_outcome, '', COUNT(*), 0, 0, NULL, NULL
+	FROM events WHERE event IN ('connection_succeeded', 'connection_failed') AND access_outcome IS NOT NULL GROUP BY 1, 3
+	UNION ALL
+	SELECT ` + telemetryOccurredHour + `, 'relay_source', relay_source, '', COUNT(*), 0, 0, NULL, NULL
+	FROM events WHERE event = 'connection_succeeded' AND relay_source IS NOT NULL GROUP BY 1, 3
 	UNION ALL
 	SELECT ` + telemetryOccurredHour + `, 'relay_ok', relay_id, '', COUNT(*), 0, 0, NULL, NULL
 	FROM events WHERE event IN ('connection_succeeded', 'relay_failover') AND relay_id <> '' GROUP BY 1, 3
@@ -354,6 +364,15 @@ FROM event_counts WHERE kind = 'failure' GROUP BY k1
 UNION ALL
 SELECT 'failure_reasons', k1 || ' · ' || k2, NULL, SUM(n)::bigint, NULL, NULL, NULL
 FROM event_counts WHERE kind = 'failure' GROUP BY 2
+UNION ALL
+-- access_outcomes / relay_sources: the per-user access path, counted over the
+-- terminal connect events exactly as the in-memory accumulator does (an
+-- event without the attribute — a client predating it — counts nowhere).
+SELECT 'access_outcomes', k1, NULL, SUM(n)::bigint, NULL, NULL, NULL
+FROM event_counts WHERE kind = 'access' GROUP BY k1
+UNION ALL
+SELECT 'relay_sources', k1, NULL, SUM(n)::bigint, NULL, NULL, NULL
+FROM event_counts WHERE kind = 'relay_source' GROUP BY k1
 UNION ALL
 SELECT 'relay_successes', k1, NULL, SUM(n)::bigint, NULL, NULL, NULL
 FROM event_counts WHERE kind = 'relay_ok' GROUP BY k1
@@ -692,6 +711,8 @@ func (s *PostgresTelemetrySink) TelemetryOverview(now time.Time, window time.Dur
 	overview.ActiveOS = sortedCounts(osFamilyCounts(counts["active_by_os"]), 10)
 	overview.FailureStages = sortedCounts(counts["failure_stages"], 10)
 	overview.FailureReasons = sortedCounts(counts["failure_reasons"], 10)
+	overview.AccessOutcomes = sortedCounts(counts["access_outcomes"], accessPanelLimit)
+	overview.RelaySources = sortedCounts(counts["relay_sources"], accessPanelLimit)
 	overview.TopRelays = topRelaySummaries(counts["relay_successes"], counts["relay_failures"], relayFailureReasons)
 	overview.SpeedTests = speedTests
 	applyTelemetryRelayClasses(&overview, relayClasses)
