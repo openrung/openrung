@@ -289,17 +289,17 @@ grows. Event partitions are dropped after 7 days. The dashboard rollup the
 24-hour and longer windows read (`telemetry_sessions`, one row per session, and
 `telemetry_event_counts`, hourly counts) is kept for 31 days so the 14- and
 31-day windows have history; the daily prune blanks the client IP fields, city,
-and ISP on rollup sessions older than 7 days, so IP-level data is never kept
-longer than the raw events. A broker older than 0.9.3 prunes the rollup back to
-7 days on its next maintenance pass, and the extra rows and the BRIN index are
-harmless to it. High-volume `application_connection` events are not stored as
-rows in either store: ingestion folds them into an hourly per-application count
-(`telemetry_app_counts` in postgres mode), summing the bounded optional
-`measurements.connection_count` used by aggregating clients and defaulting to
-one for legacy or out-of-range integer values. One application can contribute
-at most 100,000 represented flows per batch. The aggregate feeds the
-dashboard's top-applications panel; per-event destination and client metadata
-is discarded.
+ISP, organization, and ASN on rollup sessions older than 7 days, so IP-level
+data is never kept longer than the raw events. A broker older than 0.9.3 prunes
+the rollup back to 7 days on its next maintenance pass, and the extra rows and
+the BRIN index are harmless to it. High-volume `application_connection` events
+are not stored as rows in either store: ingestion folds them into an hourly
+per-application count (`telemetry_app_counts` in postgres mode), summing the
+bounded optional `measurements.connection_count` used by aggregating clients
+and defaulting to one for legacy or out-of-range integer values. One
+application can contribute at most 100,000 represented flows per batch. The
+aggregate feeds the dashboard's top-applications panel; per-event destination
+and client metadata is discarded.
 
 ## Relay reachability probe
 

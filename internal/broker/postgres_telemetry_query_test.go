@@ -705,8 +705,9 @@ func TestPostgresTelemetryRollupWindowSelection(t *testing.T) {
 
 // TestPostgresTelemetryRollupPrune ages rollup rows out at the rollup's own
 // retention (sessions by their latest event, hourly counts by their hour) and
-// blanks the IP-level fields of sessions older than the raw-event retention,
-// which the long windows then still count.
+// blanks the IP-level fields (including the ISP label's organization and ASN
+// fallbacks) of sessions older than the raw-event retention, which the long
+// windows then still count.
 func TestPostgresTelemetryRollupPrune(t *testing.T) {
 	now := time.Date(2026, 6, 24, 12, 30, 0, 0, time.UTC)
 	sink := newTestPostgresTelemetrySink(t, now)
@@ -714,11 +715,17 @@ func TestPostgresTelemetryRollupPrune(t *testing.T) {
 	expired := now.Add(-telemetryRollupRetention - 2*time.Hour)
 	aged := now.Add(-telemetryRetention - 2*time.Hour)
 	recent := now.Add(-time.Hour)
-	located := map[string]string{"city": "Berlin", "isp": "ExampleNet", "client_ip": "198.51.100.7", "country": "DE"}
+	located := map[string]string{"city": "Berlin", "isp": "ExampleNet", "organization": "Example Org", "asn": "AS64500", "client_ip": "198.51.100.7", "country": "DE"}
+	// The ISP label falls back to organization, then asn, so each fallback
+	// must be blanked too: these aged sessions carry only one of them.
+	orgOnly := map[string]string{"organization": "Fallback Org"}
+	asnOnly := map[string]string{"asn": "AS64501"}
 	records := []TelemetryRecord{
 		dashboardRecord(expired, "expired-1", "connection_succeeded", "client-expired", "session-expired", "relay-1", nil, nil),
 		dashboardRecord(aged, "aged-1", "client_seen", "client-aged", "session-aged", "", located, nil),
 		dashboardRecord(aged.Add(time.Minute), "aged-2", "connection_succeeded", "client-aged", "session-aged", "relay-1", located, nil),
+		dashboardRecord(aged, "org-1", "connection_succeeded", "client-org", "session-org", "relay-1", orgOnly, nil),
+		dashboardRecord(aged, "asn-1", "connection_succeeded", "client-asn", "session-asn", "relay-1", asnOnly, nil),
 		dashboardRecord(recent, "recent-1", "client_seen", "client-recent", "session-recent", "", located, nil),
 		dashboardRecord(recent.Add(time.Minute), "recent-2", "connection_succeeded", "client-recent", "session-recent", "relay-1", located, nil),
 	}
@@ -728,8 +735,8 @@ func TestPostgresTelemetryRollupPrune(t *testing.T) {
 	if err := sink.flush(); err != nil {
 		t.Fatalf("flush telemetry: %v", err)
 	}
-	if got := countRollupSessions(t, sink); got != 3 {
-		t.Fatalf("expected 3 rollup sessions before prune, got %d", got)
+	if got := countRollupSessions(t, sink); got != 5 {
+		t.Fatalf("expected 5 rollup sessions before prune, got %d", got)
 	}
 	// Twice: the second pass must find nothing left to blank or delete.
 	for pass := 0; pass < 2; pass++ {
@@ -738,23 +745,25 @@ func TestPostgresTelemetryRollupPrune(t *testing.T) {
 		}
 	}
 
-	rows, err := sink.pool.Query(ctx, `SELECT session_id, observed_client_ip, reported_client_ip, fallback_source_ip, city, isp, country,
-		observed_client_ip_at IS NULL AND reported_client_ip_at IS NULL AND fallback_source_ip_at IS NULL AND city_at IS NULL AND isp_at IS NULL
-			AND observed_client_ip_occurred_at IS NULL AND reported_client_ip_occurred_at IS NULL AND fallback_source_ip_occurred_at IS NULL
-			AND city_occurred_at IS NULL AND isp_occurred_at IS NULL
+	ordering := ""
+	for _, column := range telemetrySessionIPFields {
+		ordering += " AND " + column + "_at IS NULL AND " + column + "_occurred_at IS NULL"
+	}
+	rows, err := sink.pool.Query(ctx, `SELECT session_id, observed_client_ip, reported_client_ip, fallback_source_ip, city, isp, organization, asn, country,
+		TRUE`+ordering+`
 		FROM telemetry_sessions ORDER BY session_id`)
 	if err != nil {
 		t.Fatalf("read rollup sessions: %v", err)
 	}
 	type kept struct {
-		observed, reported, fallback, city, isp, country string
-		orderingBlank                                    bool
+		observed, reported, fallback, city, isp, organization, asn, country string
+		orderingBlank                                                       bool
 	}
 	got := make(map[string]kept)
 	for rows.Next() {
 		var id string
 		var row kept
-		if err := rows.Scan(&id, &row.observed, &row.reported, &row.fallback, &row.city, &row.isp, &row.country, &row.orderingBlank); err != nil {
+		if err := rows.Scan(&id, &row.observed, &row.reported, &row.fallback, &row.city, &row.isp, &row.organization, &row.asn, &row.country, &row.orderingBlank); err != nil {
 			t.Fatalf("scan rollup session: %v", err)
 		}
 		got[id] = row
@@ -762,13 +771,18 @@ func TestPostgresTelemetryRollupPrune(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read rollup sessions: %v", err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("rollup sessions after prune = %v, want session-aged and session-recent", got)
+	if len(got) != 4 {
+		t.Fatalf("rollup sessions after prune = %v, want the three aged sessions and session-recent", got)
 	}
 	if aged := got["session-aged"]; aged != (kept{country: "DE", orderingBlank: true}) {
-		t.Fatalf("aged session = %+v, want IP fields, city and ISP blanked and country kept", aged)
+		t.Fatalf("aged session = %+v, want IP fields, city, ISP, organization and ASN blanked and country kept", aged)
 	}
-	if recent := got["session-recent"]; recent != (kept{observed: "203.0.113.20", reported: "198.51.100.7", fallback: "203.0.113.20", city: "Berlin", isp: "ExampleNet", country: "DE"}) {
+	for _, id := range []string{"session-org", "session-asn"} {
+		if aged := got[id]; aged != (kept{orderingBlank: true}) {
+			t.Fatalf("%s = %+v, want its ISP fallback blanked", id, aged)
+		}
+	}
+	if recent := got["session-recent"]; recent != (kept{observed: "203.0.113.20", reported: "198.51.100.7", fallback: "203.0.113.20", city: "Berlin", isp: "ExampleNet", organization: "Example Org", asn: "AS64500", country: "DE"}) {
 		t.Fatalf("recent session = %+v, want its IP-level fields intact", recent)
 	}
 	var hours int
@@ -784,21 +798,26 @@ func TestPostgresTelemetryRollupPrune(t *testing.T) {
 	if err != nil {
 		t.Fatalf("14d overview: %v", err)
 	}
-	if overview.Totals.Sessions != 2 || overview.Totals.Successes != 2 {
-		t.Fatalf("14d totals = %+v, want both surviving sessions", overview.Totals)
+	if overview.Totals.Sessions != 4 || overview.Totals.Successes != 4 {
+		t.Fatalf("14d totals = %+v, want every surviving session", overview.Totals)
 	}
 	if len(overview.TopCities) != 1 || overview.TopCities[0] != (countSummary{Name: "Berlin", Count: 1}) {
 		t.Fatalf("14d top cities = %+v, want only the recent session's city", overview.TopCities)
+	}
+	if len(overview.TopISPs) != 1 || overview.TopISPs[0] != (countSummary{Name: "ExampleNet", Count: 1}) {
+		t.Fatalf("14d top ISPs = %+v, want only the recent session's ISP", overview.TopISPs)
 	}
 	sessions, total, err := sink.TelemetrySessions(now, 14*24*time.Hour, 0, 10)
 	if err != nil {
 		t.Fatalf("14d sessions: %v", err)
 	}
-	if total != 2 || len(sessions) != 2 || sessions[1].SessionID != "session-aged" {
-		t.Fatalf("14d sessions = %+v (total %d), want recent then aged", sessions, total)
+	if total != 4 || len(sessions) != 4 || sessions[0].SessionID != "session-recent" {
+		t.Fatalf("14d sessions = %+v (total %d), want recent first then the aged ones", sessions, total)
 	}
-	if aged := sessions[1]; aged.SourceIP != "" || aged.City != "" || aged.ISP != "" || aged.Country != "DE" {
-		t.Fatalf("aged session summary = %+v, want no source IP, city or ISP", aged)
+	for _, aged := range sessions[1:] {
+		if aged.SourceIP != "" || aged.City != "" || aged.ISP != "" || aged.Organization != "" || aged.ASN != "" {
+			t.Fatalf("aged session summary = %+v, want no source IP, city, ISP, organization or ASN", aged)
+		}
 	}
 }
 

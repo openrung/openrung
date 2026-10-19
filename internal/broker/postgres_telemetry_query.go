@@ -179,8 +179,9 @@ var telemetrySessionOrderColumns = func() string {
 
 // telemetrySessionIPFields are the IP-level latest fields of
 // telemetry_sessions; PruneTelemetry blanks them on sessions older than the
-// raw-event retention (telemetrySessionBlankIPStatement).
-var telemetrySessionIPFields = []string{"observed_client_ip", "reported_client_ip", "fallback_source_ip", "city", "isp"}
+// raw-event retention (telemetrySessionBlankIPStatement). organization and asn
+// go with isp, which the ISP label falls back to (telemetrySessionISPLabel).
+var telemetrySessionIPFields = []string{"observed_client_ip", "reported_client_ip", "fallback_source_ip", "city", "isp", "organization", "asn"}
 
 // telemetrySessionBlankIPStatement clears every IP-level field, and the
 // ordering pair that supplied it, on sessions whose latest event was received
