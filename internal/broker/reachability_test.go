@@ -130,45 +130,123 @@ func inventoryReachability(t *testing.T, server http.Handler, id string) string 
 	return ""
 }
 
-func TestRegisterProbesEndpointAndWithholdsUnreachableRelay(t *testing.T) {
+// registerRaw posts a registration and returns the recorder, for the
+// refusals registerOn would fail on.
+func registerRaw(t *testing.T, server http.Handler, req relay.RegisterRequest) *httptest.ResponseRecorder {
+	t.Helper()
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/relays/register", bytes.NewReader(body)))
+	return rec
+}
+
+// inventoryCount is how many relays the operator inventory lists.
+func inventoryCount(t *testing.T, server http.Handler) int {
+	t.Helper()
+	rec := getInventory(t, server)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("inventory: expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var envelope struct {
+		Relays []json.RawMessage `json:"relays"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	return len(envelope.Relays)
+}
+
+// A registration whose endpoint the broker cannot reach is refused with the
+// reason and a Retry-After, and nothing is stored: the relay's own retries
+// re-probe it, and the first reachable attempt registers it probed. A relay
+// that registered reachable and later goes dark is withheld by the heartbeat
+// re-probe, which is unchanged.
+func TestRegisterRefusesUnreachableEndpoint(t *testing.T) {
 	prober := &stubProber{err: errors.New("connect: operation timed out")}
 	// A nanosecond interval makes every heartbeat re-probe.
 	server := probeServer(t, prober, time.Nanosecond)
 	req := validRegisterRequest()
 	req.PublicHost = "203.0.113.7"
-	desc, fields := registerOn(t, server, req)
 
-	if got := string(fields["reachable"]); got != "false" {
-		t.Fatalf("registration reachable = %s, want false", got)
+	rec := registerRaw(t, server, req)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("unreachable registration: expected 422, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Retry-After"); got != "30" {
+		t.Fatalf("Retry-After = %q, want 30", got)
+	}
+	var refusal struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &refusal); err != nil {
+		t.Fatal(err)
+	}
+	// The leading phrase and the endpoint are what the relay logs and the
+	// volunteer installer greps for.
+	if !strings.HasPrefix(refusal.Error, "public endpoint unreachable: the broker could not connect to 203.0.113.7:443") || !strings.Contains(refusal.Error, "inbound TCP 443") {
+		t.Fatalf("refusal body = %q", refusal.Error)
 	}
 	if prober.count() != 1 || prober.endpoints[0] != "203.0.113.7:443" {
 		t.Fatalf("probed endpoints = %v, want the advertised endpoint once", prober.endpoints)
 	}
 	if ids := listedIDs(t, server); len(ids) != 0 {
-		t.Fatalf("unreachable relay listed: %v", ids)
+		t.Fatalf("refused relay listed: %v", ids)
 	}
-	if got := inventoryReachability(t, server, desc.ID); got != "false" {
-		t.Fatalf("inventory reachable = %s, want false", got)
+	if got := inventoryCount(t, server); got != 0 {
+		t.Fatalf("refused relay stored: inventory lists %d relays", got)
 	}
 
-	// The relay keeps heartbeating; once a probe succeeds it is listed again.
+	// The relay retries; once the port opens it registers, probed.
 	prober.set(nil)
-	heartbeatOn(t, server, desc)
+	desc, fields := registerOn(t, server, req)
+	if got := string(fields["reachable"]); got != "true" {
+		t.Fatalf("registration reachable = %s, want true", got)
+	}
 	if prober.count() != 2 {
-		t.Fatalf("probes after heartbeat = %d, want 2", prober.count())
+		t.Fatalf("probes = %d, want one per registration attempt", prober.count())
 	}
 	if ids := listedIDs(t, server); len(ids) != 1 || ids[0] != desc.ID {
-		t.Fatalf("relisted relays = %v, want [%s]", ids, desc.ID)
+		t.Fatalf("listed relays = %v, want [%s]", ids, desc.ID)
 	}
 	if got := inventoryReachability(t, server, desc.ID); got != "true" {
 		t.Fatalf("inventory reachable = %s, want true", got)
 	}
 
-	// And withheld again when a later probe fails.
+	// Going dark later is caught by the heartbeat re-probe and withheld,
+	// without ending the registration.
 	prober.set(errors.New("connect: connection refused"))
 	heartbeatOn(t, server, desc)
 	if ids := listedIDs(t, server); len(ids) != 0 {
 		t.Fatalf("relay listed after a failed re-probe: %v", ids)
+	}
+	if got := inventoryReachability(t, server, desc.ID); got != "false" {
+		t.Fatalf("inventory reachable after going dark = %s, want false", got)
+	}
+	prober.set(nil)
+	heartbeatOn(t, server, desc)
+	if ids := listedIDs(t, server); len(ids) != 1 {
+		t.Fatalf("repaired relay not relisted: %v", ids)
+	}
+}
+
+// A refused registration hands its new-identity budget unit back, so a
+// relay crash-looping on a closed port cannot exhaust its own address's cap
+// and lock itself out once the port opens.
+func TestRefusedRegistrationReleasesTheNewRelayCap(t *testing.T) {
+	prober := &stubProber{err: errors.New("connect: operation timed out")}
+	const cap = 2
+	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed(), APIToken: testAPIToken, RelayProber: prober, RelayProbeInterval: time.Hour, MaxNewRelayIDsPerIPPerDay: cap})
+	for i := 0; i < 3*cap; i++ {
+		if rec := registerRaw(t, server, validRegisterRequest()); rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("attempt %d: expected 422, got %d: %s", i, rec.Code, rec.Body.String())
+		}
+	}
+	prober.set(nil)
+	if rec := registerRaw(t, server, validRegisterRequest()); rec.Code != http.StatusCreated {
+		t.Fatalf("registration after the port opened: expected 201, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

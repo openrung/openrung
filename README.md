@@ -130,10 +130,22 @@ curl -fsSL https://raw.githubusercontent.com/openrung/openrung/main/deploy/relay
 Once `/etc/openrung/relay.env` exists, it is authoritative. Edit that file and
 re-run the installer to change an existing relay's name or other settings.
 
+The script opens TCP 443 in the host firewall (ufw or firewalld) itself. The
+broker connects to that port from the internet before it accepts a relay, so
+the script then reads from the relay's log whether the registration was
+accepted or refused. A refusal means the port is blocked outside the VM — your
+provider's firewall or security group, which nothing inside the VM can change
+— so the script prints where to open it for your provider (AWS, Hetzner,
+Google Cloud, Azure, Oracle, DigitalOcean, Vultr, Alibaba, Tencent, or
+generic instructions) and keeps checking for up to ten minutes while you do.
+The relay is installed either way and registers by itself once the port
+opens.
+
 Afterwards:
 
-- **Allow inbound TCP 443** in your provider's firewall (and
-  `sudo ufw allow 443/tcp` if you use ufw) so clients can reach the relay.
+- **Check later** with `docker logs openrung-relay 2>&1 | grep -E 'registered
+  relay|public endpoint'`: the relay retries registration about every half
+  minute until the broker can reach it.
 - **Update** by re-running the same command — your relay keeps its identity,
   and a failed update rolls back to the running version automatically.
 - **Watch it**: `docker logs -f openrung-relay`

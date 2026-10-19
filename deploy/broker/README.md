@@ -285,31 +285,7 @@ automatically) instead of the JSONL file. It uses
 needs no extra configuration; the broker refuses to start if neither is set.
 In postgres mode the admin dashboard aggregates in SQL, bounded by the
 selected time window, so dashboard cost and broker memory stay flat as event
-history grows. The 24h and 7d windows read a **dashboard rollup** rather than
-the event rows: `telemetry_sessions` holds one row per session (the same
-per-field "latest non-empty wins" accumulation the dashboard shows) and
-`telemetry_event_counts` holds hourly event-grain counts (connection trend,
-failure stages and reasons, per-relay successes, failures, speed tests and
-retained node class). Both are maintained by the same statement that inserts a
-batch of events, so they never lag ingestion, and they age out with the
-partitions. The 1h window still aggregates the hour's events directly. For
-the rollup-served windows a session belongs to the window when its latest
-event does, and the event-grain window edge is hour-granular, like the
-top-applications panel.
-
-On the first start after upgrading to a broker with the rollup, the broker
-**backfills** it from the partitions already on disk, in the background, one
-hour of `received_at` at a time with a short pause between chunks so relay
-polls are not starved; the watermark lives in `telemetry_rollup_state` and
-survives restarts. Until the backfill completes the 24h and 7d windows fall
-back to aggregating events directly (the pre-rollup behaviour), and the
-broker logs `telemetry rollup backfill started` / `complete`. Expect the
-backfill of a full seven-day history to take some minutes on a small
-instance. Downgrading to a broker without the rollup is safe (it ignores the
-three tables); to upgrade again after rows were written by such a broker,
-`TRUNCATE telemetry_sessions, telemetry_event_counts; DELETE FROM
-telemetry_rollup_state;` before starting it so the backfill re-covers the
-history. High-volume `application_connection` events are not stored as
+history grows. High-volume `application_connection` events are not stored as
 rows in either store: ingestion folds them into an hourly per-application
 count (`telemetry_app_counts` in postgres mode), summing the bounded optional
 `measurements.connection_count` used by aggregating clients and defaulting to
@@ -321,12 +297,17 @@ is discarded.
 ## Relay reachability probe
 
 The broker checks that every direct-transport relay's advertised
-`public_host:public_port` accepts inbound connections — a bounded TCP connect
-from the broker host when the relay registers, repeated on heartbeat once the
-result is five minutes old — and withholds a relay whose latest probe failed
-from the public list and access answers until a probe succeeds. The relay
-stays registered and visible in the inventory and the relays page with
-`reachable: false`. It is on by default:
+`public_host:public_port` accepts inbound connections with a bounded TCP
+connect from the broker host. At registration the check gates admission: a
+relay whose port cannot be reached is refused (`422`, `Retry-After: 30`,
+body `public endpoint unreachable: ...`), nothing is stored, and the relay's
+own retries re-run the check until the port opens; the relay logs the
+refusal verbatim, which is what `volunteer-up.sh` reads to tell its operator
+which firewall to open. A relay that registered reachable is re-checked on a
+heartbeat once its result is five minutes old, and one whose latest check
+failed is withheld from the public list and access answers until a check
+succeeds, staying registered and visible in the inventory and the relays
+page with `reachable: false`. It is on by default:
 
 ```sh
 OPENRUNG_RELAY_PROBE=off           # disable; every relay is listed on its lease alone

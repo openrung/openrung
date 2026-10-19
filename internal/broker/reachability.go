@@ -23,12 +23,16 @@ import (
 // no inbound connection at all (a firewall, a NAT without a port map, a
 // listener bound to the wrong address) still looks healthy to the broker
 // while every client attempt against it times out. The broker therefore dials
-// the advertised endpoint itself: once when the relay registers, and again on
-// a heartbeat once the previous result is older than RelayProbeInterval. The
-// result is stored on the descriptor; a relay whose latest probe failed is
-// left out of the public directory and of access answers until a later probe
-// succeeds. It stays registered, heartbeats normally, and remains visible to
-// operators (inventory, relays page) with the result.
+// the advertised endpoint itself. At registration the probe gates admission:
+// a conclusive failure is refused with the reason (422, Retry-After), nothing
+// is stored, and the relay's own registration retries re-probe it until the
+// port opens — the relay logs the refusal verbatim, which is how the
+// volunteer installer tells its operator which firewall to open. A relay
+// that registered reachable is re-probed on a heartbeat once its result is
+// older than RelayProbeInterval; one whose latest probe then failed is left
+// out of the public directory and of access answers until a later probe
+// succeeds, staying registered and visible to operators (inventory, relays
+// page) with the result.
 //
 // Only direct transport is probed: a tunnel relay's advertised endpoint is the
 // relay hub, which fronts it precisely because the relay itself is not
@@ -255,6 +259,54 @@ func classifyProbeError(err error) error {
 	}
 }
 
+// unreachableRetryAfterSeconds is the Retry-After a rejected registration
+// carries. The relay honours it between its registration attempts, so a
+// closed port costs one probe per interval rather than one per backoff step.
+const unreachableRetryAfterSeconds = 30
+
+// probeRegistration runs the registration-time probe of req's advertised
+// endpoint. probed reports that a conclusive probe succeeded (the caller
+// records it); a non-nil err is a conclusive failure the registration must
+// be refused for. No prober, a non-direct transport or an inconclusive probe
+// yield (false, nil): the relay registers unprobed, as before probing.
+func probeRegistration(ctx context.Context, prober RelayProber, req relay.RegisterRequest) (probed bool, err error) {
+	if prober == nil || normalizeTransport(req.Transport) != relay.TransportDirect {
+		return false, nil
+	}
+	err = prober.Probe(ctx, req.PublicHost, req.PublicPort)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, ErrProbeInconclusive) {
+		slog.Warn("relay reachability probe inconclusive", "public", req.PublicHost, "port", req.PublicPort, "error", err)
+		return false, nil
+	}
+	return false, err
+}
+
+// unreachableRegistrationMessage is the error body of a rejected
+// registration. The relay logs it verbatim, and deploy/relay/volunteer-up.sh
+// reads the leading phrase from the container log to tell the volunteer
+// which firewall to open, so "public endpoint unreachable" is a contract.
+func unreachableRegistrationMessage(req relay.RegisterRequest) string {
+	endpoint := net.JoinHostPort(req.PublicHost, strconv.Itoa(req.PublicPort))
+	return fmt.Sprintf("public endpoint unreachable: the broker could not connect to %s; allow inbound TCP %d in the provider firewall (security group) and any host firewall, the relay retries on its own", endpoint, req.PublicPort)
+}
+
+// recordReachability persists a probe outcome for a registered relay and
+// mirrors it on desc. A store error leaves the stored result as it was and
+// never fails the surrounding request.
+func recordReachability(store RelayStore, desc *relay.Descriptor, reachable bool, now time.Time) {
+	if err := store.UpdateReachability(desc.ID, desc.LeaseToken, reachable, now); err != nil {
+		if !errors.Is(err, ErrRelayNotFound) {
+			slog.Warn("could not store relay reachability", "relay_id", desc.ID, "error", err)
+		}
+		return
+	}
+	desc.Reachable = reachable
+	desc.ReachabilityCheckedAt = now
+}
+
 // relayProbeDue reports whether desc should be probed now: never for a
 // non-direct transport, always when it has no result yet, otherwise once the
 // stored result is interval old.
@@ -284,14 +336,7 @@ func probeRelayReachability(ctx context.Context, store RelayStore, prober RelayP
 		return
 	}
 	reachable := err == nil
-	if err := store.UpdateReachability(desc.ID, desc.LeaseToken, reachable, now); err != nil {
-		if !errors.Is(err, ErrRelayNotFound) {
-			slog.Warn("could not store relay reachability", "relay_id", desc.ID, "error", err)
-		}
-		return
-	}
-	desc.Reachable = reachable
-	desc.ReachabilityCheckedAt = now
+	recordReachability(store, desc, reachable, now)
 	if reachable {
 		return
 	}

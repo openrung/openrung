@@ -120,17 +120,6 @@ top-applications panel, whose window edge is consequently hour-granular. These
 were historically by far the highest-volume events, so client aggregation and
 the broker rollup keep dashboard queries bounded by session-grade volume.
 
-In Postgres mode the 24-hour and seven-day dashboard windows are likewise
-served from a rollup the broker maintains as it ingests — one row per session
-plus hourly event-grain counts — rather than from the window's event rows, so
-their cost tracks the number of sessions, not events. The response shape is
-unchanged. Two edges differ from the one-hour window, which still aggregates
-events directly: a session is in a rollup-served window when its latest event
-is (its fields reflect the whole session), and event-grain counts such as the
-hourly trend and failure reasons have an hour-granular window edge, like the
-top-applications panel. A future-dated event (within the accepted clock skew)
-counts in its session as soon as it is ingested.
-
 Before starting the tunnel, Android also resolves its public IP metadata and
 adds `client_ip`, `country`, `country_code`, `city`, `asn`, `isp`, and
 `organization` to subsequent session events. A failed metadata lookup does not
@@ -608,7 +597,10 @@ count, so stable-identity relays and tunnel relays reconnecting through the
 hub are unaffected, and the budget is only consumed by registrations the
 broker accepts, so a relay crash-looping on a rejected request cannot exhaust
 it. Requests over the cap receive `429` with a `Retry-After` header, which the
-relay runtime honors with backoff. Sources listed in
+relay runtime honors with backoff. A direct relay whose advertised endpoint
+the broker cannot connect to is refused with `422` before anything is stored
+(see [Inbound reachability probe](#inbound-reachability-probe)); that
+refusal does not consume the cap either. Sources listed in
 `OPENRUNG_REGISTRATION_CAP_EXEMPT_CIDRS` (comma-separated CIDRs) are exempt —
 set this to the relay hub's egress addresses so a wave of first-time tunnel
 volunteers is never throttled — and requests presenting the foundation token
@@ -656,18 +648,26 @@ A direct-transport relay registers and heartbeats over connections it opens
 itself, which proves nothing about whether its advertised
 `public_host:public_port` accepts connections. The broker therefore dials that
 endpoint itself (a bounded plain TCP connect, no Reality handshake) in the
-registration request and reports the outcome in the response as `reachable`
-(`true` or `false`; absent when the broker did not probe). The relay listens
-before it registers, so a `false` here means the endpoint is not accepting
-connections from the broker's network: the relay stays registered, heartbeats
-and syncs leases normally, but is **withheld from [`GET
-/api/v1/relays`](#list-relays) and [`POST /api/v1/access`](#client-access)**
-until a later probe succeeds. The operator views show the result (see
-[inventory](#operational-relay-inventory)).
+registration request, before anything is stored. The relay listens before it
+registers, so a failed connect means the endpoint is not accepting connections
+from the broker's network, and the registration is **refused**: `422` with
+`Retry-After: 30` and the body
+`{"error": "public endpoint unreachable: the broker could not connect to <host>:<port>; ..."}`.
+Nothing is stored. The relay's own registration retries re-run the probe, so
+the relay admits itself as soon as the port opens; it logs the refusal
+verbatim, and `deploy/relay/volunteer-up.sh` reads that log line to tell the
+operator which firewall to open. The leading phrase `public endpoint
+unreachable` is therefore a contract. A successful probe registers the relay
+and reports `"reachable": true` in the response (absent when the broker did
+not probe).
 
 Heartbeats re-probe once the stored result is older than the probe interval,
-so a relay that goes dark is withheld and a repaired one relisted without
-re-registering. Only direct transport is probed; a tunnel relay's advertised
+so a relay that registered reachable and then went dark is **withheld from
+[`GET /api/v1/relays`](#list-relays) and [`POST
+/api/v1/access`](#client-access)** until a later probe succeeds; it stays
+registered, heartbeats and syncs leases normally, and the operator views show
+the result (see [inventory](#operational-relay-inventory)). A repaired relay
+is relisted without re-registering. Only direct transport is probed; a tunnel relay's advertised
 endpoint is the relay hub. A probe the broker could not attempt — no route or
 local address for the endpoint's address family, a transient resolver
 failure — is inconclusive and changes nothing.

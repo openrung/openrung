@@ -312,6 +312,19 @@ func registerHandler(store RelayStore, cfg Config, clientIP *clientIPResolver, l
 			}()
 		}
 
+		// The relay listens before it registers, so its endpoint is probed in
+		// the same request, before anything is stored: a port nothing outside
+		// the host can reach is rejected with the reason, and the relay's own
+		// retry loop re-registers (and is re-probed) until it opens. See
+		// reachability.go. An inconclusive probe registers the relay unprobed.
+		probed, probeErr := probeRegistration(r.Context(), cfg.RelayProber, req)
+		if probeErr != nil {
+			slog.Warn("relay registration rejected: endpoint unreachable", "node_class", maxClass, "public", req.PublicHost, "port", req.PublicPort, "version", req.RelayVersion, "error", probeErr)
+			w.Header().Set("Retry-After", strconv.Itoa(unreachableRetryAfterSeconds))
+			writeError(w, http.StatusUnprocessableEntity, unreachableRegistrationMessage(req))
+			return
+		}
+
 		desc, err := store.Register(req, now, cfg.RelayLeaseTTL)
 		// A malformed or stale identity proof fails the registration loudly
 		// instead of silently falling back to a random relay ID — a relay that
@@ -343,10 +356,9 @@ func registerHandler(store RelayStore, cfg Config, clientIP *clientIPResolver, l
 		// identity can never drain more than one unit of an address's budget.
 		keepReservation = ledger.rememberIfNew(desc.ID, desc.NodeClass, now)
 		resolveRelayGeo(r.Context(), store, cfg.GeoIP, &desc)
-		// The relay listens before it registers, so its endpoint is probed in
-		// the same request and the response reports the result; a relay that
-		// fails it is registered but not listed (see reachability.go).
-		probeRelayReachability(r.Context(), store, cfg.RelayProber, cfg.RelayProbeInterval, &desc, now)
+		if probed {
+			recordReachability(store, &desc, true, now)
+		}
 		slog.Info("relay registered", "relay_id", desc.ID, "node_class", desc.NodeClass, "public", desc.PublicHost, "port", desc.PublicPort, "city", desc.City, "country", desc.Country, "max_sessions", desc.MaxSessions, "version", desc.RelayVersion, "reachable", reachabilityLogValue(desc))
 
 		writeJSON(w, http.StatusCreated, relay.RegisterResponse{Descriptor: desc})

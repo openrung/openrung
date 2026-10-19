@@ -259,8 +259,8 @@ capability explicitly.
 
 ### One-line volunteer VPS bring-up
 
-For volunteers with any Linux VPS (public IPv4, inbound TCP 443 open), one
-line brings up a volunteer-class relay from the public image:
+For volunteers with any Linux VPS with a public IPv4 address, one line brings
+up a volunteer-class relay from the public image:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/openrung/openrung/main/deploy/relay/volunteer-up.sh | sudo sh
@@ -416,7 +416,14 @@ not need to match.
 
 - **Firewall / security group:** allow inbound **TCP 443** (the relay's public
   port). On AWS, add an inbound rule for TCP 443 from `0.0.0.0/0` **and** `::/0`.
-  With `ufw`: `sudo ufw allow 443/tcp`.
+  With `ufw`: `sudo ufw allow 443/tcp`. The broker connects to the port
+  before it accepts a registration and refuses one it cannot reach (`public
+  endpoint unreachable`, which the relay logs verbatim while it retries about
+  every half minute); a relay that registered and later went dark is kept
+  registered but withheld from clients. `volunteer-up.sh` opens ufw/firewalld
+  itself, prints the provider's fix when the registration is refused, and
+  waits for the port to open (`OPENRUNG_REACHABILITY_WAIT`, default 600 s on
+  a terminal, 0 otherwise).
 - **IPv6:** OpenRung prefers IPv6. With host networking the container uses the
   host's IPv6 directly. Make sure the VPS actually has a routable global IPv6
   address and that inbound 443 is allowed over IPv6.

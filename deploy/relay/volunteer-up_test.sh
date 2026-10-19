@@ -36,6 +36,8 @@ FAKE_BIN=$TEST_TMP/bin
 SIM_DIR=$TEST_TMP/docker
 CONTAINERS=$SIM_DIR/containers
 DOCKER_LOG=$TEST_TMP/docker.log
+FIREWALL_LOG=$TEST_TMP/firewall.log
+DMI_DIR=$TEST_TMP/dmi
 OUTPUT=$TEST_TMP/output
 
 mkdir -p "$FAKE_BIN" "$CONTAINERS" || exit 1
@@ -50,8 +52,13 @@ fi
 
 sed \
     -e "s|^    ENV_FILE=/etc/openrung/relay.env$|    ENV_FILE='$ENV_FILE'|" \
+    -e "s|^    DMI_DIR=/sys/class/dmi/id$|    DMI_DIR='$DMI_DIR'|" \
     -e "s|/etc/openrung/volunteer.env|$LEGACY_ENV_FILE|g" \
     "$SCRIPT" >"$RUN_SCRIPT" || exit 1
+grep -q "DMI_DIR='$DMI_DIR'" "$RUN_SCRIPT" || {
+    echo "FAIL: volunteer-up.sh no longer assigns DMI_DIR where the suite expects" >&2
+    exit 1
+}
 sed '$d' "$RUN_SCRIPT" >"$LIB_SCRIPT" || exit 1
 
 cat >"$FAKE_BIN/id" <<'EOF'
@@ -64,6 +71,34 @@ cat >"$FAKE_BIN/sleep" <<'EOF'
 # Registration timeout tests must not take a real minute.
 exit 0
 EOF
+
+# Host firewall front-ends: present on every run (as on a typical VPS image),
+# inactive unless a test says otherwise, and every call recorded.
+cat >"$FAKE_BIN/ufw" <<'EOF'
+#!/bin/sh
+printf 'ufw %s\n' "$*" >>"$FIREWALL_LOG"
+case "${1:-}" in
+    status)
+        if [ "${SIM_UFW:-inactive}" = active ]; then echo 'Status: active'; else echo 'Status: inactive'; fi
+        ;;
+esac
+exit 0
+EOF
+
+cat >"$FAKE_BIN/firewall-cmd" <<'EOF'
+#!/bin/sh
+printf 'firewall-cmd %s\n' "$*" >>"$FIREWALL_LOG"
+case "${1:-}" in
+    --state)
+        if [ "${SIM_FIREWALLD:-stopped}" = running ]; then echo running; exit 0; fi
+        echo 'not running'
+        exit 252
+        ;;
+esac
+exit 0
+EOF
+
+chmod +x "$FAKE_BIN/ufw" "$FAKE_BIN/firewall-cmd"
 
 cat >"$FAKE_BIN/docker" <<'EOF'
 #!/bin/sh
@@ -248,7 +283,29 @@ case "$op" in
         name=$(resolve_name "$logs_ref") || exit 1
         read_state "$name" || exit 1
         if [ "$state_registered" = yes ]; then
-            printf 'registered relay (simulated)\n'
+            # A broker that cannot reach the port refuses the registration and
+            # the relay logs the refusal verbatim while retrying; the stub
+            # models that with SIM_REACHABILITY=unreachable. opens_after:N
+            # has the broker accept the retry from the Nth logs call on,
+            # modelling a port opened while the script waits.
+            logs_calls=$(cat "$SIM_DIR/logs_calls" 2>/dev/null || echo 0)
+            logs_calls=$((logs_calls + 1))
+            printf '%s\n' "$logs_calls" >"$SIM_DIR/logs_calls"
+            refusal='relay stopped: register with broker: broker /api/v1/relays/register: public endpoint unreachable: the broker could not connect to 8.8.8.8:443 (simulated) — retrying in 2s'
+            case "${SIM_REACHABILITY:-accepted}" in
+                unreachable)
+                    printf '%s\n' "$refusal"
+                    ;;
+                opens_after:*)
+                    printf '%s\n' "$refusal"
+                    if [ "$logs_calls" -ge "${SIM_REACHABILITY#opens_after:}" ]; then
+                        printf 'registered relay (simulated)\n'
+                    fi
+                    ;;
+                *)
+                    printf 'registered relay (simulated)\n'
+                    ;;
+            esac
         elif [ "$state_restarts" != 0 ]; then
             printf 'simulated relay crash\n'
         else
@@ -400,7 +457,10 @@ reset_simulation() {
     mkdir -p "$CONTAINERS"
     printf 'true 0 yes prior id-prior\n' >"$CONTAINERS/openrung-relay"
     : >"$DOCKER_LOG"
-    rm -f "$LEGACY_ENV_FILE"
+    : >"$FIREWALL_LOG"
+    rm -f "$LEGACY_ENV_FILE" "$SIM_DIR/logs_calls"
+    rm -rf "$DMI_DIR"
+    mkdir -p "$DMI_DIR"
 }
 
 write_env() {
@@ -422,6 +482,7 @@ run_volunteer_up() {
         PATH="$FAKE_BIN:$PATH" \
         SIM_DIR="$SIM_DIR" \
         DOCKER_LOG="$DOCKER_LOG" \
+        FIREWALL_LOG="$FIREWALL_LOG" \
         SIM_SCENARIO="$run_scenario" \
         "$TEST_SHELL" "$RUN_SCRIPT" >"$OUTPUT" 2>&1; then
         RUN_RC=0
@@ -441,6 +502,7 @@ run_volunteer_up_first_run() {
         PATH="$FAKE_BIN:$PATH" \
         SIM_DIR="$SIM_DIR" \
         DOCKER_LOG="$DOCKER_LOG" \
+        FIREWALL_LOG="$FIREWALL_LOG" \
         SIM_SCENARIO="$run_scenario" \
         "$TEST_SHELL" "$RUN_SCRIPT" >"$OUTPUT" 2>&1; then
         RUN_RC=0
@@ -455,6 +517,7 @@ run_volunteer_up_with_host_foundation_token() {
         PATH="$FAKE_BIN:$PATH" \
         SIM_DIR="$SIM_DIR" \
         DOCKER_LOG="$DOCKER_LOG" \
+        FIREWALL_LOG="$FIREWALL_LOG" \
         SIM_SCENARIO="$run_scenario" \
         "$TEST_SHELL" "$RUN_SCRIPT" >"$OUTPUT" 2>&1; then
         RUN_RC=0
@@ -734,6 +797,159 @@ expect_non_public_ipv4() {
     fi
 }
 
+assert_output_has() { # label pattern
+    if grep -q -- "$2" "$OUTPUT"; then
+        pass
+    else
+        fail "$1: output lacks '$2'"
+    fi
+}
+
+assert_output_lacks() { # label pattern
+    if grep -q -- "$2" "$OUTPUT"; then
+        fail "$1: output unexpectedly contains '$2'"
+    else
+        pass
+    fi
+}
+
+# The host firewall is opened before the relay registers, only through a
+# front-end that is actually on, and never fatally: the docker transaction
+# proceeds regardless of what ufw/firewalld answered.
+test_host_firewall_opened_only_when_active() {
+    reset_simulation
+    write_env
+    run_volunteer_up ok SIM_UFW=inactive SIM_FIREWALLD=stopped
+    if [ "$RUN_RC" -eq 0 ] && ! grep -q 'ufw allow' "$FIREWALL_LOG" && ! grep -q 'add-port' "$FIREWALL_LOG"; then
+        pass
+    else
+        fail "inactive host firewalls: expected no allow/add-port calls, got: $(cat "$FIREWALL_LOG")"
+    fi
+
+    reset_simulation
+    write_env
+    run_volunteer_up ok SIM_UFW=active SIM_FIREWALLD=running
+    if [ "$RUN_RC" -eq 0 ] \
+        && grep -q '^ufw allow 443/tcp$' "$FIREWALL_LOG" \
+        && grep -q '^firewall-cmd --add-port=443/tcp$' "$FIREWALL_LOG" \
+        && grep -q '^firewall-cmd --permanent --add-port=443/tcp$' "$FIREWALL_LOG" \
+        && ! grep -q -- '--reload' "$FIREWALL_LOG"; then
+        pass
+    else
+        fail "active host firewalls: expected ufw allow + firewalld runtime and permanent add-port (no reload), got: $(cat "$FIREWALL_LOG")"
+    fi
+    assert_output_has "active host firewalls" 'host firewall: ufw allows 443/tcp'
+    assert_output_has "active host firewalls" 'host firewall: firewalld allows 443/tcp'
+    # Ordering: the firewall is opened before the candidate is created, so the
+    # broker's registration-time probe already sees the open port.
+    firewall_line=$(grep -n 'ufw allow' "$FIREWALL_LOG" | head -1 | cut -d: -f1)
+    if [ -n "$firewall_line" ] && grep -q '^create ' "$DOCKER_LOG"; then
+        pass
+    else
+        fail "active host firewalls: firewall not opened before the candidate was created"
+    fi
+}
+
+test_accepted_registration_is_reported_as_serving() {
+    reset_simulation
+    write_env
+    run_volunteer_up ok
+    assert_candidate_is_live "accepted registration"
+    assert_output_has "accepted registration" 'done — this host is now serving as a volunteer-class OpenRung relay (the broker connected to its public port 443 before accepting it)'
+    assert_output_lacks "accepted registration" 'WARNING'
+}
+
+# A refused registration never fails the run and never rolls back: the
+# candidate is healthy and retrying, so it is promoted, the provider's fix is
+# printed, and with no wait the script moves on.
+test_unreachable_prints_provider_fix_and_promotes() {
+    reset_simulation
+    write_env
+    printf 'Amazon EC2\n' >"$DMI_DIR/sys_vendor"
+    run_volunteer_up ok SIM_REACHABILITY=unreachable OPENRUNG_REACHABILITY_WAIT=0
+    if [ "$RUN_RC" -eq 0 ]; then
+        pass
+    else
+        fail "unreachable (aws): expected success, got exit $RUN_RC"
+    fi
+    assert_candidate_is_live "unreachable (aws)"
+    assert_output_has "unreachable (aws)" 'the broker refused its registration because its public port is unreachable'
+    assert_output_has "unreachable (aws)" 'WARNING: the broker could not connect to this relay on TCP 443 and refused its registration'
+    assert_output_has "unreachable (aws)" 'aws lightsail open-instance-public-ports'
+    assert_output_has "unreachable (aws)" 'aws ec2 authorize-security-group-ingress'
+    assert_output_lacks "unreachable (aws)" 'hcloud firewall'
+    assert_output_has "unreachable (aws)" 'registers by itself once the port opens'
+    assert_output_lacks "unreachable (aws)" 'now serving'
+    if tail -n 1 "$OUTPUT" | grep -q 'thank you for running'; then
+        pass
+    else
+        fail "unreachable (aws): the closing thanks must still end the run"
+    fi
+
+    reset_simulation
+    write_env
+    printf 'Hetzner\n' >"$DMI_DIR/sys_vendor"
+    run_volunteer_up ok SIM_REACHABILITY=unreachable OPENRUNG_REACHABILITY_WAIT=0
+    assert_output_has "unreachable (hetzner)" 'hcloud firewall add-rule'
+    assert_output_lacks "unreachable (hetzner)" 'aws lightsail'
+
+    reset_simulation
+    write_env
+    printf '7783-7084-3265-9085-8269-3286-77\n' >"$DMI_DIR/chassis_asset_tag"
+    printf 'Microsoft Corporation\n' >"$DMI_DIR/sys_vendor"
+    run_volunteer_up ok SIM_REACHABILITY=unreachable OPENRUNG_REACHABILITY_WAIT=0
+    assert_output_has "unreachable (azure)" 'az network nsg rule create'
+
+    reset_simulation
+    write_env
+    run_volunteer_up ok SIM_REACHABILITY=unreachable OPENRUNG_REACHABILITY_WAIT=0
+    assert_output_has "unreachable (unknown provider)" "Your provider's console"
+}
+
+# While waiting, the verdict is re-read from the log and a port opened in the
+# meantime ends the wait with the good news; a port that stays closed ends it
+# with the warning repeated, still exit 0.
+test_unreachable_wait_sees_the_port_open() {
+    reset_simulation
+    write_env
+    # Candidate verification (1) and the pre-commit check (2) read the log
+    # before the first answer is read (3); the broker accepts on the second
+    # wait poll (5), so the first report must be the warning.
+    run_volunteer_up ok SIM_REACHABILITY=opens_after:5 OPENRUNG_REACHABILITY_WAIT=120
+    if [ "$RUN_RC" -eq 0 ]; then
+        pass
+    else
+        fail "wait then open: expected success, got exit $RUN_RC"
+    fi
+    assert_candidate_is_live "wait then open"
+    assert_output_has "wait then open" 'WARNING: the broker could not connect to this relay on TCP 443'
+    assert_output_has "wait then open" 'waiting up to 120s for the port to open'
+    assert_output_has "wait then open" 'done — the broker accepted this relay now'
+    assert_output_lacks "wait then open" 'still unreachable after 120s'
+
+    reset_simulation
+    write_env
+    run_volunteer_up ok SIM_REACHABILITY=unreachable OPENRUNG_REACHABILITY_WAIT=120
+    if [ "$RUN_RC" -eq 0 ]; then
+        pass
+    else
+        fail "wait times out: expected success, got exit $RUN_RC"
+    fi
+    assert_candidate_is_live "wait times out"
+    assert_output_has "wait times out" 'still unreachable after 60s'
+    assert_output_has "wait times out" 'WARNING: still unreachable after 120s'
+    assert_output_lacks "wait times out" 'now serving'
+}
+
+test_bad_wait_value_is_refused_before_mutation() {
+    reset_simulation
+    write_env
+    run_volunteer_up ok OPENRUNG_REACHABILITY_WAIT=soon
+    assert_nonzero "$RUN_RC" "bad wait value"
+    assert_no_mutating_docker_calls "bad wait value"
+    assert_output_has "bad wait value" 'OPENRUNG_REACHABILITY_WAIT must be a whole number'
+}
+
 test_special_ipv4_ranges() {
     expect_public_ipv4 1.1.1.1
     expect_public_ipv4 8.8.8.8
@@ -766,6 +982,11 @@ test_first_run_generates_label_and_promotes
 test_first_run_falls_back_for_flagless_image
 test_first_run_honors_explicit_label
 test_special_ipv4_ranges
+test_host_firewall_opened_only_when_active
+test_accepted_registration_is_reported_as_serving
+test_unreachable_prints_provider_fix_and_promotes
+test_unreachable_wait_sees_the_port_open
+test_bad_wait_value_is_refused_before_mutation
 
 if [ "$FAIL" -ne 0 ]; then
     echo "volunteer-up tests: $PASS passed, $FAIL failed" >&2

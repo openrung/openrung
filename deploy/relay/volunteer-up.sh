@@ -34,9 +34,26 @@
 #                         against an env file that has no name pins one the
 #                         same way, so relays set up before naming existed
 #                         stop changing their dashboard name on every restart.
+#   OPENRUNG_REACHABILITY_WAIT
+#                         seconds to keep checking whether the broker can
+#                         reach this relay's port 443 after the relay is up
+#                         (default 600 on a terminal, 0 when output is not a
+#                         terminal, e.g. under cloud-init). 0 reports the
+#                         verdict once and moves on.
 # Overrides configure the FIRST run; once /etc/openrung/relay.env exists it is
 # authoritative and overrides are ignored (edit the file instead). The script
 # never prompts — it is safe under cloud-init and any other automation.
+#
+# Reachability: the relay listens on TCP 443, and the broker connects to that
+# port from the internet before it accepts the registration; a closed port is
+# refused with the reason, and the relay retries on its own until it opens.
+# This script opens 443 in the host firewall it can see (ufw, firewalld), then
+# reads the broker's answer from the relay log: accepted means serving; refused
+# means the install is complete but blocked, so it prints the fix for the
+# detected cloud provider and keeps checking while the volunteer opens the
+# port. A provider firewall (security group, cloud firewall) lives outside the
+# VM: nothing inside it can open that, so the answer is reported, never
+# bypassed.
 #
 # POSIX sh on purpose: this must run on whatever /bin/sh the volunteer's
 # distro ships (dash, busybox ash, bash).
@@ -258,6 +275,183 @@ transaction_exit() {
     exit "$transaction_status"
 }
 
+# --- reachability ---------------------------------------------------------
+# The relay serves on this port; it is the only port the script sets up.
+RELAY_PORT=443
+
+# Allows inbound TCP 443 in the host firewall when the host runs one of the
+# two front-ends that own the whole ruleset: ufw (when active) or firewalld
+# (when running). Both calls are idempotent. A hand-written nftables or
+# iptables policy is left alone — inserting into somebody's ordered ruleset
+# blind can break it — and is covered by the verdict below instead. Docker
+# never opens this port: the container runs on the host network, which has
+# no published-port rules. Never fatal; a failure here is reported and the
+# broker's verdict says whether it mattered.
+open_host_firewall() {
+    if command -v ufw >/dev/null 2>&1; then
+        ufw_state="$(ufw status 2>/dev/null | head -n 1)" || ufw_state=""
+        case "$ufw_state" in
+            "Status: active"*)
+                if ufw allow "${RELAY_PORT}/tcp" >/dev/null 2>&1; then
+                    log "host firewall: ufw allows ${RELAY_PORT}/tcp"
+                else
+                    log "warning: could not allow ${RELAY_PORT}/tcp in ufw; run: ufw allow ${RELAY_PORT}/tcp"
+                fi
+                ;;
+        esac
+    fi
+    if command -v firewall-cmd >/dev/null 2>&1 \
+        && [ "$(firewall-cmd --state 2>/dev/null)" = running ]; then
+        # Runtime and permanent separately, rather than --reload, which would
+        # drop runtime-only rules the operator added by hand.
+        if firewall-cmd --add-port="${RELAY_PORT}/tcp" >/dev/null 2>&1 \
+            && firewall-cmd --permanent --add-port="${RELAY_PORT}/tcp" >/dev/null 2>&1; then
+            log "host firewall: firewalld allows ${RELAY_PORT}/tcp"
+        else
+            log "warning: could not allow ${RELAY_PORT}/tcp in firewalld; run: firewall-cmd --permanent --add-port=${RELAY_PORT}/tcp && firewall-cmd --reload"
+        fi
+    fi
+}
+
+# Prints a provider token (aws, hetzner, gcp, azure, oracle, digitalocean,
+# vultr, alibaba, tencent) from the DMI tables the hypervisor fills, or
+# nothing when unknown. DMI needs no network and no metadata-service
+# credentials; it only decides which instructions to print.
+detect_provider() {
+    dp_vendor="$(cat "$DMI_DIR/sys_vendor" 2>/dev/null)" || dp_vendor=""
+    dp_product="$(cat "$DMI_DIR/product_name" 2>/dev/null)" || dp_product=""
+    dp_asset="$(cat "$DMI_DIR/chassis_asset_tag" 2>/dev/null)" || dp_asset=""
+    dp_bios="$(cat "$DMI_DIR/bios_version" 2>/dev/null)" || dp_bios=""
+    case "$dp_asset" in
+        OracleCloud.com) echo oracle; return 0 ;;
+        7783-7084-3265-9085-8269-3286-77) echo azure; return 0 ;;
+    esac
+    case "$dp_vendor $dp_product $dp_bios" in
+        "Amazon EC2"* | *amazon* | *"HVM domU"*) echo aws ;;
+        Hetzner*) echo hetzner ;;
+        Google*) echo gcp ;;
+        DigitalOcean*) echo digitalocean ;;
+        Vultr*) echo vultr ;;
+        "Alibaba Cloud"*) echo alibaba ;;
+        "Tencent Cloud"*) echo tencent ;;
+        *) ;;
+    esac
+}
+
+# Prints, for the detected provider, where the firewall outside the VM is
+# opened. Every hint names the console path and the CLI equivalent; the
+# generic fallback covers providers DMI does not identify.
+provider_firewall_hint() { # provider
+    case "$1" in
+        aws)
+            echo "  AWS: allow inbound TCP ${RELAY_PORT} from 0.0.0.0/0 AND ::/0."
+            echo "    EC2: Security Groups -> the instance's group -> Inbound rules -> Add rule."
+            echo "         aws ec2 authorize-security-group-ingress --group-id <sg-id> --protocol tcp --port ${RELAY_PORT} --cidr 0.0.0.0/0"
+            echo "    Lightsail: the instance -> Networking -> IPv4 firewall -> Add rule (TCP ${RELAY_PORT}); repeat under IPv6."
+            echo "         aws lightsail open-instance-public-ports --instance-name <name> --port-info fromPort=${RELAY_PORT},toPort=${RELAY_PORT},protocol=tcp"
+            ;;
+        hetzner)
+            echo "  Hetzner Cloud: Firewalls -> the firewall attached to this server -> Inbound -> add TCP ${RELAY_PORT} from 0.0.0.0/0 and ::/0."
+            echo "    hcloud firewall add-rule <firewall> --direction in --protocol tcp --port ${RELAY_PORT} --source-ips 0.0.0.0/0 --source-ips ::/0"
+            ;;
+        gcp)
+            echo "  Google Cloud: VPC network -> Firewall -> Create rule: ingress, all instances (or this one's tag), TCP ${RELAY_PORT} from 0.0.0.0/0."
+            echo "    gcloud compute firewall-rules create openrung-relay --direction INGRESS --allow tcp:${RELAY_PORT} --source-ranges 0.0.0.0/0"
+            ;;
+        azure)
+            echo "  Azure: the VM -> Networking -> Network security group -> Inbound security rules -> Add: TCP ${RELAY_PORT}, Allow."
+            echo "    az network nsg rule create -g <resource-group> --nsg-name <nsg> -n openrung-relay --priority 1000 --protocol Tcp --destination-port-ranges ${RELAY_PORT} --access Allow"
+            ;;
+        oracle)
+            echo "  Oracle Cloud: Networking -> the VCN -> Security Lists (or the NSG) -> Ingress rule: TCP ${RELAY_PORT} from 0.0.0.0/0."
+            echo "  Oracle images also ship an iptables REJECT rule inside the VM:"
+            echo "    iptables -I INPUT 6 -p tcp --dport ${RELAY_PORT} -j ACCEPT && netfilter-persistent save"
+            ;;
+        digitalocean)
+            echo "  DigitalOcean: Networking -> Firewalls -> the firewall on this Droplet -> Inbound Rules -> add TCP ${RELAY_PORT}."
+            echo "    doctl compute firewall add-rules <firewall-id> --inbound-rules 'protocol:tcp,ports:${RELAY_PORT},address:0.0.0.0/0,address:::/0'"
+            ;;
+        vultr)
+            echo "  Vultr: Products -> Firewall -> the group linked to this instance -> add inbound TCP ${RELAY_PORT} (or unlink the group)."
+            ;;
+        alibaba)
+            echo "  Alibaba Cloud: ECS -> Security Groups -> the instance's group -> Inbound -> Add rule: TCP ${RELAY_PORT} from 0.0.0.0/0."
+            ;;
+        tencent)
+            echo "  Tencent Cloud: CVM -> Security Groups -> the instance's group -> Inbound rules -> add TCP ${RELAY_PORT} from 0.0.0.0/0."
+            ;;
+        *)
+            echo "  Your provider's console: the VM's firewall / security group -> inbound rule allowing TCP ${RELAY_PORT} from anywhere (0.0.0.0/0 and ::/0)."
+            ;;
+    esac
+}
+
+# The broker's latest answer from the relay log: 'reachable' once the broker
+# accepted a registration ("registered relay"; it connects to the port before
+# accepting), 'unreachable' while it refuses one ("public endpoint
+# unreachable", the refusal the relay logs verbatim), empty before either.
+# Newest line wins, so a refusal followed by a registration is reachable. Both
+# phrases are deployment contracts: cmd/relay/main.go for the first,
+# internal/broker/reachability.go for the second.
+reachability_verdict() { # container
+    rv_last="$(docker logs "$1" 2>&1 | grep -oE 'public endpoint unreachable|registered relay' | tail -n 1)"
+    case "$rv_last" in
+        'registered relay') echo reachable ;;
+        'public endpoint unreachable') echo unreachable ;;
+    esac
+}
+
+# Reports whether the broker accepted the relay and, while the port is closed,
+# prints the provider's fix and keeps re-reading the answer for up to
+# REACHABILITY_WAIT seconds: the relay re-registers on its own about every
+# half minute and the broker probes the port each time, so a port opened in
+# another window turns the answer within a minute. The relay stays installed
+# either way — it registers by itself once the port opens — so this never
+# fails the run.
+report_reachability() { # container
+    rr_container=$1
+    rr_verdict="$(reachability_verdict "$rr_container")"
+    case "$rr_verdict" in
+        reachable)
+            log "done — this host is now serving as a volunteer-class OpenRung relay (the broker connected to its public port ${RELAY_PORT} before accepting it)"
+            return 0
+            ;;
+        '')
+            log "note: the relay has neither been accepted nor refused by the broker yet; check later with: docker logs $CONTAINER 2>&1 | grep -E 'registered relay|public endpoint'"
+            return 0
+            ;;
+    esac
+    rr_provider="$(detect_provider)"
+    echo "volunteer-up: WARNING: the broker could not connect to this relay on TCP ${RELAY_PORT} and refused its registration, so no client is being handed it yet." >&2
+    echo "volunteer-up: the relay itself is installed and running, retrying by itself; something outside it blocks the port. Open it here:" >&2
+    provider_firewall_hint "$rr_provider" >&2
+    echo "volunteer-up: (host firewalls: ufw and firewalld were handled by this script; a hand-written nftables/iptables policy needs its own accept rule for TCP ${RELAY_PORT})" >&2
+    if [ "$REACHABILITY_WAIT" -le 0 ]; then
+        echo "volunteer-up: the relay registers by itself once the port opens; check with: docker logs $CONTAINER 2>&1 | grep -E 'registered relay|public endpoint'" >&2
+        return 0
+    fi
+    log "waiting up to ${REACHABILITY_WAIT}s for the port to open (Ctrl-C stops waiting; the relay keeps running)"
+    rr_waited=0
+    while [ "$rr_waited" -lt "$REACHABILITY_WAIT" ]; do
+        sleep 5
+        rr_waited=$((rr_waited + 5))
+        if [ "$(reachability_verdict "$rr_container")" = reachable ]; then
+            log "done — the broker accepted this relay now: this host is serving as a volunteer-class OpenRung relay"
+            return 0
+        fi
+        if [ $((rr_waited % 60)) -eq 0 ]; then
+            log "still unreachable after ${rr_waited}s; waiting for inbound TCP ${RELAY_PORT} to open"
+        fi
+    done
+    echo "volunteer-up: WARNING: still unreachable after ${REACHABILITY_WAIT}s. The relay keeps retrying and registers by itself once the port opens; check with: docker logs $CONTAINER 2>&1 | grep -E 'registered relay|public endpoint'" >&2
+    return 0
+}
+
+# Returns 0 once the candidate has registered, 2 when it is running but the
+# broker refused its registration because the port is unreachable (the
+# candidate is healthy — the relay keeps retrying by itself — so an update
+# must still promote it rather than roll back to a version with the same
+# closed port), 1 when it stopped, restarted or did neither within 60s.
 verify_candidate() {
     verify_container=$1
     log "waiting for the relay candidate to register with the broker"
@@ -265,10 +459,16 @@ verify_candidate() {
     while :; do
         verify_state="$(container_inspect -f '{{.State.Running}} {{.RestartCount}}' "$verify_container" 2>/dev/null)" \
             || verify_state=""
+        verify_logs="$(docker logs "$verify_container" 2>&1)" || verify_logs=""
         if [ "$verify_state" = "true 0" ] \
-            && docker logs "$verify_container" 2>&1 | grep -q 'registered relay'; then
-            log "$(docker logs "$verify_container" 2>&1 | grep 'registered relay' | tail -1)"
+            && printf '%s\n' "$verify_logs" | grep -q 'registered relay'; then
+            log "$(printf '%s\n' "$verify_logs" | grep 'registered relay' | tail -1)"
             return 0
+        fi
+        if [ "$verify_state" = "true 0" ] \
+            && printf '%s\n' "$verify_logs" | grep -q 'public endpoint unreachable'; then
+            log "the relay candidate is running; the broker refused its registration because its public port is unreachable"
+            return 2
         fi
 
         case "$verify_state" in
@@ -294,6 +494,12 @@ main() {
     IMAGE="${OPENRUNG_IMAGE:-ghcr.io/openrung/openrung-relay:main}"
     BROKER_URL="${OPENRUNG_BROKER_URL:-https://broker-origin.openrung.org}"
     ENV_FILE=/etc/openrung/relay.env
+    DMI_DIR=/sys/class/dmi/id
+    # A terminal has someone to open the port while we wait; automation
+    # (cloud-init, a non-interactive shell) gets the verdict once and moves on.
+    if [ -t 1 ]; then REACHABILITY_WAIT_DEFAULT=600; else REACHABILITY_WAIT_DEFAULT=0; fi
+    REACHABILITY_WAIT="${OPENRUNG_REACHABILITY_WAIT:-$REACHABILITY_WAIT_DEFAULT}"
+    case "$REACHABILITY_WAIT" in *[!0-9]* | '') die "OPENRUNG_REACHABILITY_WAIT must be a whole number of seconds" ;; esac
     CONTAINER=openrung-relay
     OLD_CONTAINER=openrung-relay-old
     NEW_CONTAINER=openrung-relay-new
@@ -381,6 +587,10 @@ main() {
         [ "$live_running" = true ] \
             || die "existing '$CONTAINER' is not running; inspect and recover it before attempting an update"
     fi
+
+    # Before the relay registers: the broker probes the port in the
+    # registration request, and a host firewall opened first passes it.
+    open_host_firewall
 
     # Pull before naming: random_label asks this image for the name, and the
     # env file written below must record whatever it returns.
@@ -511,8 +721,13 @@ main() {
     docker start "$CANDIDATE_ID" >/dev/null \
         || die "the relay candidate failed to start; automatic rollback will restore the previous relay"
 
-    verify_candidate "$NEW_CONTAINER" \
-        || die "the relay candidate failed verification; automatic rollback will restore the previous relay"
+    CANDIDATE_BLOCKED=0
+    if verify_candidate "$NEW_CONTAINER"; then
+        :
+    else
+        [ "$?" -eq 2 ] && CANDIDATE_BLOCKED=1 \
+            || die "the relay candidate failed verification; automatic rollback will restore the previous relay"
+    fi
 
     # Recheck the exact objects and health immediately before committing. These
     # guards prevent a concurrent operator action from making the rollback
@@ -521,7 +736,7 @@ main() {
         || die "relay candidate changed identity before commit"
     [ "$(container_inspect -f '{{.State.Running}} {{.RestartCount}}' "$NEW_CONTAINER" 2>/dev/null)" = "true 0" ] \
         || die "relay candidate stopped or restarted before commit"
-    docker logs "$NEW_CONTAINER" 2>&1 | grep -q 'registered relay' \
+    docker logs "$NEW_CONTAINER" 2>&1 | grep -qE 'registered relay|public endpoint unreachable' \
         || die "relay candidate registration evidence disappeared before commit"
     if [ "$HAD_PREVIOUS" = 1 ]; then
         [ "$(container_id "$OLD_CONTAINER")" = "$OLD_ID" ] \
@@ -543,8 +758,8 @@ main() {
             || die "the verified relay is live, but the stopped backup '$OLD_CONTAINER' could not be removed; inspect and remove that backup before the next update"
     fi
 
-    log "done — this host is now serving as a volunteer-class OpenRung relay"
-    log "  open inbound TCP 443 in your provider's firewall (and 'ufw allow 443/tcp' if you use ufw)"
+    log "installed: $CONTAINER is the live volunteer-class OpenRung relay on this host"
+    report_reachability "$CONTAINER"
     log "  logs:    docker logs -f $CONTAINER"
     log "  update:  re-run the same one-line command (identity in $ENV_FILE is preserved)"
     log "  remove:  docker rm -f $CONTAINER   # and delete $ENV_FILE to forget the relay identity"
