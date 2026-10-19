@@ -72,10 +72,19 @@ const (
 	defaultEnrollmentDailyWindow = 24 * time.Hour
 
 	maxUserStatusReasonBytes = 256
+
+	// sourceUnclassifiedRetryAfter is the Retry-After on a 503 answered
+	// because source classification has no fresh data. Refreshing the data
+	// is an operator action, so retrying sooner would only add load.
+	sourceUnclassifiedRetryAfter = 5 * time.Minute
 )
 
 var (
 	ErrUserNotFound = errors.New("user not found")
+	// errDatacenterSource and errSourceUnclassified refuse a NEW identity by
+	// its source network (source_class.go); an existing key is never refused.
+	errDatacenterSource   = errors.New("enrollment refused from a datacenter source")
+	errSourceUnclassified = errors.New("enrollment source classification unavailable")
 	// ErrInvalidUserStatus rejects any status other than the two the schema
 	// allows, so a typo cannot park a user in an undefined state.
 	ErrInvalidUserStatus = errors.New("user status must be enabled or disabled")
@@ -156,8 +165,10 @@ type AccessStore interface {
 	// the source's enrollment budget first and refused with
 	// *EnrollmentLimitedError when any is exhausted — in which case nothing
 	// is stored and nothing is charged. An existing key is never charged.
+	// A non-nil refuseNew refuses a new identity with that error before any
+	// charge, storing nothing; an existing key is unaffected by it.
 	// created reports whether this call minted the user.
-	AuthenticateUser(ctx context.Context, canonicalPublicKey, sourceKey string, windows []EnrollmentWindow, now time.Time) (user User, created bool, err error)
+	AuthenticateUser(ctx context.Context, canonicalPublicKey, sourceKey string, windows []EnrollmentWindow, refuseNew error, now time.Time) (user User, created bool, err error)
 	UserByID(ctx context.Context, id string) (User, error)
 	// SetUserStatus records an operator decision. Disabling stamps
 	// DisabledAt and the reason and, in the same transaction, revokes every
@@ -329,7 +340,13 @@ type userAuthService struct {
 	tokens     accessTokenCodec
 	windows    []EnrollmentWindow
 	clientIP   *clientIPResolver
-	now        func() time.Time
+	// sources classifies a new identity's source network; nil disables the
+	// check (Config.SourceClassifier).
+	sources *SourceClassifier
+	// stats is shared with the access handler, so enrollment refusals are
+	// reported in its periodic summary line.
+	stats *accessStats
+	now   func() time.Time
 }
 
 func newUserAuthService(store RelayStore, cfg Config, clientIP *clientIPResolver) *userAuthService {
@@ -350,6 +367,8 @@ func newUserAuthService(store RelayStore, cfg Config, clientIP *clientIPResolver
 		tokens:     tokens,
 		windows:    cfg.EnrollmentBudget.windows(),
 		clientIP:   clientIP,
+		sources:    cfg.SourceClassifier,
+		stats:      &accessStats{every: accessSummaryInterval},
 		now:        time.Now,
 	}
 }
@@ -414,7 +433,23 @@ func (s *userAuthService) authHandler() http.HandlerFunc {
 			return
 		}
 
-		user, created, err := s.store.AuthenticateUser(r.Context(), canonical, sourceBucketKey(s.clientIP.clientIP(r)), s.windows, now)
+		source := s.clientIP.clientIP(r)
+		user, created, err := s.store.AuthenticateUser(r.Context(), canonical, sourceBucketKey(source), s.windows, s.enrollmentRefusal(source, now), now)
+		if errors.Is(err, errDatacenterSource) {
+			s.stats.add(now, func(st *accessStats) { st.enrollDatacenter++ })
+			writeJSON(w, http.StatusForbidden, brokerapi.ErrorResponse{
+				Error: "enrollment is not available from this network", Code: brokerapi.UserAuthCodeDatacenterSource,
+			})
+			return
+		}
+		if errors.Is(err, errSourceUnclassified) {
+			s.stats.add(now, func(st *accessStats) { st.enrollUnclassified++ })
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(sourceUnclassifiedRetryAfter)))
+			writeJSON(w, http.StatusServiceUnavailable, brokerapi.ErrorResponse{
+				Error: "enrollment is temporarily unavailable, retry later", Code: brokerapi.UserAuthCodeSourceUnclassified,
+			})
+			return
+		}
 		var limited *EnrollmentLimitedError
 		if errors.As(err, &limited) {
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(limited.RetryAfter)))
@@ -443,6 +478,23 @@ func (s *userAuthService) authHandler() http.HandlerFunc {
 		writeJSON(w, http.StatusOK, brokerapi.UserAuthResponse{
 			UserID: user.ID, Status: user.Status, AccessToken: token, TokenExpiresAt: expiresAt,
 		})
+	}
+}
+
+// enrollmentRefusal is the error a NEW identity from source is refused with,
+// or nil when it may enroll (subject to the budget). It is evaluated before
+// the store is asked, but applies only if the key turns out to be new.
+func (s *userAuthService) enrollmentRefusal(source string, now time.Time) error {
+	if s.sources == nil {
+		return nil
+	}
+	switch s.sources.classify(source, now) {
+	case sourceDatacenter:
+		return errDatacenterSource
+	case sourceUnclassified:
+		return errSourceUnclassified
+	default:
+		return nil
 	}
 }
 

@@ -18,7 +18,7 @@ import (
 
 const userColumns = `id, public_key, status, created_at, last_auth_at, disabled_at, disabled_reason`
 
-func (s *PostgresStore) AuthenticateUser(parent context.Context, canonicalPublicKey, sourceKey string, windows []EnrollmentWindow, now time.Time) (User, bool, error) {
+func (s *PostgresStore) AuthenticateUser(parent context.Context, canonicalPublicKey, sourceKey string, windows []EnrollmentWindow, refuseNew error, now time.Time) (User, bool, error) {
 	ctx, cancel := context.WithTimeout(parent, postgresOperationTimeout)
 	defer cancel()
 
@@ -37,6 +37,10 @@ func (s *PostgresStore) AuthenticateUser(parent context.Context, canonicalPublic
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return User{}, false, err
+	}
+	if refuseNew != nil {
+		// Nothing was written; the deferred rollback ends the transaction.
+		return User{}, false, refuseNew
 	}
 
 	// Create the user first, then charge the budget, all in this transaction.

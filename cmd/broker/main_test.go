@@ -123,3 +123,30 @@ func TestParseOptionalWSSTicketSeed(t *testing.T) {
 		}
 	}
 }
+
+func TestNewSourceClassifierFromEnv(t *testing.T) {
+	t.Setenv("OPENRUNG_SOURCE_ASN_DB", "")
+	t.Setenv("OPENRUNG_DATACENTER_ASN_LIST", "")
+	t.Setenv("OPENRUNG_ENROLLMENT_EXEMPT_CIDRS", "192.0.2.0/24")
+	if c, err := newSourceClassifier(); err != nil || c != nil {
+		t.Fatalf("unset: %v %v, want disabled", c, err)
+	}
+	t.Setenv("OPENRUNG_SOURCE_ASN_DB", "/nonexistent/ip2asn.tsv")
+	if _, err := newSourceClassifier(); err == nil {
+		t.Fatal("accepted a table without an ASN list")
+	}
+	// Both set: starts even though the data cannot be loaded yet.
+	t.Setenv("OPENRUNG_DATACENTER_ASN_LIST", "/nonexistent/datacenter-asns.txt")
+	if c, err := newSourceClassifier(); err != nil || c == nil {
+		t.Fatalf("configured: %v %v", c, err)
+	}
+	t.Setenv("OPENRUNG_SOURCE_ASN_MAX_AGE", "weekly")
+	if _, err := newSourceClassifier(); err == nil {
+		t.Fatal("accepted a malformed max age")
+	}
+	t.Setenv("OPENRUNG_SOURCE_ASN_MAX_AGE", "")
+	t.Setenv("OPENRUNG_ENROLLMENT_EXEMPT_CIDRS", "192.0.2.1")
+	if _, err := newSourceClassifier(); err == nil {
+		t.Fatal("accepted a malformed exempt CIDR")
+	}
+}

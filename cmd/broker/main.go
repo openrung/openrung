@@ -84,6 +84,12 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// Datacenter source classification of new user identities: off unless
+	// the operator points it at the refreshed data files.
+	sourceClassifier, err := newSourceClassifier()
+	if err != nil {
+		return err
+	}
 	if *printWSSTicketPublicKey {
 		if len(wssTicketSeed) == 0 {
 			return errors.New("OPENRUNG_WSS_TICKET_SIGNING_SEED is required")
@@ -196,6 +202,7 @@ func run() error {
 		AccessLeaseTTL:             accessLeaseTTL,
 		MaxLeasesPerUser:           maxLeasesPerUser,
 		MaxLeasesPerRelay:          maxLeasesPerRelay,
+		SourceClassifier:           sourceClassifier,
 	}
 	if len(userTokenKey) > 0 {
 		slog.Info("client user authentication enabled")
@@ -230,6 +237,9 @@ func run() error {
 	}
 	shutdownContext, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
+	if sourceClassifier != nil {
+		go sourceClassifier.Run(shutdownContext, 0)
+	}
 	shutdownDone := make(chan struct{})
 	go func() {
 		<-shutdownContext.Done()
@@ -242,7 +252,7 @@ func run() error {
 		close(shutdownDone)
 	}()
 
-	slog.Info("starting broker", "version", buildinfo.Version(baseVersion), "revision", buildinfo.Revision(), "addr", *addr, "lease_ttl", leaseTTL.String(), "telemetry_store", *telemetryStore, "telemetry_file", *telemetryFile, "relay_store", *relayStore, "dashboard_enabled", dashboardToken != "", "operational_api_enabled", apiToken != "", "foundation_registration_enabled", foundationToken != "", "wss_ticket_issuance_enabled", len(wssTicketSeed) != 0, "status_interval", statusInterval.String(), "geoip_enabled", geoResolver != nil, "relay_probe_enabled", relayProber != nil)
+	slog.Info("starting broker", "version", buildinfo.Version(baseVersion), "revision", buildinfo.Revision(), "addr", *addr, "lease_ttl", leaseTTL.String(), "telemetry_store", *telemetryStore, "telemetry_file", *telemetryFile, "relay_store", *relayStore, "dashboard_enabled", dashboardToken != "", "operational_api_enabled", apiToken != "", "foundation_registration_enabled", foundationToken != "", "wss_ticket_issuance_enabled", len(wssTicketSeed) != 0, "status_interval", statusInterval.String(), "geoip_enabled", geoResolver != nil, "relay_probe_enabled", relayProber != nil, "source_classification_enabled", sourceClassifier != nil)
 	err = server.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {
 		<-shutdownDone
@@ -326,6 +336,32 @@ func newRelayProber(mode string, timeout, interval time.Duration) (broker.RelayP
 		return nil, errors.New("OPENRUNG_RELAY_PROBE_INTERVAL must be a positive duration like 5m")
 	}
 	return broker.NewTCPRelayProber(timeout), nil
+}
+
+// newSourceClassifier builds the datacenter source classifier from
+// OPENRUNG_SOURCE_ASN_DB and OPENRUNG_DATACENTER_ASN_LIST, or returns nil
+// (classification disabled) when neither is set. Setting only one, a
+// malformed exempt CIDR or max age refuses to start; data that cannot be
+// loaded yet does not (enrollment answers 503 until it can).
+func newSourceClassifier() (*broker.SourceClassifier, error) {
+	table := strings.TrimSpace(os.Getenv("OPENRUNG_SOURCE_ASN_DB"))
+	list := strings.TrimSpace(os.Getenv("OPENRUNG_DATACENTER_ASN_LIST"))
+	if table == "" && list == "" {
+		if strings.TrimSpace(os.Getenv("OPENRUNG_ENROLLMENT_EXEMPT_CIDRS")) != "" {
+			slog.Warn("OPENRUNG_ENROLLMENT_EXEMPT_CIDRS is set but datacenter source classification is disabled (OPENRUNG_SOURCE_ASN_DB unset)")
+		}
+		return nil, nil
+	}
+	maxAge, err := parseOptionalDuration("OPENRUNG_SOURCE_ASN_MAX_AGE")
+	if err != nil {
+		return nil, err
+	}
+	return broker.NewSourceClassifier(broker.SourceClassifierConfig{
+		ASNDBPath:             table,
+		DatacenterASNListPath: list,
+		ExemptCIDRs:           splitAndTrim(os.Getenv("OPENRUNG_ENROLLMENT_EXEMPT_CIDRS")),
+		MaxAge:                maxAge,
+	})
 }
 
 // parseNewRelayIDCap maps OPENRUNG_MAX_NEW_RELAY_IDS_PER_IP_PER_DAY onto

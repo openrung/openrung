@@ -28,8 +28,10 @@ import (
 //
 // Until relays enforce leases the public list still works, so every failure
 // short of an operator disable falls back to it: no key, a broker without the
-// access endpoints, an endpoint-unbound front, an error, or no relay with
-// per-user access for the target. An empty answer therefore means "no leased
+// access endpoints, an endpoint-unbound front, an error, no relay with
+// per-user access for the target, or a broker that will not enroll a new key
+// from the current network (which is also surfaced as a notice, since only
+// the user can change networks). An empty answer therefore means "no leased
 // relay for this target" at connect time (fall back) and "the connected relay
 // is gone" at renewal time (reconnect through the ladder); the broker's
 // contract for the empty answer is in docs/api.md. How each connect's access
@@ -39,6 +41,13 @@ var (
 	// ErrAccessDisabled reports that the broker refused this installation
 	// because an operator disabled it. It is terminal for the connect.
 	ErrAccessDisabled = errors.New("this installation has been disabled and cannot connect; contact OpenRung support")
+
+	// ErrEnrollmentRefused reports that the broker will not enroll this
+	// (not yet enrolled) installation from the current network, because it
+	// belongs to a datacenter or hosting provider. Retrying from the same
+	// network cannot help, so the access path is not retried; an installation
+	// enrolled once from another network is never refused this way.
+	ErrEnrollmentRefused = errors.New("OpenRung cannot register this device from the current network, which belongs to a hosting or datacenter provider (often another VPN or a cloud server); connect once from your regular internet connection")
 
 	// errAccessUnsupported marks a broker without the user/access endpoints.
 	errAccessUnsupported = errors.New("broker does not issue per-user relay access")
@@ -152,6 +161,14 @@ func (s *Engine) fetchAccess(ctx context.Context, conn *connection, front string
 		conn.accessOutcome = accessOutcomeDenied
 		s.reportAccessDisabled()
 		return discovery.Fetch{}, false, err
+	case errors.Is(err, ErrEnrollmentRefused):
+		// Pre-enforcement the public list still carries the connect, like
+		// every other non-terminal access failure; the notice tells the
+		// user why per-user access is missing. The front answered properly,
+		// so it stays pinned.
+		conn.accessOutcome = accessOutcomeEnrollmentRefused
+		s.reportEnrollmentRefused()
+		return discovery.Fetch{}, false, nil
 	case errors.Is(err, errAccessUnsupported):
 		conn.accessUnsupported = true
 		conn.accessOutcome = accessOutcomeUnsupported
@@ -262,6 +279,11 @@ func (s *Engine) runPublicFallback(ctx context.Context, conn *connection, broker
 func (s *Engine) reportAccessDisabled() {
 	s.appendLog("the broker refused access: this installation has been disabled")
 	s.notify(Notice{Kind: NoticeAccessDenied, Reason: ErrAccessDisabled.Error()})
+}
+
+func (s *Engine) reportEnrollmentRefused() {
+	s.appendLog("the broker does not register new devices from this network (a hosting or datacenter network); using the public relay list")
+	s.notify(Notice{Kind: NoticeEnrollmentRefused, Reason: ErrEnrollmentRefused.Error()})
 }
 
 // requestAccess runs one access request: it authenticates when no valid
@@ -379,12 +401,16 @@ func (s *Engine) userAccessToken(ctx context.Context, client *brokerapi.Client, 
 }
 
 // userAuthError maps the user endpoints' refusals onto the access path's
-// outcomes: a disabled user is terminal, a missing endpoint is "old broker".
+// outcomes: a disabled user is terminal, a refused enrollment from a
+// datacenter network is reported, a missing endpoint is "old broker".
 func userAuthError(err error) error {
 	var status *brokerapi.UserAuthStatusError
 	if errors.As(err, &status) {
 		switch status.StatusCode {
 		case 403:
+			if status.Code == brokerapi.UserAuthCodeDatacenterSource {
+				return ErrEnrollmentRefused
+			}
 			return ErrAccessDisabled
 		case 404:
 			return errAccessUnsupported

@@ -212,6 +212,70 @@ lease lifetime and caps. Deploy the broker before updating relays: the
 capability is recorded at registration, and a relay only starts its syncer
 when the broker echoes it.
 
+### Datacenter source classification
+
+With user authentication enabled, the broker can refuse to enroll **new**
+user identities from datacenter and hosting networks (`403` with code
+`datacenter_source`, see `docs/api.md`). An identity that already exists
+authenticates from any network. Classification is off until both data files
+are configured, and it never makes a network request: it is a lookup in two
+local files that `refresh-source-asn.sh` keeps current.
+
+| File | Source | Licence |
+| --- | --- | --- |
+| `ip2asn.tsv` — IP range → ASN, IPv4 and IPv6 | [iptoasn.com](https://iptoasn.com/) `ip2asn-combined.tsv.gz` (updated hourly upstream) | Public Domain Dedication and License (PDDL) |
+| `datacenter-asns.txt` — datacenter/hosting ASNs | [bad-asn-list](https://github.com/brianhama/bad-asn-list), a published list of cloud, managed hosting and colocation ASNs, plus the optional local file `datacenter-asns.local` | MIT |
+
+Neither file is committed to this repository. The list's format is one ASN
+per line (`AS64500` or `64500`, with anything after the number ignored, so
+both the CSV and `AS… # comment` styles work); put operator additions, one per
+line, in `datacenter-asns.local` next to the generated files. Any other
+source that produces the same two formats works too
+(`OPENRUNG_SOURCE_ASN_URL`, `OPENRUNG_DATACENTER_ASN_URL`).
+
+Set it up on the broker host:
+
+```sh
+sudo install -d -m 0755 /var/lib/openrung-source
+sudo install -m 0755 deploy/broker/refresh-source-asn.sh /usr/local/sbin/refresh-source-asn
+sudo /usr/local/sbin/refresh-source-asn            # first fetch; prints the row and ASN counts
+# daily refresh (any hour; the upstream table changes hourly, slowly)
+echo '17 4 * * * root /usr/local/sbin/refresh-source-asn >/dev/null' | sudo tee /etc/cron.d/openrung-source-asn
+```
+
+then mount the directory read-only into the broker container
+(`-v /var/lib/openrung-source:/var/lib/openrung-source:ro`; the compose file
+has the line commented out) and add to the env file:
+
+```sh
+OPENRUNG_SOURCE_ASN_DB=/var/lib/openrung-source/ip2asn.tsv
+OPENRUNG_DATACENTER_ASN_LIST=/var/lib/openrung-source/datacenter-asns.txt
+#OPENRUNG_SOURCE_ASN_MAX_AGE=168h
+#OPENRUNG_ENROLLMENT_EXEMPT_CIDRS=
+```
+
+The script validates each download (every table line parsed, minimum row and
+ASN counts) and replaces a file atomically only when it passes, so a failed
+refresh leaves the previous data in place. The broker re-reads the files
+within a minute of a change, logs the number of datacenter ASNs and ranges it
+loaded, and keeps its previous data if a new file fails to parse. The table's
+modification time dates the data: once it is older than
+`OPENRUNG_SOURCE_ASN_MAX_AGE` (default 7 days), or while no data has loaded,
+new enrollments get a retryable `503` (`Retry-After: 300`, code
+`source_unclassified`) and `/healthz` reports
+`"source_classification_available": false` — alert on that rather than on
+user reports. Setting only one of the two paths refuses to start.
+
+Classification needs the **real** client address: behind a front, the
+broker must see it through `OPENRUNG_TRUSTED_PROXY_CIDRS` (see Fronting with Cloudflare
+below), or every enrollment arrives from the front's own (datacenter)
+network and is refused. `OPENRUNG_ENROLLMENT_EXEMPT_CIDRS` (comma-separated)
+lists sources that are never refused, for example a test network.
+
+Refusals are counted in the ten-minute `access requests` summary line
+(`enroll_refused_datacenter`, `enroll_unclassified`); individual requests
+are not logged.
+
 ## WSS ticket signing and relay public-key handoff
 
 WSS ticket signing is optional and uses a dedicated Ed25519 key. Set
@@ -521,6 +585,10 @@ docker inspect openrung-broker \
 | `OPENRUNG_ACCESS_TOKEN_TTL`          | no       | `24h`                               | Lifetime of client access tokens (`1m`–`168h`)                 |
 | `OPENRUNG_ENROLLMENT_BURST_LIMIT`    | no       | `3`                                 | New user identities per source address (IPv6: /64) per hour; negative disables |
 | `OPENRUNG_ENROLLMENT_DAILY_LIMIT`    | no       | `10`                                | New user identities per source address per 24 h; negative disables |
+| `OPENRUNG_SOURCE_ASN_DB`             | no       | —                                   | IP-to-ASN table (iptoasn TSV); with the list below, refuses new user identities from datacenter networks |
+| `OPENRUNG_DATACENTER_ASN_LIST`       | no       | —                                   | Datacenter/hosting ASN list, one per line; required with `OPENRUNG_SOURCE_ASN_DB` |
+| `OPENRUNG_SOURCE_ASN_MAX_AGE`        | no       | `168h`                              | Table age past which new enrollments get a retryable `503`     |
+| `OPENRUNG_ENROLLMENT_EXEMPT_CIDRS`   | no       | none                                | Source CIDRs never refused as datacenter sources               |
 | `OPENRUNG_ACCESS_LEASE_TTL`          | no       | `1h`                                | Lifetime of a per-client relay credential (access lease) without renewal (`1m`–`24h`) |
 | `OPENRUNG_MAX_LEASES_PER_USER`       | no       | `10`                                | Live access leases one user may hold across the fleet; the least recently renewed are revoked at the cap |
 | `OPENRUNG_MAX_LEASES_PER_RELAY`      | no       | `2000`                              | Live access leases one relay may hold; a relay at the cap is skipped by issuance |

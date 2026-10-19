@@ -93,16 +93,17 @@ func newClientAccessHandler(store RelayStore, users *userAuthService, access *ac
 	return &clientAccessHandler{
 		store: store, users: users, access: access, signer: s,
 		applyTimeout: defaultAccessApplyTimeout,
-		stats:        &accessStats{every: accessSummaryInterval},
+		stats:        users.stats,
 	}
 }
 
-// accessStats counts access answers by outcome and emits one INFO summary
-// line per interval. Counting is driven by the requests themselves (the
-// summary is written by the first request after the interval has elapsed,
-// covering the window since the previous one), so it needs no goroutine and
-// a broker with no access traffic logs nothing. The counts are aggregates
-// only: no user, relay or address appears in the line.
+// accessStats counts access answers by outcome, and enrollments refused by
+// source classification, and emits one INFO summary line per interval.
+// Counting is driven by the requests themselves (the summary is written by
+// the first counted request after the interval has elapsed, covering the
+// window since the previous one), so it needs no goroutine and a broker with
+// no such traffic logs nothing. The counts are aggregates only: no user,
+// relay, address or network appears in the line.
 type accessStats struct {
 	every time.Duration
 
@@ -115,10 +116,13 @@ type accessStats struct {
 // answers by whether they carried relays; the rest are keyed by status.
 // extended counts answers that waited a second time for a slow relay
 // (whatever they then answered), cancelled the requests the client abandoned
-// before an answer was written.
+// before an answer was written. enrollDatacenter and enrollUnclassified
+// count user authentications that refused a new identity by its source
+// network (403) or for want of classification data (503).
 type accessCounts struct {
 	granted, empty, badRequest, unauthorized, denied, rateLimited int
 	unapplied, failed, other, cancelled, extended                 int
+	enrollDatacenter, enrollUnclassified                          int
 }
 
 func (s *accessStats) add(now time.Time, bump func(*accessStats)) {
@@ -135,7 +139,8 @@ func (s *accessStats) add(now time.Time, bump func(*accessStats)) {
 		"window", now.Sub(s.since).Round(time.Second).String(),
 		"granted", s.granted, "empty", s.empty, "unapplied", s.unapplied, "extended", s.extended,
 		"denied", s.denied, "unauthorized", s.unauthorized, "rate_limited", s.rateLimited,
-		"bad_request", s.badRequest, "cancelled", s.cancelled, "error", s.failed, "other", s.other)
+		"bad_request", s.badRequest, "cancelled", s.cancelled, "error", s.failed, "other", s.other,
+		"enroll_refused_datacenter", s.enrollDatacenter, "enroll_unclassified", s.enrollUnclassified)
 	s.accessCounts, s.since = accessCounts{}, now
 }
 

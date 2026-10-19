@@ -107,6 +107,10 @@ type Config struct {
 	// EnrollmentBudget limits NEW user identities per source address (IPv6:
 	// per /64). Zero fields apply the defaults; see EnrollmentBudget.
 	EnrollmentBudget EnrollmentBudget
+	// SourceClassifier refuses NEW user identities from datacenter networks
+	// (source_class.go); nil disables the check. The caller keeps it fresh
+	// (SourceClassifier.Run).
+	SourceClassifier *SourceClassifier
 	// AccessLeaseTTL is how long an issued per-client relay credential stays
 	// valid without renewal (OPENRUNG_ACCESS_LEASE_TTL); zero applies the
 	// default (1 h). Renewal extends the same credential.
@@ -155,6 +159,9 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 		response := map[string]any{"ok": true, "signing_key_id": relaySigner.keyID}
 		if wssIssuer != nil {
 			response["wss_ticket_key_id"] = wssIssuer.signer.KeyID()
+		}
+		if cfg.SourceClassifier != nil {
+			response["source_classification_available"] = cfg.SourceClassifier.Available(time.Now())
 		}
 		writeJSON(w, http.StatusOK, response)
 	})

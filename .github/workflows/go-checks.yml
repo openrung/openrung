@@ -73,6 +73,9 @@ jobs:
           bash -n deploy/broker/azure-front-door-up.sh
           bash -n deploy/broker/azure-front-door-up_test.sh
           bash deploy/broker/azure-front-door-up_test.sh
+          bash -n deploy/broker/refresh-source-asn.sh
+          bash -n deploy/broker/refresh-source-asn_test.sh
+          bash deploy/broker/refresh-source-asn_test.sh
           bash -n deploy/relay/bunny/bunny-wss-front.sh
           bash -n deploy/relay/bunny/bunny-wss-front_test.sh
           bash deploy/relay/bunny/bunny-wss-front_test.sh

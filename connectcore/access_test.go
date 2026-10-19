@@ -5,6 +5,7 @@ package connectcore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -100,6 +101,7 @@ type fakeAccessBroker struct {
 	// Behaviour switches.
 	noEndpoints  bool                             // 404 on every user/access route (an older broker)
 	disabled     bool                             // 403 on auth and access
+	datacenter   bool                             // 403 datacenter_source on auth (a new key from a datacenter network)
 	unapplied    int                              // answer this many access requests with 503 first
 	failAccess   bool                             // 500 on access
 	failRenewals bool                             // 500 on single-relay requests (the renewal shape)
@@ -148,6 +150,11 @@ func newFakeAccessBroker(t *testing.T, clock func() time.Time, relays ...brokera
 		if b.disabled {
 			w.WriteHeader(http.StatusForbidden)
 			_ = json.NewEncoder(w).Encode(brokerapi.UserAuthResponse{UserID: "user_test", Status: brokerapi.UserStatusDisabled})
+			return
+		}
+		if b.datacenter {
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(brokerapi.ErrorResponse{Error: "enrollment is not available from this network", Code: brokerapi.UserAuthCodeDatacenterSource})
 			return
 		}
 		_ = json.NewEncoder(w).Encode(brokerapi.UserAuthResponse{
@@ -572,6 +579,66 @@ func TestAccessDisabledUserIsTerminal(t *testing.T) {
 	failed := awaitEvent(t, broker, "connection_failed", accessOutcomeDenied, "")
 	if failed.Attributes["failure_stage"] != "access_denied" {
 		t.Fatalf("failure_stage = %q", failed.Attributes["failure_stage"])
+	}
+}
+
+// A broker that will not enroll the key from the current (datacenter)
+// network is not a disable: the connect continues on the public list
+// (pre-enforcement), the user gets a notice saying why, the outcome token
+// names the refusal, and the refused authentication is not retried.
+func TestAccessEnrollmentRefusedFallsBackWithNotice(t *testing.T) {
+	relays := []brokerapi.RelayDescriptor{publicRelay("relay-a", "JP")}
+	broker := newFakeAccessBroker(t, time.Now, relays...)
+	broker.datacenter = true
+	e := newAccessEngine(t, broker, relays...)
+
+	if err := e.Connect("https://configured.example", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForStatus(t, e.Engine, StatusConnected)
+	if runs := e.tunnelRuns(); len(runs) != 1 || runs[0] != "shared-relay-a" {
+		t.Fatalf("tunnel credentials = %v, want the public credential", runs)
+	}
+	if hasNotice(e.sink, NoticeAccessDenied) {
+		t.Fatal("a refused enrollment was reported as a disabled installation")
+	}
+	var refused *Notice
+	for _, notice := range e.sink.noticesSnapshot() {
+		if notice.Kind == NoticeEnrollmentRefused {
+			refused = &notice
+		}
+	}
+	if refused == nil || refused.Reason != ErrEnrollmentRefused.Error() {
+		t.Fatalf("enrollment_refused notice = %+v", refused)
+	}
+	if got := broker.auths.Load(); got != 1 {
+		t.Fatalf("user authentications = %d, want the one refused attempt", got)
+	}
+	if len(broker.accessRequests()) != 0 {
+		t.Fatal("an access request was sent without a token")
+	}
+	awaitEvent(t, broker, "connection_succeeded", accessOutcomeEnrollmentRefused, relaySourcePublic)
+	_ = e.Disconnect()
+	waitIdle(t, e.Engine)
+}
+
+func TestUserAuthErrorTellsRefusalsApart(t *testing.T) {
+	for _, tc := range []struct {
+		status *brokerapi.UserAuthStatusError
+		want   error
+	}{
+		{&brokerapi.UserAuthStatusError{StatusCode: 403}, ErrAccessDisabled},
+		{&brokerapi.UserAuthStatusError{StatusCode: 403, Code: brokerapi.UserAuthCodeDatacenterSource}, ErrEnrollmentRefused},
+		{&brokerapi.UserAuthStatusError{StatusCode: 403, Code: "something_else"}, ErrAccessDisabled},
+		{&brokerapi.UserAuthStatusError{StatusCode: 404}, errAccessUnsupported},
+	} {
+		if got := userAuthError(tc.status); !errors.Is(got, tc.want) {
+			t.Errorf("%+v → %v, want %v", tc.status, got, tc.want)
+		}
+	}
+	unclassified := &brokerapi.UserAuthStatusError{StatusCode: 503, Code: brokerapi.UserAuthCodeSourceUnclassified}
+	if got := userAuthError(unclassified); got != unclassified {
+		t.Errorf("503 source_unclassified → %v, want the status error itself (an ordinary access error)", got)
 	}
 }
 

@@ -620,14 +620,14 @@ func accessStoreConformance(t *testing.T, store AccessStore) {
 	}
 
 	keyA := keyOf(t)
-	userA, created, err := store.AuthenticateUser(ctx, keyA, "src-1", windows, now)
+	userA, created, err := store.AuthenticateUser(ctx, keyA, "src-1", windows, nil, now)
 	if err != nil || !created {
 		t.Fatalf("first auth: %+v %v %v", userA, created, err)
 	}
 	if userA.PublicKey != keyA || userA.Status != brokerapi.UserStatusEnabled || !userA.CreatedAt.Equal(now) || !userA.LastAuthAt.Equal(now) || !userA.DisabledAt.IsZero() {
 		t.Fatalf("new user = %+v", userA)
 	}
-	again, created, err := store.AuthenticateUser(ctx, keyA, "src-2", windows, now.Add(time.Minute))
+	again, created, err := store.AuthenticateUser(ctx, keyA, "src-2", windows, nil, now.Add(time.Minute))
 	if err != nil || created || again.ID != userA.ID || !again.LastAuthAt.Equal(now.Add(time.Minute)) || !again.CreatedAt.Equal(now) {
 		t.Fatalf("repeat auth: %+v %v %v", again, created, err)
 	}
@@ -636,10 +636,10 @@ func accessStoreConformance(t *testing.T, store AccessStore) {
 	// third is refused with the burst remainder, and the refusal is not
 	// charged (the daily window must still hold exactly 3 after the burst
 	// window resets).
-	if _, created, err := store.AuthenticateUser(ctx, keyOf(t), "src-1", windows, now.Add(2*time.Minute)); err != nil || !created {
+	if _, created, err := store.AuthenticateUser(ctx, keyOf(t), "src-1", windows, nil, now.Add(2*time.Minute)); err != nil || !created {
 		t.Fatalf("second identity: %v %v", created, err)
 	}
-	_, _, err = store.AuthenticateUser(ctx, keyOf(t), "src-1", windows, now.Add(3*time.Minute))
+	_, _, err = store.AuthenticateUser(ctx, keyOf(t), "src-1", windows, nil, now.Add(3*time.Minute))
 	var limited *EnrollmentLimitedError
 	if !errors.As(err, &limited) {
 		t.Fatalf("third identity: %v, want EnrollmentLimitedError", err)
@@ -647,19 +647,19 @@ func accessStoreConformance(t *testing.T, store AccessStore) {
 	if limited.RetryAfter != time.Hour-3*time.Minute {
 		t.Fatalf("burst retry after = %s, want 57m", limited.RetryAfter)
 	}
-	if _, created, err := store.AuthenticateUser(ctx, keyOf(t), "src-1", windows, now.Add(time.Hour)); err != nil || !created {
+	if _, created, err := store.AuthenticateUser(ctx, keyOf(t), "src-1", windows, nil, now.Add(time.Hour)); err != nil || !created {
 		t.Fatalf("after burst reset: %v %v", created, err)
 	}
-	_, _, err = store.AuthenticateUser(ctx, keyOf(t), "src-1", windows, now.Add(time.Hour+time.Minute))
+	_, _, err = store.AuthenticateUser(ctx, keyOf(t), "src-1", windows, nil, now.Add(time.Hour+time.Minute))
 	if !errors.As(err, &limited) || limited.RetryAfter != 23*time.Hour-time.Minute {
 		t.Fatalf("daily limit: %v", err)
 	}
 	// src-2 charged nothing for the repeat auth above.
-	if _, created, err := store.AuthenticateUser(ctx, keyOf(t), "src-2", windows, now); err != nil || !created {
+	if _, created, err := store.AuthenticateUser(ctx, keyOf(t), "src-2", windows, nil, now); err != nil || !created {
 		t.Fatalf("src-2 first identity: %v %v", created, err)
 	}
 	// No windows means no budget at all.
-	if _, created, err := store.AuthenticateUser(ctx, keyOf(t), "src-1", nil, now.Add(2*time.Hour)); err != nil || !created {
+	if _, created, err := store.AuthenticateUser(ctx, keyOf(t), "src-1", nil, nil, now.Add(2*time.Hour)); err != nil || !created {
 		t.Fatalf("budget disabled: %v %v", created, err)
 	}
 
@@ -676,7 +676,7 @@ func accessStoreConformance(t *testing.T, store AccessStore) {
 	if err != nil || disabled.Status != brokerapi.UserStatusDisabled || !disabled.DisabledAt.Equal(disabledAt) || disabled.DisabledReason != "resale" {
 		t.Fatalf("disable: %+v %v", disabled, err)
 	}
-	stillDisabled, created, err := store.AuthenticateUser(ctx, keyA, "src-1", windows, disabledAt.Add(time.Minute))
+	stillDisabled, created, err := store.AuthenticateUser(ctx, keyA, "src-1", windows, nil, disabledAt.Add(time.Minute))
 	if err != nil || created || stillDisabled.Status != brokerapi.UserStatusDisabled {
 		t.Fatalf("auth while disabled: %+v %v %v", stillDisabled, created, err)
 	}
@@ -704,7 +704,7 @@ func accessStoreConformance(t *testing.T, store AccessStore) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			user, created, err := store.AuthenticateUser(ctx, keyC, "src-race", windows, later)
+			user, created, err := store.AuthenticateUser(ctx, keyC, "src-race", windows, nil, later)
 			ids[i], createds[i], errs[i] = user.ID, created, err
 		}(i)
 	}
@@ -724,21 +724,39 @@ func accessStoreConformance(t *testing.T, store AccessStore) {
 	if creators != 1 {
 		t.Fatalf("%d concurrent auths reported created=true, want exactly 1", creators)
 	}
-	if _, created, err := store.AuthenticateUser(ctx, keyOf(t), "src-race", windows, later.Add(time.Minute)); err != nil || !created {
+	if _, created, err := store.AuthenticateUser(ctx, keyOf(t), "src-race", windows, nil, later.Add(time.Minute)); err != nil || !created {
 		t.Fatalf("second burst slot after the race: %v %v (the race charged more than one slot)", created, err)
 	}
-	if _, _, err := store.AuthenticateUser(ctx, keyOf(t), "src-race", windows, later.Add(2*time.Minute)); !errors.As(err, &limited) {
+	if _, _, err := store.AuthenticateUser(ctx, keyOf(t), "src-race", windows, nil, later.Add(2*time.Minute)); !errors.As(err, &limited) {
 		t.Fatalf("third identity after the race: %v, want EnrollmentLimitedError", err)
 	}
 
 	// A refusal rolls back the would-be user as well: the refused key is
 	// still unknown and can enroll elsewhere.
 	refusedKey := keyOf(t)
-	if _, _, err := store.AuthenticateUser(ctx, refusedKey, "src-race", windows, later.Add(3*time.Minute)); !errors.As(err, &limited) {
+	if _, _, err := store.AuthenticateUser(ctx, refusedKey, "src-race", windows, nil, later.Add(3*time.Minute)); !errors.As(err, &limited) {
 		t.Fatalf("refused key: %v", err)
 	}
-	if _, created, err := store.AuthenticateUser(ctx, refusedKey, "src-fresh", windows, later.Add(4*time.Minute)); err != nil || !created {
+	if _, created, err := store.AuthenticateUser(ctx, refusedKey, "src-fresh", windows, nil, later.Add(4*time.Minute)); err != nil || !created {
 		t.Fatalf("refused key enrolling from another source: %v %v (refusal left a user row behind)", created, err)
+	}
+
+	// refuseNew refuses only a new key, before any charge, storing nothing;
+	// an existing key authenticates through it.
+	refusal := errors.New("refused by source")
+	newKey := keyOf(t)
+	if _, _, err := store.AuthenticateUser(ctx, newKey, "src-refuse", windows, refusal, later.Add(5*time.Minute)); !errors.Is(err, refusal) {
+		t.Fatalf("new key with refuseNew: %v, want the refusal", err)
+	}
+	if user, created, err := store.AuthenticateUser(ctx, keyA, "src-refuse", windows, refusal, later.Add(5*time.Minute)); err != nil || created || user.ID != userA.ID {
+		t.Fatalf("existing key with refuseNew: %+v %v %v", user, created, err)
+	}
+	// Neither left a charge on src-refuse nor a row for newKey: the source's
+	// whole burst budget (2) is still available, the first slot to newKey.
+	for i, key := range []string{newKey, keyOf(t)} {
+		if _, created, err := store.AuthenticateUser(ctx, key, "src-refuse", windows, nil, later.Add(6*time.Minute)); err != nil || !created {
+			t.Fatalf("enrollment %d after refusals: %v %v", i+1, created, err)
+		}
 	}
 }
 
@@ -747,7 +765,7 @@ func TestStorePruneDropsEndedEnrollmentWindows(t *testing.T) {
 	now := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
 	windows := EnrollmentBudget{BurstLimit: 1, BurstWindow: time.Hour, DailyLimit: 1, DailyWindow: 24 * time.Hour}.windows()
 	canonical, _ := brokerapi.CanonicalUserPublicKey(&newUserKey(t).PublicKey)
-	if _, _, err := store.AuthenticateUser(context.Background(), canonical, "src", windows, now); err != nil {
+	if _, _, err := store.AuthenticateUser(context.Background(), canonical, "src", windows, nil, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Prune(now.Add(2 * time.Hour)); err != nil {

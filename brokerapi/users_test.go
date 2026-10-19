@@ -258,8 +258,37 @@ func TestClientUserAuthStatusErrorsAndValidation(t *testing.T) {
 
 	status, retryAfter, body = http.StatusForbidden, "", `{"user_id":"user_x","status":"disabled"}`
 	_, err = client.AuthenticateUser(ctx, ts.URL, request)
-	if !errors.As(err, &statusErr) || statusErr.StatusCode != 403 {
-		t.Fatalf("403 → %v", err)
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != 403 || statusErr.Code != "" {
+		t.Fatalf("403 → %v, want a code-less UserAuthStatusError (disabled user)", err)
+	}
+
+	// The datacenter-source refusal shares the 403 and is told apart by its
+	// code; the 503 for missing classification data carries Retry-After.
+	status, retryAfter, body = http.StatusForbidden, "", `{"error":"enrollment is not available from this network","code":"datacenter_source"}`
+	_, err = client.AuthenticateUser(ctx, ts.URL, request)
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != 403 || statusErr.Code != UserAuthCodeDatacenterSource {
+		t.Fatalf("datacenter 403 → %v, want code %q", err, UserAuthCodeDatacenterSource)
+	}
+	if !strings.Contains(err.Error(), UserAuthCodeDatacenterSource) || strings.Contains(err.Error(), "network") {
+		t.Fatalf("error text %q should name the code and not echo the body", err)
+	}
+	status, retryAfter, body = http.StatusServiceUnavailable, "300", `{"error":"retry later","code":"source_unclassified"}`
+	_, err = client.AuthenticateUser(ctx, ts.URL, request)
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != 503 || statusErr.Code != UserAuthCodeSourceUnclassified || statusErr.RetryAfter != 5*time.Minute {
+		t.Fatalf("unclassified 503 → %+v", statusErr)
+	}
+	for name, bad := range map[string]string{
+		"not json":   `datacenter_source`,
+		"uppercase":  `{"code":"DATACENTER_SOURCE"}`,
+		"spaces":     `{"code":"datacenter source"}`,
+		"oversized":  `{"code":"` + strings.Repeat("a", 65) + `"}`,
+		"wrong type": `{"code":7}`,
+	} {
+		status, retryAfter, body = http.StatusForbidden, "", bad
+		_, err = client.AuthenticateUser(ctx, ts.URL, request)
+		if !errors.As(err, &statusErr) || statusErr.Code != "" {
+			t.Errorf("%s: code %q surfaced from a malformed body", name, statusErr.Code)
+		}
 	}
 
 	for name, bad := range map[string]string{

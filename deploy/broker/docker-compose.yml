@@ -43,6 +43,9 @@ services:
       - /tmp
     volumes:
       - openrung-broker-state:/var/lib/openrung
+      # Datacenter source classification data, refreshed on the host by
+      # refresh-source-asn.sh (README.md); uncomment with the two env paths.
+      # - /var/lib/openrung-source:/var/lib/openrung-source:ro
 
 volumes:
   openrung-broker-state:

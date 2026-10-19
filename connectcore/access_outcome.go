@@ -47,6 +47,10 @@ const (
 	// accessOutcomeFallbackPublic: access was granted, every leased candidate
 	// failed, and the public list carried the connect instead.
 	accessOutcomeFallbackPublic = "fallback_public"
+	// accessOutcomeEnrollmentRefused: the broker refused to enroll this
+	// installation from the current (datacenter) network; the public list
+	// was used.
+	accessOutcomeEnrollmentRefused = "enrollment_refused"
 )
 
 // accessOutcomes is the closed set, in the order the vector file lists it.
@@ -54,7 +58,7 @@ var accessOutcomes = []string{
 	accessOutcomeGranted, accessOutcomeNoKey, accessOutcomeNotRequested,
 	accessOutcomeUnsupported, accessOutcomeFrontUnbound, accessOutcomeDenied,
 	accessOutcomeUnapplied, accessOutcomeRateLimited, accessOutcomeEmpty,
-	accessOutcomeError, accessOutcomeFallbackPublic,
+	accessOutcomeError, accessOutcomeFallbackPublic, accessOutcomeEnrollmentRefused,
 }
 
 // relay_source tokens: where the connected relay's descriptor came from.

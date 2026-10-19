@@ -13,7 +13,7 @@ import (
 // contract/vectors/access_outcome.json this suite expects; the file's version
 // moves with every edit, and this constant with it (contract.LoadVersioned
 // enforces the pin, like every other vector suite).
-const accessOutcomeVectorsVersion = 1
+const accessOutcomeVectorsVersion = 2
 
 type accessOutcomeVectors struct {
 	Suites     []string `json:"suites"`

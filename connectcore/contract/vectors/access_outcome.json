@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "contract": "openrung-access-outcome-v1",
   "suites": ["go"],
   "comment": "Golden cross-repo vectors for the per-user access telemetry contract (ADR-006): the closed token sets of the access_outcome and relay_source attributes the engine stamps on its terminal connect events, which the broker dashboard groups by. Consumed by the Go suite (connectcore/access_outcome_vectors_test.go, against connectcore/access_outcome.go). The engine is the only emitter — the mobile apps bind connectcore rather than reimplementing the access path, so there is no Kotlin, Swift or TypeScript producer to run these rows against (see no_mobile_suites_note). The file still lives here, versioned like its siblings, because the broker and the dashboard sit downstream of every client build: a token that changes meaning re-labels history, so an existing token may change only together with a bump of 'version' here and in the Go suite's pinned constant, and the mobile repo vendors the file so a pin bump carries the change to the one place the bound engine is tested.",
@@ -19,7 +19,8 @@
         "rate_limited",
         "empty",
         "error",
-        "fallback_public"
+        "fallback_public",
+        "enrollment_refused"
       ],
       "meaning": {
         "granted": "The access answer was the candidate list the connect used.",
@@ -32,7 +33,8 @@
         "rate_limited": "The access request was rate limited (429); the public list was used.",
         "empty": "The answer named no relay the ladder could use for the target; the public list was used.",
         "error": "Any other failure of the access request (transport, another status, authentication); the public list was used.",
-        "fallback_public": "Access was granted, every leased candidate failed remotely, and a public-list relay carried the connect."
+        "fallback_public": "Access was granted, every leased candidate failed remotely, and a public-list relay carried the connect.",
+        "enrollment_refused": "The broker refused to enroll this not-yet-enrolled installation from the current network (403 with code datacenter_source); the public list was used."
       }
     },
     "relay_source": {

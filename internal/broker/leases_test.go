@@ -76,7 +76,7 @@ func enrollLeaseUser(t *testing.T, store AccessStore, now time.Time) User {
 	if err != nil {
 		t.Fatal(err)
 	}
-	user, _, err := store.AuthenticateUser(context.Background(), canonical, "lease-src", nil, now)
+	user, _, err := store.AuthenticateUser(context.Background(), canonical, "lease-src", nil, nil, now)
 	if err != nil {
 		t.Fatalf("enroll user: %v", err)
 	}

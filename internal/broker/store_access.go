@@ -19,7 +19,7 @@ type enrollmentCounter struct {
 	count       int
 }
 
-func (s *Store) AuthenticateUser(_ context.Context, canonicalPublicKey, sourceKey string, windows []EnrollmentWindow, now time.Time) (User, bool, error) {
+func (s *Store) AuthenticateUser(_ context.Context, canonicalPublicKey, sourceKey string, windows []EnrollmentWindow, refuseNew error, now time.Time) (User, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -28,6 +28,9 @@ func (s *Store) AuthenticateUser(_ context.Context, canonicalPublicKey, sourceKe
 		user.LastAuthAt = now
 		s.users[id] = user
 		return user, false, nil
+	}
+	if refuseNew != nil {
+		return User{}, false, refuseNew
 	}
 
 	// Evaluate every window before charging any, so a refusal leaves the

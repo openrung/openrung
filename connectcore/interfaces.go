@@ -78,6 +78,12 @@ const (
 	// relays because an operator disabled it. Terminal: the connect (or the
 	// live session) ends and is not retried. Reason is user-presentable.
 	NoticeAccessDenied NoticeKind = "access_denied"
+	// NoticeEnrollmentRefused: the broker will not register this installation
+	// (it has not enrolled before) from the current network, which belongs
+	// to a datacenter or hosting provider — typically another VPN or a cloud
+	// server. Not terminal: the connect continues on the public relay list.
+	// Reason is user-presentable and says what to do.
+	NoticeEnrollmentRefused NoticeKind = "enrollment_refused"
 )
 
 // Notice is one typed mid-flow engine event for host status UIs. Only the

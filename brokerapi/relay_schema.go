@@ -270,9 +270,12 @@ type RelayListResponse struct {
 	Relays []RelayDescriptor `json:"relays"`
 }
 
-// ErrorResponse is the broker's JSON error body shape.
+// ErrorResponse is the broker's JSON error body shape. Code is a
+// machine-readable token on the answers that define one (for example
+// UserAuthCodeDatacenterSource); absent otherwise.
 type ErrorResponse struct {
 	Error string `json:"error"`
+	Code  string `json:"code,omitempty"`
 }
 
 // EffectiveNodeClass reads the class a client should act on from the value in

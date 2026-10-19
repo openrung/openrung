@@ -245,6 +245,7 @@ during discovery) and on clients that predate it.
 | `empty` | The answer named no relay the ladder could use for the target; the public list was used. |
 | `error` | Any other failure of the access request; the public list was used. |
 | `fallback_public` | Access was granted, every leased candidate failed remotely, and a public-list relay carried the connect. |
+| `enrollment_refused` | The broker refused to enroll this not-yet-enrolled installation from the current network (`403` with code `datacenter_source`); the public list was used. Clients from connectcore 0.8.0. |
 
 `relay_source` rides on `connection_succeeded` only: `access` when the
 connected relay's descriptor and credential came from the access answer (a
@@ -575,6 +576,10 @@ it is public data that already ships in every relay-list response.
 `wss_ticket_key_id` is present only when WSS ticket issuance is configured and
 identifies the broker's active ticket signer, allowing operators to confirm the
 matching public key is installed on relay-local sidecars.
+`source_classification_available` is present only when datacenter source
+classification is configured (see Client users): `false` while its data is
+missing or older than `OPENRUNG_SOURCE_ASN_MAX_AGE`, when new enrollments are
+answered with `503`. It does not affect `ok` or the status code.
 
 When the broker uses PostgreSQL relay state, `/healthz` also verifies database
 connectivity. If relay state is unavailable, it returns `503` with an error
@@ -1303,7 +1308,9 @@ once, and clients re-authenticate.
 | `400` | Malformed body, unknown field, unparseable or non-P-256 key, invalid challenge text |
 | `401` | `challenge unknown or expired`, or `invalid signature` |
 | `403` | The user is disabled; the body carries `user_id` and `status` but no token |
+| `403` + `"code": "datacenter_source"` | A new identity from a datacenter or hosting network (see below); nothing was stored or charged |
 | `429` | Enrollment budget exhausted for this source; `Retry-After` says when the window resets |
+| `503` + `"code": "source_unclassified"` + `Retry-After` | A new identity could not be classified because the broker's classification data is missing or stale; retry later |
 | `503` | Store unavailable |
 
 **Enrollment budget.** Only a *new* identity is charged, after its signature
@@ -1313,6 +1320,31 @@ verifies, against two fixed windows per source (the IPv4 address, or the IPv6
 attempt is never charged, and existing keys authenticate freely. A negative
 limit disables that window. Clients behind one shared address share a budget,
 so a client should surface the `Retry-After` rather than retry immediately.
+
+**Datacenter sources.** When the operator configures source classification
+(`OPENRUNG_SOURCE_ASN_DB` and `OPENRUNG_DATACENTER_ASN_LIST`, see
+`deploy/broker/README.md`), a *new* identity whose source address lies in a
+range announced by a listed datacenter or hosting ASN is refused before the
+enrollment budget is consulted:
+
+```json
+{"error": "enrollment is not available from this network", "code": "datacenter_source"}
+```
+
+The classification is a lookup in local files the operator refreshes; no
+request leaves the broker. Addresses the data does not cover are not
+datacenter sources, and `OPENRUNG_ENROLLMENT_EXEMPT_CIDRS` are never refused.
+An existing key authenticates from any network, so an installation enrolled
+once keeps working through another VPN or a hosting provider. While the data
+is missing or older than `OPENRUNG_SOURCE_ASN_MAX_AGE` (default 7 days), a new
+identity receives `503` with `Retry-After: 300` and the code
+`source_unclassified` instead of being admitted or refused on stale
+information. Without the two files configured nothing changes. The `code`
+field is the machine-readable part of these bodies: clients should map it to
+their own explanation (connectcore raises the `enrollment_refused` notice and
+records the `enrollment_refused` access outcome) rather than show the
+`error` text. The broker counts both refusals in its ten-minute access
+summary line and logs nothing about the individual request.
 
 Later authentication of an existing key only updates its `last_auth_at`;
 nothing else about the record changes, and a disabled identity stays disabled.
@@ -1390,7 +1422,9 @@ time it means the connected relay is gone, so the client reconnects through
 its ladder immediately rather than retrying a dead relay until the lease
 expires. The broker logs one `INFO` summary of access answers per ten-minute
 window (counts by outcome: granted, empty, unapplied, extended, denied,
-unauthorized, rate limited, malformed, cancelled, errors), so access health
+unauthorized, rate limited, malformed, cancelled, errors; plus the user
+authentications that refused a new identity from a datacenter source or for
+want of classification data), so access health
 remains readable from the broker log after the origin access log has rolled
 over; a request its client abandoned mid-flight is logged at `INFO`, never as
 an error.
