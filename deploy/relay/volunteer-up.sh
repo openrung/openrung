@@ -34,6 +34,12 @@
 #                         against an env file that has no name pins one the
 #                         same way, so relays set up before naming existed
 #                         stop changing their dashboard name on every restart.
+#   OPENRUNG_OPERATOR_CONTACT
+#                         contact email for this relay, sent privately to the
+#                         broker so the project can reach you if the relay has
+#                         an issue; never published in the relay directory.
+#                         Optional. Set it (or set it empty to skip) to avoid
+#                         the first-run question below.
 #   OPENRUNG_REACHABILITY_WAIT
 #                         seconds to keep checking whether the broker can
 #                         reach this relay's port 443 after the relay is up
@@ -41,8 +47,14 @@
 #                         terminal, e.g. under cloud-init). 0 reports the
 #                         verdict once and moves on.
 # Overrides configure the FIRST run; once /etc/openrung/relay.env exists it is
-# authoritative and overrides are ignored (edit the file instead). The script
-# never prompts — it is safe under cloud-init and any other automation.
+# authoritative and overrides are ignored (edit the file instead).
+#
+# The one question: on a first run with a terminal attached, the script asks
+# for an optional contact email (Enter skips; a suggestion found on the host,
+# such as the sudo user's git email, is shown and only used when confirmed).
+# Standard input is this script under curl|sh, so the question is asked on
+# the terminal device. Without a terminal (cloud-init, pipes) or with
+# OPENRUNG_OPERATOR_CONTACT set, nothing is asked; later runs never ask.
 #
 # Reachability: the relay listens on TCP 443, and the broker connects to that
 # port from the internet before it accepts the registration; a closed port is
@@ -113,6 +125,87 @@ random_label() {
 validate_label() { # label
     case "$1" in '' | *[!A-Za-z0-9._-]*) return 1 ;; esac
     [ "${#1}" -le 63 ]
+}
+
+# Mirrors the broker's rule (relay.NormalizeOperatorContact,
+# internal/relay/types.go): printable ASCII without spaces, at most 128
+# characters, exactly one '@' after a non-empty local part, and a domain with a
+# dot that neither starts nor ends it. A value the broker refuses would make the
+# relay exit at startup, so it must never reach relay.env. Whitespace and
+# control characters matter twice: the value lands in the env file, where a
+# newline would inject a variable.
+validate_contact() { # contact
+    # The case pattern sees the whole value, embedded newlines included; the
+    # grep below works line by line and cannot.
+    case "$1" in '' | @* | *@*@* | *[![:graph:]]*) return 1 ;; esac
+    # Byte-wise under the C locale: [:graph:] alone would admit non-ASCII
+    # letters under bash in a UTF-8 locale.
+    if printf '%s' "$1" | LC_ALL=C grep -q '[^!-~]'; then return 1; fi
+    vc_domain=${1#*@}
+    [ "$vc_domain" != "$1" ] || return 1
+    case "$vc_domain" in .* | *.) return 1 ;; *.*) ;; *) return 1 ;; esac
+    [ "${#1}" -le 128 ]
+}
+
+# A contact suggestion for the question: the git user.email of the user who
+# ran sudo (or of root's own home when run as root). Only ever shown in the
+# question and used when the operator confirms it — never stored silently.
+suggest_contact() {
+    command -v git >/dev/null 2>&1 || return 0
+    if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+        sc_home="$(awk -F: -v u="$SUDO_USER" '$1 == u { print $6; exit }' "$PASSWD_FILE" 2>/dev/null)" || sc_home=""
+    else
+        sc_home="${HOME:-}"
+    fi
+    [ -n "$sc_home" ] || return 0
+    for sc_file in "$sc_home/.gitconfig" "$sc_home/.config/git/config"; do
+        [ -f "$sc_file" ] || continue
+        sc_email="$(git config --file "$sc_file" --get user.email 2>/dev/null)" || continue
+        if validate_contact "$sc_email"; then
+            printf '%s' "$sc_email"
+            return 0
+        fi
+    done
+}
+
+# Ask for the optional operator contact on the terminal device and print the
+# answer (empty when skipped). Enter confirms a shown suggestion; a typed value
+# replaces it; Enter without a suggestion, end of input, or three invalid
+# answers skip. The caller only asks when a terminal can actually be opened.
+ask_operator_contact() {
+    ac_suggestion="$(suggest_contact)" || ac_suggestion=""
+    ac_tries=0
+    exec 3<"$TTY_DEVICE"
+    while :; do
+        ac_tries=$((ac_tries + 1))
+        if [ -n "$ac_suggestion" ]; then
+            printf '%s [%s]: ' "$CONTACT_QUESTION" "$ac_suggestion" >>"$TTY_DEVICE"
+        else
+            printf '%s: ' "$CONTACT_QUESTION" >>"$TTY_DEVICE"
+        fi
+        ac_answer=""
+        if ! read -r ac_answer <&3; then
+            printf '\n' >>"$TTY_DEVICE"
+            ac_answer=""
+            break
+        fi
+        if [ -z "$ac_answer" ]; then ac_answer="$ac_suggestion"; fi
+        if [ -z "$ac_answer" ] || validate_contact "$ac_answer"; then break; fi
+        if [ "$ac_tries" -ge 3 ]; then
+            printf 'volunteer-up: skipping the contact; set OPENRUNG_OPERATOR_CONTACT in %s later if you want one\n' "$ENV_FILE" >>"$TTY_DEVICE"
+            ac_answer=""
+            break
+        fi
+        printf 'volunteer-up: that does not look like an email address (no spaces, at most 128 characters); press Enter to skip\n' >>"$TTY_DEVICE"
+    done
+    exec 3<&-
+    printf '%s' "$ac_answer"
+}
+
+# A terminal is attached when the terminal device opens; /dev/tty exists even
+# without a controlling terminal, so test by opening it.
+have_terminal() {
+    (: <"$TTY_DEVICE" >>"$TTY_DEVICE") 2>/dev/null
 }
 
 # Strict dotted-quad, publicly-routable IPv4. The detection services' responses
@@ -498,6 +591,9 @@ main() {
     BROKER_URL="${OPENRUNG_BROKER_URL:-https://broker-origin.openrung.org}"
     ENV_FILE=/etc/openrung/relay.env
     DMI_DIR=/sys/class/dmi/id
+    TTY_DEVICE=/dev/tty
+    PASSWD_FILE=/etc/passwd
+    CONTACT_QUESTION="volunteer-up: contact email for this relay (Optional, we will only contact you if there is an issue with your relay)"
     # A terminal has someone to open the port while we wait; automation
     # (cloud-init, a non-interactive shell) gets the verdict once and moves on.
     if [ -t 1 ]; then REACHABILITY_WAIT_DEFAULT=600; else REACHABILITY_WAIT_DEFAULT=0; fi
@@ -524,6 +620,10 @@ main() {
         validate_label "$OPENRUNG_LABEL" \
             || die "OPENRUNG_LABEL may use only letters, digits, '.', '_', '-', and at most 63 characters (the relay refuses longer labels at startup)"
     fi
+    if [ -n "${OPENRUNG_OPERATOR_CONTACT:-}" ]; then
+        validate_contact "$OPENRUNG_OPERATOR_CONTACT" \
+            || die "OPENRUNG_OPERATOR_CONTACT must be an email address without spaces, at most 128 characters"
+    fi
 
     # The Foundation conversion workflow deliberately uses this same canonical
     # env path. A Foundation token is therefore an ownership boundary, not an
@@ -534,6 +634,15 @@ main() {
     assert_volunteer_env
     if [ -e /etc/openrung/volunteer.env ] || [ -L /etc/openrung/volunteer.env ]; then
         die "legacy /etc/openrung/volunteer.env found; migrate its settings into $ENV_FILE (see deploy/relay/README.md) and remove it, then re-run"
+    fi
+
+    # Ask first, while the operator who just ran the command is still at the
+    # terminal: a fresh host spends the next minutes installing and pulling.
+    # Only a first run asks (relay.env is authoritative afterwards), and a set
+    # OPENRUNG_OPERATOR_CONTACT — even an empty one — answers the question.
+    OPERATOR_CONTACT="${OPENRUNG_OPERATOR_CONTACT:-}"
+    if [ ! -f "$ENV_FILE" ] && [ -z "${OPENRUNG_OPERATOR_CONTACT+set}" ] && have_terminal; then
+        OPERATOR_CONTACT="$(ask_operator_contact)" || OPERATOR_CONTACT=""
     fi
 
     # Same package the Foundation fleet bootstrap installs (lightsail-up.sh
@@ -623,6 +732,19 @@ main() {
         elif [ -n "${OPENRUNG_LABEL:-}" ]; then
             log "note: OPENRUNG_LABEL does not change an existing name — edit $ENV_FILE and re-run instead"
         fi
+        # Same rule as the name: a relay set up before contacts existed takes
+        # OPENRUNG_OPERATOR_CONTACT once; an existing contact is never changed
+        # and the question is never asked again.
+        effective_contact="$(sed -n 's/^OPENRUNG_OPERATOR_CONTACT=//p' "$ENV_FILE" | tail -1)" || effective_contact=""
+        if [ -z "$effective_contact" ] && [ -n "$OPERATOR_CONTACT" ]; then
+            umask 077
+            { cat "$ENV_FILE" && printf 'OPENRUNG_OPERATOR_CONTACT=%s\n' "$OPERATOR_CONTACT"; } >"$ENV_FILE.tmp" \
+                || die "could not stage the operator contact into $ENV_FILE.tmp"
+            mv "$ENV_FILE.tmp" "$ENV_FILE"
+            log "saved operator contact '${OPERATOR_CONTACT}' in $ENV_FILE (sent privately to the broker; never published)"
+        elif [ -n "$OPERATOR_CONTACT" ] && [ "$OPERATOR_CONTACT" != "$effective_contact" ]; then
+            log "note: OPENRUNG_OPERATOR_CONTACT does not change an existing contact — edit $ENV_FILE and re-run instead"
+        fi
         if [ -n "${OPENRUNG_BROKER_URL:-}" ] || [ -n "${OPENRUNG_PUBLIC_HOST:-}" ]; then
             log "note: OPENRUNG_* overrides do not change an existing $ENV_FILE — edit that file and re-run instead"
         fi
@@ -661,6 +783,7 @@ main() {
             printf 'OPENRUNG_PUBLIC_HOST=%s\n' "$PUBLIC_HOST"
             printf 'OPENRUNG_IDENTITY_SEED=%s\n' "$SEED"
             printf 'OPENRUNG_LABEL=%s\n' "$LABEL"
+            if [ -n "$OPERATOR_CONTACT" ]; then printf 'OPENRUNG_OPERATOR_CONTACT=%s\n' "$OPERATOR_CONTACT"; fi
             # The binary's default listen host is '::' (dual-stack, the fleet
             # posture). Pin the IPv4 wildcard only when the kernel has no IPv6
             # support at all, where a '::' bind cannot work.
@@ -668,6 +791,9 @@ main() {
         } >"$ENV_FILE.tmp"
         mv "$ENV_FILE.tmp" "$ENV_FILE"
         log "wrote $ENV_FILE (root-owned, mode 0600) with public host ${PUBLIC_HOST} and relay name '${LABEL}'"
+        if [ -n "$OPERATOR_CONTACT" ]; then
+            log "operator contact '${OPERATOR_CONTACT}' is sent privately to the broker and never published"
+        fi
     fi
 
     # Updates are a recoverable transaction. Host networking prevents the old

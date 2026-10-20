@@ -100,6 +100,10 @@ type Config struct {
 	NodeClass string
 	// Label is the public relay name; generated (adjective-noun) when empty.
 	Label string
+	// OperatorContact is how the operator can be reached about this relay
+	// (typically an email address). Optional; sent at direct-mode
+	// registration and kept private by the broker.
+	OperatorContact string
 	// PublicHost is the public hostname or IP clients can reach (cmd/relay's
 	// -public-host). Direct mode uses it verbatim; when empty, the host's
 	// first global IPv6 address is auto-detected and periodically re-checked
@@ -431,6 +435,9 @@ func (c Config) validate() error {
 	// surface it at Start rather than as an endless retry loop.
 	if _, err := relay.NormalizeLabel(c.Label); err != nil {
 		return fmt.Errorf("invalid label: %w", err)
+	}
+	if _, err := relay.NormalizeOperatorContact(c.OperatorContact); err != nil {
+		return fmt.Errorf("invalid operator contact: %w", err)
 	}
 	if c.Mode == ModeAuto {
 		for _, port := range c.AutomaticPortCandidates {
@@ -1359,6 +1366,7 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 		MaxMbps:          cfg.MaxMbps,
 		RelayVersion:     cfg.Version,
 		Label:            label,
+		OperatorContact:  strings.TrimSpace(cfg.OperatorContact),
 		NodeClass:        cfg.NodeClass,
 		Transport:        relay.TransportDirect,
 		WSSFronts:        slices.Clone(cfg.WSSFronts),

@@ -198,6 +198,7 @@ func TestPostgresStoreDuplicateEndpointReplacesOldDescriptor(t *testing.T) {
 }
 
 func TestPostgresStoreRankingUsesSharedMetrics(t *testing.T) {
+	pinRankingOrder(t)
 	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
 	storeA := newTestPostgresStore(t)
 	storeB := newTestPostgresStore(t)

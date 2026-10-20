@@ -127,8 +127,18 @@ and `-`; at most 63 characters), pass `OPENRUNG_LABEL` through `sudo`:
 curl -fsSL https://raw.githubusercontent.com/openrung/openrung/main/deploy/relay/volunteer-up.sh | sudo env OPENRUNG_LABEL=my-relay sh
 ```
 
+On the first run the script asks one optional question on your terminal: a
+contact email for the relay. It is used only to reach you if there is an issue
+with your relay, is sent privately to the broker, and is never published in the
+relay directory. Press Enter to skip; if the script found a likely address (your
+git email), it shows it in brackets and Enter accepts it. To answer in advance,
+pass `OPENRUNG_OPERATOR_CONTACT=you@example.org` (or an empty value to skip)
+through `sudo env` like the name above. Without a terminal, such as under
+cloud-init, nothing is asked.
+
 Once `/etc/openrung/relay.env` exists, it is authoritative. Edit that file and
-re-run the installer to change an existing relay's name or other settings.
+re-run the installer to change an existing relay's name, contact, or other
+settings.
 
 The script opens TCP 443 in the host firewall (ufw or firewalld) itself. The
 broker connects to that port from the internet before it accepts a relay, so

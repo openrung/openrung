@@ -169,6 +169,7 @@ func (s *Store) Register(req relay.RegisterRequest, now time.Time, ttl time.Dura
 		LeaseToken:        leaseToken,
 		LeaseCapable:      req.AccessLeases && identityKey != nil,
 		Label:             req.Label,
+		OperatorContact:   req.OperatorContact,
 		NodeClass:         normalizeNodeClass(req.NodeClass),
 		PublicHost:        req.PublicHost,
 		PublicPort:        req.PublicPort,
@@ -329,7 +330,7 @@ func (s *Store) ListRanked(now time.Time, limit int) ([]relay.Descriptor, map[st
 	}
 
 	snapshots, weights := s.metricSnapshotsLocked(now)
-	sortRelayCandidates(relays, snapshots, weights)
+	sortRelayCandidates(relays, snapshots, weights, rankingUniform)
 
 	if limit > 0 && len(relays) > limit {
 		return relays[:limit], weights, nil

@@ -375,7 +375,7 @@ registered (`offline_relays`), live sessions across the fleet, and the distinct
 count of clients currently connected through any relay.
 
 Each relay row carries the registry half for online relays — label, class,
-public endpoint, transport, exit location (city/country as resolved by the
+public endpoint, operator contact (when the relay registered one), transport, exit location (city/country as resolved by the
 broker), relay software version, capacity, punch/WSS capability, registration
 and last-heartbeat times — merged with per-relay telemetry for the window:
 currently connected clients and active sessions, unique clients and sessions,
@@ -461,9 +461,11 @@ reachability probe](#inbound-reachability-probe): `reachable` is `null` until
 the broker has probed the relay (tunnel transport, probing off, or not yet),
 otherwise `true` or `false`, with `reachability_checked_at` giving the probe
 time when there is one. A `false` relay is registered but withheld from
-clients. Lease tokens, stable-identity keys and proofs, hub-observed exit
-addresses, telemetry, and signing seeds never appear here; the endpoint
-exposes fleet membership, not credentials.
+clients. `operator_contact` is the contact the relay registered with (see
+[Register Relay](#register-relay)), omitted when it sent none. Lease
+tokens, stable-identity keys and proofs, hub-observed exit addresses,
+telemetry, and signing seeds never appear here; the endpoint exposes fleet
+membership, not credentials.
 
 Response:
 
@@ -475,7 +477,7 @@ Response:
   "key_id": "3097e2dee2cb4a34",
   "channel": "inventory",
   "relays": [
-    { "id": "relay_0a1b...", "public_host": "203.0.113.7", "public_port": 443, "node_class": "foundation", "...": "...", "ranking_weight": 1, "reachable": true, "reachability_checked_at": "2026-06-09T06:58:00Z" }
+    { "id": "relay_0a1b...", "public_host": "203.0.113.7", "public_port": 443, "node_class": "foundation", "...": "...", "ranking_weight": 1, "reachable": true, "reachability_checked_at": "2026-06-09T06:58:00Z", "operator_contact": "ops@example.org" }
   ]
 }
 ```
@@ -490,10 +492,13 @@ Authorization: Bearer <OPENRUNG_API_TOKEN>
 ```
 
 An operator-set per-relay multiplier on the candidate ranking behind
-`GET /api/v1/relays`: a number in `[0, 1]`, default `1`, applied last to the
-relay's telemetry-derived score. `1` leaves the ranking untouched, values below
-`1` demote the relay in proportion, and `0` pins it to the bottom of every page
-without delisting it — and excludes the relay from the WSS-candidate
+`GET /api/v1/relays`: a number in `[0, 1]`, default `1`. The broker orders each
+response by weighted random sampling, so relays with similar telemetry-derived
+scores share the head of the page instead of one taking every client; the
+weight multiplies a relay's sampling weight. `1` leaves the ranking untouched,
+values below `1` reduce the relay's share of page heads in proportion (`0.5`
+halves its odds against an otherwise equal relay), and `0` pins it to the
+bottom of every page without delisting it — and excludes the relay from the WSS-candidate
 reservation that can otherwise promote a WSS-capable Foundation relay into a
 short page's last slot (weights above `0` keep that eligibility). Weights key on
 the relay ID, so they survive lease expiry and re-registration, and are never
@@ -642,9 +647,21 @@ Request:
   "relay_version": "relay/0.1.0",
   "transport": "direct",
   "node_class": "volunteer",
-  "access_leases": true
+  "access_leases": true,
+  "operator_contact": "ops@example.org"
 }
 ```
+
+`operator_contact` (optional) is the email address the relay's operator asked
+to be reached at about the relay. It must be at most 128 printable ASCII
+characters without whitespace, with exactly one `@`, a non-empty local part and
+a domain containing a dot that neither starts nor ends it; anything else is
+refused with `400`.
+Registrations without it are accepted unchanged. The broker stores it with the
+registration and shows it only in the [operational relay
+inventory](#operational-relay-inventory) and the admin relays page: it is not
+bound by the identity statement and never appears in the registration response,
+relay lists, or any signed client-facing body.
 
 `access_leases` (optional, default `false`) declares that the relay installs
 broker-issued per-client credentials through the [relay lease
@@ -1126,8 +1143,13 @@ latest [inbound reachability probe](#inbound-reachability-probe) failed is
 left out before ranking and page shaping. The broker uses recent
 connection successes/failures, active sessions, observed client latency, and
 speed-test telemetry. The latency it scores is aggregated across all clients,
-so it cannot describe any one client's path. IPv6 is only a final tie-breaker
-after score and heartbeat recency. `limit` truncates *after* ranking, so
+so it cannot describe any one client's path. The order is drawn per response by
+weighted random sampling without replacement, with each relay's weight rising
+steeply with its score: a clearly better relay leads almost every response,
+while relays with similar scores take turns at the head, so concurrent clients
+spread across them rather than all landing on the marginal leader. IPv6 is only
+a final tie-breaker after the sampled order and heartbeat recency. `limit`
+truncates *after* ranking, so
 membership of the returned set — unlike the order within it — is decided
 entirely by the broker.
 

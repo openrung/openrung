@@ -18,8 +18,9 @@ import (
 
 // Operator ranking weights are the broker-side dial for shifting client load
 // between relays without touching the relays themselves: a per-relay
-// multiplier in [0, 1] applied last in relayScore. Weight 1 (the default) is
-// the pure telemetry ranking; smaller values demote a relay in proportion; 0
+// multiplier in [0, 1] on the relay's sampling weight (relaySelectionWeight).
+// Weight 1 (the default) is the pure telemetry ranking; smaller values shrink
+// the relay's share of page heads in proportion; 0
 // pins it to the bottom of every page without delisting it, which drains a
 // relay while still letting a client with no other reachable candidate use it.
 //

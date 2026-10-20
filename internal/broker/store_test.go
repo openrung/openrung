@@ -173,6 +173,7 @@ func TestStoreUpdateGeo(t *testing.T) {
 }
 
 func TestStoreRankingUsesFreshHeartbeatBeforeIPv6TieBreak(t *testing.T) {
+	pinRankingOrder(t)
 	store := NewStore()
 	now := time.Date(2026, 6, 9, 7, 0, 0, 0, time.UTC)
 
@@ -201,6 +202,7 @@ func TestStoreRankingUsesFreshHeartbeatBeforeIPv6TieBreak(t *testing.T) {
 }
 
 func TestStoreRankingPrefersLowerActiveLoad(t *testing.T) {
+	pinRankingOrder(t)
 	store := NewStore()
 	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
 	crowded := registerRelayForRanking(t, store, now, "crowded.example.com", 1, 20)
@@ -222,6 +224,7 @@ func TestStoreRankingPrefersLowerActiveLoad(t *testing.T) {
 }
 
 func TestStoreRankingDemotesRecentFailures(t *testing.T) {
+	pinRankingOrder(t)
 	store := NewStore()
 	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
 	reliable := registerRelayForRanking(t, store, now, "reliable.example.com", 8, 20)
@@ -251,6 +254,7 @@ func TestStoreRankingDemotesRecentFailures(t *testing.T) {
 }
 
 func TestStoreRankingPrefersLowerLatency(t *testing.T) {
+	pinRankingOrder(t)
 	store := NewStore()
 	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
 	fast := registerRelayForRanking(t, store, now, "fast.example.com", 8, 20)
@@ -282,6 +286,7 @@ func TestStoreRankingPrefersLowerLatency(t *testing.T) {
 }
 
 func TestStoreRankingUsesSpeedTests(t *testing.T) {
+	pinRankingOrder(t)
 	store := NewStore()
 	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
 	fast := registerRelayForRanking(t, store, now, "fast-download.example.com", 8, 20)

@@ -55,6 +55,11 @@ type RegisterRequest struct {
 	MaxMbps          int    `json:"max_mbps"`
 	RelayVersion     string `json:"relay_version"`
 	Label            string `json:"label,omitempty"`
+	// OperatorContact is the email address the operator asked to be reached
+	// at about this relay. Optional, private registration material: the broker stores it for the operator views and
+	// never serves it in the public directory. Not bound by the identity
+	// statement, so relays that predate it register unchanged.
+	OperatorContact string `json:"operator_contact,omitempty"`
 	// NodeClass declares who operates this relay: NodeClassVolunteer (the
 	// default when empty) or NodeClassFoundation. A foundation claim is only
 	// honored when the request presents the broker's foundation token;
@@ -191,6 +196,10 @@ type Descriptor struct {
 	// broker to pick relays that can install per-client credentials, never
 	// serialized into the public directory.
 	LeaseCapable bool `json:"-"`
+	// OperatorContact is the registration's optional operator contact. It is
+	// shown only in the operator inventory and relays page; serializing it
+	// into the public directory would publish every operator's address.
+	OperatorContact string `json:"-"`
 	// Reachable and ReachabilityCheckedAt record the broker's latest inbound
 	// probe of the advertised endpoint (direct transport only). A zero
 	// ReachabilityCheckedAt means no probe has run; Reachable is meaningful
@@ -427,6 +436,36 @@ func NormalizeNodeClass(class string) (string, error) {
 	default:
 		return "", fmt.Errorf("node_class must be %q or %q", NodeClassVolunteer, NodeClassFoundation)
 	}
+}
+
+// MaxOperatorContactLength bounds the operator-supplied contact.
+const MaxOperatorContactLength = 128
+
+// NormalizeOperatorContact trims and validates an operator-supplied contact.
+// An empty contact is allowed and returns "". Otherwise it must be an email
+// address in a lenient shape: printable ASCII without spaces, exactly one
+// "@" with a non-empty local part, and a domain containing a dot that neither
+// starts nor ends it. The installers apply the same rule
+// (deploy/relay/volunteer-up.sh validate_contact).
+func NormalizeOperatorContact(contact string) (string, error) {
+	contact = strings.TrimSpace(contact)
+	if contact == "" {
+		return "", nil
+	}
+	if len(contact) > MaxOperatorContactLength {
+		return "", fmt.Errorf("operator_contact must be at most %d characters", MaxOperatorContactLength)
+	}
+	for i := 0; i < len(contact); i++ {
+		if contact[i] < '!' || contact[i] > '~' {
+			return "", errors.New("operator_contact must be an email address (printable ASCII, no spaces)")
+		}
+	}
+	local, domain, ok := strings.Cut(contact, "@")
+	if !ok || local == "" || strings.Contains(domain, "@") ||
+		!strings.Contains(domain, ".") || strings.HasPrefix(domain, ".") || strings.HasSuffix(domain, ".") {
+		return "", errors.New("operator_contact must be an email address")
+	}
+	return contact, nil
 }
 
 // MaxLabelLength bounds the operator-supplied relay label.
