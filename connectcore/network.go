@@ -49,6 +49,15 @@ type NetworkState struct {
 	// produces. It is opaque to the engine: equality is the only operation,
 	// and ANY change (with Up folded in) is an epoch boundary.
 	Fingerprint string
+	// IPv6Known reports that the host determined HasIPv6 for this snapshot.
+	// Hosts that cannot tell leave it false, and the engine then neither
+	// rewrites nor reorders IPv6 candidates up front (see family.go).
+	IPv6Known bool
+	// HasIPv6 reports that the physical network has a usable global IPv6
+	// default route (Android: a non-VPN network whose LinkProperties carry a
+	// global IPv6 address and default route; iOS: NWPath.supportsIPv6).
+	// Meaningful only with IPv6Known.
+	HasIPv6 bool
 }
 
 // UpdateNetworkState feeds one platform network observation into the engine.

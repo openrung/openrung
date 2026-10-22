@@ -6,7 +6,9 @@ this repository — the mobile apps foremost — can pin and consume the same
 implementation the desktop app and terminal client run.
 
 The module root is the connection engine: the connect state machine, candidate
-ladder and client-side ranking, relay-local WSS front fallback, the punch
+ladder and client-side ranking, address-family fallback (a relay an access
+answer names by IPv6 is dialled at its public IPv4 endpoint when IPv6 is
+unavailable or does not answer, see `family.go`), relay-local WSS front fallback, the punch
 attempt policy, mid-session health monitoring and failover, the directory
 cache, and the internet/readiness probes. Its subpackages carry the rest of
 the client policy layer:

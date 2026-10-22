@@ -376,6 +376,7 @@ func (s *Engine) reladder(ctx context.Context, conn *connection, port int, targe
 	if err != nil {
 		return nil, 0, stage, err
 	}
+	cands = s.adaptToAddressFamily(conn, cands)
 	// Rank first, then demote: the relay that just died is demoted for having
 	// lost its tunnel, not for being slow, so ranking must not lift it back to
 	// the front. Demoting last keeps both invariants — the ladder is in client

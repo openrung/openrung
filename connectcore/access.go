@@ -245,12 +245,14 @@ func (s *Engine) runPublicFallback(ctx context.Context, conn *connection, broker
 			return nil, ladderOrder{}, false, nil
 		}
 		_ = conn.mgr.SetBrokerFront(fetch.BrokerURL, fetch.AzureSNI)
+		conn.rememberPublicEndpoints(fetch.Response)
 		public = &fetch
 	}
 	cands, _, err := s.candidatesFor(public.Response, target)
 	if err != nil {
 		return nil, ladderOrder{}, false, nil
 	}
+	cands = s.adaptToAddressFamily(conn, cands)
 	skip := make(map[string]bool, len(tried))
 	for _, relay := range tried {
 		skip[relay.ID] = true

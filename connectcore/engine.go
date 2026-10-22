@@ -162,6 +162,11 @@ type connection struct {
 	// per-user access then succeeded: the candidates tried after the leased
 	// ones fail (see runPublicFallback). Nil when no race ran.
 	publicFallback *discovery.Fetch
+	// publicEndpoints is each relay's public endpoint from the public lists
+	// this connection fetched, kept across recoveries: the fallback for a
+	// relay an access answer names by IPv6 (see family.go). Touched only by
+	// the runConnect goroutine.
+	publicEndpoints map[string]relayEndpoint
 	// handledNetEpoch is the network epoch the supervisor has accounted for.
 	// Touched only by the runConnect goroutine.
 	handledNetEpoch uint64
@@ -471,6 +476,7 @@ type Engine struct {
 	probeTunnel          func(ctx context.Context, proxyPort int) (int64, error)
 	healthProbe          func(ctx context.Context, proxyPort int) error
 	dialRelay            func(ctx context.Context, host string, port int) (int64, error)
+	ipv6Probe            func() ipv6State
 	fetchRelays          func(ctx context.Context, brokerURL string, limit int, clientID, sessionID string) (discovery.Fetch, error)
 	tunnelReady          func(ctx context.Context, proxyPort int) error
 	requestWSSTicket     func(ctx context.Context, brokerURL string, request brokerapi.WSSTicketRequest, clientID, sessionID string) (brokerapi.WSSTicketResponse, error)
@@ -887,6 +893,7 @@ func (s *Engine) connectFlow(ctx context.Context, conn *connection, brokerURL st
 	if err != nil {
 		return stage, err
 	}
+	cands = s.adaptToAddressFamily(conn, cands)
 	order := s.rankLadder(ctx, cands, target)
 	ladder := order.candidates()
 	s.mu.Lock()
@@ -979,6 +986,7 @@ func (s *Engine) fetchCandidates(ctx context.Context, conn *connection, brokerUR
 	if err != nil {
 		return discovery.Fetch{}, 0, err
 	}
+	conn.rememberPublicEndpoints(fetch.Response)
 	// All hosts follow the verified winner, including queued events and
 	// recovery fetches. In-flight uploads retain their captured endpoint.
 	_ = conn.mgr.SetBrokerFront(fetch.BrokerURL, fetch.AzureSNI)
@@ -1143,6 +1151,26 @@ func (s *Engine) attemptDirectCandidate(ctx context.Context, conn *connection, c
 	s.appendLog(fmt.Sprintf("trying relay %s at %s:%d", cand.ID, cand.PublicHost, cand.PublicPort))
 	s.appendLog("checking relay TCP reachability")
 	tcpMS, err := s.relayDialer()(ctx, cand.PublicHost, cand.PublicPort)
+	if err != nil && ctx.Err() == nil {
+		// An IPv6 endpoint that does not answer is retried once on the same
+		// relay's public endpoint, which accepts the same credential (see
+		// family.go). The candidate then carries that endpoint everywhere —
+		// config, route exclusions, telemetry — as if the answer had named it.
+		if endpoint, ok := conn.publicEndpointFor(cand); ok {
+			s.appendLog(fmt.Sprintf("relay %s did not answer over IPv6 (%v); retrying at %s:%d", cand.ID, err, endpoint.host, endpoint.port))
+			cand.PublicHost, cand.PublicPort = endpoint.host, endpoint.port
+			tcpMS, err = s.relayDialer()(ctx, cand.PublicHost, cand.PublicPort)
+			if err == nil {
+				configInput = s.candidateConfigInput(cand, port)
+				if s.Mobile != nil {
+					configInput, err = s.mobileConfig(ctx, configInput)
+					if err != nil {
+						return nil, markLocalCandidateError("config", err)
+					}
+				}
+			}
+		}
+	}
 	if err != nil {
 		// A socket-protection refusal is classified local inside the marker.
 		return nil, markDirectPathError("tcp", err)

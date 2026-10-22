@@ -162,6 +162,17 @@ recovery. All shared physical HTTP transports (geo, punch coordination and
 liveness) bypass process proxies. Socket-protection refusal permits the ladder
 to surface its terminal local failure instead of waiting for connectivity.
 
+Hosts should also report IPv6 availability on every observation:
+`NetworkState.IPv6Known = true` with `HasIPv6` set from the physical (non-VPN)
+network. On Android, that means its `LinkProperties` carry a global IPv6
+address and an IPv6 default route; on iOS, `NWPath.supportsIPv6`. When
+`HasIPv6` is false, relays that an access answer names by IPv6 are dialled at
+their public (IPv4) endpoint with the same per-user credential, and IPv6-only
+relays move to the end of the ladder. Without a report, a mobile engine changes
+nothing up front, because the VPN may own the route table. On every platform, a
+failed TCP check to an IPv6 relay endpoint is retried once on that relay's
+public endpoint.
+
 An observed mobile `NetworkState.Up == false` skips physical probes; before the
 first observation, probing remains enabled. Post-teardown outage polls double from
 5 seconds toward a 60-second ceiling, always clipped to the remaining budget.
