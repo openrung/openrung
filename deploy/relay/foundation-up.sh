@@ -772,13 +772,67 @@ WantedBy=multi-user.target
 UNIT
 }
 
-# Runs before the roll, so the candidate relay finds the address in place at
-# its first registration. Unset leaves the host as it is; `off` stops (and so
-# removes the address), disables and deletes the unit. An address the host
-# already carries as a preferred address is refused: that is a primary
-# address, not one this unit configured.
-apply_access_address() { # host
-  local host="$1" dev rc=0
+# An access address change is split around the roll so that a failure at any
+# point leaves the previous relay with exactly the addresses it had:
+#   prepare_access_address  (before the roll) adds the new address beside any
+#                           previous one, so the candidate finds it in place
+#                           at its first registration;
+#   abort_access_address    (failed roll) removes only an address this run
+#                           added — the previous unit and address are untouched;
+#   commit_access_address   (verified roll) swaps the boot unit, restoring the
+#                           previous unit if the new one does not come up.
+# Unset OPENRUNG_ACCESS_HOST leaves the host as it is; `off` changes nothing
+# until the roll is verified, then removes the unit (and with it the address).
+ACCESS_DEV=""     # the interface prepare_access_address chose
+ACCESS_ADDED=0    # 1 when prepare_access_address added the address itself
+
+# An address the host already carries as a preferred address is refused: that
+# is a primary address, not one this script configured.
+prepare_access_address() { # host
+  local host="$1" dev out rc=0
+  ACCESS_DEV=""; ACCESS_ADDED=0
+  [ -n "$ACCESS_HOST" ] && [ "$ACCESS_HOST" != off ] || return 0
+  dev="$(ssh_run "$host" "ip -6 route show default | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1" | scrub)" || dev=""
+  [[ "$dev" =~ $DEV_RE ]] \
+    || { echo "error: ${host}: no IPv6 default route to carry the access address (got '$(printf '%s' "$dev" | head -c 40)')" >&2; return 1; }
+  out="$(ssh_run "$host" "set -e
+    current=\$(ip -6 -o address show to ${ACCESS_HOST}/128)
+    if [ -n \"\$current\" ] && ! printf '%s' \"\$current\" | grep -q deprecated; then exit 42; fi
+    added=0
+    if [ -z \"\$current\" ]; then
+      sudo ip -6 address replace ${ACCESS_HOST}/128 dev ${dev} preferred_lft 0 nodad
+      added=1
+    fi
+    if ! ip -6 -o address show to ${ACCESS_HOST}/128 | grep -q deprecated; then
+      if [ \"\$added\" = 1 ]; then sudo ip -6 address delete ${ACCESS_HOST}/128 dev ${dev} || true; fi
+      exit 1
+    fi
+    echo \"added=\$added\"" | scrub)" || rc=$?
+  if [ "$rc" = 42 ]; then
+    echo "error: ${host}: ${ACCESS_HOST} is already a preferred address on this host (its primary address?); choose another address for OPENRUNG_ACCESS_HOST" >&2
+    return 1
+  elif [ "$rc" != 0 ]; then
+    echo "error: ${host}: could not add the access address ${ACCESS_HOST} on ${dev}; the live relay was not touched — re-run convert to retry" >&2
+    print_ssh_command "$host"
+    return 1
+  fi
+  ACCESS_DEV="$dev"
+  [ "$out" = added=1 ] && ACCESS_ADDED=1
+  log "access address: ${ACCESS_HOST} on ${dev} ($([ "$ACCESS_ADDED" = 1 ] && echo added || echo already present))"
+}
+
+abort_access_address() { # host
+  local host="$1"
+  [ "$ACCESS_ADDED" = 1 ] || return 0
+  ACCESS_ADDED=0
+  ssh_run "$host" "sudo ip -6 address delete ${ACCESS_HOST}/128 dev ${ACCESS_DEV}" \
+    && log "access address: removed ${ACCESS_HOST}, which this run added; the previous relay keeps its addresses" \
+    || warn "${host}: could not remove ${ACCESS_HOST}, which this run added; remove it by hand (ip -6 address delete ${ACCESS_HOST}/128 dev ${ACCESS_DEV})"
+  return 0
+}
+
+commit_access_address() { # host
+  local host="$1" rc=0
   [ -n "$ACCESS_HOST" ] || return 0
   if [ "$ACCESS_HOST" = off ]; then
     ssh_run "$host" "set -e
@@ -787,32 +841,58 @@ apply_access_address() { # host
         sudo rm -f ${ACCESS_UNIT}
         sudo systemctl daemon-reload
       fi" \
-      || { echo "error: ${host}: could not remove the access address unit" >&2; print_ssh_command "$host"; return 1; }
+      || { echo "error: ${host}: the relay is live without an access address, but the access address unit could not be removed; re-run convert" >&2; print_ssh_command "$host"; return 1; }
     log "access address: removed"
     return 0
   fi
-  dev="$(ssh_run "$host" "ip -6 route show default | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1" | scrub)" || dev=""
-  [[ "$dev" =~ $DEV_RE ]] \
-    || { echo "error: ${host}: no IPv6 default route to carry the access address (got '$(printf '%s' "$dev" | head -c 40)')" >&2; return 1; }
-  access_address_unit "$ACCESS_HOST" "$dev" | ssh_run "$host" "set -e
-    current=\$(ip -6 -o address show to ${ACCESS_HOST}/128)
-    if [ -n \"\$current\" ] && ! printf '%s' \"\$current\" | grep -q deprecated; then exit 42; fi
+  [[ "$ACCESS_DEV" =~ $DEV_RE ]] \
+    || { echo "error: ${host}: internal: the access address was not prepared before the roll" >&2; return 1; }
+  # Stopping a previous unit runs its ExecStop, which removes the PREVIOUS
+  # address only; it is skipped when that unit already names this address,
+  # which the relay is now serving.
+  access_address_unit "$ACCESS_HOST" "$ACCESS_DEV" | ssh_run "$host" "
     unit=\$(cat)
-    if sudo test -f ${ACCESS_UNIT}; then sudo systemctl stop ${ACCESS_UNIT_NAME} || true; fi
-    printf '%s\\n' \"\$unit\" | sudo tee ${ACCESS_UNIT}.new >/dev/null
-    sudo mv ${ACCESS_UNIT}.new ${ACCESS_UNIT}
-    sudo systemctl daemon-reload
-    sudo systemctl enable --now ${ACCESS_UNIT_NAME} >/dev/null 2>&1
-    ip -6 -o address show to ${ACCESS_HOST}/128 | grep -q deprecated" || rc=$?
-  if [ "$rc" = 42 ]; then
-    echo "error: ${host}: ${ACCESS_HOST} is already a preferred address on this host (its primary address?); choose another address for OPENRUNG_ACCESS_HOST" >&2
+    printf '%s\\n' \"\$unit\" | sudo tee ${ACCESS_UNIT}.new >/dev/null || exit 1
+    if sudo test -f ${ACCESS_UNIT} && sudo cmp -s ${ACCESS_UNIT}.new ${ACCESS_UNIT}; then
+      sudo rm -f ${ACCESS_UNIT}.new
+      sudo systemctl enable --now ${ACCESS_UNIT_NAME} >/dev/null 2>&1 || exit 1
+      exit 0
+    fi
+    had_old=0
+    if sudo test -f ${ACCESS_UNIT}; then
+      had_old=1
+      sudo cp -p ${ACCESS_UNIT} ${ACCESS_UNIT}.old || exit 1
+      if ! sudo grep -q 'address replace ${ACCESS_HOST}/128 ' ${ACCESS_UNIT}; then
+        sudo systemctl stop ${ACCESS_UNIT_NAME} || true
+      fi
+    fi
+    if sudo mv ${ACCESS_UNIT}.new ${ACCESS_UNIT} && sudo systemctl daemon-reload \\
+       && sudo systemctl enable --now ${ACCESS_UNIT_NAME} >/dev/null 2>&1 \\
+       && ip -6 -o address show to ${ACCESS_HOST}/128 | grep -q deprecated; then
+      sudo rm -f ${ACCESS_UNIT}.old
+      exit 0
+    fi
+    sudo rm -f ${ACCESS_UNIT}.new
+    if [ \"\$had_old\" = 1 ]; then
+      sudo mv ${ACCESS_UNIT}.old ${ACCESS_UNIT}
+      sudo systemctl daemon-reload
+      sudo systemctl enable --now ${ACCESS_UNIT_NAME} >/dev/null 2>&1 || true
+    else
+      sudo systemctl disable ${ACCESS_UNIT_NAME} >/dev/null 2>&1 || true
+      sudo rm -f ${ACCESS_UNIT}
+      sudo systemctl daemon-reload
+    fi
+    exit 43" || rc=$?
+  if [ "$rc" = 43 ]; then
+    echo "error: ${host}: the relay is live on ${ACCESS_HOST}, but its boot unit did not start; the previous unit was restored, so a reboot would not keep ${ACCESS_HOST} — re-run convert" >&2
+    print_ssh_command "$host"
     return 1
   elif [ "$rc" != 0 ]; then
-    echo "error: ${host}: could not configure the access address ${ACCESS_HOST} on ${dev}; the live relay was not touched — re-run convert to retry" >&2
+    echo "error: ${host}: the relay is live on ${ACCESS_HOST}, but its boot unit could not be installed; re-run convert" >&2
     print_ssh_command "$host"
     return 1
   fi
-  log "access address: ${ACCESS_HOST} on ${dev} (${ACCESS_UNIT_NAME})"
+  log "access address: ${ACCESS_HOST} kept by ${ACCESS_UNIT_NAME}"
 }
 
 convert_host() {
@@ -838,8 +918,9 @@ convert_host() {
   log "identity: label=${label:--} public_host=${public_host} (preserved)"
   install_env_file "$host" || return
   log "wrote ${ENV_FILE} (root:root 0600; existing settings preserved, broker URL + token updated)"
-  apply_access_address "$host" || return
-  roll_host "$host" "$ENV_FILE" || return
+  prepare_access_address "$host" || return
+  roll_host "$host" "$ENV_FILE" || { abort_access_address "$host"; return 1; }
+  commit_access_address "$host" || return
   apply_egress_limit "$host" || return
 }
 

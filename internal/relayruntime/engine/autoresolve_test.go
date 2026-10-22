@@ -16,7 +16,7 @@ import (
 func stubIPv6(t *testing.T, addr string, err error) {
 	t.Helper()
 	prev := detectPublicIPv6
-	detectPublicIPv6 = func() (string, error) { return addr, err }
+	detectPublicIPv6 = func(string) (string, error) { return addr, err }
 	t.Cleanup(func() { detectPublicIPv6 = prev })
 }
 

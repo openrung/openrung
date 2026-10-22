@@ -336,97 +336,151 @@ test_access_host_validation_and_env() {
   TOKEN=""
 }
 
-# The address is configured before the roll, so the candidate relay finds it
-# at its first registration, and a failure stops convert before the roll.
-test_convert_applies_access_address_before_roll() {
+# The address is added before the roll, so the candidate relay finds it at its
+# first registration; the unit is swapped only after a verified roll; a failed
+# roll removes only what this run added and never reaches the commit.
+test_convert_orders_access_address_around_roll() {
   reset_script_functions
   preflight_host() { :; }
   prepare_image() { printf 'pull\n' >> "$MUTATION_LOG"; }
   stage_preserved_env() { printf 'stage\n' >> "$MUTATION_LOG"; }
   ssh_run() { printf 'public_host=203.0.113.10\nlabel=test\n'; }
   install_env_file() { printf 'install\n' >> "$MUTATION_LOG"; }
-  apply_access_address() { printf 'access\n' >> "$MUTATION_LOG"; }
+  prepare_access_address() { printf 'access-prepare\n' >> "$MUTATION_LOG"; }
+  abort_access_address() { printf 'access-abort\n' >> "$MUTATION_LOG"; }
+  commit_access_address() { printf 'access-commit\n' >> "$MUTATION_LOG"; }
   roll_host() { printf 'roll\n' >> "$MUTATION_LOG"; }
   apply_egress_limit() { printf 'egress\n' >> "$MUTATION_LOG"; }
   : > "$MUTATION_LOG"
   (set -e; convert_host 203.0.113.10) >"$OUTPUT" 2>&1
-  assert_eq $'pull\nstage\ninstall\naccess\nroll\negress' "$(<"$MUTATION_LOG")" "convert configures the access address before the roll"
+  assert_eq $'pull\nstage\ninstall\naccess-prepare\nroll\naccess-commit\negress' "$(<"$MUTATION_LOG")" "convert adds the address before the roll and commits the unit after it"
 
-  apply_access_address() { printf 'access\n' >> "$MUTATION_LOG"; return 1; }
+  roll_host() { printf 'roll\n' >> "$MUTATION_LOG"; return 1; }
+  : > "$MUTATION_LOG"
+  if (set -e; convert_host 203.0.113.10) >"$OUTPUT" 2>&1; then fail "convert succeeded after a failed roll"; else pass; fi
+  assert_eq $'pull\nstage\ninstall\naccess-prepare\nroll\naccess-abort' "$(<"$MUTATION_LOG")" "a failed roll aborts the access change and never commits it"
+
+  prepare_access_address() { printf 'access-prepare\n' >> "$MUTATION_LOG"; return 1; }
   : > "$MUTATION_LOG"
   if (set -e; convert_host 203.0.113.10) >"$OUTPUT" 2>&1; then fail "convert continued after the access address failed"; else pass; fi
-  assert_eq $'pull\nstage\ninstall\naccess' "$(<"$MUTATION_LOG")" "a failed access address never rolls the relay"
+  assert_eq $'pull\nstage\ninstall\naccess-prepare' "$(<"$MUTATION_LOG")" "a failed access address never rolls the relay"
 }
 
-# Run the exact remote commands apply_access_address sends, against stubs.
-test_apply_access_address_remote_command() {
+# Run the exact remote commands against stubs that keep the host's address
+# list in a file: ip adds and deletes lines, and systemctl start/stop run the
+# unit's own ExecStart/ExecStop addresses (or fail to start on request).
+test_access_address_remote_commands() {
   reset_script_functions
-  local stub="${TEST_TMP}/access-stub" calls="${TEST_TMP}/access-calls" root="${TEST_TMP}/access-root" addrs="${TEST_TMP}/access-addrs" unit
+  local stub="${TEST_TMP}/access-stub" calls="${TEST_TMP}/access-calls" root="${TEST_TMP}/access-root"
+  local addrs="${TEST_TMP}/access-addrs" failstart="${TEST_TMP}/access-failstart" old new
   mkdir -p "$stub" "$root"
-  : > "$calls"
-  : > "$addrs"
+  ACCESS_UNIT="${root}/openrung-access-address.service"
   cat > "${stub}/sudo" <<'EOF'
 #!/bin/sh
 exec "$@"
 EOF
-  # ip answers the default-route query and lists whatever "$addrs" holds;
-  # systemctl's enable --now stands in for the unit's ExecStart.
   cat > "${stub}/ip" <<EOF
 #!/bin/sh
 echo "ip \$*" >> "$calls"
 case "\$*" in
   "-6 route show default") echo "default via fe80::1 dev eth0 proto static metric 1024 pref medium" ;;
-  "-6 -o address show to "*) cat "$addrs" ;;
+  "-6 -o address show to "*) a="\${6%/128}"; grep " \$a/" "$addrs" || true ;;
+  "-6 address replace "*) a="\${4%/128}"; grep -v " \$a/" "$addrs" > "$addrs.tmp"; mv "$addrs.tmp" "$addrs"; echo "2: \$6    inet6 \$a/128 scope global deprecated nodad" >> "$addrs" ;;
+  "-6 address delete "*) a="\${4%/128}"; grep -v " \$a/" "$addrs" > "$addrs.tmp"; mv "$addrs.tmp" "$addrs" ;;
 esac
 EOF
   cat > "${stub}/systemctl" <<EOF
 #!/bin/sh
 echo "systemctl \$*" >> "$calls"
+unit_addr() { sed -n 's/^ExecStart=.* replace \([^/]*\)\/128 .*/\1/p' "$ACCESS_UNIT"; }
 case "\$*" in
-  "enable --now "*) echo "2: eth0    inet6 2001:db8:1::10/128 scope global deprecated nodad" > "$addrs" ;;
-  "stop "*|"disable --now "*) : > "$addrs" ;;
+  "enable --now "*)
+    [ -e "$failstart" ] && grep -q "\$(cat "$failstart")" "$ACCESS_UNIT" && exit 1
+    a=\$(unit_addr); grep -v " \$a/" "$addrs" > "$addrs.tmp"; mv "$addrs.tmp" "$addrs"
+    echo "2: eth0    inet6 \$a/128 scope global deprecated nodad" >> "$addrs" ;;
+  "stop "*|"disable --now "*)
+    a=\$(unit_addr); grep -v " \$a/" "$addrs" > "$addrs.tmp"; mv "$addrs.tmp" "$addrs" ;;
 esac
+exit 0
 EOF
   chmod +x "$stub"/*
   ssh_run() { PATH="${stub}:${PATH}" bash -c "$2"; }
-  ACCESS_UNIT="${root}/openrung-access-address.service"
+  has_addr() { grep -q " $1/" "$addrs"; }
+  old=2001:db8:1::10
+  new=2001:db8:1::20
 
+  # Unset: nothing on the host is touched at either step.
+  : > "$calls"; : > "$addrs"; rm -f "$ACCESS_UNIT" "$failstart"
   ACCESS_HOST=""
-  (set -e; apply_access_address 203.0.113.10) >"$OUTPUT" 2>&1
+  (set -e; prepare_access_address 203.0.113.10; commit_access_address 203.0.113.10) >"$OUTPUT" 2>&1
   if [ -s "$calls" ]; then fail "unset access host touched the host: $(<"$calls")"; else pass; fi
 
-  ACCESS_HOST=2001:db8:1::10
-  if (set -e; apply_access_address 203.0.113.10) >"$OUTPUT" 2>&1; then pass; else fail "apply_access_address failed: $(<"$OUTPUT")"; fi
-  unit="$(<"$ACCESS_UNIT")"
-  assert_contains "$unit" "ExecStart=/sbin/ip -6 address replace 2001:db8:1::10/128 dev eth0 preferred_lft 0 nodad" "unit adds the address deprecated on the default-route interface"
-  assert_contains "$unit" "ExecStop=-/sbin/ip -6 address delete 2001:db8:1::10/128 dev eth0" "unit removes the address on stop"
-  assert_contains "$unit" "Before=docker.service" "unit runs before docker starts the relay"
-  assert_contains "$(<"$calls")" "systemctl enable --now openrung-access-address.service" "unit is enabled and started"
-  if [ -e "${ACCESS_UNIT}.new" ]; then fail "staging unit left behind"; else pass; fi
+  # Fresh host: added before the roll, kept by the unit after it.
+  ACCESS_HOST="$old"
+  if (set -e; prepare_access_address 203.0.113.10; commit_access_address 203.0.113.10) >"$OUTPUT" 2>&1; then pass; else fail "fresh access address failed: $(<"$OUTPUT")"; fi
+  has_addr "$old" && pass || fail "fresh access address missing"
+  assert_contains "$(<"$ACCESS_UNIT")" "ExecStart=/sbin/ip -6 address replace ${old}/128 dev eth0 preferred_lft 0 nodad" "unit adds the address deprecated on the default-route interface"
+  assert_contains "$(<"$ACCESS_UNIT")" "ExecStop=-/sbin/ip -6 address delete ${old}/128 dev eth0" "unit removes the address on stop"
+  assert_contains "$(<"$ACCESS_UNIT")" "Before=docker.service" "unit runs before docker starts the relay"
+  if [ -e "${ACCESS_UNIT}.new" ] || [ -e "${ACCESS_UNIT}.old" ]; then fail "staging files left behind"; else pass; fi
 
-  # A re-run (or a changed address) stops the old unit first, so its own
-  # ExecStop removes the address it added.
+  # Re-running with the same address changes nothing and never stops the unit.
   : > "$calls"
-  if (set -e; apply_access_address 203.0.113.10) >"$OUTPUT" 2>&1; then pass; else fail "re-run failed: $(<"$OUTPUT")"; fi
-  assert_before "$(<"$calls")" "systemctl stop openrung-access-address.service" "systemctl enable --now" "re-run stops the old unit before starting the new one"
+  if (set -e; prepare_access_address 203.0.113.10; commit_access_address 203.0.113.10) >"$OUTPUT" 2>&1; then pass; else fail "re-run failed: $(<"$OUTPUT")"; fi
+  case "$(<"$calls")" in *"systemctl stop"*|*"address replace"*|*"address delete"*) fail "re-run disturbed the address: $(<"$calls")" ;; *) pass ;; esac
+  has_addr "$old" && pass || fail "re-run lost the address"
+
+  # A changed address whose roll fails: the run's own address is removed and
+  # the previous address and unit are untouched.
+  local before; before="$(<"$ACCESS_UNIT")"
+  ACCESS_HOST="$new"
+  roll_check() { if has_addr "$old" && has_addr "$new"; then echo beside; fi; }
+  (set -e; prepare_access_address 203.0.113.10; roll_check > "${TEST_TMP}/access-during-roll"; abort_access_address 203.0.113.10) >"$OUTPUT" 2>&1
+  assert_eq beside "$(<"${TEST_TMP}/access-during-roll")" "the new address sits beside the old one during the roll"
+  if has_addr "$old" && ! has_addr "$new"; then pass; else fail "abort must leave exactly the previous address: $(<"$addrs")"; fi
+  assert_eq "$before" "$(<"$ACCESS_UNIT")" "abort leaves the previous unit untouched"
+
+  # A changed address whose new unit fails to start after a verified roll:
+  # the previous unit is restored with its address, and the relay keeps the
+  # new address it is serving.
+  echo "$new" > "$failstart"
+  if (set -e; prepare_access_address 203.0.113.10; commit_access_address 203.0.113.10) >"$OUTPUT" 2>&1; then fail "commit succeeded although the unit did not start"; else pass; fi
+  assert_contains "$(<"$OUTPUT")" "previous unit was restored" "commit failure says the previous unit was restored"
+  assert_eq "$before" "$(<"$ACCESS_UNIT")" "commit failure restores the previous unit"
+  if has_addr "$old" && has_addr "$new"; then pass; else fail "commit failure must keep the previous and the served address: $(<"$addrs")"; fi
+  if [ -e "${ACCESS_UNIT}.new" ] || [ -e "${ACCESS_UNIT}.old" ]; then fail "staging files left behind after restore"; else pass; fi
+
+  # The same change once the unit starts: the previous address goes with the
+  # previous unit, the new unit keeps the new one.
+  rm -f "$failstart"
+  : > "$calls"
+  if (set -e; prepare_access_address 203.0.113.10; commit_access_address 203.0.113.10) >"$OUTPUT" 2>&1; then pass; else fail "address change failed: $(<"$OUTPUT")"; fi
+  if ! has_addr "$old" && has_addr "$new"; then pass; else fail "after the change only the new address may remain: $(<"$addrs")"; fi
+  assert_before "$(<"$calls")" "systemctl stop openrung-access-address.service" "systemctl enable --now" "the previous unit stops (removing its address) before the new one starts"
+  assert_contains "$(<"$ACCESS_UNIT")" "replace ${new}/128" "the new unit names the new address"
 
   # The host's own preferred address is refused before anything changes.
-  rm -f "$ACCESS_UNIT"
-  echo "2: eth0    inet6 2001:db8:1::10/64 scope global" > "$addrs"
   : > "$calls"
-  if (set -e; apply_access_address 203.0.113.10) >"$OUTPUT" 2>&1; then fail "a preferred host address was accepted"; else pass; fi
+  echo "2: eth0    inet6 2001:db8:1::30/64 scope global" >> "$addrs"
+  before="$(<"$ACCESS_UNIT")"
+  ACCESS_HOST=2001:db8:1::30
+  if (set -e; prepare_access_address 203.0.113.10) >"$OUTPUT" 2>&1; then fail "a preferred host address was accepted"; else pass; fi
   assert_contains "$(<"$OUTPUT")" "already a preferred address" "refusal names the reason"
-  if [ -e "$ACCESS_UNIT" ]; then fail "a unit was written for a preferred host address"; else pass; fi
-  case "$(<"$calls")" in *systemctl*) fail "systemctl ran for a refused address" ;; *) pass ;; esac
+  case "$(<"$calls")" in *"address replace"*|*systemctl*) fail "a refused address changed the host: $(<"$calls")" ;; *) pass ;; esac
+  assert_eq "$before" "$(<"$ACCESS_UNIT")" "a refused address leaves the unit untouched"
 
-  # off disables and deletes the unit.
-  : > "$addrs"
-  (set -e; apply_access_address 203.0.113.10) >"$OUTPUT" 2>&1
+  # off changes nothing before the roll, then removes the unit and its address.
   ACCESS_HOST=off
   : > "$calls"
-  if (set -e; apply_access_address 203.0.113.10) >"$OUTPUT" 2>&1; then pass; else fail "off failed: $(<"$OUTPUT")"; fi
+  (set -e; prepare_access_address 203.0.113.10) >"$OUTPUT" 2>&1
+  if [ -s "$calls" ]; then fail "off changed the host before the roll: $(<"$calls")"; else pass; fi
+  if (set -e; prepare_access_address 203.0.113.10; commit_access_address 203.0.113.10) >"$OUTPUT" 2>&1; then pass; else fail "off failed: $(<"$OUTPUT")"; fi
   assert_contains "$(<"$calls")" "systemctl disable --now openrung-access-address.service" "off stops and disables the unit"
   if [ -e "$ACCESS_UNIT" ]; then fail "off left the unit behind"; else pass; fi
+  if has_addr "$new"; then fail "off left the address behind"; else pass; fi
+  # A commit without a prepared interface refuses instead of writing a unit.
+  ACCESS_HOST="$new"; ACCESS_DEV=""
+  if (set -e; commit_access_address 203.0.113.10) >"$OUTPUT" 2>&1; then fail "commit ran without prepare"; else pass; fi
   ACCESS_HOST=""
 }
 
@@ -909,8 +963,8 @@ test_egress_limit_follows_verified_roll
 test_new_dest_rate_validation
 test_foundation_contact_is_managed_only_when_set
 test_access_host_validation_and_env
-test_convert_applies_access_address_before_roll
-test_apply_access_address_remote_command
+test_convert_orders_access_address_around_roll
+test_access_address_remote_commands
 test_apply_egress_limit_remote_command
 test_audit_remote_command
 test_real_transaction_and_rollback_commands

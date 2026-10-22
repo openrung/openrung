@@ -215,3 +215,86 @@ func TestRenderXrayConfigAccessHostKeepsOneWildcardListener(t *testing.T) {
 		})
 	}
 }
+
+// With no configured public host, detection skips the access address (which
+// sits on the same interface as the primary), and a resolved public host that
+// still names the access address is never advertised beside it.
+func TestDetectedPublicHostNeverIsTheAccessHost(t *testing.T) {
+	const primary = "2001:db8:1::1"
+	for name, tc := range map[string]struct {
+		detect     func(exclude string) (string, error)
+		wantPublic string
+		wantAccess string
+	}{
+		"detection skips the access host": {
+			detect: func(exclude string) (string, error) {
+				// The access address enumerates first, as it can on a host.
+				for _, candidate := range []string{testAccessHost, primary} {
+					if candidate != exclude {
+						return candidate, nil
+					}
+				}
+				return "", errors.New("no global IPv6")
+			},
+			wantPublic: primary,
+			wantAccess: testAccessHost,
+		},
+		"a resolved public host equal to the access host": {
+			detect:     func(string) (string, error) { return testAccessHost, nil },
+			wantPublic: testAccessHost,
+			wantAccess: "",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			prev := detectPublicIPv6
+			var excluded []string
+			var mu sync.Mutex
+			detectPublicIPv6 = func(exclude string) (string, error) {
+				mu.Lock()
+				excluded = append(excluded, exclude)
+				mu.Unlock()
+				return tc.detect(exclude)
+			}
+			t.Cleanup(func() { detectPublicIPv6 = prev })
+
+			broker := &fakeBroker{}
+			ts := httptest.NewServer(broker.handler())
+			defer ts.Close()
+			log := &syncBuffer{}
+			eng := New(Config{
+				BrokerURL:   ts.URL,
+				Mode:        ModeDirect,
+				AccessHost:  testAccessHost,
+				ListenPort:  freePort(t),
+				Identity:    testIdentity,
+				DisableXray: true,
+				ConfigDir:   t.TempDir(),
+			}, Events{Log: log})
+			eng.hostAddresses = func() ([]relayruntime.HostAddress, error) {
+				return []relayruntime.HostAddress{{IP: netip.MustParseAddr(testAccessHost), Deprecated: true}}, nil
+			}
+			if err := eng.Start(); err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			defer eng.Stop()
+			eventually(t, 5*time.Second, "registration", func() bool {
+				registers, _, _ := broker.stats()
+				return registers >= 1
+			})
+			_, _, last := broker.stats()
+			if last.PublicHost != tc.wantPublic || last.AccessHost != tc.wantAccess {
+				t.Fatalf("registered public %q access %q; want public %q access %q", last.PublicHost, last.AccessHost, tc.wantPublic, tc.wantAccess)
+			}
+			if tc.wantAccess == "" && !strings.Contains(log.String(), "it is the public host") {
+				t.Fatalf("missing refusal log line; log:\n%s", log.String())
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			for _, exclude := range excluded {
+				if exclude != testAccessHost {
+					t.Fatalf("detection ran without excluding the access host: %q", excluded)
+				}
+			}
+		})
+	}
+}

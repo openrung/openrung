@@ -2,6 +2,7 @@ package relayruntime
 
 import (
 	"net"
+	"net/netip"
 	"testing"
 )
 
@@ -23,5 +24,18 @@ func TestIsAdvertisableIPv6(t *testing.T) {
 				t.Fatalf("isAdvertisableIPv6(%q) = %v, want %v", tt.ip, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestSameIPMatchesAnySpelling(t *testing.T) {
+	access := netip.MustParseAddr("2001:db8:1::10")
+	if !sameIP(net.ParseIP("2001:DB8:1:0:0:0:0:10"), access) {
+		t.Fatal("the same address in another spelling did not match")
+	}
+	if sameIP(net.ParseIP("2001:db8:1::1"), access) {
+		t.Fatal("a different address matched")
+	}
+	if sameIP(net.ParseIP("2001:db8:1::10"), netip.Addr{}) {
+		t.Fatal("an empty exclusion matched")
 	}
 }

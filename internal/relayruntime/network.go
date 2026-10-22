@@ -3,11 +3,18 @@ package relayruntime
 import (
 	"errors"
 	"net"
+	"net/netip"
+	"strings"
 )
 
 var ErrNoGlobalIPv6Address = errors.New("no global unicast IPv6 address found")
 
-func DefaultPublicIPv6Address() (string, error) {
+// DefaultPublicIPv6Address returns the host's first global unicast IPv6
+// address, skipping exclude (an IP literal, or "" for none): a relay with an
+// access address passes it here, since that address sits on the same
+// interface but must never become the advertised public host.
+func DefaultPublicIPv6Address(exclude string) (string, error) {
+	skip, _ := netip.ParseAddr(strings.TrimSpace(exclude))
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return "", err
@@ -22,7 +29,7 @@ func DefaultPublicIPv6Address() (string, error) {
 		}
 		for _, addr := range addrs {
 			ip := addressIP(addr)
-			if isAdvertisableIPv6(ip) {
+			if isAdvertisableIPv6(ip) && !sameIP(ip, skip) {
 				return ip.String(), nil
 			}
 		}
@@ -39,6 +46,11 @@ func addressIP(addr net.Addr) net.IP {
 	default:
 		return nil
 	}
+}
+
+func sameIP(ip net.IP, addr netip.Addr) bool {
+	parsed, ok := netip.AddrFromSlice(ip)
+	return ok && addr.IsValid() && parsed.Unmap() == addr.Unmap()
 }
 
 func isAdvertisableIPv6(ip net.IP) bool {

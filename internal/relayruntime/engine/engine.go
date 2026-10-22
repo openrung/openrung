@@ -512,13 +512,18 @@ func accessHostListenHost(host string) bool {
 	}
 }
 
-// verifiedAccessHost returns the access host to advertise in a registration,
-// or "" — with the reason logged — when none is configured or the host check
+// verifiedAccessHost returns the access host to advertise in a registration
+// whose resolved public host is publicHost, or "" — with the reason logged —
+// when none is configured, it names the public host itself, or the host check
 // fails. It runs per registration, so an address configured after the relay
 // started is picked up by the next re-registration.
-func (e *Engine) verifiedAccessHost(cfg Config) string {
+func (e *Engine) verifiedAccessHost(cfg Config, publicHost string) string {
 	access, err := relay.NormalizeAccessHost(cfg.AccessHost)
 	if err != nil || access == "" {
+		return ""
+	}
+	if public, err := netip.ParseAddr(strings.TrimSpace(publicHost)); err == nil && public.Unmap().String() == access {
+		e.logf("not advertising access host %s: it is the public host this relay registers with", access)
 		return ""
 	}
 	list := e.hostAddresses
@@ -843,6 +848,10 @@ var errReresolve = errors.New("auto mode re-resolved to a different transport")
 // detectPublicIPv6 is a package var so tests can stub public-IPv6 detection. It
 // is used for the direct-session public-address checks; auto mode never guesses
 // direct from it (see autoResolve).
+//
+// Its argument is the configured access host (or ""), which detection skips:
+// the access address sits on the same interface as the primary address but
+// must never be advertised as the public host.
 var detectPublicIPv6 = relayruntime.DefaultPublicIPv6Address
 
 // autoReprobeInterval is how often auto mode re-evaluates reachability while a
@@ -1300,7 +1309,7 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 		usedConfiguredHost = true
 	}
 	if publicHost == "" {
-		detected, err := detectPublicIPv6()
+		detected, err := detectPublicIPv6(cfg.AccessHost)
 		if err != nil {
 			return fmt.Errorf("this computer has no public address the internet can reach (no global IPv6): %w", err)
 		}
@@ -1461,7 +1470,7 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 	// with the same expiry, binding the exact front list to this identity.
 	signedReq := func() (relay.RegisterRequest, error) {
 		signed := req
-		signed.AccessHost = e.verifiedAccessHost(cfg)
+		signed.AccessHost = e.verifiedAccessHost(cfg, signed.PublicHost)
 		expiresAt := time.Now().Add(relay.IdentityProofTTLDirect)
 		signed.IdentityPublicKey, signed.IdentityProof, signed.IdentityExpiresAt =
 			relay.SignIdentity(identityKey, signed, expiresAt)
@@ -1584,7 +1593,7 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 	// arms when the registered address actually came from detection.
 	ipBaseline := ""
 	if !usedConfiguredHost {
-		ipBaseline, _ = detectPublicIPv6()
+		ipBaseline, _ = detectPublicIPv6(cfg.AccessHost)
 	}
 	ipRecheck := time.NewTicker(ipRecheckInterval)
 	defer ipRecheck.Stop()
@@ -1684,7 +1693,7 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 				return fmt.Errorf("connection listener stopped: %w", err)
 			}
 		case <-ipRecheck.C:
-			detected, err := detectPublicIPv6()
+			detected, err := detectPublicIPv6(cfg.AccessHost)
 			if err == nil && ipBaseline != "" && detected != ipBaseline {
 				e.logf("public IPv6 changed %s → %s; re-registering", ipBaseline, detected)
 				return errPublicIPChanged
