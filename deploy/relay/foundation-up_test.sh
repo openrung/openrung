@@ -306,6 +306,130 @@ test_foundation_contact_is_managed_only_when_set() {
   TOKEN=""
 }
 
+test_access_host_validation_and_env() {
+  reset_script_functions
+  local value sent="$TEST_TMP/access-install-stdin"
+  for value in 2001:db8:1::10 2a01:4f9:c010:1234::a off ''; do
+    if (ACCESS_HOST="$value"; validate_config) >/dev/null 2>&1; then pass; else fail "access host '${value}' rejected"; fi
+  done
+  for value in 203.0.113.7 '[2001:db8::1]' '2001:db8::1%eth0' relay.example.org '2001:db8::1;reboot' "\$(id)"; do
+    if (ACCESS_HOST="$value"; validate_config) >/dev/null 2>&1; then fail "access host '${value}' accepted"; else pass; fi
+  done
+
+  ACCESS_HOST=""
+  case "$(preserve_drop)" in *ACCESS_HOST*) fail "unset access host drops the host's setting" ;; *) pass ;; esac
+  for value in 2001:db8:1::10 off; do
+    ACCESS_HOST="$value"
+    assert_contains "$(preserve_drop)" '|ACCESS_HOST)=' "access host ${value} replaces the host's setting"
+  done
+
+  ssh_run() { cat > "$sent"; }
+  TOKEN=test-token
+  ACCESS_HOST=2001:db8:1::10
+  install_env_file 203.0.113.10
+  assert_contains "$(<"$sent")" 'OPENRUNG_ACCESS_HOST=2001:db8:1::10' "convert writes the access host"
+  for value in off ''; do
+    ACCESS_HOST="$value"
+    install_env_file 203.0.113.10
+    if grep -q ACCESS_HOST "$sent"; then fail "access host '${value}' was written"; else pass; fi
+  done
+  TOKEN=""
+}
+
+# The address is configured before the roll, so the candidate relay finds it
+# at its first registration, and a failure stops convert before the roll.
+test_convert_applies_access_address_before_roll() {
+  reset_script_functions
+  preflight_host() { :; }
+  prepare_image() { printf 'pull\n' >> "$MUTATION_LOG"; }
+  stage_preserved_env() { printf 'stage\n' >> "$MUTATION_LOG"; }
+  ssh_run() { printf 'public_host=203.0.113.10\nlabel=test\n'; }
+  install_env_file() { printf 'install\n' >> "$MUTATION_LOG"; }
+  apply_access_address() { printf 'access\n' >> "$MUTATION_LOG"; }
+  roll_host() { printf 'roll\n' >> "$MUTATION_LOG"; }
+  apply_egress_limit() { printf 'egress\n' >> "$MUTATION_LOG"; }
+  : > "$MUTATION_LOG"
+  (set -e; convert_host 203.0.113.10) >"$OUTPUT" 2>&1
+  assert_eq $'pull\nstage\ninstall\naccess\nroll\negress' "$(<"$MUTATION_LOG")" "convert configures the access address before the roll"
+
+  apply_access_address() { printf 'access\n' >> "$MUTATION_LOG"; return 1; }
+  : > "$MUTATION_LOG"
+  if (set -e; convert_host 203.0.113.10) >"$OUTPUT" 2>&1; then fail "convert continued after the access address failed"; else pass; fi
+  assert_eq $'pull\nstage\ninstall\naccess' "$(<"$MUTATION_LOG")" "a failed access address never rolls the relay"
+}
+
+# Run the exact remote commands apply_access_address sends, against stubs.
+test_apply_access_address_remote_command() {
+  reset_script_functions
+  local stub="${TEST_TMP}/access-stub" calls="${TEST_TMP}/access-calls" root="${TEST_TMP}/access-root" addrs="${TEST_TMP}/access-addrs" unit
+  mkdir -p "$stub" "$root"
+  : > "$calls"
+  : > "$addrs"
+  cat > "${stub}/sudo" <<'EOF'
+#!/bin/sh
+exec "$@"
+EOF
+  # ip answers the default-route query and lists whatever "$addrs" holds;
+  # systemctl's enable --now stands in for the unit's ExecStart.
+  cat > "${stub}/ip" <<EOF
+#!/bin/sh
+echo "ip \$*" >> "$calls"
+case "\$*" in
+  "-6 route show default") echo "default via fe80::1 dev eth0 proto static metric 1024 pref medium" ;;
+  "-6 -o address show to "*) cat "$addrs" ;;
+esac
+EOF
+  cat > "${stub}/systemctl" <<EOF
+#!/bin/sh
+echo "systemctl \$*" >> "$calls"
+case "\$*" in
+  "enable --now "*) echo "2: eth0    inet6 2001:db8:1::10/128 scope global deprecated nodad" > "$addrs" ;;
+  "stop "*|"disable --now "*) : > "$addrs" ;;
+esac
+EOF
+  chmod +x "$stub"/*
+  ssh_run() { PATH="${stub}:${PATH}" bash -c "$2"; }
+  ACCESS_UNIT="${root}/openrung-access-address.service"
+
+  ACCESS_HOST=""
+  (set -e; apply_access_address 203.0.113.10) >"$OUTPUT" 2>&1
+  if [ -s "$calls" ]; then fail "unset access host touched the host: $(<"$calls")"; else pass; fi
+
+  ACCESS_HOST=2001:db8:1::10
+  if (set -e; apply_access_address 203.0.113.10) >"$OUTPUT" 2>&1; then pass; else fail "apply_access_address failed: $(<"$OUTPUT")"; fi
+  unit="$(<"$ACCESS_UNIT")"
+  assert_contains "$unit" "ExecStart=/sbin/ip -6 address replace 2001:db8:1::10/128 dev eth0 preferred_lft 0 nodad" "unit adds the address deprecated on the default-route interface"
+  assert_contains "$unit" "ExecStop=-/sbin/ip -6 address delete 2001:db8:1::10/128 dev eth0" "unit removes the address on stop"
+  assert_contains "$unit" "Before=docker.service" "unit runs before docker starts the relay"
+  assert_contains "$(<"$calls")" "systemctl enable --now openrung-access-address.service" "unit is enabled and started"
+  if [ -e "${ACCESS_UNIT}.new" ]; then fail "staging unit left behind"; else pass; fi
+
+  # A re-run (or a changed address) stops the old unit first, so its own
+  # ExecStop removes the address it added.
+  : > "$calls"
+  if (set -e; apply_access_address 203.0.113.10) >"$OUTPUT" 2>&1; then pass; else fail "re-run failed: $(<"$OUTPUT")"; fi
+  assert_before "$(<"$calls")" "systemctl stop openrung-access-address.service" "systemctl enable --now" "re-run stops the old unit before starting the new one"
+
+  # The host's own preferred address is refused before anything changes.
+  rm -f "$ACCESS_UNIT"
+  echo "2: eth0    inet6 2001:db8:1::10/64 scope global" > "$addrs"
+  : > "$calls"
+  if (set -e; apply_access_address 203.0.113.10) >"$OUTPUT" 2>&1; then fail "a preferred host address was accepted"; else pass; fi
+  assert_contains "$(<"$OUTPUT")" "already a preferred address" "refusal names the reason"
+  if [ -e "$ACCESS_UNIT" ]; then fail "a unit was written for a preferred host address"; else pass; fi
+  case "$(<"$calls")" in *systemctl*) fail "systemctl ran for a refused address" ;; *) pass ;; esac
+
+  # off disables and deletes the unit.
+  : > "$addrs"
+  (set -e; apply_access_address 203.0.113.10) >"$OUTPUT" 2>&1
+  ACCESS_HOST=off
+  : > "$calls"
+  if (set -e; apply_access_address 203.0.113.10) >"$OUTPUT" 2>&1; then pass; else fail "off failed: $(<"$OUTPUT")"; fi
+  assert_contains "$(<"$calls")" "systemctl disable --now openrung-access-address.service" "off stops and disables the unit"
+  if [ -e "$ACCESS_UNIT" ]; then fail "off left the unit behind"; else pass; fi
+  ACCESS_HOST=""
+}
+
 test_apply_egress_limit_remote_command() {
   reset_script_functions
   local stub="${TEST_TMP}/egress-stub" calls="${TEST_TMP}/egress-calls" root="${TEST_TMP}/egress-root" out
@@ -416,6 +540,29 @@ EOF
   assert_contains "$out" "unit=enabled" "audit reports the boot unit"
   case "$out" in *"script=current"*|*"script=missing"*|*"script=stale"*) pass ;; *) fail "audit reported no script state: ${out}" ;; esac
   case "$out" in *"rules=current"*|*"rules=missing"*|*"rules=stale"*) pass ;; *) fail "audit reported no rules state: ${out}" ;; esac
+
+  # The access address the env file names, and whether the host carries it.
+  local envfile="${TEST_TMP}/audit-relay.env" addrs="${TEST_TMP}/audit-addrs"
+  : > "$envfile"
+  : > "$addrs"
+  cat > "${stub}/ip" <<EOF
+#!/bin/sh
+cat "$addrs"
+EOF
+  chmod +x "${stub}/ip"
+  ENV_FILE="$envfile"
+  out="$(cmd_audit 203.0.113.10 2>&1)"
+  assert_contains "$out" "access=none" "audit reports no access address"
+  echo "OPENRUNG_ACCESS_HOST=2001:db8:1::10" > "$envfile"
+  out="$(cmd_audit 203.0.113.10 2>&1)"
+  assert_contains "$out" "access=2001:db8:1::10 access_state=missing access_unit=enabled" "audit flags a missing access address"
+  echo "2: eth0    inet6 2001:db8:1::10/128 scope global deprecated nodad" > "$addrs"
+  out="$(cmd_audit 203.0.113.10 2>&1)"
+  assert_contains "$out" "access_state=present" "audit reports a configured access address"
+  echo "2: eth0    inet6 2001:db8:1::10/64 scope global" > "$addrs"
+  out="$(cmd_audit 203.0.113.10 2>&1)"
+  assert_contains "$out" "access_state=preferred" "audit flags an access address the kernel may source egress from"
+  ENV_FILE=/etc/openrung/relay.env
 
   # Without the host's nftables the boot unit cannot restore the rules; audit
   # must say so rather than report the table as unloaded.
@@ -761,6 +908,9 @@ test_convert_prepares_image_before_env_write
 test_egress_limit_follows_verified_roll
 test_new_dest_rate_validation
 test_foundation_contact_is_managed_only_when_set
+test_access_host_validation_and_env
+test_convert_applies_access_address_before_roll
+test_apply_access_address_remote_command
 test_apply_egress_limit_remote_command
 test_audit_remote_command
 test_real_transaction_and_rollback_commands

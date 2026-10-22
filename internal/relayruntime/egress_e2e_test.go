@@ -26,6 +26,8 @@ import (
 // still carries ordinary traffic. Runs only where xray is installed.
 
 type e2eRelay struct {
+	// dialHost is the address clients dial; startE2EClient connects there.
+	dialHost   string
 	listenPort int
 	apiPort    int
 	publicKey  string
@@ -57,6 +59,13 @@ func (b *lockedBuffer) String() string {
 // TLS server (so the handshake needs no internet) and installs one credential.
 func startE2ERelay(t *testing.T, xrayPath string, guard bool, credential Credential) *e2eRelay {
 	t.Helper()
+	return startE2ERelayOn(t, xrayPath, "127.0.0.1", guard, credential)
+}
+
+// startE2ERelayOn is startE2ERelay with the public inbound bound to
+// listenHost; clients still dial 127.0.0.1 until the caller changes dialHost.
+func startE2ERelayOn(t *testing.T, xrayPath, listenHost string, guard bool, credential Credential) *e2eRelay {
+	t.Helper()
 	dest := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "dest") }))
 	dest.StartTLS()
 	t.Cleanup(dest.Close)
@@ -66,9 +75,9 @@ func startE2ERelay(t *testing.T, xrayPath string, guard bool, credential Credent
 	if err != nil {
 		t.Fatalf("generate Reality keys: %v", err)
 	}
-	relay := &e2eRelay{listenPort: freeLoopbackPort(t), apiPort: freeLoopbackPort(t), publicKey: keys.PublicKey, log: &lockedBuffer{}}
+	relay := &e2eRelay{dialHost: "127.0.0.1", listenPort: freeLoopbackPort(t), apiPort: freeLoopbackPort(t), publicKey: keys.PublicKey, log: &lockedBuffer{}}
 	config, err := BuildXrayConfig(XrayConfigInput{
-		ListenHost:         "127.0.0.1",
+		ListenHost:         listenHost,
 		ListenPort:         relay.listenPort,
 		APIPort:            relay.apiPort,
 		Flow:               "xtls-rprx-vision",
@@ -125,7 +134,7 @@ func startE2EClient(t *testing.T, xrayPath string, relay *e2eRelay, clientID str
 		"outbounds": []any{map[string]any{
 			"protocol": "vless",
 			"settings": map[string]any{"vnext": []any{map[string]any{
-				"address": "127.0.0.1", "port": relay.listenPort,
+				"address": relay.dialHost, "port": relay.listenPort,
 				"users": []any{map[string]any{"id": clientID, "encryption": "none", "flow": "xtls-rprx-vision"}},
 			}}},
 			"streamSettings": map[string]any{
@@ -303,6 +312,34 @@ func TestLeaseCredentialAdmitsUntilRemoved(t *testing.T) {
 	sharedProxy := startE2EClient(t, xrayPath, relay, shared.ID)
 	if body, err := fetchThrough(sharedProxy, victim.URL); err != nil || body != "victim" {
 		t.Fatalf("shared credential after lease removal: body %q, err %v", body, err)
+	}
+}
+
+// An access-address relay serves its IPv4 public endpoint and its IPv6 access
+// address from one listener: xray binds the wildcard the engine renders for a
+// dual-family listen host ("0.0.0.0", see engine.xrayPublicListenHost) through
+// Go's generic "tcp" network, which opens a single dual-stack socket. Here the
+// two loopback addresses stand in for the two public ones: the same relay,
+// the same credential, a VLESS+Reality handshake on each.
+func TestOneWildcardListenerServesASecondAddress(t *testing.T) {
+	xrayPath := requireXray(t)
+	if probe, err := net.Listen("tcp6", "[::1]:0"); err != nil {
+		t.Skipf("no IPv6 loopback on this host: %v", err)
+	} else {
+		_ = probe.Close()
+	}
+	victim := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "victim") }))
+	defer victim.Close()
+	credential := Credential{ID: "11111111-2222-4333-8444-555555555555", Email: "lease-0123456789abcdef0123456789abcdef"}
+
+	relay := startE2ERelayOn(t, xrayPath, "0.0.0.0", false, credential)
+	for _, host := range []string{"127.0.0.1", "::1"} {
+		viaHost := *relay
+		viaHost.dialHost = host
+		proxy := startE2EClient(t, xrayPath, &viaHost, credential.ID)
+		if body, err := fetchThrough(proxy, victim.URL); err != nil || body != "victim" {
+			t.Fatalf("VLESS through %s: body %q, err %v; xray log:\n%s", host, body, err, relay.log.String())
+		}
 	}
 }
 

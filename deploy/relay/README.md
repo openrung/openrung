@@ -132,6 +132,7 @@ deploy/relay/foundation-up.sh rollback 203.0.113.10
 | `OPENRUNG_SSH_KEY` / `OPENRUNG_SSH_USER` | `~/.ssh/id_ed25519_openrung` / `ubuntu` | SSH access to the host. |
 | `OPENRUNG_REGION` | `ap-northeast-1` | Region used to look up Lightsail-published SSH host keys for pinning. |
 | `OPENRUNG_FOUNDATION_CONTACT` | — | Foundation operator contact (an email address). `convert` and `create` (and `lightsail-up.sh`) write it as `OPENRUNG_OPERATOR_CONTACT`, which the relay sends privately at registration. Unset keeps whatever contact the host already has. |
+| `OPENRUNG_ACCESS_HOST` | — | IPv6 access address (see *Access address* under Networking notes). `convert` and `create` configure it on the host through `openrung-access-address.service` before the roll and write it into the env file; `off` removes both. Unset keeps whatever the host already has. |
 | `OPENRUNG_ALLOW_TOFU` | `0` | Every mode refuses to contact a host whose SSH key cannot be verified out-of-band (a tokenless mode that silently accepted a key would launder it into "known" for a later token-carrying run); set to `1` to explicitly accept a first-seen key (non-Lightsail hosts). |
 
 Notes on the design:
@@ -496,9 +497,45 @@ not need to match.
 
   `foundation-up.sh audit HOST...` reports, per host, the relay version,
   whether the saved rules and the installed script match that relay's image,
-  whether the host has `nftables`, whether the table is loaded, and whether the
-  boot unit is enabled. Volunteer relays (`volunteer-up.sh`, the
-  desktop app) never get host firewall changes.
+  whether the host has `nftables`, whether the table is loaded, whether the
+  boot unit is enabled, and the access address state (below). Volunteer
+  relays (`volunteer-up.sh`, the desktop app) never get host firewall
+  changes.
+
+- **Access address (Foundation, optional):** `OPENRUNG_ACCESS_HOST` names one
+  extra IPv6 address, distinct from the relay's primary address and its
+  `OPENRUNG_PUBLIC_HOST`, that the relay serves on the same listener and
+  sends privately at registration as `access_host`. The broker then names
+  that address instead of the public host in the per-user access answer
+  (`POST /api/v1/access`, see [docs/api.md](../../docs/api.md)); the
+  anonymous relay list keeps the public host. Run
+  `foundation-up.sh convert` (or `create`) with `OPENRUNG_ACCESS_HOST=<IPv6>`:
+  it writes the variable into the env file and installs
+  `openrung-access-address.service`, a host unit that adds the address
+  before docker starts the relay and removes it when stopped:
+
+  ```
+  ip -6 address replace <IPv6>/128 dev <default-route interface> preferred_lft 0 nodad
+  ```
+
+  `preferred_lft 0` makes the address *deprecated*: the kernel accepts and
+  answers connections to it but never picks it as the source of a new one,
+  so registration, heartbeats and client egress stay on the primary address
+  (and the broker's reachability probe keeps targeting the public endpoint).
+  Before every registration the
+  relay checks, with a read-only netlink query (no capability needed), that
+  the address is on a host interface, past duplicate address detection and
+  deprecated; when it is not, the relay logs `not advertising access host …`
+  with the reason and registers without it. xray keeps one wildcard listener
+  — Go opens it as a single dual-stack socket — so the access address needs
+  no second listener; the relay refuses an access host with a literal
+  `OPENRUNG_LISTEN_HOST`, with connection logging, or outside direct mode.
+  `OPENRUNG_ACCESS_HOST=off` on `convert` removes the unit, the address and
+  the variable; leaving it unset keeps whatever the host has. The address is
+  static: changing it is a `convert` with the new value, which re-registers
+  the relay. `foundation-up.sh audit` reports `access=none`, or the address
+  with `access_state=present|missing|preferred` and whether its unit is
+  enabled. Volunteer relays (`volunteer-up.sh`, the desktop app) never set it.
 
 ## Operations
 

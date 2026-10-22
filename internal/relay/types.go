@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -112,6 +113,14 @@ type RegisterRequest struct {
 	// identity-bearing registrations can be lease-capable, because the sync
 	// endpoints authenticate with the registration's lease token.
 	AccessLeases bool `json:"access_leases,omitempty"`
+	// AccessHost is an optional IPv6 literal, distinct from PublicHost, that
+	// the relay serves on the same listener and that the broker may hand out
+	// in place of PublicHost in its access answer (ADR-006.1 Part A). The
+	// relay sends it only after confirming the address is configured on a
+	// host interface. Private registration material like OperatorContact:
+	// never part of the public directory, and not bound by the identity
+	// statement, so relays without it register unchanged.
+	AccessHost string `json:"access_host,omitempty"`
 }
 
 // MarshalJSON emits the canonical key plus the deprecated v1 alias so upgraded
@@ -466,6 +475,26 @@ func NormalizeOperatorContact(contact string) (string, error) {
 		return "", errors.New("operator_contact must be an email address")
 	}
 	return contact, nil
+}
+
+// NormalizeAccessHost validates an access host and returns its canonical
+// spelling. Empty is allowed and returns "". Otherwise it must be a bare IPv6
+// literal (no brackets, zone, or IPv4-mapped form) that is a global unicast,
+// non-private address: the access address is something clients on the
+// internet dial, so nothing else is meaningful.
+func NormalizeAccessHost(host string) (string, error) {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return "", nil
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil || !addr.Is6() || addr.Is4In6() || addr.Zone() != "" {
+		return "", errors.New("access_host must be an IPv6 address literal")
+	}
+	if !addr.IsGlobalUnicast() || addr.IsPrivate() {
+		return "", errors.New("access_host must be a global unicast IPv6 address")
+	}
+	return addr.String(), nil
 }
 
 // MaxLabelLength bounds the operator-supplied relay label.
