@@ -200,6 +200,9 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 		mux.HandleFunc("/admin/api/relays/weights", operational(relayWeightsListHandler(store, cfg.APIToken)))
 		mux.HandleFunc("/admin/api/relays/{id}/weight", operational(relayWeightHandler(store, cfg.APIToken, clientIP.clientIP)))
 		if users != nil {
+			if directory, ok := store.(userDirectory); ok {
+				mux.HandleFunc("/admin/api/users", operational(adminUserListHandler(directory, cfg.APIToken)))
+			}
 			mux.HandleFunc("/admin/api/users/{id}", operational(adminUserHandler(users.store, cfg.APIToken)))
 			mux.HandleFunc("/admin/api/users/{id}/status", operational(adminUserStatusHandler(access.setUserStatus, cfg.APIToken, clientIP.clientIP)))
 		}
@@ -235,6 +238,13 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 		dashboard.relayDirectory = store
 		dashboard.relayWeights = store
 		dashboard.clientIP = clientIP.clientIP
+		// The users page follows the operational user routes: it exists
+		// with client users (an access token key) and shares their store
+		// and status implementation.
+		if directory, ok := store.(userDirectory); ok && users != nil {
+			dashboard.users = directory
+			dashboard.userStatus = access.setUserStatus
+		}
 		dashboard.register(mux)
 	}
 

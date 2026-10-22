@@ -397,6 +397,43 @@ second bound, the response lists at most 200 offline rows (the busiest); the
 totals still count every attested offline relay, and the page notes when rows
 were hidden.
 
+### Users page
+
+The sidebar's Users page (`/admin/dashboard/users`) is the operator's view of
+[client users](#client-users-spec-openrung-user-auth-v1) and their
+[access leases](#relay-lease-sync), backed by:
+
+```http
+GET /admin/api/dashboard/users?status=&sort=last_auth&offset=0&limit=50
+GET /admin/api/dashboard/users/{ref}
+PUT /admin/api/dashboard/users/{id}/status
+```
+
+The list takes the same parameters and returns the same rows as the
+[operational list](#operational-user-endpoints). `{ref}` on the detail route is
+a user ID, a lease label as relays log it (`lease-<id>`), or a bare lease ID,
+which resolves to the lease's owner (`matched_lease` names it), so an operator
+can go from a relay log line to the user. The detail carries the user's row
+(status timeline and lease counters), its 50 most recently created retained
+leases with each lease's status (`live`, `expired`, `revoked`) and the relay's
+label while the relay is registered, `leases_total`, and
+`lease_retention_days` (leases are deleted seven days after they expire).
+Unknown, malformed and retention-expired references are `404`.
+
+The status route is the same implementation as the operational
+`PUT /admin/api/users/{id}/status` — same body, validation and response —
+behind the dashboard session instead of the token, with the
+[dashboard mutation guards](#dashboard-weight-endpoints) (`415` without a JSON
+content type, `403` cross-origin). Each change is logged on the one
+`user status changed` line, whose `via` field names the door (`dashboard` or
+`operational api`). The page requires a reason and a confirmation before it
+disables a user, and states that disabling stops new connections within
+seconds (live leases are revoked and relays drop them on their next sync) but
+does not terminate an established session. Responses never include public
+keys, lease credentials, client source addresses or telemetry identifiers.
+Without client users configured (`OPENRUNG_USER_TOKEN_KEY`) these routes
+answer `503`.
+
 ## Operational relay inventory
 
 ```http
@@ -1400,6 +1437,47 @@ The reason is at most 256 characters of printable text. Every change is
 logged with the caller's IP. Unknown or malformed IDs are `404`; the routes
 share the operational API's limiter and exist only when both
 `OPENRUNG_API_TOKEN` and `OPENRUNG_USER_TOKEN_KEY` are configured.
+
+```http
+GET /admin/api/users?status=disabled&sort=leases_24h&offset=0&limit=50
+Authorization: Bearer <OPENRUNG_API_TOKEN>
+```
+
+Lists users one page at a time. `status` (`enabled` or `disabled`) filters;
+`sort` is `last_auth` (default: most recently authenticated first),
+`leases_24h` (most leases issued in the last 24 hours first) or `enrolled`
+(newest first), with the user ID as the final tiebreak; `limit` is 1–100
+(default 50) and `offset` is zero or more. Invalid parameters are `400`.
+Each row is the operator view above plus three counters derived from access
+leases — the broker keeps no per-user traffic volume, so lease activity is the
+only volume signal:
+
+```json
+{
+  "generated_at": "2026-10-16T16:00:00Z",
+  "sort": "leases_24h",
+  "total": 1,
+  "offset": 0,
+  "limit": 50,
+  "users": [
+    {
+      "user_id": "user_0123456789abcdef0123456789abcdef",
+      "status": "enabled",
+      "created_at": "2026-10-16T12:00:00Z",
+      "last_auth_at": "2026-10-16T15:55:00Z",
+      "live_leases": 2,
+      "leases_issued_24h": 6,
+      "relays_24h": 3
+    }
+  ]
+}
+```
+
+`live_leases` counts leases neither revoked nor expired, `leases_issued_24h`
+counts leases created in the last 24 hours (a renewal extends a lease rather
+than issuing one), and `relays_24h` counts distinct relays among leases
+issued or renewed in the last 24 hours. `total` counts every user matching the
+filter. The route shares the limiter and the configuration requirements above.
 
 ## Client access
 

@@ -237,6 +237,12 @@ CREATE INDEX IF NOT EXISTS access_leases_live_by_relay_idx
 	ON access_leases (relay_id, expires_at)
 	WHERE revoked_at IS NULL;
 
+-- Every retained lease of one user, revoked ones included: the operator
+-- user directory's per-user lease counters (a lateral aggregate per listed
+-- user) and the user detail's most-recent-first lease list.
+CREATE INDEX IF NOT EXISTS access_leases_by_user_idx
+	ON access_leases (user_id, created_at);
+
 CREATE TABLE IF NOT EXISTS relay_lease_state (
 	relay_id text PRIMARY KEY,
 	revision bigint NOT NULL DEFAULT 0,

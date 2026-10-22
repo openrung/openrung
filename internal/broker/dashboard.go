@@ -74,7 +74,12 @@ type dashboardServer struct {
 	// (only in tests that never touch them) answers them with 503. The
 	// column itself is fed by relayDirectory's ListRanked.
 	relayWeights relayRankingWeightStore
-	// clientIP resolves the caller's address for the weight-change audit log;
+	// users and userStatus back the users page; nil (a broker without
+	// client users, or tests that never touch the page) answers its API
+	// routes with 503.
+	users      userDirectory
+	userStatus userStatusSetter
+	// clientIP resolves the caller's address for the change audit logs;
 	// NewServer installs the broker's proxy-aware resolver.
 	clientIP func(*http.Request) string
 	now      func() time.Time
@@ -98,6 +103,7 @@ func (d *dashboardServer) register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/dashboard/logout", d.logout)
 	mux.HandleFunc("GET /admin/dashboard", d.requireAuth(servePage(d.renderPage(dashboardHTML))))
 	mux.HandleFunc("GET /admin/dashboard/relays", d.requireAuth(servePage(d.renderPage(relaysHTML))))
+	mux.HandleFunc("GET /admin/dashboard/users", d.requireAuth(servePage(d.renderPage(usersHTML))))
 	mux.HandleFunc("GET /admin/dashboard/dashboard.js", d.requireAuth(serveAsset("text/javascript; charset=utf-8", dashboardJS)))
 	mux.HandleFunc("GET /admin/dashboard/dashboard.css", d.requireAuth(serveAsset("text/css; charset=utf-8", dashboardCSS)))
 	mux.HandleFunc("GET /admin/api/dashboard/overview", d.requireAuth(d.overview))
@@ -105,6 +111,9 @@ func (d *dashboardServer) register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/api/dashboard/relays", d.requireAuth(d.relaysPanel))
 	mux.HandleFunc("PUT /admin/api/dashboard/relays/{id}/weight", d.requireAuth(d.setRelayWeight))
 	mux.HandleFunc("DELETE /admin/api/dashboard/relays/{id}/weight", d.requireAuth(d.deleteRelayWeight))
+	mux.HandleFunc("GET /admin/api/dashboard/users", d.requireAuth(d.listUsers))
+	mux.HandleFunc("GET /admin/api/dashboard/users/{ref}", d.requireAuth(d.userDetail))
+	mux.HandleFunc("PUT /admin/api/dashboard/users/{id}/status", d.requireAuth(d.putUserStatus))
 }
 
 // renderPage fills a page's build-identity placeholders. The values come

@@ -414,11 +414,11 @@ func TestDashboardRelaysEndpointAndPage(t *testing.T) {
 	}
 }
 
-// Both dashboard pages carry the sidebar: links to every page, the current
+// Every dashboard page carries the sidebar: links to every page, the current
 // one marked, and the footer's build-identity placeholders.
 func TestDashboardPagesCrossLink(t *testing.T) {
-	for name, page := range map[string][]byte{"overview": dashboardHTML, "relays": relaysHTML} {
-		for _, needle := range []string{`href="/admin/dashboard"`, `href="/admin/dashboard/relays"`, `aria-current="page"`, `action="/admin/dashboard/logout"`, versionPlaceholder, revisionPlaceholder} {
+	for name, page := range map[string][]byte{"overview": dashboardHTML, "relays": relaysHTML, "users": usersHTML} {
+		for _, needle := range []string{`href="/admin/dashboard"`, `href="/admin/dashboard/relays"`, `href="/admin/dashboard/users"`, `aria-current="page"`, `action="/admin/dashboard/logout"`, versionPlaceholder, revisionPlaceholder} {
 			if !strings.Contains(string(page), needle) {
 				t.Errorf("%s page lacks %q", name, needle)
 			}
