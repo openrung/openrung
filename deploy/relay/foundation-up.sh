@@ -630,8 +630,16 @@ verify_foundation() { # host container
 # Commit only the verified candidate: rename it to the live name, then remove
 # the stopped old container last. A cleanup failure leaves a visible live+old
 # state that every later automation run refuses to guess about.
+#
+# ROLL_PROMOTED tells a caller whose roll failed whether the candidate went
+# live: 0 when it certainly did not (the roll failed before the commit, or the
+# commit guard refused), 1 when it did (committed, or only the old container's
+# removal failed), and "unknown" when the commit was interrupted. Whatever
+# the candidate depends on must be kept unless it is 0.
+ROLL_PROMOTED=0
 commit_candidate() {
   local host="$1" rc=0
+  ROLL_PROMOTED=unknown
   ssh_run "$host" "set -e
     names=\"\$(sudo docker ps -a --format '{{.Names}}')\" || exit 42
     old_seen=0; new_seen=0
@@ -651,6 +659,10 @@ commit_candidate() {
     ! sudo test -e ${ENV_FILE}.tmp && ! sudo test -L ${ENV_FILE}.tmp || exit 42
     sudo docker rename ${NEW_CONTAINER} ${CONTAINER}
     sudo docker rm -f ${OLD_CONTAINER} >/dev/null || exit 43" || rc=$?
+  case "$rc" in
+    0|43) ROLL_PROMOTED=1 ;;
+    42)   ROLL_PROMOTED=0 ;;
+  esac
   if [ "$rc" = 42 ]; then
     print_interrupted_state_help "$host" "candidate state changed after verification; refusing to promote or delete the old relay"
     return 1
@@ -668,6 +680,7 @@ commit_candidate() {
 
 roll_host() { # host env_file
   local host="$1" env_file="$2"
+  ROLL_PROMOTED=0
   begin_roll "$host" || return
   run_candidate "$host" "$env_file" || return
   verify_foundation "$host" "$NEW_CONTAINER" || return
@@ -777,8 +790,10 @@ UNIT
 #   prepare_access_address  (before the roll) adds the new address beside any
 #                           previous one, so the candidate finds it in place
 #                           at its first registration;
-#   abort_access_address    (failed roll) removes only an address this run
-#                           added — the previous unit and address are untouched;
+#   abort_access_address    (a roll whose candidate never went live) removes
+#                           only an address this run added — the previous unit
+#                           and address are untouched; a candidate that was
+#                           promoted keeps the address (see ROLL_PROMOTED);
 #   commit_access_address   (verified roll) swaps the boot unit, restoring the
 #                           previous unit if the new one does not come up.
 # Unset OPENRUNG_ACCESS_HOST leaves the host as it is; `off` changes nothing
@@ -919,7 +934,18 @@ convert_host() {
   install_env_file "$host" || return
   log "wrote ${ENV_FILE} (root:root 0600; existing settings preserved, broker URL + token updated)"
   prepare_access_address "$host" || return
-  roll_host "$host" "$ENV_FILE" || { abort_access_address "$host"; return 1; }
+  if ! roll_host "$host" "$ENV_FILE"; then
+    # Only a candidate that never went live leaves the previous relay in
+    # charge, so only then is the access change undone. A promoted candidate
+    # (only the old container's removal failed) serves the new address, so
+    # its unit is still committed; an interrupted commit keeps the address.
+    case "$ROLL_PROMOTED" in
+      0) abort_access_address "$host" ;;
+      1) commit_access_address "$host" || true ;;
+      *) [ "$ACCESS_ADDED" = 1 ] && warn "${host}: the roll was interrupted after promotion began; kept ${ACCESS_HOST}, which the live relay may be serving" ;;
+    esac
+    return 1
+  fi
   commit_access_address "$host" || return
   apply_egress_limit "$host" || return
 }

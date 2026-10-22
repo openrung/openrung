@@ -484,6 +484,60 @@ EOF
   ACCESS_HOST=""
 }
 
+# commit_candidate reports whether the candidate went live, whatever the
+# commit's outcome, so a failed roll can tell a cleanup failure from a failed
+# deployment.
+test_commit_candidate_reports_promotion() {
+  reset_script_functions
+  local rc_in want
+  for rc_in in 0:1 43:1 42:0 1:unknown 255:unknown; do
+    want="${rc_in#*:}"
+    eval "ssh_run() { return ${rc_in%%:*}; }"
+    ROLL_PROMOTED=sentinel
+    commit_candidate 203.0.113.10 >"$OUTPUT" 2>&1
+    assert_eq "$want" "$ROLL_PROMOTED" "commit exit ${rc_in%%:*} reports promotion"
+  done
+}
+
+# A failed roll undoes the access change only when the candidate never went
+# live. The real roll_host and commit_candidate run here, with the cleanup of
+# the old container failing after promotion (exit 43): the live relay keeps
+# the address and its unit is committed.
+test_failed_roll_keeps_access_address_after_promotion() {
+  reset_script_functions
+  preflight_host() { :; }
+  prepare_image() { :; }
+  stage_preserved_env() { :; }
+  install_env_file() { :; }
+  apply_egress_limit() { printf 'egress\n' >> "$MUTATION_LOG"; }
+  prepare_access_address() { printf 'access-prepare\n' >> "$MUTATION_LOG"; }
+  abort_access_address() { printf 'access-abort\n' >> "$MUTATION_LOG"; }
+  commit_access_address() { printf 'access-commit\n' >> "$MUTATION_LOG"; }
+  begin_roll() { :; }
+  run_candidate() { :; }
+  verify_foundation() { :; }
+  ssh_run() {
+    case "$*" in
+      *"docker rename ${NEW_CONTAINER} ${CONTAINER}"*) return "$COMMIT_RC" ;;
+      *) printf 'public_host=203.0.113.10\nlabel=test\n' ;;
+    esac
+  }
+  local case_rc want
+  for case_rc in $'43\naccess-prepare\naccess-commit' $'42\naccess-prepare\naccess-abort' $'1\naccess-prepare'; do
+    COMMIT_RC="${case_rc%%$'\n'*}"
+    want="${case_rc#*$'\n'}"
+    : > "$MUTATION_LOG"
+    if (set -e; convert_host 203.0.113.10) >"$OUTPUT" 2>&1; then fail "convert succeeded with commit exit ${COMMIT_RC}"; else pass; fi
+    assert_eq "$want" "$(<"$MUTATION_LOG")" "commit exit ${COMMIT_RC}: access change after the failed roll"
+  done
+
+  # A roll that fails before the commit never promoted anything.
+  verify_foundation() { return 1; }
+  : > "$MUTATION_LOG"
+  if (set -e; convert_host 203.0.113.10) >"$OUTPUT" 2>&1; then fail "convert succeeded after a failed verification"; else pass; fi
+  assert_eq $'access-prepare\naccess-abort' "$(<"$MUTATION_LOG")" "a failed verification undoes the access change"
+}
+
 test_apply_egress_limit_remote_command() {
   reset_script_functions
   local stub="${TEST_TMP}/egress-stub" calls="${TEST_TMP}/egress-calls" root="${TEST_TMP}/egress-root" out
@@ -965,6 +1019,8 @@ test_foundation_contact_is_managed_only_when_set
 test_access_host_validation_and_env
 test_convert_orders_access_address_around_roll
 test_access_address_remote_commands
+test_commit_candidate_reports_promotion
+test_failed_roll_keeps_access_address_after_promotion
 test_apply_egress_limit_remote_command
 test_audit_remote_command
 test_real_transaction_and_rollback_commands

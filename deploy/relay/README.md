@@ -132,7 +132,7 @@ deploy/relay/foundation-up.sh rollback 203.0.113.10
 | `OPENRUNG_SSH_KEY` / `OPENRUNG_SSH_USER` | `~/.ssh/id_ed25519_openrung` / `ubuntu` | SSH access to the host. |
 | `OPENRUNG_REGION` | `ap-northeast-1` | Region used to look up Lightsail-published SSH host keys for pinning. |
 | `OPENRUNG_FOUNDATION_CONTACT` | — | Foundation operator contact (an email address). `convert` and `create` (and `lightsail-up.sh`) write it as `OPENRUNG_OPERATOR_CONTACT`, which the relay sends privately at registration. Unset keeps whatever contact the host already has. |
-| `OPENRUNG_ACCESS_HOST` | — | IPv6 access address (see *Access address* under Networking notes). `convert` and `create` add it on the host before the roll, write it into the env file, and hand it to `openrung-access-address.service` once the roll is verified; a failed roll removes only an address the run added. `off` removes the unit and the address after a verified roll. Unset keeps whatever the host already has. |
+| `OPENRUNG_ACCESS_HOST` | — | IPv6 access address (see *Access address* under Networking notes). `convert` and `create` add it on the host before the roll, write it into the env file, and hand it to `openrung-access-address.service` once the roll is verified; a roll whose candidate never went live removes only an address the run added. `off` removes the unit and the address after a verified roll. Unset keeps whatever the host already has. |
 | `OPENRUNG_ALLOW_TOFU` | `0` | Every mode refuses to contact a host whose SSH key cannot be verified out-of-band (a tokenless mode that silently accepted a key would launder it into "known" for a later token-carrying run); set to `1` to explicitly accept a first-seen key (non-Lightsail hosts). |
 
 Notes on the design:
@@ -534,9 +534,11 @@ not need to match.
   address, and a relay never advertises an access host equal to the public
   host it registers with.
   `convert` adds the address before the roll, beside any previous one, and
-  swaps the unit only after the roll is verified: a failed roll removes just
-  the address this run added, and a new unit that does not start is replaced
-  by the previous one again, so the previous relay never loses its address.
+  swaps the unit only after the roll is verified: a roll whose candidate never
+  went live removes just the address this run added (a promoted candidate
+  keeps it even if removing the old container fails), and a new unit that
+  does not start is replaced by the previous one again, so neither the
+  previous nor the promoted relay loses its address.
   `OPENRUNG_ACCESS_HOST=off` on `convert` removes the unit, the address and
   the variable once the roll is verified; leaving it unset keeps whatever the
   host has. The address is static: changing it is a `convert` with the new
