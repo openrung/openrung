@@ -209,6 +209,12 @@ type Descriptor struct {
 	// shown only in the operator inventory and relays page; serializing it
 	// into the public directory would publish every operator's address.
 	OperatorContact string `json:"-"`
+	// AccessHost is the IPv6 access address an identity-bearing registration
+	// advertised (empty otherwise). The broker substitutes it for PublicHost
+	// in the per-user access answer only; the public directory, the signed
+	// relay lists and the reachability probe keep PublicHost, and only the
+	// operator views show it.
+	AccessHost string `json:"-"`
 	// Reachable and ReachabilityCheckedAt record the broker's latest inbound
 	// probe of the advertised endpoint (direct transport only). A zero
 	// ReachabilityCheckedAt means no probe has run; Reachable is meaningful
