@@ -179,6 +179,17 @@ func userDirectoryConformance(t *testing.T, store directoryStore) {
 			t.Errorf("resolve %q err = %v, want ErrUserNotFound", ref, err)
 		}
 	}
+
+	// Enrollment ties break on the user ID alone, on both stores: a later
+	// re-authentication of the lower ID must not move it ahead.
+	tiedA, tiedB := enroll(at(4*time.Hour)), enroll(at(4*time.Hour))
+	higher, lower := tiedA, tiedB
+	if lower > higher {
+		higher, lower = lower, higher
+	}
+	reauth(lower, at(25*time.Hour+45*time.Minute))
+	expectIDs("enrolled tie", list(UserListQuery{Sort: UserSortEnrolled, Limit: 2}), 6, higher, lower)
+	expectIDs("last_auth after the tie", list(UserListQuery{Limit: 2}), 6, lower, userB)
 }
 
 func TestParseUserListQuery(t *testing.T) {

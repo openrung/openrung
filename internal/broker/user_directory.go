@@ -37,7 +37,8 @@ const (
 	// UserSortLeases24h orders by leases issued in the activity window, then
 	// by last_auth_at.
 	UserSortLeases24h = "leases_24h"
-	// UserSortEnrolled orders by created_at: newest enrollments first.
+	// UserSortEnrolled orders by created_at, then by user ID: newest
+	// enrollments first.
 	UserSortEnrolled = "enrolled"
 )
 
@@ -191,9 +192,12 @@ func sortUserListEntries(entries []UserListEntry, by string) {
 				return a.LeasesIssued24h > b.LeasesIssued24h
 			}
 		case UserSortEnrolled:
+			// Enrollment never consults last_auth_at, so re-authentication
+			// cannot reorder it.
 			if !a.CreatedAt.Equal(b.CreatedAt) {
 				return a.CreatedAt.After(b.CreatedAt)
 			}
+			return a.ID > b.ID
 		}
 		if !a.LastAuthAt.Equal(b.LastAuthAt) {
 			return a.LastAuthAt.After(b.LastAuthAt)
