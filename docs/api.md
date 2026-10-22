@@ -375,7 +375,7 @@ registered (`offline_relays`), live sessions across the fleet, and the distinct
 count of clients currently connected through any relay.
 
 Each relay row carries the registry half for online relays — label, class,
-public endpoint, operator contact (when the relay registered one), transport, exit location (city/country as resolved by the
+public endpoint, access address and operator contact (when the relay registered them), transport, exit location (city/country as resolved by the
 broker), relay software version, capacity, punch/WSS capability, registration
 and last-heartbeat times — merged with per-relay telemetry for the window:
 currently connected clients and active sessions, unique clients and sessions,
@@ -498,8 +498,11 @@ reachability probe](#inbound-reachability-probe): `reachable` is `null` until
 the broker has probed the relay (tunnel transport, probing off, or not yet),
 otherwise `true` or `false`, with `reachability_checked_at` giving the probe
 time when there is one. A `false` relay is registered but withheld from
-clients. `operator_contact` is the contact the relay registered with (see
-[Register Relay](#register-relay)), omitted when it sent none. Lease
+clients. `operator_contact` is the contact the relay registered with and
+`access_host` its access address (see [Register Relay](#register-relay));
+each is omitted when the relay sent none, and both appear only in this
+trailing operator block, never in the descriptor fields the inventory shares
+with the public directory. Lease
 tokens, stable-identity keys and proofs, hub-observed exit addresses,
 telemetry, and signing seeds never appear here; the endpoint exposes fleet
 membership, not credentials.
@@ -514,7 +517,7 @@ Response:
   "key_id": "3097e2dee2cb4a34",
   "channel": "inventory",
   "relays": [
-    { "id": "relay_0a1b...", "public_host": "203.0.113.7", "public_port": 443, "node_class": "foundation", "...": "...", "ranking_weight": 1, "reachable": true, "reachability_checked_at": "2026-06-09T06:58:00Z", "operator_contact": "ops@example.org" }
+    { "id": "relay_0a1b...", "public_host": "203.0.113.7", "public_port": 443, "node_class": "foundation", "...": "...", "ranking_weight": 1, "reachable": true, "reachability_checked_at": "2026-06-09T06:58:00Z", "operator_contact": "ops@example.org", "access_host": "2001:db8:1::10" }
   ]
 }
 ```
@@ -685,7 +688,8 @@ Request:
   "transport": "direct",
   "node_class": "volunteer",
   "access_leases": true,
-  "operator_contact": "ops@example.org"
+  "operator_contact": "ops@example.org",
+  "access_host": "2001:db8:1::10"
 }
 ```
 
@@ -699,6 +703,22 @@ registration and shows it only in the [operational relay
 inventory](#operational-relay-inventory) and the admin relays page: it is not
 bound by the identity statement and never appears in the registration response,
 relay lists, or any signed client-facing body.
+
+`access_host` (optional) is an IPv6 address, distinct from `public_host`, on
+which the relay serves the same listener. It must be a bare global unicast
+IPv6 literal (no brackets, zone or IPv4-mapped form, not unique-local), may not
+name the same address as `public_host`, and is accepted for direct transport
+only; anything else is refused with `400`. It is honoured only for
+identity-bearing registrations (a legacy identityless registration's is
+dropped) and is replaced, or cleared, by every re-registration; heartbeats
+keep it. It is not bound by the identity statement. The broker uses it in one
+place: the [client access](#client-access) answer names it as the relay's
+`public_host`. The registration response, relay lists, the [inbound
+reachability probe](#inbound-reachability-probe) and every other surface keep
+`public_host`; only the operator inventory and the admin relays page show the
+access address. The reference relay sends it (`OPENRUNG_ACCESS_HOST`) only after
+confirming the address is configured on a host interface; see
+`deploy/relay/README.md`.
 
 `access_leases` (optional, default `false`) declares that the relay installs
 broker-issued per-client credentials through the [relay lease
@@ -1547,7 +1567,9 @@ channel, without `limit`, and with the lease expiry:
 
 Each descriptor's `client_id` is the caller's credential for that relay; it
 stops being accepted at `lease_expires_at` (compare with `server_time`, not the
-local clock). Clients must verify the signature and require
+local clock). For a relay that registered an `access_host`, the descriptor's
+`public_host` is that access address instead of the address the public relay
+list carries; every other field is the relay's public descriptor. Clients must verify the signature and require
 `channel == "access"`; a public list never verifies here and an access body
 never verifies as a public list.
 

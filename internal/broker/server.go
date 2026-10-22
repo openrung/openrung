@@ -283,6 +283,13 @@ func registerHandler(store RelayStore, cfg Config, clientIP *clientIPResolver, l
 		}
 		req.OperatorContact = contact
 
+		accessHost, err := relay.NormalizeAccessHost(req.AccessHost)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		req.AccessHost = accessHost
+
 		nodeClass, err := relay.NormalizeNodeClass(req.NodeClass)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -604,6 +611,10 @@ func validateRegisterRequest(req relay.RegisterRequest) error {
 		return errors.New("exit_host is only allowed for tunnel transport")
 	case req.ExitHost != "" && !validEndpointHost(req.ExitHost):
 		return errors.New("exit_host must be a DNS hostname or IP address")
+	case req.AccessHost != "" && normalizeTransport(req.Transport) != relay.TransportDirect:
+		return errors.New("access_host is only allowed for direct transport")
+	case req.AccessHost != "" && sameIPAddress(req.AccessHost, req.PublicHost):
+		return errors.New("access_host must differ from public_host")
 	case req.MaxSessions < 1:
 		return errors.New("max_sessions must be at least 1")
 	case req.MaxMbps < 1:
@@ -619,6 +630,14 @@ func validateRegisterRequest(req relay.RegisterRequest) error {
 	default:
 		return nil
 	}
+}
+
+// sameIPAddress reports whether two hosts are IP literals naming the same
+// address, however they are spelled.
+func sameIPAddress(a, b string) bool {
+	addrA, errA := netip.ParseAddr(a)
+	addrB, errB := netip.ParseAddr(b)
+	return errA == nil && errB == nil && addrA.Unmap() == addrB.Unmap()
 }
 
 // validEndpointHost accepts an IP literal or a syntactically valid DNS name.
