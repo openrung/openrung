@@ -354,6 +354,12 @@ func (h *clientAccessHandler) handler() http.HandlerFunc {
 				continue
 			}
 			desc.ClientID = lease.Credential
+			// A relay with an access address is reached there by enrolled
+			// clients (ADR-006.1 Part A); the public directory keeps naming
+			// its public host. Nothing else in the descriptor changes.
+			if desc.AccessHost != "" {
+				desc.PublicHost = desc.AccessHost
+			}
 			out = append(out, desc)
 			if expiresAt.IsZero() || lease.ExpiresAt.Before(expiresAt) {
 				expiresAt = lease.ExpiresAt

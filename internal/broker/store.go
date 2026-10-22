@@ -192,6 +192,11 @@ func (s *Store) Register(req relay.RegisterRequest, now time.Time, ttl time.Dura
 		LastHeartbeatAt:   now,
 		ExpiresAt:         now.Add(ttl),
 	}
+	// Like the lease capability, an access host is honoured only on an
+	// identity-bearing registration; a legacy one's is dropped.
+	if identityKey != nil {
+		desc.AccessHost = req.AccessHost
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

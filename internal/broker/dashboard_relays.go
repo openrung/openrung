@@ -312,6 +312,10 @@ type relayPanelRow struct {
 	// OperatorContact is the contact the relay registered with, if any: how
 	// the operator of a misbehaving relay can be reached. Operator-only.
 	OperatorContact string `json:"operator_contact,omitempty"`
+	// AccessHost is the access address the access answer hands enrolled
+	// clients instead of the endpoint's host, if the relay advertised one.
+	// Operator-only.
+	AccessHost string `json:"access_host,omitempty"`
 	// Reachable is the latest inbound probe of the endpoint: absent until the
 	// broker has probed the relay, false while it is withheld from clients.
 	Reachable       *bool      `json:"reachable,omitempty"`
@@ -364,6 +368,7 @@ func buildRelaysPanel(descriptors []relay.Descriptor, stats relayTelemetryStats,
 			RankingWeight:   rankingWeightFor(weights, desc.ID),
 			Endpoint:        net.JoinHostPort(desc.PublicHost, strconv.Itoa(desc.PublicPort)),
 			OperatorContact: desc.OperatorContact,
+			AccessHost:      desc.AccessHost,
 			Reachable:       reachablePointer(desc),
 			Transport:       desc.Transport,
 			City:            desc.City,

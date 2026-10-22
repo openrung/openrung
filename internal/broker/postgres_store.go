@@ -49,7 +49,8 @@ const descriptorColumns = `
 	lease_capable,
 	reachable,
 	reachability_checked_at,
-	operator_contact
+	operator_contact,
+	access_host
 `
 
 const postgresOperationTimeout = 5 * time.Second
@@ -214,6 +215,9 @@ ALTER TABLE relay_descriptors
 ALTER TABLE relay_descriptors
 	ADD COLUMN IF NOT EXISTS operator_contact text NOT NULL DEFAULT '';
 
+ALTER TABLE relay_descriptors
+	ADD COLUMN IF NOT EXISTS access_host text NOT NULL DEFAULT '';
+
 CREATE TABLE IF NOT EXISTS access_leases (
 	id text PRIMARY KEY,
 	user_id text NOT NULL REFERENCES users (id),
@@ -333,6 +337,11 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 		LastHeartbeatAt:   now,
 		ExpiresAt:         now.Add(ttl),
 	}
+	// Like the lease capability, an access host is honoured only on an
+	// identity-bearing registration; a legacy one's is dropped.
+	if identityKey != nil {
+		desc.AccessHost = req.AccessHost
+	}
 	wssFrontsJSON, err := json.Marshal(desc.WSSFronts)
 	if err != nil {
 		return relay.Descriptor{}, fmt.Errorf("encode WSS fronts: %w", err)
@@ -417,9 +426,10 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 			lease_token,
 			wss_fronts,
 			lease_capable,
-			operator_contact
+			operator_contact,
+			access_host
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $28, $29
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $28, $29, $30
 		)
 		ON CONFLICT (public_host, public_port) DO UPDATE SET
 			id = EXCLUDED.id,
@@ -453,6 +463,7 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 			wss_fronts = EXCLUDED.wss_fronts,
 			lease_capable = EXCLUDED.lease_capable,
 			operator_contact = EXCLUDED.operator_contact,
+			access_host = EXCLUDED.access_host,
 			reachable = false,
 			reachability_checked_at = NULL
 		WHERE relay_descriptors.node_class <> $27
@@ -488,6 +499,7 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 		relay.NodeClassFoundation,
 		desc.LeaseCapable,
 		desc.OperatorContact,
+		desc.AccessHost,
 	))
 	if errors.Is(err, pgx.ErrNoRows) {
 		// The upsert matched an existing row but the WHERE suppressed the
@@ -1131,6 +1143,7 @@ func scanDescriptor(row pgx.Row) (relay.Descriptor, error) {
 		&desc.Reachable,
 		&reachabilityCheckedAt,
 		&desc.OperatorContact,
+		&desc.AccessHost,
 	)
 	if err != nil {
 		return relay.Descriptor{}, err
