@@ -75,34 +75,43 @@
   <script>
     // The table is paged and sorted by the server; the detail panel is driven
     // by ?user= in the URL so a lookup can be shared or reloaded.
-    // A typed reason and a pending confirmation survive re-renders (Refresh
-    // re-draws the panel) and are dropped when another user is opened.
-    const PAGE=50;let offset=0,total=0,loading=false,selected='',confirming='',reasonDraft='';
+    // Loads are latest-wins: each list or detail request takes a sequence
+    // number and a response that is no longer the latest is dropped, so a
+    // slow reply can never overwrite a newer filter, page or user.
+    // draft holds the typed reason and a pending confirmation for exactly
+    // one user: it survives re-renders of that user (Refresh re-draws the
+    // panel) and is discarded the moment the panel shows anyone else, and
+    // a confirmed change is sent for draft.user, never for whatever the
+    // panel happens to show.
+    const PAGE=50;let offset=0,listSeq=0,detailSeq=0,selected='',draft={user:'',reason:'',confirming:''};
+    const resetDraft=user=>{draft={user,reason:'',confirming:''}};
     const badge=s=>`<span class="badge ${s==='disabled'?'failed':'active'}">${esc(s)}</span>`;
     // The shared relative times only look back; a live lease's expiry is
     // ahead, so it reads "in 40m" (fixed until the next load).
     function expiresCell(value){const seconds=(new Date(value)-Date.now())/1000;if(seconds<=0)return timeCell(value,'expired');return `<span title="expires · ${esc(dateTime(value))}">in ${seconds<3600?Math.max(1,Math.round(seconds/60))+'m':Math.round(seconds/3600)+'h'}</span>`}
     const leaseBadge=s=>`<span class="badge ${s==='live'?'active':s==='revoked'?'failed':'inactive'}">${esc(s)}</span>`;
-    function openUser(ref){const url=new URL(location);if(ref)url.searchParams.set('user',ref);else url.searchParams.delete('user');history.replaceState(null,'',url);confirming='';reasonDraft='';return loadDetail()}
+    function openUser(ref){const url=new URL(location);if(ref)url.searchParams.set('user',ref);else url.searchParams.delete('user');history.replaceState(null,'',url);resetDraft('');return loadDetail()}
     function renderRows(data){
-      total=data.total;const rows=data.users||[];
+      const rows=data.users||[],total=data.total,offset=data.offset;
       $('users').innerHTML=rows.length?rows.map(x=>`<tr class="${x.user_id===selected?'selected':''}"><td><button type="button" class="open-user" data-user="${esc(x.user_id)}" title="Open ${esc(x.user_id)}">${esc(x.user_id)}</button></td><td>${badge(x.status)}</td><td>${timeCell(x.created_at,'enrolled')}</td><td>${timeCell(x.last_auth_at,'last authenticated')}</td><td>${number(x.live_leases)}</td><td>${number(x.leases_issued_24h)}</td><td>${number(x.relays_24h)}</td><td class="reason" title="${esc(x.disabled_reason||'')}">${esc(x.disabled_reason||'—')}</td></tr>`).join(''):`<tr><td colspan="8" class="empty">${offset?'No users on this page':'No users match the filter'}</td></tr>`;
       $('shown').textContent=`${number(total)} ${total===1?'user':'users'}`;
       $('range').textContent=rows.length?`${number(offset+1)}–${number(offset+rows.length)} of ${number(total)}`:'';
       $('prev').disabled=offset===0;$('next').disabled=offset+rows.length>=total;
       markUpdated(data.generated_at);
     }
+    // The pager stays disabled until the latest page arrives, so Next and
+    // Previous always step from the rows on screen.
     async function load({quiet=false}={}){
-      if(loading)return;loading=true;$('refresh').disabled=true;if(!quiet)status('Loading users…');
+      const seq=++listSeq;$('prev').disabled=$('next').disabled=true;if(!quiet)status('Loading users…');
       const params=new URLSearchParams({sort:$('sort').value,offset:String(offset),limit:String(PAGE)});if($('statusFilter').value)params.set('status',$('statusFilter').value);
-      try{renderRows(await fetchJSON('/admin/api/dashboard/users?'+params));if(!quiet)status('')}catch(error){status('Could not load users: '+error.message,true)}finally{loading=false;$('refresh').disabled=false}
+      try{const data=await fetchJSON('/admin/api/dashboard/users?'+params);if(seq!==listSeq)return;renderRows(data);if(!quiet)status('')}catch(error){if(seq!==listSeq)return;$('prev').disabled=offset===0;$('next').disabled=false;status('Could not load users: '+error.message,true)}
     }
     function decisionBox(u){
       if(u.status==='enabled')return `<div class="decision"><p>Disabling revokes this user's live leases; relays drop the credentials on their next sync, so <b>new connections stop within seconds</b>. An <b>established session is not terminated</b> — it ends on its own.</p><label class="label" for="reason">Reason (required)</label><input id="reason" maxlength="256" placeholder="e.g. abuse report, ticket reference" autocomplete="off"><div class="row"><button type="button" class="danger" id="disable">Disable user…</button></div><div class="confirm-box" id="confirmBox" hidden><span>Disable <b>${esc(u.user_id)}</b>? Its ${number(u.live_leases)} live ${u.live_leases===1?'lease is':'leases are'} revoked immediately.</span><div class="row"><button type="button" class="danger confirm" id="confirmDisable">Confirm disable</button><button type="button" id="cancel">Cancel</button></div></div></div>`;
       return `<div class="decision"><p>Enabling lets this installation authenticate and request leases again. Revoked leases stay revoked; the client obtains new ones.</p><div class="row"><button type="button" id="enable">Enable user…</button></div><div class="confirm-box" id="confirmBox" hidden><span>Enable <b>${esc(u.user_id)}</b> and clear the disabled reason?</span><div class="row"><button type="button" class="confirm primary" id="confirmEnable">Confirm enable</button><button type="button" id="cancel">Cancel</button></div></div></div>`;
     }
     function renderDetail(data){
-      const u=data.user,leases=data.leases||[];selected=u.user_id;
+      const u=data.user,leases=data.leases||[];selected=u.user_id;if(draft.user!==u.user_id)resetDraft(u.user_id);
       const timeline=[['Enrolled',timeCell(u.created_at,'enrolled')+` <span class="muted">${esc(dateTime(u.created_at))}</span>`],['Last authenticated',timeCell(u.last_auth_at,'last authenticated')+` <span class="muted">${esc(dateTime(u.last_auth_at))}</span>`]];
       if(u.disabled_at)timeline.push(['Disabled',timeCell(u.disabled_at,'disabled')+` <span class="muted">${esc(dateTime(u.disabled_at))}</span>`],['Reason',esc(u.disabled_reason||'—')]);
       const matched=data.matched_lease?`<span class="hint">opened from lease-${esc(data.matched_lease)}</span>`:'';
@@ -112,32 +121,37 @@
         <div class="detail-grid"><div><dl class="timeline">${timeline.map(([k,v])=>`<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl><div class="counters" style="margin-top:14px"><article class="card"><div class="label">Live leases</div><div class="value good">${number(u.live_leases)}</div></article><article class="card"><div class="label">Issued 24 h</div><div class="value">${number(u.leases_issued_24h)}</div></article><article class="card"><div class="label">Relays 24 h</div><div class="value">${number(u.relays_24h)}</div></article></div></div>${decisionBox(u)}</div>
         <h2 style="margin-top:18px">Leases</h2><div class="scroll"><table><thead><tr><th>Lease</th><th>Relay</th><th>Status</th><th>Created</th><th>Renewed</th><th>Expires</th></tr></thead><tbody>${leaseRows}</tbody></table></div>
         <div class="muted" style="margin-top:8px;font-size:11px">${shown}Leases are retained for ${number(data.lease_retention_days)} days after they expire, then deleted; older activity is not available. Relay names appear while the relay is registered.</div>`;
-      $('detail').hidden=false;
-      if($('reason'))$('reason').value=reasonDraft;
-      if(confirming)$('confirmBox').hidden=false;
+      $('detail').hidden=false;$('detail').dataset.user=u.user_id;
+      if($('reason'))$('reason').value=draft.reason;
+      // A pending confirmation is kept only while it still matches the
+      // action the user's current status offers.
+      if(draft.confirming===(u.status==='enabled'?'disable':'enable'))$('confirmBox').hidden=false;else draft.confirming='';
       for(const row of document.querySelectorAll('#users tr'))row.classList.toggle('selected',!!row.querySelector(`[data-user="${CSS.escape(selected)}"]`));
     }
     async function loadDetail(){
-      const ref=new URLSearchParams(location.search).get('user');
-      if(!ref){$('detail').hidden=true;$('detail').innerHTML='';selected='';for(const row of document.querySelectorAll('#users tr.selected'))row.classList.remove('selected');return}
-      try{renderDetail(await fetchJSON('/admin/api/dashboard/users/'+encodeURIComponent(ref)))}catch(error){$('detail').hidden=true;selected='';status(`Could not open ${ref}: ${error.message}`,true)}
+      const seq=++detailSeq,ref=new URLSearchParams(location.search).get('user');
+      if(!ref){$('detail').hidden=true;$('detail').innerHTML='';delete $('detail').dataset.user;selected='';for(const row of document.querySelectorAll('#users tr.selected'))row.classList.remove('selected');return}
+      try{const data=await fetchJSON('/admin/api/dashboard/users/'+encodeURIComponent(ref));if(seq!==detailSeq)return;renderDetail(data)}catch(error){if(seq!==detailSeq)return;$('detail').hidden=true;$('detail').innerHTML='';delete $('detail').dataset.user;selected='';status(`Could not open ${ref}: ${error.message}`,true)}
     }
     async function setUserStatus(userID,next,reason){
       status(next==='disabled'?`Disabling ${userID}…`:`Enabling ${userID}…`);
-      try{const view=await fetchJSON('/admin/api/dashboard/users/'+encodeURIComponent(userID)+'/status',{method:'PUT',body:{status:next,reason}});confirming='';reasonDraft='';status(`User ${view.user_id} is now ${view.status}`);await Promise.all([loadDetail(),load({quiet:true})])}catch(error){status('Could not change status: '+error.message,true)}
+      try{const view=await fetchJSON('/admin/api/dashboard/users/'+encodeURIComponent(userID)+'/status',{method:'PUT',body:{status:next,reason}});resetDraft(userID);status(`User ${view.user_id} is now ${view.status}`);await Promise.all([loadDetail(),load({quiet:true})])}catch(error){status('Could not change status: '+error.message,true)}
     }
+    // Every decision acts on draft.user, and only while the panel still
+    // shows that user and the confirmation was given for that action.
     $('detail').addEventListener('click',event=>{
       const button=event.target.closest('button');if(!button)return;
       if(button.id==='closeDetail')return openUser('');
-      if(button.id==='disable'){if(!$('reason').value.trim()){status('A reason is required to disable a user',true);$('reason').focus();return}confirming='disable';$('confirmBox').hidden=false;return}
-      if(button.id==='enable'){confirming='enable';$('confirmBox').hidden=false;return}
-      if(button.id==='cancel'){confirming='';$('confirmBox').hidden=true;return}
-      if(button.id==='confirmDisable'){const reason=$('reason').value.trim();if(!reason){status('A reason is required to disable a user',true);return}return setUserStatus(selected,'disabled',reason)}
-      if(button.id==='confirmEnable')return setUserStatus(selected,'enabled','');
+      if($('detail').dataset.user!==draft.user)return;
+      if(button.id==='disable'){if(!$('reason').value.trim()){status('A reason is required to disable a user',true);$('reason').focus();return}draft.confirming='disable';$('confirmBox').hidden=false;return}
+      if(button.id==='enable'){draft.confirming='enable';$('confirmBox').hidden=false;return}
+      if(button.id==='cancel'){draft.confirming='';$('confirmBox').hidden=true;return}
+      if(button.id==='confirmDisable'&&draft.confirming==='disable'){const reason=draft.reason.trim();if(!reason){status('A reason is required to disable a user',true);return}return setUserStatus(draft.user,'disabled',reason)}
+      if(button.id==='confirmEnable'&&draft.confirming==='enable')return setUserStatus(draft.user,'enabled','');
     });
     // Editing the reason after asking to confirm withdraws the confirmation:
     // what is confirmed is exactly what is sent.
-    $('detail').addEventListener('input',event=>{if(event.target.id!=='reason')return;reasonDraft=event.target.value;if(confirming){confirming='';$('confirmBox').hidden=true}});
+    $('detail').addEventListener('input',event=>{if(event.target.id!=='reason'||$('detail').dataset.user!==draft.user)return;draft.reason=event.target.value;if(draft.confirming){draft.confirming='';$('confirmBox').hidden=true}});
     $('users').addEventListener('click',event=>{const button=event.target.closest('button.open-user');if(button)openUser(button.dataset.user)});
     $('lookup').addEventListener('submit',event=>{event.preventDefault();const ref=$('search').value.trim();if(ref)openUser(ref)});
     $('statusFilter').addEventListener('change',()=>{offset=0;load()});$('sort').addEventListener('change',()=>{offset=0;load()});
