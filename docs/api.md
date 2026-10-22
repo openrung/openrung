@@ -712,8 +712,8 @@ only; anything else is refused with `400`. It is honoured only for
 identity-bearing registrations (a legacy identityless registration's is
 dropped) and is replaced, or cleared, by every re-registration; heartbeats
 keep it. It is not bound by the identity statement. The broker uses it in one
-place: the [client access](#client-access) answer names it as the relay's
-`public_host`. The registration response, relay lists, the [inbound
+place: the [client access](#client-access) answer to a request that arrived
+over IPv6 names it as the relay's `public_host`. The registration response, relay lists, the [inbound
 reachability probe](#inbound-reachability-probe) and every other surface keep
 `public_host`; only the operator inventory and the admin relays page show the
 access address. The reference relay sends it (`OPENRUNG_ACCESS_HOST`) only after
@@ -1567,9 +1567,12 @@ channel, without `limit`, and with the lease expiry:
 
 Each descriptor's `client_id` is the caller's credential for that relay; it
 stops being accepted at `lease_expires_at` (compare with `server_time`, not the
-local clock). For a relay that registered an `access_host`, the descriptor's
-`public_host` is that access address instead of the address the public relay
-list carries; every other field is the relay's public descriptor. Clients must verify the signature and require
+local clock). For a relay that registered an `access_host`, and only when the
+access request itself arrived over IPv6 (as seen by the broker, through a
+trusted front the viewer's address), the descriptor's `public_host` is that
+access address instead of the address the public relay list carries. A request
+over IPv4 gets the public host. Every other field is the relay's public
+descriptor either way. Clients must verify the signature and require
 `channel == "access"`; a public list never verifies here and an access body
 never verifies as a public list.
 

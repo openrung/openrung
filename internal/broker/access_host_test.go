@@ -5,6 +5,7 @@ package broker
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -191,12 +192,15 @@ func TestStoreAccessHostFollowsIdentityRegistration(t *testing.T) {
 	})
 }
 
-// The access answer names the access host in place of the public host for a
-// relay that has one, keeps everything else (the lease credential included)
-// exactly as before, and leaves relays without one on their public host. The
-// signed body still passes the client's own wire validation.
-func TestAccessAnswerSubstitutesAccessHost(t *testing.T) {
+// The access answer names the access host in place of the public host only
+// for a request that arrived over IPv6: an IPv4 (or IPv4-mapped) request gets
+// the public host it can reach. Everything else — the lease credential
+// included — is the relay's descriptor either way, relays without an access
+// host keep their public host, and the signed body still passes the client's
+// own wire validation.
+func TestAccessAnswerSubstitutesAccessHostForIPv6Requests(t *testing.T) {
 	h := newAccessHarness(t)
+	h.handler.clientIP = func(r *http.Request) string { return peerIP(r.RemoteAddr) }
 	withAccess := h.addRelay("v6", 'a', "FI", func(r *relay.RegisterRequest) {
 		r.PublicHost = "203.0.113.7"
 		r.AccessHost = testAccessHost
@@ -204,51 +208,96 @@ func TestAccessAnswerSubstitutesAccessHost(t *testing.T) {
 	plain := h.addRelay("plain", 'b', "DE", nil)
 	h.autoAck(withAccess)
 	h.autoAck(plain)
-
 	token, userID := h.token()
-	rec, resp := h.request(token, `{}`)
-	if rec.Code != http.StatusOK || len(resp.Relays) != 2 {
-		t.Fatalf("access: %d %s", rec.Code, rec.Body.String())
-	}
-	credentials := map[string]string{}
-	for _, lease := range h.liveLeases(userID) {
-		credentials[lease.RelayID] = lease.Credential
-	}
-	for _, desc := range resp.Relays {
-		registered := h.store.relays[desc.ID]
-		wantHost := registered.PublicHost
-		if desc.ID == withAccess.ID {
-			wantHost = testAccessHost
+
+	for _, tc := range []struct {
+		source        string
+		wantAccessHit bool
+	}{
+		{"[2001:db8:9::5]:4000", true},
+		{"203.0.113.10:4000", false},
+		{"[::ffff:203.0.113.10]:4000", false},
+	} {
+		h.source = tc.source
+		rec, resp := h.request(token, `{}`)
+		if rec.Code != http.StatusOK || len(resp.Relays) != 2 {
+			t.Fatalf("%s: access: %d %s", tc.source, rec.Code, rec.Body.String())
 		}
-		if desc.PublicHost != wantHost {
-			t.Fatalf("relay %s public_host = %q, want %q", desc.ID, desc.PublicHost, wantHost)
+		credentials := map[string]string{}
+		for _, lease := range h.liveLeases(userID) {
+			credentials[lease.RelayID] = lease.Credential
 		}
-		if desc.ClientID != credentials[desc.ID] {
-			t.Fatalf("relay %s client_id = %q, want its lease credential", desc.ID, desc.ClientID)
+		for _, desc := range resp.Relays {
+			registered := h.store.relays[desc.ID]
+			wantHost := registered.PublicHost
+			if desc.ID == withAccess.ID && tc.wantAccessHit {
+				wantHost = testAccessHost
+			}
+			if desc.PublicHost != wantHost {
+				t.Fatalf("%s: relay %s public_host = %q, want %q", tc.source, desc.ID, desc.PublicHost, wantHost)
+			}
+			if desc.ClientID != credentials[desc.ID] {
+				t.Fatalf("%s: relay %s client_id = %q, want its lease credential", tc.source, desc.ID, desc.ClientID)
+			}
+			if desc.PublicPort != registered.PublicPort || desc.RealityPublicKey != registered.RealityPublicKey ||
+				desc.ShortID != registered.ShortID || desc.ServerName != registered.ServerName || desc.NodeClass != registered.NodeClass {
+				t.Fatalf("%s: relay %s descriptor changed beyond the host: %+v vs %+v", tc.source, desc.ID, desc, registered)
+			}
 		}
-		if desc.PublicPort != registered.PublicPort || desc.RealityPublicKey != registered.RealityPublicKey ||
-			desc.ShortID != registered.ShortID || desc.ServerName != registered.ServerName || desc.NodeClass != registered.NodeClass {
-			t.Fatalf("relay %s descriptor changed beyond the host: %+v vs %+v", desc.ID, desc, registered)
+		if strings.Contains(rec.Body.String(), "access_host") {
+			t.Fatalf("%s: access answer carried an access_host field: %s", tc.source, rec.Body.String())
 		}
-	}
-	if strings.Contains(rec.Body.String(), "access_host") {
-		t.Fatalf("access answer carried an access_host field: %s", rec.Body.String())
 	}
 	// The stored descriptor and the public directory keep the public host.
 	if stored := h.store.relays[withAccess.ID]; stored.PublicHost != "203.0.113.7" {
 		t.Fatalf("substitution leaked into the store: %q", stored.PublicHost)
 	}
 
-	// The real client path over loopback: brokerapi's access verifier applies
-	// the relay-list wire schema (the signature is checked by request above).
-	server := httptest.NewServer(h.server)
+	// Without a resolver nothing is substituted.
+	h.handler.clientIP = nil
+	h.source = "[2001:db8:9::5]:4000"
+	if _, resp := h.request(token, `{"relay_id":"`+withAccess.ID+`"}`); len(resp.Relays) != 1 || resp.Relays[0].PublicHost != "203.0.113.7" {
+		t.Fatalf("access answer without a resolver = %+v, want the public host", resp.Relays)
+	}
+	h.handler.clientIP = func(r *http.Request) string { return peerIP(r.RemoteAddr) }
+
+	// The real client path over IPv6 loopback: brokerapi's access verifier
+	// applies the relay-list wire schema (the signature is checked by request
+	// above).
+	listener, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("no IPv6 loopback for the client path: %v", err)
+	}
+	server := httptest.NewUnstartedServer(h.server)
+	server.Listener = listener
+	server.Start()
 	defer server.Close()
 	client := brokerapi.NewClient(server.Client(), brokerapi.Options{})
 	answer, err := client.RequestAccess(context.Background(), server.URL, brokerapi.AccessRequest{AccessToken: token, RelayID: withAccess.ID})
 	if err != nil {
 		t.Fatalf("client RequestAccess: %v", err)
 	}
-	if len(answer.Relays) != 1 || answer.Relays[0].PublicHost != testAccessHost || answer.Relays[0].ClientID != credentials[withAccess.ID] {
+	if len(answer.Relays) != 1 || answer.Relays[0].PublicHost != testAccessHost {
 		t.Fatalf("client-decoded access answer = %+v", answer.Relays)
+	}
+}
+
+func TestRequestOverIPv6(t *testing.T) {
+	for source, want := range map[string]bool{
+		"2001:db8::5":         true,
+		"203.0.113.10":        false,
+		"::ffff:203.0.113.10": false,
+		"":                    false,
+		"not-an-address":      false,
+		" 2001:db8::5 ":       true,
+	} {
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/access", nil)
+		got := requestOverIPv6(func(*http.Request) string { return source }, r)
+		if got != want {
+			t.Errorf("requestOverIPv6(%q) = %v, want %v", source, got, want)
+		}
+	}
+	if requestOverIPv6(nil, httptest.NewRequest(http.MethodPost, "/api/v1/access", nil)) {
+		t.Error("a nil resolver counted as IPv6")
 	}
 }

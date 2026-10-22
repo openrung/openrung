@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -84,6 +85,10 @@ type clientAccessHandler struct {
 	// withholdUnreachable is whether reachability probing is enabled, and so
 	// whether a stored failed probe excludes a relay (see reachability.go).
 	withholdUnreachable bool
+	// clientIP resolves the address the access request came from (through a
+	// trusted front, the viewer's). Nil, like an unparseable address, counts
+	// as IPv4, so no relay's access host is handed out.
+	clientIP func(*http.Request) string
 }
 
 func newClientAccessHandler(store RelayStore, users *userAuthService, access *accessService, s signer) *clientAccessHandler {
@@ -347,6 +352,7 @@ func (h *clientAccessHandler) handler() http.HandlerFunc {
 			return
 		}
 		out := make([]relay.Descriptor, 0, len(byRelay))
+		overIPv6 := requestOverIPv6(h.clientIP, r)
 		var expiresAt time.Time
 		for _, desc := range page {
 			lease, ok := byRelay[desc.ID]
@@ -356,8 +362,11 @@ func (h *clientAccessHandler) handler() http.HandlerFunc {
 			desc.ClientID = lease.Credential
 			// A relay with an access address is reached there by enrolled
 			// clients (ADR-006.1 Part A); the public directory keeps naming
-			// its public host. Nothing else in the descriptor changes.
-			if desc.AccessHost != "" {
+			// its public host. Nothing else in the descriptor changes. The
+			// access address is IPv6, so it is handed only to a client whose
+			// request arrived over IPv6; any other client keeps the public
+			// host it can reach.
+			if desc.AccessHost != "" && overIPv6 {
 				desc.PublicHost = desc.AccessHost
 			}
 			out = append(out, desc)
@@ -367,6 +376,17 @@ func (h *clientAccessHandler) handler() http.HandlerFunc {
 		}
 		h.writeAccess(w, h.access.now().UTC(), out, expiresAt)
 	}
+}
+
+// requestOverIPv6 reports whether the request came from an IPv6 address.
+// An IPv4-mapped address is IPv4, and an unknown resolver or unparseable
+// address counts as IPv4.
+func requestOverIPv6(clientIP func(*http.Request) string, r *http.Request) bool {
+	if clientIP == nil {
+		return false
+	}
+	addr, err := netip.ParseAddr(strings.TrimSpace(clientIP(r)))
+	return err == nil && addr.Unmap().Is6()
 }
 
 // writeAccess signs and writes the access body. Timestamps are narrowed to

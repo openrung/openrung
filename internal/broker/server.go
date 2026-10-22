@@ -214,6 +214,7 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 	// token key (users) and a store that can hold leases (access).
 	if clientAccess := newClientAccessHandler(store, users, access, relaySigner); clientAccess != nil {
 		clientAccess.withholdUnreachable = cfg.RelayProber != nil
+		clientAccess.clientIP = clientIP.clientIP
 		accessLimiter := newIPRateLimiter(accessRatePerSecond, accessBurst, rateLimiterMaxTrackedIPs)
 		mux.HandleFunc("POST /api/v1/access", clientAccess.counted(rateLimitedBy(accessLimiter, clientAccess.rateKey(clientIP), 10, clientAccess.handler())))
 	}
