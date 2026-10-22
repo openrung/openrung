@@ -234,7 +234,7 @@ func (s *Engine) runPublicFallback(ctx context.Context, conn *connection, broker
 	}
 	lease := conn.lease
 	conn.lease = accessLease{}
-	knownEndpoints := conn.knownEndpointIDs()
+	knownEndpoints := conn.snapshotEndpoints()
 	public := conn.publicFallback
 	conn.publicFallback = nil
 	if public == nil {
@@ -250,9 +250,9 @@ func (s *Engine) runPublicFallback(ctx context.Context, conn *connection, broker
 		conn.rememberPublicEndpoints(fetch.Response)
 		public = &fetch
 	}
-	// A leased relay the ladder could only try over IPv6, because its public
-	// endpoint was not known yet, gets one attempt at the endpoint this list
-	// just revealed, still on its per-user credential, before the shared
+	// A leased relay this list gave an endpoint the ladder could not try —
+	// unknown before, or changed since the cached one it fell back to — gets
+	// one attempt there, still on its per-user credential, before the shared
 	// credentials take over. Its WSS fronts were already tried.
 	if retry := conn.leasedEndpointRetries(tried, knownEndpoints); len(retry) > 0 {
 		conn.lease = lease

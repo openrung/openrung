@@ -105,30 +105,43 @@ func (c *connection) rememberPublicEndpoints(resp brokerapi.RelayListResponse) {
 	}
 }
 
-// knownEndpointIDs is the set of relays whose public endpoint is known now.
-func (c *connection) knownEndpointIDs() map[string]bool {
-	known := make(map[string]bool, len(c.publicEndpoints))
-	for id := range c.publicEndpoints {
-		known[id] = true
+// snapshotEndpoints copies the public endpoints known now, so a refresh can
+// tell which relays it gave a new endpoint.
+func (c *connection) snapshotEndpoints() map[string]relayEndpoint {
+	snapshot := make(map[string]relayEndpoint, len(c.publicEndpoints))
+	for id, endpoint := range c.publicEndpoints {
+		snapshot[id] = endpoint
 	}
-	return known
+	return snapshot
 }
 
-// leasedEndpointRetries returns the tried candidates that were named by IPv6
-// while their public endpoint was unknown (so the ladder could not fall back)
-// and whose endpoint is known now, rewritten to that endpoint with their WSS
-// fronts removed: the ladder already tried those.
-func (c *connection) leasedEndpointRetries(tried []brokerapi.RelayDescriptor, knownBefore map[string]bool) []brokerapi.RelayDescriptor {
+// leasedEndpointRetries returns the tried candidates a refresh gave an
+// endpoint they have not been tried on, rewritten to it with their WSS fronts
+// removed (the ladder already tried those). A candidate qualifies when the
+// ladder could only have reached it by IPv6 or at the endpoint known before
+// the refresh (the fallback's own retry target, or the no-IPv6 rewrite) and
+// the refreshed endpoint differs from that one. Relay IDs survive endpoint
+// changes, so the comparison is on host and port, never on the ID alone.
+func (c *connection) leasedEndpointRetries(tried []brokerapi.RelayDescriptor, before map[string]relayEndpoint) []brokerapi.RelayDescriptor {
 	var retry []brokerapi.RelayDescriptor
 	for _, cand := range tried {
-		if knownBefore[cand.ID] {
-			continue
-		}
-		endpoint, ok := c.publicEndpointFor(cand)
+		current, ok := c.publicEndpoints[cand.ID]
 		if !ok {
 			continue
 		}
-		cand.PublicHost, cand.PublicPort = endpoint.host, endpoint.port
+		previous, hadPrevious := before[cand.ID]
+		if hadPrevious && previous == current {
+			continue // nothing new: the ladder already had this endpoint
+		}
+		triedEndpoint := relayEndpoint{host: cand.PublicHost, port: cand.PublicPort}
+		fromPrevious := hadPrevious && triedEndpoint == previous
+		if !brokerapi.IsIPv6Host(cand.PublicHost) && !fromPrevious {
+			continue // an endpoint the answer itself named, not one learned here
+		}
+		if triedEndpoint == current {
+			continue
+		}
+		cand.PublicHost, cand.PublicPort = current.host, current.port
 		cand.WSSFronts = nil
 		retry = append(retry, cand)
 	}

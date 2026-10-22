@@ -351,3 +351,72 @@ func freeLoopbackPort(t *testing.T) int {
 	defer listener.Close()
 	return listener.Addr().(*net.TCPAddr).Port
 }
+
+func TestLeasedEndpointRetriesComparesEndpointsNotIDs(t *testing.T) {
+	current := relayEndpoint{host: "203.0.113.5", port: 443}
+	stale := relayEndpoint{host: "198.51.100.9", port: 443}
+	cand := func(host string) brokerapi.RelayDescriptor {
+		c := publicRelay("relay-a", "FI")
+		c.PublicHost = host
+		c.WSSFronts = []brokerapi.RelayWSSFront{{ID: "front-1", URL: "wss://cdn.example/api/v1/wss-bridge"}}
+		return c
+	}
+	for name, tc := range map[string]struct {
+		tried     brokerapi.RelayDescriptor
+		before    map[string]relayEndpoint
+		wantRetry bool
+	}{
+		"ipv6, endpoint unknown before":        {cand(familyAccessHost), nil, true},
+		"ipv6, endpoint changed since cache":   {cand(familyAccessHost), map[string]relayEndpoint{"relay-a": stale}, true},
+		"ipv6, endpoint unchanged":             {cand(familyAccessHost), map[string]relayEndpoint{"relay-a": current}, false},
+		"rewritten from a stale cache":         {cand(stale.host), map[string]relayEndpoint{"relay-a": stale}, true},
+		"answer named the current endpoint":    {cand(current.host), nil, false},
+		"answer named its own ipv4, now moved": {cand("192.0.2.44"), map[string]relayEndpoint{"relay-a": stale}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			conn := &connection{publicEndpoints: map[string]relayEndpoint{"relay-a": current}}
+			retry := conn.leasedEndpointRetries([]brokerapi.RelayDescriptor{tc.tried}, tc.before)
+			if !tc.wantRetry {
+				if len(retry) != 0 {
+					t.Fatalf("retried %+v", retry)
+				}
+				return
+			}
+			if len(retry) != 1 || retry[0].PublicHost != current.host || retry[0].PublicPort != current.port ||
+				retry[0].ClientID != tc.tried.ClientID || len(retry[0].WSSFronts) != 0 {
+				t.Fatalf("retry = %+v, want relay-a at %s with its credential and no WSS fronts", retry, current.host)
+			}
+		})
+	}
+}
+
+// A recovery that fell back to a cached public endpoint which has since
+// changed (the relay ID did not) retries the relay at the endpoint the fresh
+// list carries, on the leased credential.
+func TestPublicFallbackRetriesAChangedEndpointForAKnownRelay(t *testing.T) {
+	relays := []brokerapi.RelayDescriptor{publicRelay("relay-a", "FI")} // now at 203.0.113.5
+	broker := newFakeAccessBroker(t, time.Now, relays...)
+	e := newAccessEngine(t, broker, relays...)
+	e.ipv6Probe = func() ipv6State { return ipv6Available }
+	servers := recordServers(e)
+	_ = recordDials(e, map[string]error{familyAccessHost: syscall.ENETUNREACH, "198.51.100.9": syscall.ETIMEDOUT})
+
+	leased := publicRelay("relay-a", "FI")
+	leased.PublicHost = familyAccessHost
+	leased.ClientID = "lease-relay-a"
+	conn := &connection{
+		lease:           accessLease{expiresAt: time.Now().Add(time.Hour), lifetime: time.Hour},
+		publicEndpoints: map[string]relayEndpoint{"relay-a": {host: "198.51.100.9", port: 443}}, // stale cache
+	}
+	res, _, ok, err := e.runPublicFallback(context.Background(), conn, broker.srv.URL, RelayTarget{}, []brokerapi.RelayDescriptor{leased}, freeLoopbackPort(t), "", errors.New("every leased relay failed"))
+	if !ok || err != nil || res == nil {
+		t.Fatalf("fallback = ok %v, err %v; want the changed endpoint retried", ok, err)
+	}
+	defer res.teardown()
+	if res.relay.PublicHost != "203.0.113.5" || res.relay.ClientID != "lease-relay-a" || !conn.lease.valid() {
+		t.Fatalf("connected %+v (lease valid %v), want relay-a at its current endpoint on the lease", res.relay, conn.lease.valid())
+	}
+	if runs := servers(); len(runs) != 1 || runs[0] != "203.0.113.5 lease-relay-a" {
+		t.Fatalf("tunnels = %v", runs)
+	}
+}
