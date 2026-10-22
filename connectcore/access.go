@@ -232,7 +232,9 @@ func (s *Engine) runPublicFallback(ctx context.Context, conn *connection, broker
 	if _, local := localCandidateErrorStage(ladderErr); local {
 		return nil, ladderOrder{}, false, nil
 	}
+	lease := conn.lease
 	conn.lease = accessLease{}
+	knownEndpoints := conn.knownEndpointIDs()
 	public := conn.publicFallback
 	conn.publicFallback = nil
 	if public == nil {
@@ -247,6 +249,23 @@ func (s *Engine) runPublicFallback(ctx context.Context, conn *connection, broker
 		_ = conn.mgr.SetBrokerFront(fetch.BrokerURL, fetch.AzureSNI)
 		conn.rememberPublicEndpoints(fetch.Response)
 		public = &fetch
+	}
+	// A leased relay the ladder could only try over IPv6, because its public
+	// endpoint was not known yet, gets one attempt at the endpoint this list
+	// just revealed, still on its per-user credential, before the shared
+	// credentials take over. Its WSS fronts were already tried.
+	if retry := conn.leasedEndpointRetries(tried, knownEndpoints); len(retry) > 0 {
+		conn.lease = lease
+		retry = demoteRelay(retry, failedRelayID)
+		s.appendLog(fmt.Sprintf("retrying %d relay(s) with per-user access at their public endpoint", len(retry)))
+		res, err := s.runLadder(ctx, conn, retry, port)
+		if err == nil {
+			return res, ladderOrder{brokerOrder: retry, ranked: unranked(retry)}, true, nil
+		}
+		if _, local := localCandidateErrorStage(err); local || ctx.Err() != nil {
+			return nil, ladderOrder{}, true, err
+		}
+		conn.lease = accessLease{}
 	}
 	cands, _, err := s.candidatesFor(public.Response, target)
 	if err != nil {

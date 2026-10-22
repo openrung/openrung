@@ -1151,11 +1151,13 @@ func (s *Engine) attemptDirectCandidate(ctx context.Context, conn *connection, c
 	s.appendLog(fmt.Sprintf("trying relay %s at %s:%d", cand.ID, cand.PublicHost, cand.PublicPort))
 	s.appendLog("checking relay TCP reachability")
 	tcpMS, err := s.relayDialer()(ctx, cand.PublicHost, cand.PublicPort)
-	if err != nil && ctx.Err() == nil {
+	if err != nil && ctx.Err() == nil && !isSocketProtectionFailure(err) {
 		// An IPv6 endpoint that does not answer is retried once on the same
 		// relay's public endpoint, which accepts the same credential (see
 		// family.go). The candidate then carries that endpoint everywhere —
 		// config, route exclusions, telemetry — as if the answer had named it.
+		// A socket the host would not protect is a local failure, not an
+		// unanswered endpoint: it is reported as such, never retried.
 		if endpoint, ok := conn.publicEndpointFor(cand); ok {
 			s.appendLog(fmt.Sprintf("relay %s did not answer over IPv6 (%v); retrying at %s:%d", cand.ID, err, endpoint.host, endpoint.port))
 			cand.PublicHost, cand.PublicPort = endpoint.host, endpoint.port

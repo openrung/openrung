@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/openrung/openrung/brokerapi"
+	"github.com/openrung/openrung/wsscore"
 )
 
 const familyAccessHost = "2001:db8:1::10"
@@ -274,4 +276,78 @@ func hasLog(sink *testSink, fragment string) bool {
 		}
 	}
 	return false
+}
+
+// A socket the host refused to protect is a local failure: it is reported as
+// one and never retried on the public endpoint (where a network error would
+// overwrite it and count against the relay).
+func TestSocketProtectionFailureIsNotRetried(t *testing.T) {
+	relays := []brokerapi.RelayDescriptor{publicRelay("relay-a", "FI")}
+	broker := newFakeAccessBroker(t, time.Now, relays...)
+	accessOverIPv6(broker)
+	e := newAccessEngine(t, broker, relays...)
+	e.ipv6Probe = func() ipv6State { return ipv6Available }
+	dials := recordDials(e, map[string]error{familyAccessHost: fmt.Errorf("dial: %w", wsscore.ErrSocketProtectionFailed)})
+
+	if err := e.ConnectTarget("https://configured.example", RelayTarget{RelayID: "relay-a"}); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "the connect to fail", func() bool { return e.State().Status == StatusFailed })
+	if got := dials(); len(got) != 1 || got[0] != familyAccessHost {
+		t.Fatalf("dials = %v, want only the access address", got)
+	}
+	if !hasLog(e.sink, "local VPN setup failed") {
+		t.Fatal("the socket-protection failure was not reported as local")
+	}
+	_ = e.Disconnect()
+	waitIdle(t, e.Engine)
+}
+
+// A recovery that reached a leased relay only by IPv6 (its public endpoint
+// unknown) retries it at the endpoint the public fallback's fresh list
+// reveals, on the leased credential, before the shared credentials take over.
+func TestPublicFallbackRetriesLeasedRelayAtANewlyLearnedEndpoint(t *testing.T) {
+	relays := []brokerapi.RelayDescriptor{publicRelay("relay-a", "FI")}
+	broker := newFakeAccessBroker(t, time.Now, relays...)
+	e := newAccessEngine(t, broker, relays...)
+	e.ipv6Probe = func() ipv6State { return ipv6Available }
+	servers := recordServers(e)
+	dials := recordDials(e, map[string]error{familyAccessHost: syscall.ENETUNREACH})
+
+	leased := publicRelay("relay-a", "FI")
+	leased.PublicHost = familyAccessHost
+	leased.ClientID = "lease-relay-a"
+	leased.WSSFronts = []brokerapi.RelayWSSFront{{ID: "front-1", URL: "wss://cdn.example/api/v1/wss-bridge"}}
+	conn := &connection{lease: accessLease{expiresAt: time.Now().Add(time.Hour), lifetime: time.Hour}}
+	port := freeLoopbackPort(t)
+
+	res, _, ok, err := e.runPublicFallback(context.Background(), conn, broker.srv.URL, RelayTarget{}, []brokerapi.RelayDescriptor{leased}, port, "", errors.New("every leased relay failed"))
+	if !ok || err != nil || res == nil {
+		t.Fatalf("fallback = ok %v, err %v, res %v; want the leased retry to connect", ok, err, res)
+	}
+	defer res.teardown()
+	if res.relay.PublicHost != "203.0.113.5" || res.relay.ClientID != "lease-relay-a" || len(res.relay.WSSFronts) != 0 {
+		t.Fatalf("retried candidate = %+v, want the public endpoint with the lease and no WSS fronts", res.relay)
+	}
+	if !conn.lease.valid() {
+		t.Fatal("the lease was dropped although the leased credential connected")
+	}
+	if runs := servers(); len(runs) != 1 || runs[0] != "203.0.113.5 lease-relay-a" {
+		t.Fatalf("tunnels = %v", runs)
+	}
+	for _, host := range dials() {
+		if host == familyAccessHost {
+			t.Fatal("the fallback dialled the IPv6 address again")
+		}
+	}
+}
+
+func freeLoopbackPort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve port: %v", err)
+	}
+	defer listener.Close()
+	return listener.Addr().(*net.TCPAddr).Port
 }

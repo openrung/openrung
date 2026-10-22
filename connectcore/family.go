@@ -105,6 +105,36 @@ func (c *connection) rememberPublicEndpoints(resp brokerapi.RelayListResponse) {
 	}
 }
 
+// knownEndpointIDs is the set of relays whose public endpoint is known now.
+func (c *connection) knownEndpointIDs() map[string]bool {
+	known := make(map[string]bool, len(c.publicEndpoints))
+	for id := range c.publicEndpoints {
+		known[id] = true
+	}
+	return known
+}
+
+// leasedEndpointRetries returns the tried candidates that were named by IPv6
+// while their public endpoint was unknown (so the ladder could not fall back)
+// and whose endpoint is known now, rewritten to that endpoint with their WSS
+// fronts removed: the ladder already tried those.
+func (c *connection) leasedEndpointRetries(tried []brokerapi.RelayDescriptor, knownBefore map[string]bool) []brokerapi.RelayDescriptor {
+	var retry []brokerapi.RelayDescriptor
+	for _, cand := range tried {
+		if knownBefore[cand.ID] {
+			continue
+		}
+		endpoint, ok := c.publicEndpointFor(cand)
+		if !ok {
+			continue
+		}
+		cand.PublicHost, cand.PublicPort = endpoint.host, endpoint.port
+		cand.WSSFronts = nil
+		retry = append(retry, cand)
+	}
+	return retry
+}
+
 // publicEndpointFor returns the public endpoint to retry an IPv6 candidate
 // on, when one is known and differs from the candidate's own.
 func (c *connection) publicEndpointFor(cand brokerapi.RelayDescriptor) (relayEndpoint, bool) {
