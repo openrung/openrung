@@ -376,6 +376,7 @@ test_access_address_remote_commands() {
   mkdir -p "$stub" "$root"
   ACCESS_UNIT="${root}/openrung-access-address.service"
   ACCESS_REASSERT_SERVICE="${root}/openrung-access-address-reassert.service"
+  ACCESS_REASSERT_SCRIPT="${root}/openrung-access-address-reassert"
   ACCESS_REASSERT_TIMER="${root}/openrung-access-address-reassert.timer"
   cat > "${stub}/sudo" <<'EOF'
 #!/bin/sh
@@ -424,12 +425,14 @@ EOF
   assert_contains "$(<"$ACCESS_UNIT")" "ExecStart=/sbin/ip -6 address replace ${old}/128 dev eth0 preferred_lft 0 nodad" "unit adds the address deprecated on the default-route interface"
   assert_contains "$(<"$ACCESS_UNIT")" "ExecStop=-/sbin/ip -6 address delete ${old}/128 dev eth0" "unit removes the address on stop"
   assert_contains "$(<"$ACCESS_UNIT")" "Before=docker.service" "unit runs before docker starts the relay"
-  assert_contains "$(<"$ACCESS_UNIT")" "ExecReload=/sbin/ip -6 address replace ${old}/128 dev eth0 preferred_lft 0 nodad" "reload re-adds the address"
   assert_contains "$(<"$ACCESS_REASSERT_SERVICE")" "ExecCondition=/bin/systemctl is-active --quiet openrung-access-address.service" "re-assert acts only while the unit is active"
-  assert_contains "$(<"$ACCESS_REASSERT_SERVICE")" "ExecStart=/bin/systemctl reload openrung-access-address.service" "re-assert reloads the unit"
+  assert_contains "$(<"$ACCESS_REASSERT_SERVICE")" "ExecStart=${ACCESS_REASSERT_SCRIPT}" "re-assert runs the script"
+  assert_contains "$(<"$ACCESS_REASSERT_SERVICE")" "LogLevelMax=notice" "re-assert keeps systemd's per-run lines out of the journal"
+  if [ -x "$ACCESS_REASSERT_SCRIPT" ]; then pass; else fail "re-assert script missing or not executable"; fi
+  if [ -e "${ACCESS_REASSERT_SCRIPT}.new" ]; then fail "re-assert script staging copy left behind"; else pass; fi
   assert_contains "$(<"$ACCESS_REASSERT_TIMER")" "OnUnitActiveSec=1min" "re-assert runs every minute"
   assert_contains "$(<"$calls")" "systemctl enable --now openrung-access-address-reassert.timer" "re-assert timer is enabled and started"
-  case "$(<"$ACCESS_REASSERT_SERVICE")$(<"$ACCESS_REASSERT_TIMER")" in *"${old}"*) fail "the re-assert files name the address" ;; *) pass ;; esac
+  case "$(<"$ACCESS_REASSERT_SERVICE")$(<"$ACCESS_REASSERT_TIMER")$(<"$ACCESS_REASSERT_SCRIPT")" in *"${old}"*) fail "the re-assert files name the address" ;; *) pass ;; esac
   if [ -e "${ACCESS_UNIT}.new" ] || [ -e "${ACCESS_UNIT}.old" ]; then fail "staging files left behind"; else pass; fi
 
   # Re-running with the same address changes nothing and never stops the unit.
@@ -486,7 +489,7 @@ EOF
   assert_contains "$(<"$calls")" "systemctl disable --now openrung-access-address.service" "off stops and disables the unit"
   assert_before "$(<"$calls")" "systemctl disable --now openrung-access-address-reassert.timer" "systemctl disable --now openrung-access-address.service" "off stops the re-assert timer before the unit, so it cannot re-add the address"
   if [ -e "$ACCESS_UNIT" ]; then fail "off left the unit behind"; else pass; fi
-  if [ -e "$ACCESS_REASSERT_SERVICE" ] || [ -e "$ACCESS_REASSERT_TIMER" ]; then fail "off left the re-assert files behind"; else pass; fi
+  if [ -e "$ACCESS_REASSERT_SERVICE" ] || [ -e "$ACCESS_REASSERT_TIMER" ] || [ -e "$ACCESS_REASSERT_SCRIPT" ]; then fail "off left the re-assert files behind"; else pass; fi
   if has_addr "$new"; then fail "off left the address behind"; else pass; fi
   # A commit without a prepared interface refuses instead of writing a unit.
   ACCESS_HOST="$new"; ACCESS_DEV=""
@@ -497,6 +500,48 @@ EOF
 # commit_candidate reports whether the candidate went live, whatever the
 # commit's outcome, so a failed roll can tell a cleanup failure from a failed
 # deployment.
+# The re-assert script itself, against a stub `ip`: silent and hands-off while
+# the address is present and deprecated; re-adds it and logs a warning when it
+# is missing or no longer deprecated; refuses an unreadable unit.
+test_access_reassert_script() {
+  reset_script_functions
+  local stub="${TEST_TMP}/reassert-stub" calls="${TEST_TMP}/reassert-calls" addrs="${TEST_TMP}/reassert-addrs" script="${TEST_TMP}/reassert.sh" out rc
+  mkdir -p "$stub"
+  ACCESS_UNIT="${TEST_TMP}/reassert-unit.service"
+  access_address_unit 2001:db8:1::10 eth0 > "$ACCESS_UNIT"
+  access_reassert_script > "$script"
+  chmod +x "$script"
+  cat > "${stub}/ip" <<EOF
+#!/bin/sh
+echo "ip \$*" >> "$calls"
+case "\$*" in "-6 -o address show to "*) cat "$addrs" ;; esac
+EOF
+  chmod +x "${stub}/ip"
+
+  : > "$calls"; echo "2: eth0    inet6 2001:db8:1::10/128 scope global deprecated nodad" > "$addrs"
+  out="$(PATH="${stub}:${PATH}" sh "$script")"; rc=$?
+  assert_eq 0 "$rc" "present address exits cleanly"
+  assert_eq "" "$out" "present address logs nothing"
+  case "$(<"$calls")" in *"address replace"*) fail "present address was re-added" ;; *) pass ;; esac
+
+  : > "$calls"; : > "$addrs"
+  out="$(PATH="${stub}:${PATH}" sh "$script")"; rc=$?
+  assert_eq 0 "$rc" "missing address exits cleanly"
+  assert_contains "$(<"$calls")" "ip -6 address replace 2001:db8:1::10/128 dev eth0 preferred_lft 0 nodad" "missing address is re-added deprecated on the unit's interface"
+  assert_eq "<4>re-added access address 2001:db8:1::10 on eth0" "$out" "re-adding logs one warning"
+
+  : > "$calls"; echo "2: eth0    inet6 2001:db8:1::10/128 scope global" > "$addrs"
+  out="$(PATH="${stub}:${PATH}" sh "$script")"
+  assert_contains "$(<"$calls")" "address replace 2001:db8:1::10/128" "a preferred address is made deprecated again"
+  assert_contains "$out" "<4>re-added" "and that is logged"
+
+  echo "[Service]" > "$ACCESS_UNIT"; : > "$calls"
+  out="$(PATH="${stub}:${PATH}" sh "$script")"; rc=$?
+  assert_eq 1 "$rc" "an unreadable unit fails"
+  assert_contains "$out" "<3>cannot read the access address" "and says so"
+  case "$(<"$calls")" in *"address replace"*) fail "an unreadable unit re-added something" ;; *) pass ;; esac
+}
+
 test_commit_candidate_reports_promotion() {
   reset_script_functions
   local rc_in want
@@ -1029,6 +1074,7 @@ test_foundation_contact_is_managed_only_when_set
 test_access_host_validation_and_env
 test_convert_orders_access_address_around_roll
 test_access_address_remote_commands
+test_access_reassert_script
 test_commit_candidate_reports_promotion
 test_failed_roll_keeps_access_address_after_promotion
 test_apply_egress_limit_remote_command

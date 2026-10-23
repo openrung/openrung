@@ -778,7 +778,6 @@ Before=docker.service
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/sbin/ip -6 address replace $1/128 dev $2 preferred_lft 0 nodad
-ExecReload=/sbin/ip -6 address replace $1/128 dev $2 preferred_lft 0 nodad
 ExecStop=-/sbin/ip -6 address delete $1/128 dev $2
 
 [Install]
@@ -788,25 +787,53 @@ UNIT
 
 # A network manager that reconfigures the interface (systemd-networkd restarting
 # under unattended upgrades, for one) drops addresses it does not own, and the
-# one-shot unit above would stay "active" without the address. The re-assert
-# timer reloads that unit every minute — ExecReload re-adds the address and is
-# a no-op while it is present — and only while the unit is active, so stopping
-# it (an `off` or an address change) is never undone. Both files are generic:
-# the address lives in the unit alone.
+# one-shot unit above would stay "active" without the address. Every minute the
+# re-assert timer runs a tiny script that re-adds the address the unit names
+# (read from its ExecStart line) when it is missing or no longer deprecated,
+# and logs a warning only then; while the address is in place it is silent,
+# and LogLevelMax keeps systemd's own per-run lines out of the journal too. It
+# runs only while the unit is active, so stopping the unit (an `off` or an
+# address change) is never undone. None of the three files names the address.
 ACCESS_REASSERT_NAME=openrung-access-address-reassert
+ACCESS_REASSERT_SCRIPT=/usr/local/sbin/${ACCESS_REASSERT_NAME}
 ACCESS_REASSERT_SERVICE=/etc/systemd/system/${ACCESS_REASSERT_NAME}.service
 ACCESS_REASSERT_TIMER=/etc/systemd/system/${ACCESS_REASSERT_NAME}.timer
+
+access_reassert_script() {
+  cat <<'SCRIPT'
+#!/bin/sh
+# Re-add the access address that openrung-access-address.service configures
+# when the interface has lost it (or it lost its deprecated flag). Silent
+# while the address is in place; logs a warning only when it re-adds it.
+set -eu
+SCRIPT
+  printf 'unit=%s
+' "$ACCESS_UNIT"
+  cat <<'SCRIPT'
+set -- $(sed -n "s#^ExecStart=/sbin/ip -6 address replace \([^ ]*\)/128 dev \([^ ]*\) .*#\1 \2#p" "$unit")
+if [ "$#" -ne 2 ]; then
+  echo "<3>cannot read the access address from $unit"
+  exit 1
+fi
+if ip -6 -o address show to "$1/128" | grep -q deprecated; then
+  exit 0
+fi
+ip -6 address replace "$1/128" dev "$2" preferred_lft 0 nodad
+echo "<4>re-added access address $1 on $2"
+SCRIPT
+}
 
 access_reassert_service() {
   cat <<UNIT
 [Unit]
-Description=Re-assert the OpenRung relay access address
+Description=Re-add the OpenRung relay access address if it is missing
 After=${ACCESS_UNIT_NAME}
 
 [Service]
 Type=oneshot
+LogLevelMax=notice
 ExecCondition=/bin/systemctl is-active --quiet ${ACCESS_UNIT_NAME}
-ExecStart=/bin/systemctl reload ${ACCESS_UNIT_NAME}
+ExecStart=${ACCESS_REASSERT_SCRIPT}
 UNIT
 }
 
@@ -828,7 +855,8 @@ UNIT
 # Install (idempotently) and start the re-assert timer.
 install_access_reassert() { # host
   local host="$1"
-  access_reassert_service | ssh_run "$host" "sudo tee ${ACCESS_REASSERT_SERVICE} >/dev/null" \
+  access_reassert_script | ssh_run "$host" "sudo tee ${ACCESS_REASSERT_SCRIPT}.new >/dev/null && sudo chmod 0755 ${ACCESS_REASSERT_SCRIPT}.new && sudo mv ${ACCESS_REASSERT_SCRIPT}.new ${ACCESS_REASSERT_SCRIPT}" \
+    && access_reassert_service | ssh_run "$host" "sudo tee ${ACCESS_REASSERT_SERVICE} >/dev/null" \
     && access_reassert_timer | ssh_run "$host" "sudo tee ${ACCESS_REASSERT_TIMER} >/dev/null" \
     && ssh_run "$host" "sudo systemctl daemon-reload && sudo systemctl enable --now ${ACCESS_REASSERT_NAME}.timer >/dev/null 2>&1"
 }
@@ -901,7 +929,7 @@ commit_access_address() { # host
     ssh_run "$host" "set -e
       if sudo test -f ${ACCESS_REASSERT_TIMER} || sudo test -f ${ACCESS_REASSERT_SERVICE}; then
         sudo systemctl disable --now ${ACCESS_REASSERT_NAME}.timer >/dev/null 2>&1 || true
-        sudo rm -f ${ACCESS_REASSERT_TIMER} ${ACCESS_REASSERT_SERVICE}
+        sudo rm -f ${ACCESS_REASSERT_TIMER} ${ACCESS_REASSERT_SERVICE} ${ACCESS_REASSERT_SCRIPT}
         sudo systemctl daemon-reload
       fi
       if sudo test -f ${ACCESS_UNIT}; then

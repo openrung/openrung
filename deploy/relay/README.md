@@ -513,11 +513,14 @@ not need to match.
   it writes the variable into the env file and installs
   `openrung-access-address.service`, a host unit that adds the address
   before docker starts the relay and removes it when stopped, plus
-  `openrung-access-address-reassert.timer`, which reloads that unit every
-  minute while it is active. A network manager that reconfigures the
-  interface (systemd-networkd restarted by unattended upgrades, for one)
-  drops addresses it does not own; the reload puts the address back within a
-  minute and does nothing while it is present. The unit's command:
+  `openrung-access-address-reassert.timer`. A network manager that
+  reconfigures the interface (systemd-networkd restarted by unattended
+  upgrades, for one) drops addresses it does not own. While the unit is
+  active, the timer runs `/usr/local/sbin/openrung-access-address-reassert`
+  every minute: it re-adds the address the unit names when it is missing (or
+  no longer deprecated) and logs one warning
+  (`re-added access address … on …`); while the address is in place it does
+  and logs nothing. The unit's command:
 
   ```
   ip -6 address replace <IPv6>/128 dev <default-route interface> preferred_lft 0 nodad
