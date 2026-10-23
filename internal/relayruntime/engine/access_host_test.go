@@ -407,3 +407,69 @@ func TestNoAccessHostNeverRechecks(t *testing.T) {
 		t.Fatalf("re-registered without an access host: %d", r)
 	}
 }
+
+// An access-host re-registration mints a new lease token while the lease
+// syncer may be holding a long poll on the old one. The stale poll is
+// cancelled and the new session is synchronised and acknowledged at once —
+// not after a heartbeat — so leases issued meanwhile are applied within the
+// broker's acknowledgement wait.
+func TestAccessHostReRegistrationResyncsLeasesImmediately(t *testing.T) {
+	shortRotation(t, time.Hour)
+	shortLeaseTiming(t)
+	prev := accessRecheckInterval
+	accessRecheckInterval = 40 * time.Millisecond
+	t.Cleanup(func() { accessRecheckInterval = prev })
+
+	broker := &fakeBroker{leaseCapable: true, rejectStaleLeaseTokens: true, leaseHold: 20 * time.Second}
+	users := newRecordingUsers()
+	ts := httptest.NewServer(broker.handler())
+	defer ts.Close()
+	eng := New(Config{
+		BrokerURL:   ts.URL,
+		Mode:        ModeDirect,
+		PublicHost:  "203.0.113.7",
+		AccessHost:  testAccessHost,
+		ListenPort:  freePort(t),
+		Identity:    testIdentity,
+		DisableXray: true,
+		ConfigDir:   t.TempDir(),
+	}, Events{})
+	eng.cfg.HeartbeatInterval = time.Hour // a 404 wait would outlast the test
+	eng.newXrayUsers = func(Config, string) relayruntime.XrayUserManager { return users }
+	hosts := &fakeHostAddresses{}
+	hosts.set([]relayruntime.HostAddress{{IP: netip.MustParseAddr(testAccessHost), Deprecated: true}}, nil)
+	eng.hostAddresses = hosts.list
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = eng.runDirectSession(ctx, &relayruntime.BrokerClient{BaseURL: ts.URL}, eng.cfg, "access-relay", testIdentity, "", directOnlyListenHost)
+	}()
+	defer func() { cancel(); <-done }()
+
+	eventually(t, 5*time.Second, "online with the first session acked", func() bool {
+		return eng.Status().Phase == PhaseOnline && len(broker.ackedRevisions()) >= 1
+	})
+	// Let the syncer park in a long poll on the first token.
+	time.Sleep(200 * time.Millisecond)
+
+	hosts.set(nil, nil) // the address disappears: re-register without it
+	eventually(t, 5*time.Second, "withdrawal re-registration", func() bool {
+		registers, _, last := broker.stats()
+		return registers == 2 && last.AccessHost == ""
+	})
+	newToken := func() string { broker.mu.Lock(); defer broker.mu.Unlock(); return broker.currentLeaseToken() }()
+	revision := broker.setLeases(relay.LeaseEntry{ID: "0123456789abcdef0123456789abcdef", Credential: "44444444-2222-4333-8444-555555555555", ExpiresAt: time.Now().Add(time.Hour)})
+	eventually(t, 3*time.Second, "the new session's lease set acked with its own token", func() bool {
+		last, ok := broker.lastAcked()
+		if !ok || last < revision {
+			return false
+		}
+		_, bearers := broker.leaseStats()
+		return len(bearers) > 0 && bearers[len(bearers)-1] == newToken
+	})
+	if emails := users.leaseEmails(); len(emails) != 1 {
+		t.Fatalf("installed lease users = %v, want the issued lease", emails)
+	}
+}

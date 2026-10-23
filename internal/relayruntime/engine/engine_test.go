@@ -83,6 +83,16 @@ type fakeBroker struct {
 	leaseNotFoundOnce bool
 	// leaseAfters records each poll's `after` (-1 when omitted).
 	leaseAfters []int64
+	// rejectStaleLeaseTokens answers lease calls that present any token but
+	// the latest registration's with 404, as the broker does; leaseHold
+	// overrides fakeLeaseHold for polls with a current `after`.
+	rejectStaleLeaseTokens bool
+	leaseHold              time.Duration
+}
+
+// currentLeaseToken is the token of the latest registration.
+func (f *fakeBroker) currentLeaseToken() string {
+	return fmt.Sprintf("lease_relay_%d", f.nextRelayID)
 }
 
 // fakeLeaseHold is how long the fake broker holds a poll whose `after` is
@@ -144,7 +154,7 @@ func (f *fakeBroker) leaseHandlers(mux *http.ServeMux) {
 		f.leasePolls++
 		f.leaseBearers = append(f.leaseBearers, bearer)
 		f.leaseAfters = append(f.leaseAfters, after)
-		notFound := f.leaseNotFoundOnce
+		notFound := f.leaseNotFoundOnce || (f.rejectStaleLeaseTokens && bearer != f.currentLeaseToken())
 		f.leaseNotFoundOnce = false
 		failing := f.failLeasePolls
 		if f.leaseWake == nil {
@@ -152,6 +162,10 @@ func (f *fakeBroker) leaseHandlers(mux *http.ServeMux) {
 		}
 		wake := f.leaseWake
 		revision := f.leaseRevision
+		hold := fakeLeaseHold
+		if f.leaseHold > 0 {
+			hold = f.leaseHold
+		}
 		f.mu.Unlock()
 		if failing {
 			w.WriteHeader(http.StatusServiceUnavailable)
@@ -166,7 +180,7 @@ func (f *fakeBroker) leaseHandlers(mux *http.ServeMux) {
 		if hasAfter && revision <= after {
 			select {
 			case <-wake:
-			case <-time.After(fakeLeaseHold):
+			case <-time.After(hold):
 			case <-r.Context().Done():
 				return
 			}
@@ -179,8 +193,15 @@ func (f *fakeBroker) leaseHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/relays/{id}/leases/ack", func(w http.ResponseWriter, r *http.Request) {
 		var ack relay.LeaseAckRequest
 		_ = json.NewDecoder(r.Body).Decode(&ack)
+		bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		f.mu.Lock()
-		f.leaseBearers = append(f.leaseBearers, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		f.leaseBearers = append(f.leaseBearers, bearer)
+		if f.rejectStaleLeaseTokens && bearer != f.currentLeaseToken() {
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"relay not found"}`))
+			return
+		}
 		failing := f.failLeaseAcks
 		if !failing {
 			f.leaseAcks = append(f.leaseAcks, ack.Revision)

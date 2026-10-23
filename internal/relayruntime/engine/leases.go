@@ -38,12 +38,15 @@ var (
 // the syncer re-reads it on every cycle: a new token is a new broker-side
 // session whose applied revision the broker reset, so the syncer starts that
 // session with a full fetch and ack whether or not it ever saw a 404. The
-// generation counter is how it notices the change.
+// generation counter is how it notices the change; changed is closed (and
+// replaced) on every change, so a poll or wait that holds the old token ends
+// as soon as a re-registration mints a new one.
 type leaseSession struct {
 	mu         sync.Mutex
 	id         string
 	token      string
 	generation uint64
+	changed    chan struct{}
 }
 
 func (s *leaseSession) set(id, token string) {
@@ -54,12 +57,27 @@ func (s *leaseSession) set(id, token string) {
 	}
 	s.id, s.token = id, token
 	s.generation++
+	if s.changed != nil {
+		close(s.changed)
+	}
+	s.changed = make(chan struct{})
 }
 
-func (s *leaseSession) get() (id, token string, generation uint64) {
+// get returns the current session and a channel closed when it changes.
+func (s *leaseSession) get() (id, token string, generation uint64, changed <-chan struct{}) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.id, s.token, s.generation
+	if s.changed == nil {
+		s.changed = make(chan struct{})
+	}
+	return s.id, s.token, s.generation, s.changed
+}
+
+// superseded reports whether the session moved past generation.
+func (s *leaseSession) superseded(generation uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.generation != generation
 }
 
 // installedLease is one lease the relay's Xray currently accepts.
@@ -224,10 +242,32 @@ func (l *leaseSync) run(ctx context.Context) {
 // installed, and the relay's own online transition never depends on which
 // attempt finally succeeded.
 func (l *leaseSync) step(ctx context.Context) bool {
-	id, token, generation := l.session.get()
+	id, token, generation, changed := l.session.get()
 	if id == "" || token == "" {
 		return false
 	}
+	// Every broker call of this cycle holds this session's token: a
+	// re-registration that mints a new one cancels them (a long poll would
+	// otherwise sit out its hold on a dead token), and the cycle reports
+	// success so the loop starts over at once with the new session.
+	sessionCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		select {
+		case <-changed:
+			cancel()
+		case <-sessionCtx.Done():
+		}
+	}()
+	ok := l.cycle(sessionCtx, id, token, generation, changed)
+	if !ok && ctx.Err() == nil && l.session.superseded(generation) {
+		return true
+	}
+	return ok
+}
+
+// cycle is one step against a fixed session (see step).
+func (l *leaseSync) cycle(ctx context.Context, id, token string, generation uint64, changed <-chan struct{}) bool {
 	l.mu.Lock()
 	if generation != l.generation {
 		// A new registration session: the broker reset its applied revision
@@ -241,7 +281,7 @@ func (l *leaseSync) step(ctx context.Context) bool {
 	l.mu.Unlock()
 
 	if pending && !full {
-		if !l.ack(ctx, id, token, applied) {
+		if !l.ack(ctx, id, token, applied, changed) {
 			return false
 		}
 	}
@@ -252,7 +292,7 @@ func (l *leaseSync) step(ctx context.Context) bool {
 	}
 	resp, err := l.broker.PollLeases(ctx, id, token, after)
 	if err != nil {
-		return l.handleBrokerError(ctx, "poll", err)
+		return l.handleBrokerError(ctx, "poll", err, changed)
 	}
 	now := l.now()
 	if !l.reconcile(ctx, resp, now) {
@@ -269,16 +309,16 @@ func (l *leaseSync) step(ctx context.Context) bool {
 		l.logf("lease revision went backwards (%d → %d); following the broker", applied, resp.Revision)
 	}
 	l.mu.Lock()
-	changed := resp.Revision != l.applied
+	revisionChanged := resp.Revision != l.applied
 	l.applied = resp.Revision
-	if full || changed || l.pendingAck {
+	if full || revisionChanged || l.pendingAck {
 		l.pendingAck = true
 	}
 	l.full = false
 	pending = l.pendingAck
 	l.mu.Unlock()
 	if pending {
-		return l.ack(ctx, id, token, resp.Revision)
+		return l.ack(ctx, id, token, resp.Revision, changed)
 	}
 	return true
 }
@@ -286,9 +326,9 @@ func (l *leaseSync) step(ctx context.Context) bool {
 // ack confirms revision to the broker and, on success, clears the pending
 // ack and fires onApplied once per syncer. Every ack — first attempt or
 // retry — goes through here so the online transition cannot be skipped.
-func (l *leaseSync) ack(ctx context.Context, id, token string, revision int64) bool {
+func (l *leaseSync) ack(ctx context.Context, id, token string, revision int64, changed <-chan struct{}) bool {
 	if err := l.broker.AckLeases(ctx, id, token, revision); err != nil {
-		return l.handleBrokerError(ctx, "ack", err)
+		return l.handleBrokerError(ctx, "ack", err, changed)
 	}
 	l.mu.Lock()
 	if l.applied == revision {
@@ -304,21 +344,29 @@ func (l *leaseSync) ack(ctx context.Context, id, token string, revision int64) b
 }
 
 // handleBrokerError logs a failed broker call. A 404 means this session's
-// token no longer names a live registration: the heartbeat loop will
-// re-register and publish the new token through the session, so wait one
-// heartbeat and start over with a full poll (the broker reset the applied
-// revision when it minted the token).
-func (l *leaseSync) handleBrokerError(ctx context.Context, what string, err error) bool {
+// token no longer names a live registration: the session re-registers (the
+// heartbeat after an expired lease, or an access-host change) and publishes
+// the new token through the session, so wait for that — at most one
+// heartbeat — and start over with a full poll (the broker reset the applied
+// revision when it minted the token). A token that was replaced while the
+// call was in flight ends the wait at once.
+func (l *leaseSync) handleBrokerError(ctx context.Context, what string, err error, changed <-chan struct{}) bool {
 	if ctx.Err() != nil {
 		return false
 	}
 	if relayruntime.IsRelayNotFound(err) {
-		l.logf("lease %s: registration gone; waiting for the heartbeat to re-register", what)
 		l.mu.Lock()
 		l.full = true
 		l.mu.Unlock()
 		select {
+		case <-changed:
+			return false // a newer session exists; step retries at once
+		default:
+		}
+		l.logf("lease %s: registration gone; waiting for the heartbeat to re-register", what)
+		select {
 		case <-ctx.Done():
+		case <-changed:
 		case <-time.After(l.heartbeatInterval):
 		}
 		return false
