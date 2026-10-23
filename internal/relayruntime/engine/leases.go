@@ -163,6 +163,14 @@ func (l *leaseSync) setActive(active bool) {
 	}
 }
 
+// sessionMovedPast reports whether the session's current generation differs
+// from the one the last cycle worked against.
+func (l *leaseSync) sessionMovedPast(generation uint64) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.generation != generation
+}
+
 func (l *leaseSync) isActive() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -222,11 +230,22 @@ func (l *leaseSync) run(ctx context.Context) {
 			l.removeAll(ctx)
 			return
 		}
+		// A new session (a re-registration) ends the backoff: the failure
+		// that caused it most likely belonged to the old token. A change
+		// that landed after the failed cycle began skips the wait outright.
+		_, _, generation, changed := l.session.get()
+		if l.sessionMovedPast(generation) {
+			backoff = leaseSyncMinBackoff
+			continue
+		}
 		select {
 		case <-ctx.Done():
 			l.removeAll(ctx)
 			return
 		case <-l.activate:
+		case <-changed:
+			backoff = leaseSyncMinBackoff
+			continue
 		case <-time.After(backoff):
 		}
 		backoff *= 2

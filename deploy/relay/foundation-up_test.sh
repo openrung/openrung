@@ -397,12 +397,17 @@ EOF
 echo "systemctl \$*" >> "$calls"
 unit_addr() { sed -n 's/^ExecStart=.* replace \([^/]*\)\/128 .*/\1/p' "$ACCESS_UNIT"; }
 case "\$*" in
-  "enable --now "*)
+  "enable --now openrung-access-address.service")
     [ -e "$failstart" ] && grep -q "\$(cat "$failstart")" "$ACCESS_UNIT" && exit 1
     a=\$(unit_addr); grep -v " \$a/" "$addrs" > "$addrs.tmp"; mv "$addrs.tmp" "$addrs"
     echo "2: eth0    inet6 \$a/128 scope global deprecated nodad" >> "$addrs" ;;
-  "stop "*|"disable --now "*)
+  "stop openrung-access-address.service"|"disable --now openrung-access-address.service")
     a=\$(unit_addr); grep -v " \$a/" "$addrs" > "$addrs.tmp"; mv "$addrs.tmp" "$addrs" ;;
+  *"stop "*"openrung-access-address-reassert.service"*)
+    # A re-assert run is in flight: stop returns only once it has finished,
+    # so model that run completing here — with the address missing, it
+    # re-adds whatever the unit currently names.
+    [ -x "$ACCESS_REASSERT_SCRIPT" ] && "$ACCESS_REASSERT_SCRIPT" >/dev/null || true ;;
 esac
 exit 0
 EOF
@@ -458,6 +463,7 @@ EOF
   if (set -e; prepare_access_address 203.0.113.10; commit_access_address 203.0.113.10) >"$OUTPUT" 2>&1; then fail "commit succeeded although the unit did not start"; else pass; fi
   assert_contains "$(<"$OUTPUT")" "previous unit was restored" "commit failure says the previous unit was restored"
   assert_eq "$before" "$(<"$ACCESS_UNIT")" "commit failure restores the previous unit"
+  assert_contains "$(<"$calls")" "systemctl start openrung-access-address-reassert.timer" "commit failure restarts the re-assert timer for the restored unit"
   if has_addr "$old" && has_addr "$new"; then pass; else fail "commit failure must keep the previous and the served address: $(<"$addrs")"; fi
   if [ -e "${ACCESS_UNIT}.new" ] || [ -e "${ACCESS_UNIT}.old" ]; then fail "staging files left behind after restore"; else pass; fi
 
@@ -468,6 +474,7 @@ EOF
   if (set -e; prepare_access_address 203.0.113.10; commit_access_address 203.0.113.10) >"$OUTPUT" 2>&1; then pass; else fail "address change failed: $(<"$OUTPUT")"; fi
   if ! has_addr "$old" && has_addr "$new"; then pass; else fail "after the change only the new address may remain: $(<"$addrs")"; fi
   assert_before "$(<"$calls")" "systemctl stop openrung-access-address.service" "systemctl enable --now" "the previous unit stops (removing its address) before the new one starts"
+  assert_before "$(<"$calls")" "systemctl stop openrung-access-address-reassert.timer openrung-access-address-reassert.service" "systemctl stop openrung-access-address.service" "re-assert is stopped and drained before the previous address is removed"
   assert_contains "$(<"$ACCESS_UNIT")" "replace ${new}/128" "the new unit names the new address"
 
   # The host's own preferred address is refused before anything changes.
@@ -488,6 +495,7 @@ EOF
   if (set -e; prepare_access_address 203.0.113.10; commit_access_address 203.0.113.10) >"$OUTPUT" 2>&1; then pass; else fail "off failed: $(<"$OUTPUT")"; fi
   assert_contains "$(<"$calls")" "systemctl disable --now openrung-access-address.service" "off stops and disables the unit"
   assert_before "$(<"$calls")" "systemctl disable --now openrung-access-address-reassert.timer" "systemctl disable --now openrung-access-address.service" "off stops the re-assert timer before the unit, so it cannot re-add the address"
+  assert_before "$(<"$calls")" "systemctl stop openrung-access-address-reassert.service" "systemctl disable --now openrung-access-address.service" "off drains a re-assert run in progress before the address is removed"
   if [ -e "$ACCESS_UNIT" ]; then fail "off left the unit behind"; else pass; fi
   if [ -e "$ACCESS_REASSERT_SERVICE" ] || [ -e "$ACCESS_REASSERT_TIMER" ] || [ -e "$ACCESS_REASSERT_SCRIPT" ]; then fail "off left the re-assert files behind"; else pass; fi
   if has_addr "$new"; then fail "off left the address behind"; else pass; fi

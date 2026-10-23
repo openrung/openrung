@@ -473,3 +473,76 @@ func TestAccessHostReRegistrationResyncsLeasesImmediately(t *testing.T) {
 		t.Fatalf("installed lease users = %v, want the issued lease", emails)
 	}
 }
+
+// A re-registration that lands while the lease syncer is backing off after
+// a failed poll ends the backoff: the new session is synchronised at once,
+// not after the (here 30-second) backoff.
+func TestLeaseBackoffEndsOnReRegistration(t *testing.T) {
+	shortRotation(t, time.Hour)
+	minBackoff, maxBackoff, expiry := leaseSyncMinBackoff, leaseSyncMaxBackoff, leaseExpiryInterval
+	leaseSyncMinBackoff, leaseSyncMaxBackoff, leaseExpiryInterval = 30*time.Second, 30*time.Second, time.Hour
+	t.Cleanup(func() { leaseSyncMinBackoff, leaseSyncMaxBackoff, leaseExpiryInterval = minBackoff, maxBackoff, expiry })
+	prev := accessRecheckInterval
+	accessRecheckInterval = 40 * time.Millisecond
+	t.Cleanup(func() { accessRecheckInterval = prev })
+
+	broker := &fakeBroker{leaseCapable: true, rejectStaleLeaseTokens: true}
+	users := newRecordingUsers()
+	ts := httptest.NewServer(broker.handler())
+	defer ts.Close()
+	eng := New(Config{
+		BrokerURL:   ts.URL,
+		Mode:        ModeDirect,
+		PublicHost:  "203.0.113.7",
+		AccessHost:  testAccessHost,
+		ListenPort:  freePort(t),
+		Identity:    testIdentity,
+		DisableXray: true,
+		ConfigDir:   t.TempDir(),
+	}, Events{})
+	eng.cfg.HeartbeatInterval = time.Hour
+	eng.newXrayUsers = func(Config, string) relayruntime.XrayUserManager { return users }
+	hosts := &fakeHostAddresses{}
+	hosts.set([]relayruntime.HostAddress{{IP: netip.MustParseAddr(testAccessHost), Deprecated: true}}, nil)
+	eng.hostAddresses = hosts.list
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = eng.runDirectSession(ctx, &relayruntime.BrokerClient{BaseURL: ts.URL}, eng.cfg, "access-relay", testIdentity, "", directOnlyListenHost)
+	}()
+	defer func() { cancel(); <-done }()
+	eventually(t, 5*time.Second, "online with the first session acked", func() bool {
+		return eng.Status().Phase == PhaseOnline && len(broker.ackedRevisions()) >= 1
+	})
+
+	// Polls start failing; the syncer falls into its 30-second backoff.
+	broker.mu.Lock()
+	broker.failLeasePolls = true
+	broker.mu.Unlock()
+	eventually(t, 5*time.Second, "a failed poll", func() bool {
+		polls, _ := broker.leaseStats()
+		return polls >= 2
+	})
+	time.Sleep(300 * time.Millisecond) // well inside the backoff
+	broker.mu.Lock()
+	broker.failLeasePolls = false
+	broker.mu.Unlock()
+
+	hosts.set(nil, nil) // re-register without the access host
+	eventually(t, 5*time.Second, "withdrawal re-registration", func() bool {
+		registers, _, last := broker.stats()
+		return registers == 2 && last.AccessHost == ""
+	})
+	newToken := func() string { broker.mu.Lock(); defer broker.mu.Unlock(); return broker.currentLeaseToken() }()
+	revision := broker.setLeases(relay.LeaseEntry{ID: "0123456789abcdef0123456789abcdef", Credential: "44444444-2222-4333-8444-555555555555", ExpiresAt: time.Now().Add(time.Hour)})
+	eventually(t, 3*time.Second, "the new session acked despite the backoff", func() bool {
+		last, ok := broker.lastAcked()
+		if !ok || last < revision {
+			return false
+		}
+		_, bearers := broker.leaseStats()
+		return len(bearers) > 0 && bearers[len(bearers)-1] == newToken
+	})
+}

@@ -929,6 +929,7 @@ commit_access_address() { # host
     ssh_run "$host" "set -e
       if sudo test -f ${ACCESS_REASSERT_TIMER} || sudo test -f ${ACCESS_REASSERT_SERVICE}; then
         sudo systemctl disable --now ${ACCESS_REASSERT_NAME}.timer >/dev/null 2>&1 || true
+        sudo systemctl stop ${ACCESS_REASSERT_NAME}.service >/dev/null 2>&1 || true
         sudo rm -f ${ACCESS_REASSERT_TIMER} ${ACCESS_REASSERT_SERVICE} ${ACCESS_REASSERT_SCRIPT}
         sudo systemctl daemon-reload
       fi
@@ -955,6 +956,11 @@ commit_access_address() { # host
       exit 0
     fi
     had_old=0
+    # A re-assert run that read the old unit could re-add its address after
+    # the stop below removes it: stop the timer and wait out a run in
+    # progress (systemctl stop returns once it has exited) before any
+    # address is touched. install_access_reassert starts the timer again.
+    sudo systemctl stop ${ACCESS_REASSERT_NAME}.timer ${ACCESS_REASSERT_NAME}.service >/dev/null 2>&1 || true
     if sudo test -f ${ACCESS_UNIT}; then
       had_old=1
       sudo cp -p ${ACCESS_UNIT} ${ACCESS_UNIT}.old || exit 1
@@ -973,6 +979,7 @@ commit_access_address() { # host
       sudo mv ${ACCESS_UNIT}.old ${ACCESS_UNIT}
       sudo systemctl daemon-reload
       sudo systemctl enable --now ${ACCESS_UNIT_NAME} >/dev/null 2>&1 || true
+      if sudo test -f ${ACCESS_REASSERT_TIMER}; then sudo systemctl start ${ACCESS_REASSERT_NAME}.timer >/dev/null 2>&1 || true; fi
     else
       sudo systemctl disable ${ACCESS_UNIT_NAME} >/dev/null 2>&1 || true
       sudo rm -f ${ACCESS_UNIT}
