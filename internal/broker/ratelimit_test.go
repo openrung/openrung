@@ -224,3 +224,29 @@ func TestRateLimitsWithDefaultsKeepsOverrides(t *testing.T) {
 		t.Fatalf("telemetry limit = %+v, want default %+v", got.Telemetry, want)
 	}
 }
+
+func TestRateLimitedRetryAfterCoversConfiguredRefill(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		limit RateLimit
+		want  string
+	}{
+		{name: "slow refill", limit: RateLimit{PerSecond: 0.05, Burst: 1}, want: "20"},
+		{name: "fast refill keeps floor", limit: RateLimit{PerSecond: 2, Burst: 1}, want: "10"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed(), RateLimits: RateLimits{RelayList: test.limit}})
+			var recorder *httptest.ResponseRecorder
+			for range 2 {
+				recorder = httptest.NewRecorder()
+				server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/relays", nil))
+			}
+			if recorder.Code != http.StatusTooManyRequests {
+				t.Fatalf("second request status = %d, want 429", recorder.Code)
+			}
+			if got := recorder.Header().Get("Retry-After"); got != test.want {
+				t.Fatalf("Retry-After = %q, want %q", got, test.want)
+			}
+		})
+	}
+}

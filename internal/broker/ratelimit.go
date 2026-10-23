@@ -147,6 +147,13 @@ func newIPRateLimiter(ratePerSecond, burst float64, maxKeys int) *ipRateLimiter 
 }
 
 func (l *ipRateLimiter) allow(key string) bool {
+	allowed, _ := l.take(key)
+	return allowed
+}
+
+// take spends one token from key's bucket. When the bucket is empty it
+// reports how long until the next token refills.
+func (l *ipRateLimiter) take(key string) (bool, time.Duration) {
 	now := l.now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -160,7 +167,7 @@ func (l *ipRateLimiter) allow(key string) bool {
 			// Fail open: an attacker rotating through more source IPs than the
 			// table holds would otherwise turn the limiter into a DoS against
 			// legitimate clients. Multi-source floods are handled at the edge.
-			return true
+			return true, 0
 		}
 		bucket = &tokenBucket{tokens: l.burst, lastSeen: now}
 		l.buckets[key] = bucket
@@ -171,10 +178,10 @@ func (l *ipRateLimiter) allow(key string) bool {
 		bucket.lastSeen = now
 	}
 	if bucket.tokens < 1 {
-		return false
+		return false, time.Duration((1 - bucket.tokens) / l.ratePerSecond * float64(time.Second))
 	}
 	bucket.tokens--
-	return true
+	return true, 0
 }
 
 // sweepLocked drops buckets that have been idle long enough to refill
@@ -197,11 +204,13 @@ func rateLimited(limiter *ipRateLimiter, clientIP *clientIPResolver, retryAfterS
 
 func rateLimitedBy(limiter *ipRateLimiter, key func(*http.Request) string, retryAfterSeconds int, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !limiter.allow(key(r)) {
+		if allowed, refill := limiter.take(key(r)); !allowed {
 			// A 429 is per-client state: a shared cache (Cloudflare's edge)
 			// storing one would replay it to every client behind the edge.
 			w.Header().Set("Cache-Control", "no-store")
-			w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
+			// retryAfterSeconds is a floor; a slow configured refill must not
+			// send clients back before their next token exists.
+			w.Header().Set("Retry-After", strconv.Itoa(max(retryAfterSeconds, int(math.Ceil(refill.Seconds())))))
 			writeError(w, http.StatusTooManyRequests, "rate limit exceeded, retry later")
 			return
 		}
