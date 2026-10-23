@@ -205,7 +205,8 @@ func (l *leaseSync) run(ctx context.Context) {
 			return
 		}
 		var ok bool
-		if l.isActive() {
+		polling := l.isActive()
+		if polling {
 			ok = l.step(ctx)
 		} else {
 			ok = l.removeAll(ctx)
@@ -230,13 +231,20 @@ func (l *leaseSync) run(ctx context.Context) {
 			l.removeAll(ctx)
 			return
 		}
-		// A new session (a re-registration) ends the backoff: the failure
-		// that caused it most likely belonged to the old token. A change
-		// that landed after the failed cycle began skips the wait outright.
-		_, _, generation, changed := l.session.get()
-		if l.sessionMovedPast(generation) {
-			backoff = leaseSyncMinBackoff
-			continue
+		// A new session (a re-registration) ends a polling failure's
+		// backoff: the failure most likely belonged to the old token, and a
+		// change that landed after the failed cycle began skips the wait
+		// outright. A failed drain is local (Xray removals) — a session
+		// change says nothing about it, and the generation it would compare
+		// is only advanced by a poll cycle — so it keeps its backoff.
+		var changed <-chan struct{}
+		if polling {
+			var generation uint64
+			_, _, generation, changed = l.session.get()
+			if l.sessionMovedPast(generation) {
+				backoff = leaseSyncMinBackoff
+				continue
+			}
 		}
 		select {
 		case <-ctx.Done():

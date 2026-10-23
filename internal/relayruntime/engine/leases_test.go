@@ -531,3 +531,40 @@ func TestDirectSessionStartsLeaseSyncWhenReRegistrationGainsCapability(t *testin
 		t.Fatalf("the syncer kept polling after the capability was withdrawn (%d → %d)", polls, after)
 	}
 }
+
+// A drain whose removals keep failing backs off even when the session has
+// moved past the generation the syncer last polled with (a re-registration
+// while leases are off): the session-change shortcut is for polling only.
+func TestFailingDrainKeepsItsBackoffAcrossSessionChanges(t *testing.T) {
+	minBackoff, maxBackoff, expiry := leaseSyncMinBackoff, leaseSyncMaxBackoff, leaseExpiryInterval
+	leaseSyncMinBackoff, leaseSyncMaxBackoff, leaseExpiryInterval = 200*time.Millisecond, time.Second, time.Hour
+	t.Cleanup(func() { leaseSyncMinBackoff, leaseSyncMaxBackoff, leaseExpiryInterval = minBackoff, maxBackoff, expiry })
+
+	users := newRecordingUsers()
+	users.failRemoves = true
+	session := &leaseSession{}
+	session.set("relay_1", "lease_relay_1") // generation 1; the syncer never polled it
+	syncer := newLeaseSync(&relayruntime.BrokerClient{BaseURL: "http://127.0.0.1:1"}, session, users, time.Hour, func(string, ...any) {})
+	syncer.installed["0123456789abcdef0123456789abcdef"] = installedLease{credential: "44444444-2222-4333-8444-555555555555", expiresAt: time.Now().Add(time.Hour)}
+	// Inactive from the start: the worker drains, and every removal fails.
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); syncer.run(ctx) }()
+	time.Sleep(500 * time.Millisecond)
+	session.set("relay_1", "lease_relay_2") // a re-registration while draining
+	time.Sleep(500 * time.Millisecond)
+	users.mu.Lock()
+	attempts := users.removeAttempts
+	users.mu.Unlock()
+	cancel()
+	<-done
+	// Backoff 200 ms doubling to 1 s over one second allows a handful of
+	// attempts; a loop that skips the backoff makes thousands.
+	if attempts > 10 {
+		t.Fatalf("%d removal attempts in one second: the failing drain spun without backoff", attempts)
+	}
+	if attempts == 0 {
+		t.Fatal("the drain never tried to remove the lease")
+	}
+}

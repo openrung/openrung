@@ -22,6 +22,8 @@ type recordingUsers struct {
 	failAdds bool
 	// failRemoves makes every RemoveUser fail (the user stays accepted).
 	failRemoves bool
+	// removeAttempts counts every RemoveUser call, failed ones included.
+	removeAttempts int
 	// addDelay slows every AddUser (a slow management API).
 	addDelay time.Duration
 }
@@ -50,6 +52,7 @@ func (r *recordingUsers) AddUser(_ context.Context, credential relayruntime.Cred
 func (r *recordingUsers) RemoveUser(_ context.Context, email string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.removeAttempts++
 	if r.failRemoves {
 		return errors.New("management API unavailable")
 	}
