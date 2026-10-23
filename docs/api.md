@@ -16,6 +16,14 @@ so legitimate clients behind one carrier-grade NAT address do not all consume
 one bucket. That identifier is not authentication, so relay-side admission
 limits remain mandatory.
 
+Each of these per-client budgets is broker-host configuration, set as
+`<per-second rate>:<burst>` in `OPENRUNG_RATE_LIMIT_RELAY_LIST`,
+`OPENRUNG_RATE_LIMIT_WSS_TICKET`, `OPENRUNG_RATE_LIMIT_USER_AUTH`,
+`OPENRUNG_RATE_LIMIT_ACCESS`, `OPENRUNG_RATE_LIMIT_TELEMETRY`,
+`OPENRUNG_RATE_LIMIT_SPEED_TEST` and `OPENRUNG_RATE_LIMIT_RELAY_REGISTRATION`
+(registration, heartbeat and lease polling share one budget). Clients must not
+assume any particular budget; they react only to `429` and `Retry-After`.
+
 The credentialed operational endpoint `GET /admin/api/relays/inventory` is rate
 limited the same way, on a tighter budget: authentication bounds who may call
 it, not how often, and each call costs a full unbounded read of the relay store.
@@ -1206,6 +1214,9 @@ steeply with its score: a clearly better relay leads almost every response,
 while relays with similar scores take turns at the head, so concurrent clients
 spread across them rather than all landing on the marginal leader. IPv6 is only
 a final tie-breaker after the sampled order and heartbeat recency. `limit`
+defaults to `OPENRUNG_RELAY_LIST_DEFAULT_LIMIT` and may not exceed
+`OPENRUNG_RELAY_LIST_MAX_LIMIT` (larger values are `400`); the operator keeps
+the maximum at or above every shipped client's request. `limit`
 truncates *after* ranking, so
 membership of the returned set — unlike the order within it — is decided
 entirely by the broker.

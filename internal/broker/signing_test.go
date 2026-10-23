@@ -433,6 +433,35 @@ func TestListRelaysBodyFields(t *testing.T) {
 	}
 }
 
+func TestListRelaysConfiguredLimits(t *testing.T) {
+	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed(), RelayListDefaultLimit: 3, RelayListMaxLimit: 8})
+	for _, tc := range []struct {
+		query      string
+		wantStatus int
+		wantLimit  int
+	}{
+		{query: "", wantStatus: http.StatusOK, wantLimit: 3},
+		{query: "?limit=8", wantStatus: http.StatusOK, wantLimit: 8},
+		{query: "?limit=9", wantStatus: http.StatusBadRequest},
+	} {
+		recorder := httptest.NewRecorder()
+		server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/relays"+tc.query, nil))
+		if recorder.Code != tc.wantStatus {
+			t.Fatalf("%q: status = %d, want %d: %s", tc.query, recorder.Code, tc.wantStatus, recorder.Body.String())
+		}
+		if tc.wantStatus != http.StatusOK {
+			continue
+		}
+		var out relay.ListResponse
+		if err := json.Unmarshal(recorder.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode relay list: %v", err)
+		}
+		if out.Limit != tc.wantLimit {
+			t.Fatalf("%q: echoed limit = %d, want %d", tc.query, out.Limit, tc.wantLimit)
+		}
+	}
+}
+
 func TestRelayListErrorsCarryNoSignature(t *testing.T) {
 	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed()})
 	recorder := httptest.NewRecorder()

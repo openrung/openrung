@@ -177,6 +177,18 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	rateLimits, err := parseRateLimits()
+	if err != nil {
+		return err
+	}
+	relayListDefaultLimit, relayListMaxLimit, err := parseRelayListLimits()
+	if err != nil {
+		return err
+	}
+	wssTicketTTL, wssTicketMaxStreams, err := parseWSSTicketBounds()
+	if err != nil {
+		return err
+	}
 
 	cfg := broker.Config{
 		RegistrationToken: registrationToken,
@@ -196,6 +208,11 @@ func run() error {
 		RelayProbeInterval:         relayProbeInterval,
 		SigningSeed:                signingSeed,
 		WSSTicketSigningSeed:       wssTicketSeed,
+		WSSTicketTTL:               wssTicketTTL,
+		WSSTicketMaxStreams:        wssTicketMaxStreams,
+		RateLimits:                 rateLimits,
+		RelayListDefaultLimit:      relayListDefaultLimit,
+		RelayListMaxLimit:          relayListMaxLimit,
 		UserTokenKey:               userTokenKey,
 		AccessTokenTTL:             accessTokenTTL,
 		EnrollmentBudget:           broker.EnrollmentBudget{BurstLimit: enrollmentBurstLimit, DailyLimit: enrollmentDailyLimit},
@@ -362,6 +379,70 @@ func newSourceClassifier() (*broker.SourceClassifier, error) {
 		ExemptCIDRs:           splitAndTrim(os.Getenv("OPENRUNG_ENROLLMENT_EXEMPT_CIDRS")),
 		MaxAge:                maxAge,
 	})
+}
+
+// parseRateLimits reads the OPENRUNG_RATE_LIMIT_* per-client budgets
+// ("<per-second rate>:<burst>"); unset ones keep the broker's defaults.
+func parseRateLimits() (broker.RateLimits, error) {
+	var limits broker.RateLimits
+	for _, entry := range []struct {
+		name   string
+		target *broker.RateLimit
+	}{
+		{"OPENRUNG_RATE_LIMIT_RELAY_LIST", &limits.RelayList},
+		{"OPENRUNG_RATE_LIMIT_WSS_TICKET", &limits.WSSTicket},
+		{"OPENRUNG_RATE_LIMIT_TELEMETRY", &limits.Telemetry},
+		{"OPENRUNG_RATE_LIMIT_USER_AUTH", &limits.UserAuth},
+		{"OPENRUNG_RATE_LIMIT_ACCESS", &limits.Access},
+		{"OPENRUNG_RATE_LIMIT_RELAY_REGISTRATION", &limits.RelayRegistration},
+		{"OPENRUNG_RATE_LIMIT_SPEED_TEST", &limits.SpeedTest},
+	} {
+		limit, err := broker.ParseRateLimit(os.Getenv(entry.name))
+		if err != nil {
+			return broker.RateLimits{}, fmt.Errorf("%s: %w", entry.name, err)
+		}
+		*entry.target = limit
+	}
+	return limits, nil
+}
+
+// parseRelayListLimits reads the relay-list page sizes; zero keeps the
+// broker's default for that bound.
+func parseRelayListLimits() (defaultLimit, maxLimit int, err error) {
+	if defaultLimit, err = parseOptionalInt("OPENRUNG_RELAY_LIST_DEFAULT_LIMIT"); err != nil {
+		return 0, 0, err
+	}
+	if maxLimit, err = parseOptionalInt("OPENRUNG_RELAY_LIST_MAX_LIMIT"); err != nil {
+		return 0, 0, err
+	}
+	if defaultLimit < 0 || maxLimit < 0 {
+		return 0, 0, errors.New("OPENRUNG_RELAY_LIST_DEFAULT_LIMIT and OPENRUNG_RELAY_LIST_MAX_LIMIT must be positive")
+	}
+	if defaultLimit > 0 && maxLimit > 0 && defaultLimit > maxLimit {
+		return 0, 0, errors.New("OPENRUNG_RELAY_LIST_DEFAULT_LIMIT must not exceed OPENRUNG_RELAY_LIST_MAX_LIMIT")
+	}
+	return defaultLimit, maxLimit, nil
+}
+
+// parseWSSTicketBounds reads the per-ticket lifetime and stream budget; zero
+// keeps the broker's default. Out-of-range values fail startup here rather
+// than in the ticket issuer.
+func parseWSSTicketBounds() (time.Duration, int, error) {
+	ttl, err := parseOptionalDuration("OPENRUNG_WSS_TICKET_TTL")
+	if err != nil {
+		return 0, 0, err
+	}
+	if ttl != 0 && (ttl < 2*time.Second || ttl > wssbridge.MaxTicketLifetime) {
+		return 0, 0, fmt.Errorf("OPENRUNG_WSS_TICKET_TTL must be within [2s, %s]", wssbridge.MaxTicketLifetime)
+	}
+	streams, err := parseOptionalInt("OPENRUNG_WSS_TICKET_MAX_STREAMS")
+	if err != nil {
+		return 0, 0, err
+	}
+	if streams != 0 && (streams < 1 || streams > wssbridge.MaxTicketStreams) {
+		return 0, 0, fmt.Errorf("OPENRUNG_WSS_TICKET_MAX_STREAMS must be within [1, %d]", wssbridge.MaxTicketStreams)
+	}
+	return ttl, streams, nil
 }
 
 // parseNewRelayIDCap maps OPENRUNG_MAX_NEW_RELAY_IDS_PER_IP_PER_DAY onto

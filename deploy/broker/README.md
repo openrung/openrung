@@ -598,6 +598,11 @@ docker inspect openrung-broker \
 | `OPENRUNG_API_TOKEN`                 | no       | —                                   | Enables `/admin/api/relays/inventory` and the ranking-weight endpoints; must differ from every other credential |
 | `OPENRUNG_ADDR`                      | no       | `:8080`                             | HTTP listen address                                            |
 | `OPENRUNG_TRUSTED_PROXY_CIDRS`       | no       | none                                | Proxy CIDRs trusted for forwarded client IPs                   |
+| `OPENRUNG_RATE_LIMIT_<ENDPOINT>`     | no       | built in                            | Per-client budget `<rate>:<burst>` for `RELAY_LIST`, `WSS_TICKET`, `USER_AUTH`, `ACCESS`, `TELEMETRY`, `SPEED_TEST`, `RELAY_REGISTRATION` (see [API](../../docs/api.md#abuse-limits)) |
+| `OPENRUNG_RELAY_LIST_DEFAULT_LIMIT`  | no       | built in                            | Relay-list page size when a request names none                 |
+| `OPENRUNG_RELAY_LIST_MAX_LIMIT`      | no       | built in                            | Largest relay-list page a request may ask for; keep it at or above shipped clients' requests |
+| `OPENRUNG_WSS_TICKET_TTL`            | no       | built in                            | Lifetime of an issued WSS ticket (`2s`–`5m`)                   |
+| `OPENRUNG_WSS_TICKET_MAX_STREAMS`    | no       | built in                            | Stream budget of one WSS ticket (`1`–`1024`)                   |
 | `OPENRUNG_RELAY_STORE`               | no       | `memory`                            | Relay state backend: `memory` or `postgres`                    |
 | `OPENRUNG_RELAY_DATABASE_URL`        | if pg    | —                                   | PostgreSQL URL when `OPENRUNG_RELAY_STORE=postgres`            |
 | `OPENRUNG_GEOIP_ENDPOINT`            | no       | ipwho.is                            | IP-geolocation endpoint for relay city/country; `off` disables |

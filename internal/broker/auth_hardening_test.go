@@ -34,13 +34,14 @@ func TestAuthorizedRejectsInvalidTokens(t *testing.T) {
 // TestServerRateLimitsRegister confirms the relay registration endpoint is
 // behind the per-IP limiter (the pre-fix endpoint was unthrottled).
 func TestServerRateLimitsRegister(t *testing.T) {
-	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed()})
+	const burst = 4
+	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed(), RateLimits: RateLimits{RelayRegistration: RateLimit{PerSecond: 0.001, Burst: burst}}})
 	status := 0
-	for i := 0; i < relayRegistrationBurst+1; i++ {
+	for i := 0; i < burst+1; i++ {
 		recorder := httptest.NewRecorder()
 		server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/relays/register", nil))
 		status = recorder.Code
-		if i < relayRegistrationBurst && status == http.StatusTooManyRequests {
+		if i < burst && status == http.StatusTooManyRequests {
 			t.Fatalf("request %d inside burst unexpectedly limited", i+1)
 		}
 	}
