@@ -375,6 +375,8 @@ test_access_address_remote_commands() {
   local addrs="${TEST_TMP}/access-addrs" failstart="${TEST_TMP}/access-failstart" old new
   mkdir -p "$stub" "$root"
   ACCESS_UNIT="${root}/openrung-access-address.service"
+  ACCESS_REASSERT_SERVICE="${root}/openrung-access-address-reassert.service"
+  ACCESS_REASSERT_TIMER="${root}/openrung-access-address-reassert.timer"
   cat > "${stub}/sudo" <<'EOF'
 #!/bin/sh
 exec "$@"
@@ -422,6 +424,12 @@ EOF
   assert_contains "$(<"$ACCESS_UNIT")" "ExecStart=/sbin/ip -6 address replace ${old}/128 dev eth0 preferred_lft 0 nodad" "unit adds the address deprecated on the default-route interface"
   assert_contains "$(<"$ACCESS_UNIT")" "ExecStop=-/sbin/ip -6 address delete ${old}/128 dev eth0" "unit removes the address on stop"
   assert_contains "$(<"$ACCESS_UNIT")" "Before=docker.service" "unit runs before docker starts the relay"
+  assert_contains "$(<"$ACCESS_UNIT")" "ExecReload=/sbin/ip -6 address replace ${old}/128 dev eth0 preferred_lft 0 nodad" "reload re-adds the address"
+  assert_contains "$(<"$ACCESS_REASSERT_SERVICE")" "ExecCondition=/bin/systemctl is-active --quiet openrung-access-address.service" "re-assert acts only while the unit is active"
+  assert_contains "$(<"$ACCESS_REASSERT_SERVICE")" "ExecStart=/bin/systemctl reload openrung-access-address.service" "re-assert reloads the unit"
+  assert_contains "$(<"$ACCESS_REASSERT_TIMER")" "OnUnitActiveSec=1min" "re-assert runs every minute"
+  assert_contains "$(<"$calls")" "systemctl enable --now openrung-access-address-reassert.timer" "re-assert timer is enabled and started"
+  case "$(<"$ACCESS_REASSERT_SERVICE")$(<"$ACCESS_REASSERT_TIMER")" in *"${old}"*) fail "the re-assert files name the address" ;; *) pass ;; esac
   if [ -e "${ACCESS_UNIT}.new" ] || [ -e "${ACCESS_UNIT}.old" ]; then fail "staging files left behind"; else pass; fi
 
   # Re-running with the same address changes nothing and never stops the unit.
@@ -476,7 +484,9 @@ EOF
   if [ -s "$calls" ]; then fail "off changed the host before the roll: $(<"$calls")"; else pass; fi
   if (set -e; prepare_access_address 203.0.113.10; commit_access_address 203.0.113.10) >"$OUTPUT" 2>&1; then pass; else fail "off failed: $(<"$OUTPUT")"; fi
   assert_contains "$(<"$calls")" "systemctl disable --now openrung-access-address.service" "off stops and disables the unit"
+  assert_before "$(<"$calls")" "systemctl disable --now openrung-access-address-reassert.timer" "systemctl disable --now openrung-access-address.service" "off stops the re-assert timer before the unit, so it cannot re-add the address"
   if [ -e "$ACCESS_UNIT" ]; then fail "off left the unit behind"; else pass; fi
+  if [ -e "$ACCESS_REASSERT_SERVICE" ] || [ -e "$ACCESS_REASSERT_TIMER" ]; then fail "off left the re-assert files behind"; else pass; fi
   if has_addr "$new"; then fail "off left the address behind"; else pass; fi
   # A commit without a prepared interface refuses instead of writing a unit.
   ACCESS_HOST="$new"; ACCESS_DEV=""
@@ -663,7 +673,7 @@ EOF
   assert_contains "$out" "access=none" "audit reports no access address"
   echo "OPENRUNG_ACCESS_HOST=2001:db8:1::10" > "$envfile"
   out="$(cmd_audit 203.0.113.10 2>&1)"
-  assert_contains "$out" "access=2001:db8:1::10 access_state=missing access_unit=enabled" "audit flags a missing access address"
+  assert_contains "$out" "access=2001:db8:1::10 access_state=missing access_unit=enabled access_reassert=" "audit flags a missing access address and reports the re-assert timer"
   echo "2: eth0    inet6 2001:db8:1::10/128 scope global deprecated nodad" > "$addrs"
   out="$(cmd_audit 203.0.113.10 2>&1)"
   assert_contains "$out" "access_state=present" "audit reports a configured access address"

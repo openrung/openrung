@@ -778,11 +778,59 @@ Before=docker.service
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/sbin/ip -6 address replace $1/128 dev $2 preferred_lft 0 nodad
+ExecReload=/sbin/ip -6 address replace $1/128 dev $2 preferred_lft 0 nodad
 ExecStop=-/sbin/ip -6 address delete $1/128 dev $2
 
 [Install]
 WantedBy=multi-user.target
 UNIT
+}
+
+# A network manager that reconfigures the interface (systemd-networkd restarting
+# under unattended upgrades, for one) drops addresses it does not own, and the
+# one-shot unit above would stay "active" without the address. The re-assert
+# timer reloads that unit every minute — ExecReload re-adds the address and is
+# a no-op while it is present — and only while the unit is active, so stopping
+# it (an `off` or an address change) is never undone. Both files are generic:
+# the address lives in the unit alone.
+ACCESS_REASSERT_NAME=openrung-access-address-reassert
+ACCESS_REASSERT_SERVICE=/etc/systemd/system/${ACCESS_REASSERT_NAME}.service
+ACCESS_REASSERT_TIMER=/etc/systemd/system/${ACCESS_REASSERT_NAME}.timer
+
+access_reassert_service() {
+  cat <<UNIT
+[Unit]
+Description=Re-assert the OpenRung relay access address
+After=${ACCESS_UNIT_NAME}
+
+[Service]
+Type=oneshot
+ExecCondition=/bin/systemctl is-active --quiet ${ACCESS_UNIT_NAME}
+ExecStart=/bin/systemctl reload ${ACCESS_UNIT_NAME}
+UNIT
+}
+
+access_reassert_timer() {
+  cat <<UNIT
+[Unit]
+Description=Re-assert the OpenRung relay access address every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
+UNIT
+}
+
+# Install (idempotently) and start the re-assert timer.
+install_access_reassert() { # host
+  local host="$1"
+  access_reassert_service | ssh_run "$host" "sudo tee ${ACCESS_REASSERT_SERVICE} >/dev/null" \
+    && access_reassert_timer | ssh_run "$host" "sudo tee ${ACCESS_REASSERT_TIMER} >/dev/null" \
+    && ssh_run "$host" "sudo systemctl daemon-reload && sudo systemctl enable --now ${ACCESS_REASSERT_NAME}.timer >/dev/null 2>&1"
 }
 
 # An access address change is split around the roll so that a failure at any
@@ -851,6 +899,11 @@ commit_access_address() { # host
   [ -n "$ACCESS_HOST" ] || return 0
   if [ "$ACCESS_HOST" = off ]; then
     ssh_run "$host" "set -e
+      if sudo test -f ${ACCESS_REASSERT_TIMER} || sudo test -f ${ACCESS_REASSERT_SERVICE}; then
+        sudo systemctl disable --now ${ACCESS_REASSERT_NAME}.timer >/dev/null 2>&1 || true
+        sudo rm -f ${ACCESS_REASSERT_TIMER} ${ACCESS_REASSERT_SERVICE}
+        sudo systemctl daemon-reload
+      fi
       if sudo test -f ${ACCESS_UNIT}; then
         sudo systemctl disable --now ${ACCESS_UNIT_NAME} >/dev/null 2>&1 || true
         sudo rm -f ${ACCESS_UNIT}
@@ -907,7 +960,11 @@ commit_access_address() { # host
     print_ssh_command "$host"
     return 1
   fi
-  log "access address: ${ACCESS_HOST} kept by ${ACCESS_UNIT_NAME}"
+  install_access_reassert "$host" \
+    || { echo "error: ${host}: the access address unit is in place, but its re-assert timer could not be installed, so a network reconfiguration could drop ${ACCESS_HOST}; re-run convert" >&2
+         print_ssh_command "$host"
+         return 1; }
+  log "access address: ${ACCESS_HOST} kept by ${ACCESS_UNIT_NAME}, re-asserted every minute"
 }
 
 convert_host() {
@@ -1091,7 +1148,7 @@ cmd_audit() {
         if [ -z \"\$current\" ]; then state=missing
         elif printf '%s' \"\$current\" | grep -q deprecated; then state=present
         else state=preferred; fi
-        echo \"access=\$access access_state=\$state access_unit=\$(systemctl is-enabled ${ACCESS_UNIT_NAME} 2>/dev/null || echo missing)\"
+        echo \"access=\$access access_state=\$state access_unit=\$(systemctl is-enabled ${ACCESS_UNIT_NAME} 2>/dev/null || echo missing) access_reassert=\$(systemctl is-active ${ACCESS_REASSERT_NAME}.timer 2>/dev/null || echo missing)\"
       fi" 2>/dev/null)" \
       || out="unreachable"
     printf '%s %s\n' "$host" "$(printf '%s' "$out" | scrub_stream | tr '\n' ' ' | head -c 500)"

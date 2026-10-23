@@ -298,3 +298,112 @@ func TestDetectedPublicHostNeverIsTheAccessHost(t *testing.T) {
 		})
 	}
 }
+
+// An access address that disappears after registration is withdrawn from the
+// broker within one recheck interval, and advertised again once it is back —
+// without restarting the session.
+func TestAccessHostIsWithdrawnAndRestoredWithoutRestart(t *testing.T) {
+	prev := accessRecheckInterval
+	accessRecheckInterval = 40 * time.Millisecond
+	t.Cleanup(func() { accessRecheckInterval = prev })
+
+	broker := &fakeBroker{}
+	ts := httptest.NewServer(broker.handler())
+	defer ts.Close()
+	log := &syncBuffer{}
+	eng := New(Config{
+		BrokerURL:   ts.URL,
+		Mode:        ModeDirect,
+		PublicHost:  "203.0.113.7",
+		AccessHost:  testAccessHost,
+		ListenPort:  freePort(t),
+		Identity:    testIdentity,
+		DisableXray: true,
+		ConfigDir:   t.TempDir(),
+	}, Events{Log: log})
+	eng.cfg.HeartbeatInterval = time.Hour // only the access recheck re-registers
+	present := []relayruntime.HostAddress{{IP: netip.MustParseAddr(testAccessHost), Deprecated: true}}
+	hosts := &fakeHostAddresses{}
+	hosts.set(present, nil)
+	eng.hostAddresses = hosts.list
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- eng.runDirectSession(ctx, &relayruntime.BrokerClient{BaseURL: ts.URL}, eng.cfg, "access-relay", testIdentity, "", directOnlyListenHost)
+	}()
+	defer func() { cancel(); <-done }()
+
+	eventually(t, 5*time.Second, "first registration", func() bool {
+		registers, _, last := broker.stats()
+		return registers == 1 && last.AccessHost == testAccessHost
+	})
+	// Unchanged state never re-registers.
+	time.Sleep(5 * accessRecheckInterval)
+	if registers, _, _ := broker.stats(); registers != 1 {
+		t.Fatalf("re-registered %d times with nothing changed", registers-1)
+	}
+
+	hosts.set(nil, nil) // the network manager dropped the address
+	eventually(t, 5*time.Second, "withdrawal", func() bool {
+		registers, _, last := broker.stats()
+		return registers == 2 && last.AccessHost == ""
+	})
+	if !strings.Contains(log.String(), "no longer usable") {
+		t.Fatalf("missing the withdrawal log line; log:\n%s", log.String())
+	}
+	time.Sleep(5 * accessRecheckInterval)
+	if registers, _, _ := broker.stats(); registers != 2 {
+		t.Fatalf("kept re-registering while the address stayed missing (%d)", registers)
+	}
+
+	hosts.set(present, nil) // restored
+	eventually(t, 5*time.Second, "restoration", func() bool {
+		registers, _, last := broker.stats()
+		return registers == 3 && last.AccessHost == testAccessHost
+	})
+	if _, _, last := broker.stats(); last.PublicHost != "203.0.113.7" {
+		t.Fatalf("public host changed: %q", last.PublicHost)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("the session ended: %v", err)
+	default:
+	}
+}
+
+// A relay without an access host never arms the recheck.
+func TestNoAccessHostNeverRechecks(t *testing.T) {
+	prev := accessRecheckInterval
+	accessRecheckInterval = 20 * time.Millisecond
+	t.Cleanup(func() { accessRecheckInterval = prev })
+	broker := &fakeBroker{}
+	ts := httptest.NewServer(broker.handler())
+	defer ts.Close()
+	eng := New(Config{
+		BrokerURL: ts.URL, Mode: ModeDirect, PublicHost: "203.0.113.7",
+		ListenPort: freePort(t), Identity: testIdentity, DisableXray: true, ConfigDir: t.TempDir(),
+	}, Events{})
+	eng.cfg.HeartbeatInterval = time.Hour
+	queried := 0
+	var mu sync.Mutex
+	eng.hostAddresses = func() ([]relayruntime.HostAddress, error) { mu.Lock(); queried++; mu.Unlock(); return nil, nil }
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = eng.runDirectSession(ctx, &relayruntime.BrokerClient{BaseURL: ts.URL}, eng.cfg, "plain", testIdentity, "", directOnlyListenHost)
+	}()
+	eventually(t, 5*time.Second, "registration", func() bool { r, _, _ := broker.stats(); return r == 1 })
+	time.Sleep(10 * accessRecheckInterval)
+	cancel()
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	if queried != 0 {
+		t.Fatalf("host addresses queried %d times without an access host", queried)
+	}
+	if r, _, _ := broker.stats(); r != 1 {
+		t.Fatalf("re-registered without an access host: %d", r)
+	}
+}

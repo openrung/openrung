@@ -518,13 +518,24 @@ func accessHostListenHost(host string) bool {
 // fails. It runs per registration, so an address configured after the relay
 // started is picked up by the next re-registration.
 func (e *Engine) verifiedAccessHost(cfg Config, publicHost string) string {
-	access, err := relay.NormalizeAccessHost(cfg.AccessHost)
-	if err != nil || access == "" {
+	access, err := e.checkAccessHost(cfg, publicHost)
+	if err != nil {
+		e.logf("not advertising access host %s: %v", access, err)
 		return ""
 	}
+	return access
+}
+
+// checkAccessHost is verifiedAccessHost without the logging: it returns the
+// configured access host and, when it must not be advertised, why. A relay
+// without an access host returns "" and no error.
+func (e *Engine) checkAccessHost(cfg Config, publicHost string) (string, error) {
+	access, err := relay.NormalizeAccessHost(cfg.AccessHost)
+	if err != nil || access == "" {
+		return "", nil
+	}
 	if public, err := netip.ParseAddr(strings.TrimSpace(publicHost)); err == nil && public.Unmap().String() == access {
-		e.logf("not advertising access host %s: it is the public host this relay registers with", access)
-		return ""
+		return access, errors.New("it is the public host this relay registers with")
 	}
 	list := e.hostAddresses
 	if list == nil {
@@ -534,11 +545,7 @@ func (e *Engine) verifiedAccessHost(cfg Config, publicHost string) string {
 	if err == nil {
 		err = relayruntime.VerifyAccessAddress(netip.MustParseAddr(access), configured)
 	}
-	if err != nil {
-		e.logf("not advertising access host %s: %v", access, err)
-		return ""
-	}
-	return access
+	return access, err
 }
 
 // Status is a UI-ready snapshot of the engine.
@@ -858,6 +865,11 @@ var detectPublicIPv6 = relayruntime.DefaultPublicIPv6Address
 // session runs, so it converges to the right transport after a change (hub
 // outage/recovery, a port opening). A var so tests can shorten it.
 var autoReprobeInterval = 3 * time.Minute
+
+// accessRecheckInterval is how often a relay with an access host re-checks
+// that the address is still configured (see runDirectSession). A var so
+// tests can shorten it.
+var accessRecheckInterval = 30 * time.Second
 
 const (
 	// Automatic probes use Go's generic TCP wildcard (":port"), which selects a
@@ -1495,6 +1507,8 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 	if err := verifyRegisteredDescriptor(signed, desc, identityKey); err != nil {
 		return err
 	}
+	// The access host the broker currently holds for this registration.
+	registeredAccess := signed.AccessHost
 	e.logf("registered with the broker as %q (%s) at %s", desc.Label, desc.ID,
 		net.JoinHostPort(desc.PublicHost, strconv.Itoa(desc.PublicPort)))
 	if credentials != nil {
@@ -1598,6 +1612,77 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 	ipRecheck := time.NewTicker(ipRecheckInterval)
 	defer ipRecheck.Stop()
 
+	// reRegister replaces this session's registration in place — xray, the
+	// lease syncer and the heartbeat carry on — signing a fresh request, so
+	// the access host is re-verified too. what names the cause in the logs.
+	reRegister := func(now time.Time, what string) bool {
+		reSigned, signErr := signedReq()
+		if signErr != nil {
+			e.logf("%s failed: %v", what, signErr)
+			return false
+		}
+		updated, regErr := broker.Register(ctx, reSigned)
+		if regErr != nil {
+			e.logf("%s failed: %v", what, regErr)
+			return false
+		}
+		if verifyErr := verifyRegisteredDescriptor(reSigned, updated, identityKey); verifyErr != nil {
+			// Fail closed like the initial registration: the broker-side
+			// lease now exists in a state this relay refuses to serve in
+			// (unattested class, tampered fronts), so end the session and
+			// surface the error instead of staying online mislabeled and
+			// re-registering at heartbeat cadence forever.
+			reRegisterErr = fmt.Errorf("%s: %w", what, verifyErr)
+			return false
+		}
+		desc = updated
+		registeredAccess = reSigned.AccessHost
+		ensureLeaseSync(desc)
+		e.logf("re-registered with the broker as %q (%s)", desc.Label, desc.ID)
+		if credentials != nil {
+			credentials.confirm(now, desc.ClientID)
+		}
+		// The ID is derived from the identity key and so is unchanged
+		// here; the counter is what tells a caller this happened.
+		e.registrations.Add(1)
+		e.setStatus(func() { e.relayID = desc.ID })
+		return true
+	}
+
+	// The access address can disappear after registration (a network
+	// manager reconfiguring the interface drops addresses it does not own),
+	// and the broker would keep handing it out. Re-check it on a short
+	// cadence and re-register whenever the advertisable value changes, so a
+	// missing address is withdrawn within one interval and a restored one is
+	// advertised again. Only a relay configured with an access host checks.
+	var accessRecheckC <-chan time.Time
+	if strings.TrimSpace(cfg.AccessHost) != "" {
+		accessRecheck := time.NewTicker(accessRecheckInterval)
+		defer accessRecheck.Stop()
+		accessRecheckC = accessRecheck.C
+	}
+	recheckAccessHost := func() {
+		access, checkErr := e.checkAccessHost(cfg, req.PublicHost)
+		usable := ""
+		if checkErr == nil {
+			usable = access
+		}
+		if usable == registeredAccess {
+			return
+		}
+		if usable == "" {
+			e.logf("access host %s is no longer usable (%v); re-registering without it", access, checkErr)
+		} else {
+			e.logf("access host %s is usable again; re-registering with it", access)
+		}
+		at := time.Now()
+		if credentials != nil {
+			req.ClientID = credentials.announce(ctx, at)
+			defer credentials.retire(ctx, at)
+		}
+		reRegister(at, "re-register for the access host")
+	}
+
 	// One heartbeat, shared by the ticker and the rotation boundary. A rotating
 	// session announces the newest accepted credential, learns which one the
 	// broker now serves, and only then retires the rest — so a credential the
@@ -1627,35 +1712,7 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 		if clientID != "" {
 			req.ClientID = clientID
 		}
-		reSigned, signErr := signedReq()
-		if signErr != nil {
-			e.logf("re-register after expired lease failed: %v", signErr)
-			return
-		}
-		updated, regErr := broker.Register(ctx, reSigned)
-		if regErr != nil {
-			e.logf("re-register after expired lease failed: %v", regErr)
-			return
-		}
-		if verifyErr := verifyRegisteredDescriptor(reSigned, updated, identityKey); verifyErr != nil {
-			// Fail closed like the initial registration: the broker-side
-			// lease now exists in a state this relay refuses to serve in
-			// (unattested class, tampered fronts), so end the session and
-			// surface the error instead of staying online mislabeled and
-			// re-registering at heartbeat cadence forever.
-			reRegisterErr = fmt.Errorf("re-register after expired lease: %w", verifyErr)
-			return
-		}
-		desc = updated
-		ensureLeaseSync(desc)
-		e.logf("re-registered with the broker as %q (%s)", desc.Label, desc.ID)
-		if credentials != nil {
-			credentials.confirm(now, desc.ClientID)
-		}
-		// The ID is derived from the identity key and so is unchanged
-		// here; the counter is what tells a caller this happened.
-		e.registrations.Add(1)
-		e.setStatus(func() { e.relayID = desc.ID })
+		reRegister(now, "re-register after expired lease")
 	}
 
 	// The rotation timer fires at each bucket boundary and heartbeats at once,
@@ -1698,6 +1755,8 @@ func (e *Engine) runDirectSession(ctx context.Context, broker *relayruntime.Brok
 				e.logf("public IPv6 changed %s → %s; re-registering", ipBaseline, detected)
 				return errPublicIPChanged
 			}
+		case <-accessRecheckC:
+			recheckAccessHost()
 		case <-heartbeat.C:
 			sendHeartbeat()
 		}
