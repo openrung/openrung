@@ -5,7 +5,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/openrung/openrung/main/deploy/relay/volunteer-up.sh | sudo sh
 #
 # Runs the public relay image with the exact container posture of the
-# Foundation fleet (see foundation-up.sh / lightsail-up.sh): host networking,
+# Foundation fleet (the fleet tooling lives in openrung/ops): host networking,
 # --cap-drop ALL --cap-add NET_BIND_SERVICE, read-only rootfs with a /tmp
 # tmpfs, configuration in a root-owned mode-0600 /etc/openrung/relay.env —
 # except that no OPENRUNG_FOUNDATION_TOKEN is installed, so the broker attests
@@ -78,7 +78,7 @@ set -eu
 
 # A private key (the identity seed) transits this script's variables: keep
 # xtrace off even when a volunteer debugs with 'sudo sh -x', so the seed can
-# never appear in trace output — same guard as foundation-up.sh and the fleet
+# never appear in trace output — same guard as the Foundation fleet tooling and the fleet
 # bootstrap user-data.
 { set +x; } 2>/dev/null
 
@@ -86,7 +86,7 @@ die() { echo "volunteer-up: error: $*" >&2; exit 1; }
 log() { echo "volunteer-up: $*"; }
 
 # Default relay names: the same adjective-noun style the fleet provisioning
-# helpers use (lightsail-up.sh / hetzner-up.sh), so volunteer relays show up
+# helpers use, so volunteer relays show up
 # in the dashboard alongside fleet names instead of as raw relay-ID hex. The
 # label is published in the relay directory: a generated name is also the
 # privacy-safe default — never derive one from the hostname or username.
@@ -286,7 +286,7 @@ assert_volunteer_env() {
     if [ ! -e "$ENV_FILE" ] && [ ! -L "$ENV_FILE" ]; then return 0; fi
     [ -f "$ENV_FILE" ] || die "$ENV_FILE exists but is not a regular file"
     if grep -Eq '^OPENRUNG_FOUNDATION_TOKEN(=|[[:space:]]|$)' "$ENV_FILE"; then
-        die "$ENV_FILE contains an OPENRUNG_FOUNDATION_TOKEN assignment; this host is Foundation-managed — use deploy/relay/foundation-up.sh update"
+        die "$ENV_FILE contains an OPENRUNG_FOUNDATION_TOKEN assignment; this host is Foundation-managed — use the Foundation fleet tooling"
     else
         grep_status=$?
         [ "$grep_status" -eq 1 ] || die "could not inspect $ENV_FILE for Foundation ownership"
@@ -645,7 +645,7 @@ main() {
         OPERATOR_CONTACT="$(ask_operator_contact)" || OPERATOR_CONTACT=""
     fi
 
-    # Same package the Foundation fleet bootstrap installs (lightsail-up.sh
+    # Same package the Foundation fleet bootstrap installs (its user-data
     # user-data). On non-apt distros, installing Docker is the volunteer's step.
     if ! command -v docker >/dev/null 2>&1; then
         if command -v apt-get >/dev/null 2>&1; then
@@ -664,7 +664,7 @@ main() {
 
     # Legacy artifacts mean an old deploy/volunteer setup is (or was) serving
     # here; both would contend for port 443 on the host network, and
-    # foundation-up.sh refuses hosts carrying them. Refuse rather than guess —
+    # the Foundation fleet tooling refuses hosts carrying them. Refuse rather than guess —
     # the migration steps are in deploy/relay/README.md.
     if printf '%s\n' "$docker_names" | grep -qx openrung-volunteer; then
         die "legacy 'openrung-volunteer' container found; migrate it first (see deploy/relay/README.md), or remove it with: docker rm -f openrung-volunteer"
@@ -693,7 +693,7 @@ main() {
         foundation_container_marker="$(container_foundation_marker "$CONTAINER")" \
             || die "could not inspect '$CONTAINER' for Foundation ownership"
         [ -z "$foundation_container_marker" ] \
-            || die "existing '$CONTAINER' carries OPENRUNG_FOUNDATION_TOKEN; this host is Foundation-managed — use deploy/relay/foundation-up.sh update"
+            || die "existing '$CONTAINER' carries OPENRUNG_FOUNDATION_TOKEN; this host is Foundation-managed — use the Foundation fleet tooling"
         live_running="$(container_inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null)" \
             || die "could not inspect whether '$CONTAINER' is running"
         [ "$live_running" = true ] \
@@ -808,7 +808,7 @@ main() {
         foundation_container_marker="$(container_foundation_marker "$CONTAINER")" \
             || die "could not recheck '$CONTAINER' for Foundation ownership"
         [ -z "$foundation_container_marker" ] \
-            || die "existing '$CONTAINER' became Foundation-managed during preflight; use deploy/relay/foundation-up.sh update"
+            || die "existing '$CONTAINER' became Foundation-managed during preflight; use the Foundation fleet tooling"
         OLD_ID="$(container_id "$CONTAINER")" \
             || die "could not capture the identity of the existing '$CONTAINER' container"
         [ -n "$OLD_ID" ] || die "existing '$CONTAINER' returned an empty container ID"
@@ -826,8 +826,7 @@ main() {
             || die "could not stop the previous relay; automatic rollback will restore it"
     fi
 
-    # Exact Foundation fleet container posture (foundation-up.sh run_candidate /
-    # lightsail-up.sh user-data): drop every capability, re-add only
+    # Exact Foundation fleet container posture: drop every capability, re-add only
     # NET_BIND_SERVICE so the binary's cap_net_bind_service file capability can
     # bind the privileged public port 443 — deliberately NO
     # --security-opt no-new-privileges, which would make the kernel ignore file

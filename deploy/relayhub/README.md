@@ -66,22 +66,13 @@ The hub never replaces a connected relay's `relay_version`. Its own application
 version is operational build identity, while compatibility with relays is
 governed by the tunnel/punch protocol versions and negotiated capability flags.
 
-## Deploy to AWS EC2 (two public IPs — full NAT punch)
+## Deploy to a cloud host (two public IPs — full NAT punch)
 
-`ec2-up.sh` provisions a hub on EC2 with a secondary private IP + **two Elastic IPs**, so the punch
+The Foundation's EC2 provisioning helper (private `openrung/ops` repository) provisions a hub on EC2 with a secondary private IP + **two Elastic IPs**, so the punch
 reflector has two vantage points (RFC 5780 classification). It binds the on-NIC private IPs and
 advertises the EIPs (the bind/advertise split), self-signs a TLS cert covering both EIPs, installs a
 boot-time unit that keeps the secondary private IP on the interface across reboots, and stages the
 hub with punch enabled. It starts immediately only after an explicit anonymous-mode opt-in.
-
-```sh
-# Authenticated deployment: stage the host, then install the token over verified SSH.
-./deploy/relayhub/ec2-up.sh hub-ec2-seoul
-
-# Deliberately public deployment: start an open hub immediately.
-OPENRUNG_ALLOW_ANONYMOUS_VOLUNTEERS=true \
-  ./deploy/relayhub/ec2-up.sh hub-ec2-seoul-open
-```
 
 This helper never accepts a bearer token. It rejects
 `OPENRUNG_VOLUNTEER_TOKEN` even when the variable is set to an empty value, and

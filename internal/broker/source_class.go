@@ -22,7 +22,7 @@ import (
 // datacenter networks; an existing identity authenticates from anywhere.
 //
 // The classifier answers from two local files the operator refreshes (see
-// deploy/broker/refresh-source-asn.sh), never from a per-request lookup:
+// deploy/broker/README.md), never from a per-request lookup:
 //
 //   - an IP-to-ASN table in the iptoasn.com TSV layout, one range per line:
 //     range_start <TAB> range_end <TAB> asn [<TAB> country <TAB> description];

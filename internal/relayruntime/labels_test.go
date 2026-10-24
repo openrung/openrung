@@ -52,7 +52,7 @@ func TestLabelVocabularyIsLargeAndUnique(t *testing.T) {
 	assertUnique("labelNouns", labelNouns)
 
 	// The vocabulary is now hand-editable data rather than Go literals, and
-	// deploy/lib/relay-label.sh reads the same files. Reject any word that
+	// the Foundation's provisioning helpers read the same files. Reject any word that
 	// would produce a label the relay itself refuses at startup.
 	assertUsable := func(name string, words []string) {
 		if len(words) == 0 {

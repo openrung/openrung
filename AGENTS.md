@@ -32,7 +32,7 @@ Mobile apps live elsewhere and pin shared-module releases.
 | `punchcore/`, `wsscore/` | NAT punch and Reality-over-WebSocket mechanics. |
 | `desktop/` | Client app: `vpnservice/` and `frontend/`. |
 | `desktop-volunteer/` | Volunteer app: `directsetup/`, `volunteerservice/`, `frontend/`. |
-| `deploy/`, `scripts/` | Deployment, packaging and release helpers. |
+| `deploy/`, `scripts/` | Container images, compose files, the volunteer bring-up script and release helpers. Foundation provisioning and front tooling live in the private `openrung/ops` repository. |
 | `.github/workflows/` | Authoritative checks and release workflows. |
 
 ## Design and changes

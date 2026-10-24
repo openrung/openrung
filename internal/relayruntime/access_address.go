@@ -32,8 +32,8 @@ var ErrHostAddressesUnsupported = errors.New("listing host interface addresses w
 // past duplicate address detection, and deprecated. Deprecation is what keeps
 // the relay's own traffic — registration, heartbeats, client egress — on the
 // primary address: the kernel never selects a deprecated address as a source,
-// while inbound connections to it are served normally. deploy/relay's
-// foundation-up.sh configures it that way (preferred_lft 0).
+// while inbound connections to it are served normally. The Foundation's
+// fleet tooling configures it that way (preferred_lft 0).
 func VerifyAccessAddress(addr netip.Addr, configured []HostAddress) error {
 	for _, candidate := range configured {
 		if candidate.IP != addr {

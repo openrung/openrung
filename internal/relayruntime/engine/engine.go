@@ -117,7 +117,7 @@ type Config struct {
 	// a direct relay serves on its one public listener and advertises at
 	// registration as access_host (cmd/relay's -access-host, ADR-006.1 Part
 	// A): the broker may hand it to enrolled clients in place of PublicHost.
-	// The host must configure it (deploy/relay/foundation-up.sh does) as a
+	// The host must configure it (the Foundation's fleet tooling does) as a
 	// deprecated address, so the relay's own traffic stays on the primary
 	// address; every registration first verifies that with a read-only
 	// netlink query and leaves the field out, with a log line, when the check

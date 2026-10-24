@@ -351,8 +351,8 @@ func offEnv(key string) bool {
 }
 
 // consoleReporter renders engine status transitions as the operator-facing log
-// lines cmd/relay has always printed. deploy/relay/foundation-up.sh and
-// foundation-wss-host.sh poll container logs for "registered relay", so that
+// lines cmd/relay has always printed. The Foundation's fleet tooling polls
+// container logs for "registered relay", so that
 // message is a deployment contract rather than decoration.
 type consoleReporter struct {
 	mu sync.Mutex

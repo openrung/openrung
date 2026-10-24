@@ -96,7 +96,7 @@ paths with injected fetch/cache fakes.
 ## Deploy
 
 From this directory, with wrangler authenticated against the `openrung.org` Cloudflare account.
-The origin must already hold the matching secret (see `deploy/broker/origin-tls.md`); set the
+The origin must already hold the matching secret (see `deploy/broker/README.md`); set the
 Worker side once, then deploy:
 
 ```bash
@@ -120,7 +120,7 @@ Logs: `wrangler tail openrung-broker-proxy`.
 
 - **Origin leg uses HTTPS.** This Worker defaults to the same Caddy Let's
   Encrypt terminator on `:443` used by the independent AWS CloudFront broker
-  front (see `deploy/broker/origin-tls.md`). Keep certificate validation
+  front (see `deploy/broker/README.md`). Keep certificate validation
   enabled and firewall the origin to approved CDN egress ranges. The old
   `http://broker-origin.openrung.org:8080` endpoint must not be configured in
   production because successful ticket responses contain short-lived bearer
@@ -128,7 +128,7 @@ Logs: `wrangler tail openrung-broker-proxy`.
 - **Client IP recovery (done).** The Worker forwards the real client IP as `X-Forwarded-For` and
   authenticates to the origin with the `ORIGIN_AUTH` secret (`X-OpenRung-Origin-Auth`). The origin
   Caddy passes that `X-Forwarded-For` to the broker only for authenticated requests from
-  Cloudflare's published ranges; see `deploy/broker/origin-tls.md`.
+  Cloudflare's published ranges; see `deploy/broker/Caddyfile`.
 - **SNI blocking.** A determined censor can SNI-block `broker.openrung.org` specifically (classic
   domain fronting is dead). Two of the planned mitigations have shipped: the independent
   CloudFront second front means a single SNI rule no longer takes discovery offline, and the
