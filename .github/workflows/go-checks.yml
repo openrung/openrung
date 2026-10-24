@@ -70,39 +70,15 @@ jobs:
         run: |
           bash -n deploy/broker/Caddyfile_test.sh
           bash deploy/broker/Caddyfile_test.sh
-          bash -n deploy/broker/azure-front-door-up.sh
-          bash -n deploy/broker/azure-front-door-up_test.sh
-          bash deploy/broker/azure-front-door-up_test.sh
-          bash -n deploy/broker/refresh-source-asn.sh
-          bash -n deploy/broker/refresh-source-asn_test.sh
-          bash deploy/broker/refresh-source-asn_test.sh
-          bash -n deploy/relay/bunny/bunny-wss-front.sh
-          bash -n deploy/relay/bunny/bunny-wss-front_test.sh
-          bash deploy/relay/bunny/bunny-wss-front_test.sh
-          bash -n deploy/relay/bunny/host-wss-origin-firewall.sh
-          bash -n deploy/relay/bunny/host-wss-origin-firewall_test.sh
-          bash -n deploy/relay/foundation-wss-host.sh
-          bash -n deploy/relay/foundation-wss-host_test.sh
-          bash deploy/relay/foundation-wss-host_test.sh
           sh -n deploy/relay/egress-limit.sh
           bash -n deploy/relay/egress-limit_test.sh
           command -v nft >/dev/null || sudo apt-get install -y nftables
           sudo bash deploy/relay/egress-limit_test.sh
-          sudo bash deploy/relay/bunny/host-wss-origin-firewall_test.sh
-          bash -n deploy/relay/lightsail-up.sh
-          bash -n deploy/relay/linode-up.sh
-          bash -n deploy/relay/hetzner-up.sh
-          bash -n deploy/relay/foundation-up.sh
-          bash -n deploy/relay/foundation-up_test.sh
-          bash deploy/relay/foundation-up_test.sh
           sh -n deploy/relay/volunteer-up.sh
           sh -n deploy/relay/volunteer-up_test.sh
           OPENRUNG_TEST_SHELL=/bin/dash sh deploy/relay/volunteer-up_test.sh
           OPENRUNG_TEST_SHELL=/bin/bash sh deploy/relay/volunteer-up_test.sh
           docker run --rm -v "$PWD:/src:ro" -w /src alpine:3 sh deploy/relay/volunteer-up_test.sh
-          bash -n deploy/relayhub/ec2-up.sh
-          bash -n deploy/relayhub/ec2-up_test.sh
-          bash deploy/relayhub/ec2-up_test.sh
 
   go:
     runs-on: ubuntu-latest

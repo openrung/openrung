@@ -371,7 +371,6 @@ docs/                Architecture, API, client, and operations docs.
 | [Component versioning](docs/versioning.md) | Independent release identities and compatibility contracts |
 | [Desktop clients](docs/desktop-client.md) | GUI proxy mode, Linux shell setup, and the terminal client's proxy and TUN modes |
 | [WSS fallback](docs/wss-fallback.md) | Per-relay protocol, trust boundaries, failure policy, and rollout |
-| [Per-relay CloudFront deployment](deploy/relay/cloudfront-wss.md) | CloudFront and relay-local sidecar configuration |
 | [Security and abuse](docs/security-abuse.md) | Threat model, volunteer risk, and abuse handling |
 | [Relay hub deployment](deploy/relayhub/README.md) | Running a hub: TLS, ports, and cost |
 

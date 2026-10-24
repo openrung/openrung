@@ -32,8 +32,8 @@
 # host's nft keeps userspace and kernel in step (an older nft can fail to
 # parse a table a newer one created). The host needs the nftables package,
 # both for apply and for the boot unit printed by `unit`, which reloads the
-# saved ruleset. deploy/relay/README.md shows the commands; foundation-up.sh
-# and the bring-up helpers run them.
+# saved ruleset. deploy/relay/README.md shows the commands; the Foundation's
+# fleet tooling runs them.
 set -eu
 
 RULES=/etc/openrung/egress-limit.nft

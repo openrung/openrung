@@ -2,7 +2,7 @@
 //
 // Clients reach https://broker.openrung.org/...  Cloudflare terminates TLS at the edge
 // (real cert for the hostname) and this Worker forwards each request over HTTPS to the broker
-// origin's Caddy terminator (deploy/broker/origin-tls.md). This gives China clients an HTTPS,
+// origin's Caddy terminator (deploy/broker/README.md). This gives China clients an HTTPS,
 // CDN-fronted discovery endpoint whose blocking incurs Cloudflare-edge collateral damage,
 // instead of a single null-routable plaintext IP.
 //

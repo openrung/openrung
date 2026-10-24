@@ -20,7 +20,7 @@ export const DEFAULT_ORIGIN = "https://broker-origin.openrung.org";
 
 // Shared secret proving to the origin's Caddy that a request came from this Worker; only then does
 // Caddy pass the Worker's X-Forwarded-For through to the broker. Set via `wrangler secret put
-// ORIGIN_AUTH`; see deploy/broker/origin-tls.md.
+// ORIGIN_AUTH`; see deploy/broker/README.md.
 export const ORIGIN_AUTH_HEADER = "X-OpenRung-Origin-Auth";
 
 const RELAYS_PATH = "/api/v1/relays";

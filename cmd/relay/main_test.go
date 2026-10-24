@@ -62,7 +62,7 @@ func parseFlags(t *testing.T, args ...string) *cliFlags {
 }
 
 // The CLI surface is a compatibility contract: deploy/relay/entrypoint.sh,
-// volunteer-up.sh, foundation-up.sh, and foundation-wss-host.sh all invoke the
+// volunteer-up.sh and the Foundation's fleet tooling all invoke the
 // binary with these names, so a rename or a changed default breaks a
 // deployment that this repository cannot see. Flags may be added, never
 // removed or redefined.
@@ -375,7 +375,7 @@ func TestPostureFlagsReachTheEngine(t *testing.T) {
 	}
 }
 
-// deploy/relay/foundation-up.sh and foundation-wss-host.sh poll container logs
+// The Foundation's fleet tooling polls container logs
 // for "registered relay" as the proof a candidate came up, so the frontend has
 // to keep emitting it from the engine's status stream.
 func TestConsoleReporterEmitsRegistrationLines(t *testing.T) {
@@ -722,8 +722,8 @@ func TestRelayDeploymentCoLocatesHardenedWSSSidecar(t *testing.T) {
 	for _, required := range []string{
 		"docker compose --profile wss up -d --build",
 		"wss-replay-state",
-		"cloudfront-wss.md",
-		"foundation-up.sh` currently manages and rolls only the single Reality relay",
+		"origin-facing firewall",
+		"currently manages and rolls only the single Reality relay",
 	} {
 		if !strings.Contains(readme, required) {
 			t.Errorf("relay deployment README is missing WSS coordination guidance %q", required)

@@ -85,130 +85,16 @@ also set `OPENRUNG_NODE_CLASS` or `OPENRUNG_MODE`:
   tests), and broker API redirects are refused so the bearer cannot follow a
   downgrade.
 - Never put the token in cloud-init/user-data, provider metadata, inline
-  `docker -e` arguments, or traced shell commands. The bundled Lightsail and
-  Hetzner bootstrap helpers intentionally provision anonymous volunteer-class
-  relays only and reject registration tokens; provision the host first,
+  `docker -e` arguments, or traced shell commands. Provision the host first,
   transfer the env file over an authenticated channel, and recreate the
-  container with `--env-file`.
+  container with `--env-file`. The Foundation's provisioning and fleet-roll
+  helpers, which automate this (and the host firewall and access-address
+  units described under Networking notes), live in the private
+  `openrung/ops` repository.
 
 `node_class` describes the operator of the exit relay, not the infrastructure it
 traverses. A Foundation-operated relay hub therefore does not make the
 volunteer-run relays tunneled through it Foundation-operated.
-
-#### Automating the post-boot step
-
-[`foundation-up.sh`](foundation-up.sh) automates the two-step dance above. It
-**wraps** `lightsail-up.sh` rather than changing it: the token still reaches the
-host only over SSH, after boot, and never through user-data — `create` even
-strips the token variables from the provisioning child's environment, so no bug
-in `lightsail-up.sh` could ever embed the credential.
-
-```sh
-# Provision a new Lightsail host and install credentials on it.
-OPENRUNG_FOUNDATION_TOKEN_CMD='pass show openrung/foundation-token' \
-  deploy/relay/foundation-up.sh create
-
-# Promote hosts that are already serving as volunteer-class relays.
-OPENRUNG_FOUNDATION_TOKEN_CMD='pass show openrung/foundation-token' \
-  deploy/relay/foundation-up.sh convert 203.0.113.10 203.0.113.11
-
-# Roll a new image across the fleet. Needs no token: the credentials already on
-# each host are reused as-is.
-OPENRUNG_IMAGE=ghcr.io/openrung/openrung-relay:sha-abc1234 \
-  deploy/relay/foundation-up.sh update 203.0.113.10 203.0.113.11
-
-# Restore the stopped pre-roll container after an interrupted update. This only
-# accepts the exact old-only or old+new state created by this script.
-deploy/relay/foundation-up.sh rollback 203.0.113.10
-```
-
-| Variable | Default | Meaning |
-|----------|---------|---------|
-| `OPENRUNG_FOUNDATION_TOKEN_CMD` | — | Command printing the token (`pass show …`, `aws secretsmanager get-secret-value …`, `op read …`). Preferred. Run via `bash -c`; the first output line is the token. |
-| `OPENRUNG_FOUNDATION_TOKEN` | — | The token itself. Fallback for CI; prefer the command form so the secret is not sitting in your environment. |
-| `OPENRUNG_IMAGE` | `…/openrung-relay:main` | Image to run. Pin a `sha-…` tag (or an `@sha256:…` digest) for reproducible rolls. |
-| `OPENRUNG_BROKER_URL` | `https://broker-origin.openrung.org` | The broker's **direct TLS origin** (see `deploy/broker/origin-tls.md`), not a CDN front: a front would decrypt the Foundation bearer at every edge POP and collapse per-relay rate limiting onto shared edge IPs. Must be HTTPS; the script fails fast otherwise. |
-| `OPENRUNG_ENV_FILE` | `/etc/openrung/relay.env` | Canonical credential path. `convert` preserves settings from this file or the canonical running container; it never reads, merges, or removes legacy `volunteer.env`. |
-| `OPENRUNG_SSH_KEY` / `OPENRUNG_SSH_USER` | `~/.ssh/id_ed25519_openrung` / `ubuntu` | SSH access to the host. |
-| `OPENRUNG_REGION` | `ap-northeast-1` | Region used to look up Lightsail-published SSH host keys for pinning. |
-| `OPENRUNG_FOUNDATION_CONTACT` | — | Foundation operator contact (an email address). `convert` and `create` (and `lightsail-up.sh`) write it as `OPENRUNG_OPERATOR_CONTACT`, which the relay sends privately at registration. Unset keeps whatever contact the host already has. |
-| `OPENRUNG_ACCESS_HOST` | — | IPv6 access address (see *Access address* under Networking notes). `convert` and `create` add it on the host before the roll, write it into the env file, and hand it to `openrung-access-address.service` once the roll is verified; a roll whose candidate never went live removes only an address the run added. `off` removes the unit and the address after a verified roll. Unset keeps whatever the host already has. |
-| `OPENRUNG_ALLOW_TOFU` | `0` | Every mode refuses to contact a host whose SSH key cannot be verified out-of-band (a tokenless mode that silently accepted a key would launder it into "known" for a later token-carrying run); set to `1` to explicitly accept a first-seen key (non-Lightsail hosts). |
-
-Notes on the design:
-
-- **The supported state space is deliberately small.** `convert` and `update`
-  accept exactly one running `openrung-relay`, with no `openrung-relay-old`,
-  `openrung-relay-new`, legacy container/env, staged `.tmp`, or unrecognized
-  relay/volunteer-suffixed container (for example, `openrung-relay-old-2026`).
-  Every target is inspected before the first host is changed. Legacy or
-  ambiguous state makes the entire command fail read-only with inspection and
-  manual migration instructions; it is never guessed at or cleaned up
-  automatically.
-
-- **The token is never a command-line argument.** `argv` is world-readable via
-  `/proc` and is retained in shell history, so it is read from the environment or
-  a command (run via `bash -c`, never `eval`) and streamed to the host over
-  stdin. The script keeps shell tracing (`bash -x`) disabled so the token cannot
-  leak into trace output, and the env-file write is atomic (tmp + rename).
-- **`convert` preserves the host's `OPENRUNG_*` settings, and only manages the
-  broker URL + token.** A pinned identity (`OPENRUNG_CLIENT_ID`, Reality keys,
-  short id), capacity limits, and camouflage are carried into the new env file
-  verbatim — staged on the host itself, so none of it transits the connection —
-  and a re-convert never rotates a pinned identity. (Bootstrap-provisioned
-  relays carry no pinned identity and regenerate one per restart; that is fleet
-  status quo, unchanged by this script.) No `OPENRUNG_LISTEN_HOST` default is
-  injected — the binary's own `::` (dual-stack) default stands. Dropped
-  deliberately: `OPENRUNG_VOLUNTEER_TOKEN` / `OPENRUNG_NODE_CLASS` (the
-  foundation token forces the class; a spare credential is liability) and
-  `OPENRUNG_XRAY_PATH` / `OPENRUNG_CONFIG_OUT` (image internals that must not
-  be pinned on the host).
-- **SSH host keys are verified out-of-band before any contact.** The host's SSH
-  keys are fetched over the authenticated Lightsail API
-  (`get-instance-access-details`) and written to `known_hosts` before first
-  contact. If that is impossible, **every mode refuses to proceed** rather than
-  fall back to trust-on-first-use — set `OPENRUNG_ALLOW_TOFU=1` to accept a
-  first-seen key explicitly. (IPv6/DNS targets are looked up by IPv4 address
-  only; pin those manually or use `OPENRUNG_ALLOW_TOFU=1`.)
-- **Everything read back from a host is allowlist-validated** (container names,
-  env-file paths) before it is reused in a privileged command, and everything
-  remote that reaches the terminal — captured output and passed-through stderr
-  alike — is stripped of control characters, so a compromised relay cannot
-  inject shell or terminal escapes into the operator's session.
-- **`update` needs no token**, because it reuses the env file the host already
-  has — but it refuses to run against an env file whose
-  `OPENRUNG_FOUNDATION_TOKEN` is missing, empty, whitespace-only (a trailing
-  `\r` from a CRLF edit counts: docker strips it and the container sees an
-  empty token), or shadowed by an empty duplicate (docker's last occurrence
-  wins). The value itself is never read back.
-- **A candidate never owns the live name before verification.** The current
-  relay is stopped and renamed to `openrung-relay-old`; the replacement runs as
-  `openrung-relay-new`. Only after the candidate registers, remains running, and
-  has `RestartCount` 0 is it renamed to `openrung-relay`. The old container is
-  removed last, returning the host to the single supported steady state.
-- **Interrupted rolls are explicit.** A start failure leaves `-old`; a
-  verification failure leaves `-old` + `-new`. Normal commands refuse both.
-  `rollback` accepts only those exact states, removes an optional uncommitted
-  candidate, and restores the stopped old container through the same pinned SSH
-  configuration. Any live+backup, legacy, running-backup, or staged-temp
-  combination remains manual-only.
-- **Verification is self-contained.** A relay that presents the Foundation token
-  forces `node_class=foundation` and exits during startup if the broker attests
-  any other class, so a container that logged a registration and is running
-  cleanly (`Running` with `RestartCount` 0 — a post-registration crash loop
-  fails verification) *is* the proof — no broker query needed. Transient ssh
-  errors during polling are retried, never misdiagnosed as a dead container.
-- Legacy `openrung-volunteer` container and `volunteer.env` names are detected
-  only to refuse mutation and print manual migration instructions.
-
-State policy:
-
-| Entry state | `convert` / `update` | `rollback` |
-|---|---|---|
-| Running `openrung-relay` only | Allowed (`update` also requires canonical env + token) | Refused |
-| Stopped `openrung-relay-old` only | Refused | Restored |
-| Stopped `openrung-relay-old` + `openrung-relay-new` | Refused | Candidate removed, old restored |
-| Any legacy artifact, unrecognized relay/volunteer-suffixed container, `.tmp`, live+backup, or other combination | No mutation; manual instructions | No mutation; manual instructions |
 
 ### Stable relay identity (recommended)
 
@@ -313,12 +199,12 @@ curl -fsSL https://raw.githubusercontent.com/openrung/openrung/main/deploy/relay
 ```
 
 To change settings later, edit `/etc/openrung/relay.env` and re-run the same
-command. A host set up this way is already in the canonical layout that
-`foundation-up.sh convert` expects, should it ever be promoted.
+command. A host set up this way is already in the canonical layout the
+Foundation's fleet tooling expects, should it ever be promoted.
 
 After promotion, this volunteer-only helper refuses the Foundation credential
 in `/etc/openrung/relay.env` without pulling an image or touching the relay.
-Use `foundation-up.sh update` for every subsequent Foundation-managed update.
+Use the Foundation's fleet tooling for every subsequent Foundation-managed update.
 
 ### Compose (recommended)
 
@@ -353,11 +239,9 @@ For an eligible direct-mode Foundation relay on public/local port 443:
    and configure the exact relay ID, broker ticket public-key ring, and a unique
    current/overlap origin-token ring for every advertised front.
 3. Configure the CDN front to use this relay's origin TLS listener on `8443`,
-   with the origin-facing firewall and fixed loopback proxy described in
-   [`cloudfront-wss.md`](cloudfront-wss.md). For a bunny.net pull zone, that
-   runbook still defines the architecture and rollout discipline; read it with
-   [`bunny-wss.md`](bunny-wss.md), which records only the provider differences.
-   The compose file intentionally does not invent or store origin certificate
+   with an origin-facing firewall that admits only the front's egress ranges
+   and a fixed loopback proxy to the sidecar (the provider runbooks live in
+   the private `openrung/ops` repository). The compose file intentionally does not invent or store origin certificate
    secrets.
 4. Start the colocated services:
 
@@ -380,12 +264,12 @@ recreate `relay` to stop ticket issuance; wait out issued tickets and the
 bounded session drain; stop `wss-sidecar` and origin `8443`; retain the replay
 volume. Public direct Reality on 443 remains available throughout.
 
-`foundation-up.sh` currently manages and rolls only the single Reality relay
+The Foundation's fleet-roll tooling currently manages and rolls only the single Reality relay
 container. It does **not** coordinate the sidecar, its secret env, replay
 volume, or origin TLS process. WSS-enabled Foundation hosts must use this
 colocated compose profile (or explicitly extend that per-host workflow with the
 same ordering) rather than treating the sidecar as a separate fleet service or
-assuming `foundation-up.sh update/rollback` is an atomic WSS rollout.
+assuming a fleet update or rollback is an atomic WSS rollout.
 
 ### Plain `docker run`
 
@@ -471,9 +355,8 @@ not need to match.
   `/usr/local/sbin/openrung-egress-limit`. No container ever changes the host
   firewall, and the relay container keeps no capabilities. The script saves the
   ruleset to `/etc/openrung/egress-limit.nft`, which its boot unit reloads.
-  `foundation-up.sh` `convert` and `update` do all of this after every verified
-  roll, from the image now serving, and the Lightsail, Linode and Hetzner
-  helpers do it at first boot. To load or change it by hand on a host (the host
+  The Foundation's fleet tooling does all of this after every verified roll,
+  from the image now serving, and at first boot. To load or change it by hand on a host (the host
   needs its `nftables` package; on other distributions, its equivalent), stage
   each file and check it before it replaces the installed one, so a failed
   `docker run` can never leave an empty script or unit behind. Use `apply off`
@@ -495,7 +378,7 @@ not need to match.
   rm -f "$tmp"
   ```
 
-  `foundation-up.sh audit HOST...` reports, per host, the relay version,
+  The Foundation's fleet audit reports, per host, the relay version,
   whether the saved rules and the installed script match that relay's image,
   whether the host has `nftables`, whether the table is loaded, whether the
   boot unit is enabled, and the access address state (below). Volunteer
@@ -508,9 +391,9 @@ not need to match.
   sends privately at registration as `access_host`. The broker then names
   that address instead of the public host in the per-user access answer
   (`POST /api/v1/access`, see [docs/api.md](../../docs/api.md)); the
-  anonymous relay list keeps the public host. Run
-  `foundation-up.sh convert` (or `create`) with `OPENRUNG_ACCESS_HOST=<IPv6>`:
-  it writes the variable into the env file and installs
+  anonymous relay list keeps the public host. The Foundation's fleet tooling,
+  given `OPENRUNG_ACCESS_HOST=<IPv6>`, writes the variable into the env file
+  and installs
   `openrung-access-address.service`, a host unit that adds the address
   before docker starts the relay and removes it when stopped, plus
   `openrung-access-address-reassert.timer`. A network manager that
@@ -546,16 +429,16 @@ not need to match.
   Without an explicit public host, address detection skips the access
   address, and a relay never advertises an access host equal to the public
   host it registers with.
-  `convert` adds the address before the roll, beside any previous one, and
+  A roll adds the address before the roll, beside any previous one, and
   swaps the unit only after the roll is verified: a roll whose candidate never
   went live removes just the address this run added (a promoted candidate
   keeps it even if removing the old container fails), and a new unit that
   does not start is replaced by the previous one again, so neither the
   previous nor the promoted relay loses its address.
-  `OPENRUNG_ACCESS_HOST=off` on `convert` removes the unit, the address and
+  `OPENRUNG_ACCESS_HOST=off` on a roll removes the unit, the address and
   the variable once the roll is verified; leaving it unset keeps whatever the
-  host has. The address is static: changing it is a `convert` with the new
-  value, which re-registers the relay. `foundation-up.sh audit` reports `access=none`, or the address
+  host has. The address is static: changing it is a roll with the new
+  value, which re-registers the relay. The fleet audit reports `access=none`, or the address
   with `access_state=present|missing|preferred`, whether its unit is enabled
   and whether its re-assert timer is active (`access_reassert=`). Volunteer relays (`volunteer-up.sh`, the desktop app) never set it.
 

@@ -12,11 +12,11 @@
 # AllViewerExceptHostHeader origin-request policy. (Do NOT switch it back to
 # AllViewer: that forwards the viewer Host, which CloudFront then uses as the
 # origin SNI — the distribution domain, which this proxy has no cert for, so the
-# handshake 502s. See origin-tls.md.) The default ECDSA (P-256) leaf is fine for
+# handshake 502s. See README.md.) The default ECDSA (P-256) leaf is fine for
 # CloudFront and every other client.
 #
 # OPENRUNG_WORKER_ORIGIN_AUTH, OPENRUNG_CLOUDFRONT_ORIGIN_AUTH and
-# OPENRUNG_AZURE_ORIGIN_AUTH must be in Caddy's environment (see origin-tls.md).
+# OPENRUNG_AZURE_ORIGIN_AUTH must be in Caddy's environment (see README.md).
 # They match, respectively, the Worker's ORIGIN_AUTH secret, the value CloudFront
 # sends in its X-OpenRung-CloudFront-Auth custom origin header, and the value the
 # Azure Front Door rule set writes into X-OpenRung-Azure-Auth.

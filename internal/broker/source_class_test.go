@@ -182,8 +182,8 @@ func TestSourceClassifierUnavailableAndStale(t *testing.T) {
 	}
 }
 
-// The broker side of the refresh script's validation
-// (deploy/broker/refresh-source-asn_test.sh refuses the same lines): any one
+// The broker side of the refresh job's validation (the operator's refresh
+// script refuses the same lines): any one
 // malformed line rejects the whole table.
 func TestReadDatacenterRangesRejectsMalformedTables(t *testing.T) {
 	valid := "192.0.2.0\t192.0.2.127\t64500\tZZ\tA\n2001:db8::\t2001:db8::ff\t64501\tZZ\tB\n"

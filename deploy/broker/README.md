@@ -39,34 +39,16 @@ Broker versions do not determine relay or client compatibility. Those contracts
 remain in the versioned HTTP API, relay tunnel/punch protocol versions, and
 capability negotiation.
 
-## Deploy to AWS Lightsail (one command)
+## Deploy to a cloud host
 
-`lightsail-up.sh` provisions a broker on a `micro_3_0` instance (1 GB RAM /
-2 vCPU): it allocates a static IP, installs Docker, pulls
-`ghcr.io/openrung/openrung-broker:main`, runs it (host networking, read-only
-rootfs, persistent telemetry volume), and opens the HTTP port.
-
-Prerequisites: an authenticated `aws` CLI (`aws configure`) with Lightsail
-permissions, and the broker image published to GHCR and made **public** (see note
-below).
-
-```sh
-./deploy/broker/lightsail-up.sh mybroker
-```
-
-With no `OPENRUNG_VOLUNTEER_TOKEN` set it runs open (anonymous registration); set
-one to require auth. Optional overrides: `OPENRUNG_REGION`, `OPENRUNG_BUNDLE`,
-`OPENRUNG_DASHBOARD_TOKEN`, `OPENRUNG_RELAY_STORE` / `OPENRUNG_RELAY_DATABASE_URL`,
-`OPENRUNG_GEOIP_ENDPOINT`; the reachability probe settings below go in the env
-file. The script prints the health URL and the
-`OPENRUNG_BROKER_URL=http://<ip>:8080` to point hubs and relay runtimes at. Front the
-origin with Cloudflare for TLS (below) and set the client apps' HTTPS broker URL
-to the Cloudflare hostname.
+The Foundation's provisioning helpers live in the private `openrung/ops`
+repository. Any host that runs the image under the [container hardening](#container-hardening)
+flags below, with a root-owned mode-`0600` env file, is equivalent.
 
 > **GHCR package visibility:** the first time the broker image is published, the
-> GHCR package defaults to **private** and the instance pulls anonymously. Make it
-> public once: GitHub → org **Packages** → `openrung-broker` → *Package settings* →
-> *Change visibility* → *Public*. (Or have the instance `docker login ghcr.io`.)
+> GHCR package defaults to **private**. Make it public once: GitHub → org
+> **Packages** → `openrung-broker` → *Package settings* → *Change visibility* →
+> *Public*. (Or have the host `docker login ghcr.io`.)
 
 ## ⚠️ Auth: the broker fails closed
 
@@ -111,7 +93,7 @@ cloud-init/user-data, provider metadata, an inline `docker -e` argument, or a
 shell command that tracing or history can retain. Transfer it only after boot
 over an authenticated channel, store it in the root-owned mode-`0600` broker env
 file, then **recreate** the container with `--env-file` (a Docker restart does
-not reload a changed env file). `lightsail-up.sh` intentionally rejects
+not reload a changed env file). The provisioning helpers intentionally reject
 `OPENRUNG_FOUNDATION_TOKEN` for this reason.
 
 > **Rolling back past `node_class`:** a broker image that predates the
@@ -219,7 +201,7 @@ user identities from datacenter and hosting networks (`403` with code
 `datacenter_source`, see `docs/api.md`). An identity that already exists
 authenticates from any network. Classification is off until both data files
 are configured, and it never makes a network request: it is a lookup in two
-local files that `refresh-source-asn.sh` keeps current.
+local files that a host-side refresh job keeps current.
 
 | File | Source | Licence |
 | --- | --- | --- |
@@ -233,17 +215,9 @@ line, in `datacenter-asns.local` next to the generated files. Any other
 source that produces the same two formats works too
 (`OPENRUNG_SOURCE_ASN_URL`, `OPENRUNG_DATACENTER_ASN_URL`).
 
-Set it up on the broker host:
-
-```sh
-sudo install -d -m 0755 /var/lib/openrung-source
-sudo install -m 0755 deploy/broker/refresh-source-asn.sh /usr/local/sbin/refresh-source-asn
-sudo /usr/local/sbin/refresh-source-asn            # first fetch; prints the row and ASN counts
-# daily refresh (any hour; the upstream table changes hourly, slowly)
-echo '17 4 * * * root /usr/local/sbin/refresh-source-asn >/dev/null' | sudo tee /etc/cron.d/openrung-source-asn
-```
-
-then mount the directory read-only into the broker container
+Generate both files into `/var/lib/openrung-source` on the broker host with a
+daily job (the Foundation's refresh helper lives in the private `openrung/ops`
+repository), then mount the directory read-only into the broker container
 (`-v /var/lib/openrung-source:/var/lib/openrung-source:ro`; the compose file
 has the line commented out) and add to the env file:
 
@@ -254,7 +228,7 @@ OPENRUNG_DATACENTER_ASN_LIST=/var/lib/openrung-source/datacenter-asns.txt
 #OPENRUNG_ENROLLMENT_EXEMPT_CIDRS=
 ```
 
-The script validates both downloads before replacing either file: every
+A refresh job should validate both downloads before replacing either file: every
 table line must hold two addresses of one family in ascending order and a
 32-bit ASN (it refuses anything the broker's loader would reject), and both
 files must meet minimum row and ASN counts. Files are replaced atomically and
@@ -321,11 +295,11 @@ Rotate with overlap:
 
 Do not clear sidecar replay state during rotation. A load-balanced broker fleet
 may briefly contain both issuers only after every affected sidecar accepts both
-public keys. The `lightsail-up.sh` helper does not generate or install the WSS
+public keys. The provisioning helpers do not generate or install the WSS
 ticket seed; transfer it post-boot into `/etc/openrung/broker.env` over an
 authenticated channel, then recreate the container with the existing hardened
 flags and `--env-file`. See the [broker API](../../docs/api.md#issue-wss-session-ticket)
-for the wire contract and the [per-relay CloudFront guide](../relay/cloudfront-wss.md)
+for the wire contract and the [relay README](../relay/README.md#per-relay-wss-sidecar-foundation-only)
 for sidecar and origin deployment.
 
 ## Telemetry persistence
@@ -517,7 +491,7 @@ Put the broker behind Cloudflare (or another proxy) for TLS and DDoS absorption.
 The broker trusts `CF-Connecting-IP` / `X-Forwarded-For` only from the CIDRs in
 `OPENRUNG_TRUSTED_PROXY_CIDRS` (none by default). Production fronts reach the
 broker through the local Caddy terminator, which decides the forwarded client IP
-(see [origin TLS](origin-tls.md)), so production trusts only loopback:
+(see [end-to-end TLS to the origin](#end-to-end-tls-to-the-origin)), so production trusts only loopback:
 `OPENRUNG_TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128`. The container uses **host
 networking** so the broker sees the real peer — do not switch it to bridge
 networking without reading the note in `docker-compose.yml`, or per-IP rate
@@ -528,26 +502,26 @@ limiting and telemetry source IPs will all collapse onto the docker gateway.
 For a front to reach the origin over HTTPS (so tokens like the Foundation
 registration token are never in cleartext on the edge → origin leg), terminate
 TLS on the broker box with a Let's Encrypt reverse proxy on `:443` that forwards
-to the broker on `:8080`. The production setup for the AWS CloudFront front —
-Caddy config, cert/renewal, firewall, the required CloudFront origin settings,
-verification, and rollback — is documented in
-[`origin-tls.md`](./origin-tls.md), with the deployed config in
-[`Caddyfile`](./Caddyfile). It is additive: the broker container and the
-plaintext `:8080` path are untouched.
+to the broker on `:8080`. The deployed config is [`Caddyfile`](./Caddyfile):
+it forwards the viewer address to the broker only for requests that carry the
+per-front origin secret the Caddyfile names, and the production runbook (cert
+and renewal, firewall, the front's origin settings, verification, rollback) lives
+in the private `openrung/ops` repository. It is additive: the broker container
+and the plaintext `:8080` path are untouched.
 
 ### Adding a front
 
 A candidate front must pass `go run ./cmd/frontcheck -url <https URL>` before it
 is added to the built-in discovery order: the check confirms, read-only, that a
 signed relay list arrives and verifies, and — for the SNI-less fronts — that the
-suppressed-SNI path reaches the same origin as an ordinary one. Azure Front Door
-is designed and implemented but not yet provisioned or advertised; its
-measurements, its weaker certificate tradeoff, and its provisioning steps are in
-[`azure-front-door.md`](./azure-front-door.md).
+suppressed-SNI path reaches the same origin as an ordinary one. The
+provisioning steps for each front live in the private `openrung/ops` repository;
+the certificate tradeoff of the Azure Front Door front is documented in
+`brokerapi/azure_tls.go`.
 
 ## Container hardening
 
-Both `docker-compose.yml` and `lightsail-up.sh` run the broker with a
+`docker-compose.yml` and the Foundation's provisioning helpers run the broker with a
 least-privilege container posture (verified 2026-07-13 by running the published
 image under the full flag set — it starts, serves `/healthz`, and enforces the
 read-only rootfs):

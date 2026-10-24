@@ -275,8 +275,7 @@ Origin-token and ticket-key rotation both require overlap:
 - Replay state is not cleared by a key reload and is keyed so identical ticket
   IDs cannot bypass protection during overlap.
 
-The CloudFront-specific sequence is in
-[`deploy/relay/cloudfront-wss.md`](../deploy/relay/cloudfront-wss.md).
+The provider-specific deployment sequences live in the private `openrung/ops` repository.
 
 ## Privacy and operational counters
 
