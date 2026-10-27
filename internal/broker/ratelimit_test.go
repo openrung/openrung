@@ -142,7 +142,7 @@ func TestWSSTicketRateLimiterDoesNotCollapseSharedSourceClients(t *testing.T) {
 func TestServerRateLimitsSpeedTest(t *testing.T) {
 	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed()})
 
-	for index := 0; index < speedTestBurst; index++ {
+	for index := 0; index < defaultSpeedTestBurst; index++ {
 		recorder := httptest.NewRecorder()
 		server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/speed-test?bytes=10", nil))
 		if recorder.Code != http.StatusOK {
@@ -173,18 +173,80 @@ func TestServerRateLimitsSpeedTest(t *testing.T) {
 }
 
 func TestServerRateLimitsTelemetry(t *testing.T) {
-	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed(), TelemetrySink: &memoryTelemetrySink{}})
+	const burst = 3
+	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed(), TelemetrySink: &memoryTelemetrySink{}, RateLimits: RateLimits{Telemetry: RateLimit{PerSecond: 0.001, Burst: burst}}})
 
 	status := 0
-	for index := 0; index < telemetryBurst+1; index++ {
+	for index := 0; index < burst+1; index++ {
 		recorder := httptest.NewRecorder()
 		server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/telemetry/events", nil))
 		status = recorder.Code
-		if index < telemetryBurst && status == http.StatusTooManyRequests {
+		if index < burst && status == http.StatusTooManyRequests {
 			t.Fatalf("request %d inside burst unexpectedly limited", index+1)
 		}
 	}
 	if status != http.StatusTooManyRequests {
 		t.Fatalf("expected 429 past the burst, got %d", status)
+	}
+}
+
+func TestParseRateLimit(t *testing.T) {
+	for _, test := range []struct {
+		value string
+		want  RateLimit
+		ok    bool
+	}{
+		{value: "", want: RateLimit{}, ok: true},
+		{value: "2:30", want: RateLimit{PerSecond: 2, Burst: 30}, ok: true},
+		{value: " 0.25 : 4 ", want: RateLimit{PerSecond: 0.25, Burst: 4}, ok: true},
+		{value: "2"},
+		{value: "0:30"},
+		{value: "-1:30"},
+		{value: "NaN:30"},
+		{value: "Inf:30"},
+		{value: "2:0"},
+		{value: "2:x"},
+	} {
+		got, err := ParseRateLimit(test.value)
+		if (err == nil) != test.ok || got != test.want {
+			t.Errorf("ParseRateLimit(%q) = %+v, %v; want %+v, ok=%v", test.value, got, err, test.want, test.ok)
+		}
+	}
+}
+
+func TestRateLimitsWithDefaultsKeepsOverrides(t *testing.T) {
+	override := RateLimit{PerSecond: 0.5, Burst: 7}
+	got := RateLimits{RelayList: override}.withDefaults()
+	if got.RelayList != override {
+		t.Fatalf("relay list limit = %+v, want override %+v", got.RelayList, override)
+	}
+	if want := (RateLimit{PerSecond: defaultTelemetryRatePerSecond, Burst: defaultTelemetryBurst}); got.Telemetry != want {
+		t.Fatalf("telemetry limit = %+v, want default %+v", got.Telemetry, want)
+	}
+}
+
+func TestRateLimitedRetryAfterCoversConfiguredRefill(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		limit RateLimit
+		want  string
+	}{
+		{name: "slow refill", limit: RateLimit{PerSecond: 0.05, Burst: 1}, want: "20"},
+		{name: "fast refill keeps floor", limit: RateLimit{PerSecond: 2, Burst: 1}, want: "10"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed(), RateLimits: RateLimits{RelayList: test.limit}})
+			var recorder *httptest.ResponseRecorder
+			for range 2 {
+				recorder = httptest.NewRecorder()
+				server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/relays", nil))
+			}
+			if recorder.Code != http.StatusTooManyRequests {
+				t.Fatalf("second request status = %d, want 429", recorder.Code)
+			}
+			if got := recorder.Header().Get("Retry-After"); got != test.want {
+				t.Fatalf("Retry-After = %q, want %q", got, test.want)
+			}
+		})
 	}
 }

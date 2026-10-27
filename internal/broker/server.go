@@ -21,6 +21,12 @@ import (
 // small structs, so anything near the cap is malformed or hostile.
 const maxRegisterBodyBytes = 64 << 10
 
+// Relay-list page sizes applied when Config leaves them zero.
+const (
+	DefaultRelayListLimit    = 5
+	DefaultRelayListMaxLimit = 20
+)
+
 type Config struct {
 	RegistrationToken string
 	// FoundationToken is the privileged bearer token that authorizes
@@ -92,8 +98,20 @@ type Config struct {
 	// tickets. Keeping it separate from relay-list signing permits independent
 	// rotation; sidecars accept the new and old public keys during overlap.
 	WSSTicketSigningSeed []byte
-	WSSTicketTTL         time.Duration
-	WSSTicketMaxStreams  int
+	// WSSTicketTTL and WSSTicketMaxStreams bound each issued ticket
+	// (OPENRUNG_WSS_TICKET_TTL, OPENRUNG_WSS_TICKET_MAX_STREAMS); zero applies
+	// the defaults.
+	WSSTicketTTL        time.Duration
+	WSSTicketMaxStreams int
+	// RateLimits overrides the per-client budgets of the public endpoints
+	// (OPENRUNG_RATE_LIMIT_*); zero fields apply the defaults.
+	RateLimits RateLimits
+	// RelayListDefaultLimit is the relay-list page size when a request names
+	// none, and RelayListMaxLimit the largest a request may ask for
+	// (OPENRUNG_RELAY_LIST_DEFAULT_LIMIT, OPENRUNG_RELAY_LIST_MAX_LIMIT). Zero
+	// applies the defaults; a request above the maximum is refused with 400.
+	RelayListDefaultLimit int
+	RelayListMaxLimit     int
 	// UserTokenKey is the 32-byte HMAC key behind client access tokens
 	// (OPENRUNG_USER_TOKEN_KEY). It enables the user challenge/auth endpoints
 	// and the operational user routes; empty leaves all of them unregistered,
@@ -132,15 +150,22 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 	if cfg.RelayProbeInterval == 0 {
 		cfg.RelayProbeInterval = defaultRelayProbeInterval
 	}
+	if cfg.RelayListMaxLimit == 0 {
+		cfg.RelayListMaxLimit = max(DefaultRelayListMaxLimit, cfg.RelayListDefaultLimit)
+	}
+	if cfg.RelayListDefaultLimit == 0 {
+		cfg.RelayListDefaultLimit = min(DefaultRelayListLimit, cfg.RelayListMaxLimit)
+	}
 	relaySigner := newSigner(cfg.SigningSeed)
 	wssIssuer := newWSSTicketIssuer(cfg)
 	clientIP := newClientIPResolver(cfg.TrustedProxyCIDRs)
 	clientSeen := newClientSeenDeduper(clientSeenDedupWindow, clientSeenDedupMaxEntries)
-	relayListLimiter := newIPRateLimiter(relayListRatePerSecond, relayListBurst, rateLimiterMaxTrackedIPs)
-	telemetryLimiter := newIPRateLimiter(telemetryRatePerSecond, telemetryBurst, rateLimiterMaxTrackedIPs)
-	speedTestLimiter := newIPRateLimiter(speedTestRatePerSecond, speedTestBurst, rateLimiterMaxTrackedIPs)
-	relayRegistrationLimiter := newIPRateLimiter(relayRegistrationRatePerSecond, relayRegistrationBurst, rateLimiterMaxTrackedIPs)
-	wssTicketLimiter := newIPRateLimiter(wssTicketRatePerSecond, wssTicketBurst, rateLimiterMaxTrackedIPs)
+	rateLimits := cfg.RateLimits.withDefaults()
+	relayListLimiter := rateLimits.RelayList.limiter()
+	telemetryLimiter := rateLimits.Telemetry.limiter()
+	speedTestLimiter := rateLimits.SpeedTest.limiter()
+	relayRegistrationLimiter := rateLimits.RelayRegistration.limiter()
+	wssTicketLimiter := rateLimits.WSSTicket.limiter()
 	relayLedger := newRelayIDLedger(relayLedgerTTL, relayLedgerMaxEntries)
 	seedRelayLedger(relayLedger, store)
 	newIDCap := newNewRelayCap(cfg.MaxNewRelayIDsPerIPPerDay, newRelayCapWindow, cfg.RegistrationCapExemptCIDRs)
@@ -177,7 +202,7 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 		mux.HandleFunc("GET /api/v1/relays/{id}/leases", rateLimited(relayRegistrationLimiter, clientIP, 10, access.leasePollHandler()))
 		mux.HandleFunc("POST /api/v1/relays/{id}/leases/ack", rateLimited(relayRegistrationLimiter, clientIP, 10, access.leaseAckHandler()))
 	}
-	mux.HandleFunc("GET /api/v1/relays", rateLimited(relayListLimiter, clientIP, 10, listRelaysHandler(store, cfg.TelemetrySink, clientIP, clientSeen, relaySigner, cfg.RelayProber != nil)))
+	mux.HandleFunc("GET /api/v1/relays", rateLimited(relayListLimiter, clientIP, 10, listRelaysHandler(store, cfg.TelemetrySink, clientIP, clientSeen, relaySigner, cfg.RelayProber != nil, cfg.RelayListDefaultLimit, cfg.RelayListMaxLimit)))
 	if wssIssuer != nil {
 		mux.HandleFunc("POST /api/v1/wss/tickets", rateLimitedBy(wssTicketLimiter, wssTicketRateKey(clientIP), 10, wssTicketHandler(store, wssIssuer)))
 	}
@@ -215,14 +240,14 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 	if clientAccess := newClientAccessHandler(store, users, access, relaySigner); clientAccess != nil {
 		clientAccess.withholdUnreachable = cfg.RelayProber != nil
 		clientAccess.clientIP = clientIP.clientIP
-		accessLimiter := newIPRateLimiter(accessRatePerSecond, accessBurst, rateLimiterMaxTrackedIPs)
+		accessLimiter := rateLimits.Access.limiter()
 		mux.HandleFunc("POST /api/v1/access", clientAccess.counted(rateLimitedBy(accessLimiter, clientAccess.rateKey(clientIP), 10, clientAccess.handler())))
 	}
 	// Client user endpoints exist only with an access token key configured.
 	// One limiter spans both: a challenge is worthless without the auth call
 	// that consumes it, so budgeting them together bounds the pair.
 	if users != nil {
-		userAuthLimiter := newIPRateLimiter(userAuthRatePerSecond, userAuthBurst, rateLimiterMaxTrackedIPs)
+		userAuthLimiter := rateLimits.UserAuth.limiter()
 		mux.HandleFunc("POST /api/v1/users/challenge", rateLimited(userAuthLimiter, clientIP, 10, users.challengeHandler()))
 		mux.HandleFunc("POST /api/v1/users/auth", rateLimited(userAuthLimiter, clientIP, 10, users.authHandler()))
 	}
@@ -516,7 +541,8 @@ func geoLookupHost(desc *relay.Descriptor) string {
 
 // withholdUnreachable is whether reachability probing is enabled, and so
 // whether a stored failed probe keeps a relay off the page.
-func listRelaysHandler(store RelayStore, telemetrySink TelemetrySink, clientIP *clientIPResolver, clientSeen *clientSeenDeduper, s signer, withholdUnreachable bool) http.HandlerFunc {
+func listRelaysHandler(store RelayStore, telemetrySink TelemetrySink, clientIP *clientIPResolver, clientSeen *clientSeenDeduper, s signer, withholdUnreachable bool, defaultLimit, maxLimit int) http.HandlerFunc {
+	limitError := "limit must be between 1 and " + strconv.Itoa(maxLimit)
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Relay availability is real-time: shared caches (Cloudflare's edge in
 		// production) must never store a copy, and clients cannot bust an edge
@@ -524,11 +550,11 @@ func listRelaysHandler(store RelayStore, telemetrySink TelemetrySink, clientIP *
 		// either; the signed success path upgrades it to no-store, no-transform.
 		w.Header().Set("Cache-Control", "no-store")
 		recordClientSeen(r, telemetrySink, clientIP, clientSeen)
-		limit := 5
+		limit := defaultLimit
 		if raw := r.URL.Query().Get("limit"); raw != "" {
 			parsed, err := strconv.Atoi(raw)
-			if err != nil || parsed < 1 || parsed > 20 {
-				writeError(w, http.StatusBadRequest, "limit must be between 1 and 20")
+			if err != nil || parsed < 1 || parsed > maxLimit {
+				writeError(w, http.StatusBadRequest, limitError)
 				return
 			}
 			limit = parsed

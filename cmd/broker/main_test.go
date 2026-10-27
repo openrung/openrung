@@ -150,3 +150,63 @@ func TestNewSourceClassifierFromEnv(t *testing.T) {
 		t.Fatal("accepted a malformed exempt CIDR")
 	}
 }
+
+func TestParseRateLimits(t *testing.T) {
+	t.Setenv("OPENRUNG_RATE_LIMIT_RELAY_LIST", "0.5:7")
+	limits, err := parseRateLimits()
+	if err != nil {
+		t.Fatalf("parseRateLimits: %v", err)
+	}
+	if want := (broker.RateLimit{PerSecond: 0.5, Burst: 7}); limits.RelayList != want {
+		t.Fatalf("relay list limit = %+v, want %+v", limits.RelayList, want)
+	}
+	if limits.Telemetry != (broker.RateLimit{}) {
+		t.Fatalf("unset telemetry limit = %+v, want zero (default)", limits.Telemetry)
+	}
+	t.Setenv("OPENRUNG_RATE_LIMIT_ACCESS", "fast")
+	if _, err := parseRateLimits(); err == nil || !strings.Contains(err.Error(), "OPENRUNG_RATE_LIMIT_ACCESS") {
+		t.Fatalf("malformed limit error = %v, want it to name the variable", err)
+	}
+}
+
+func TestParseRelayListLimits(t *testing.T) {
+	for _, test := range []struct {
+		defaultLimit, maxLimit string
+		wantDefault, wantMax   int
+		ok                     bool
+	}{
+		{ok: true},
+		{defaultLimit: "3", maxLimit: "8", wantDefault: 3, wantMax: 8, ok: true},
+		{defaultLimit: "8", maxLimit: "8", wantDefault: 8, wantMax: 8, ok: true},
+		{defaultLimit: "9", maxLimit: "8"},
+		{defaultLimit: "-1"},
+		{maxLimit: "many"},
+	} {
+		t.Setenv("OPENRUNG_RELAY_LIST_DEFAULT_LIMIT", test.defaultLimit)
+		t.Setenv("OPENRUNG_RELAY_LIST_MAX_LIMIT", test.maxLimit)
+		gotDefault, gotMax, err := parseRelayListLimits()
+		if (err == nil) != test.ok || gotDefault != test.wantDefault || gotMax != test.wantMax {
+			t.Errorf("default=%q max=%q: got %d, %d, %v", test.defaultLimit, test.maxLimit, gotDefault, gotMax, err)
+		}
+	}
+}
+
+func TestParseWSSTicketBounds(t *testing.T) {
+	for _, test := range []struct {
+		ttl, streams string
+		ok           bool
+	}{
+		{ok: true},
+		{ttl: "90s", streams: "16", ok: true},
+		{ttl: "1s"},
+		{ttl: "24h"},
+		{streams: "-1"},
+		{streams: "1000000"},
+	} {
+		t.Setenv("OPENRUNG_WSS_TICKET_TTL", test.ttl)
+		t.Setenv("OPENRUNG_WSS_TICKET_MAX_STREAMS", test.streams)
+		if _, _, err := parseWSSTicketBounds(); (err == nil) != test.ok {
+			t.Errorf("ttl=%q streams=%q: err = %v, want ok=%v", test.ttl, test.streams, err, test.ok)
+		}
+	}
+}
