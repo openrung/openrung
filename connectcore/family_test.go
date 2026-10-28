@@ -165,6 +165,45 @@ func TestWorkingIPv6KeepsTheAccessAddress(t *testing.T) {
 	}
 }
 
+// An access answer can name a relay by an IPv4 access address while the
+// public list names it by IPv6. The IPv4 candidate is dialled as the answer
+// names it, whatever the device knows about IPv6: the IPv6 fallback never
+// rewrites, reorders or retries it, and the relay's IPv6 public host is not
+// dialled.
+func TestIPv4AccessAddressBesideAnIPv6PublicHostIsDialledAsNamed(t *testing.T) {
+	const ipv4AccessHost, ipv6PublicHost = "198.51.100.9", "2001:db8:2::1"
+	for name, state := range map[string]ipv6State{"available": ipv6Available, "unknown": ipv6Unknown, "unavailable": ipv6Unavailable} {
+		t.Run(name, func(t *testing.T) {
+			listed := publicRelay("relay-a", "FI")
+			listed.PublicHost = ipv6PublicHost
+			relays := []brokerapi.RelayDescriptor{listed}
+			broker := newFakeAccessBroker(t, time.Now, relays...)
+			broker.mutateAccess = func(d *brokerapi.RelayDescriptor) {
+				if d.ID == "relay-a" {
+					d.PublicHost = ipv4AccessHost
+				}
+			}
+			e := newAccessEngine(t, broker, relays...)
+			e.ipv6Probe = func() ipv6State { return state }
+			servers := recordServers(e)
+			dials := recordDials(e, nil)
+
+			connectFamily(t, e, RelayTarget{RelayID: "relay-a"})
+			if runs := servers(); len(runs) != 1 || !strings.HasPrefix(runs[0], ipv4AccessHost+" lease-relay-a") {
+				t.Fatalf("tunnels = %v, want the IPv4 access address with the relay-a lease", runs)
+			}
+			for _, host := range dials() {
+				if host != ipv4AccessHost {
+					t.Fatalf("dialled %s besides the IPv4 access address: %v", host, dials())
+				}
+			}
+			if hasLog(e.sink, "using the public IPv4 endpoint") || hasLog(e.sink, "IPv6-only relay(s) last") {
+				t.Fatal("the IPv6 fallback acted on an IPv4 candidate")
+			}
+		})
+	}
+}
+
 // Without IPv6, a relay the public list itself names by IPv6 has no other
 // endpoint: it is kept but moved behind the others.
 func TestNoIPv6MovesIPv6OnlyRelaysLast(t *testing.T) {

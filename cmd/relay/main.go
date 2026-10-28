@@ -157,7 +157,7 @@ func (f *cliFlags) register(fs *flag.FlagSet, identitySeed string) {
 	fs.IntVar(&f.listenPort, "listen-port", 443, "local listen port")
 	fs.StringVar(&f.publicHost, "public-host", "", "public hostname or IP clients can reach; defaults to the relay host's first global IPv6 address")
 	fs.IntVar(&f.publicPort, "public-port", 443, "public port clients can reach")
-	fs.StringVar(&f.accessHost, "access-host", os.Getenv("OPENRUNG_ACCESS_HOST"), "optional IPv6 access address, distinct from -public-host, served on the same listener and sent privately at registration so the broker can hand it to enrolled clients instead of the public host. The host must configure it as a deprecated address (deploy/relay/foundation-up.sh does); each registration verifies that and leaves it out, with a log line, otherwise. Direct mode with a wildcard -listen-host only")
+	fs.StringVar(&f.accessHost, "access-host", os.Getenv("OPENRUNG_ACCESS_HOST"), "optional IPv4 or IPv6 access address, distinct from -public-host, served on the same listener and sent privately at registration so the broker can hand it to enrolled clients instead of the public host. The host must configure it so outgoing traffic never uses it as the source: an IPv6 address as deprecated (preferred_lft 0), an IPv4 address as a secondary address the routing table does not select; each registration verifies that and leaves it out, with a log line, otherwise. Direct mode with a wildcard -listen-host only")
 	fs.StringVar(&f.serverName, "server-name", "www.cloudflare.com", "Reality server name")
 	fs.StringVar(&f.realityDest, "reality-dest", "www.cloudflare.com:443", "Reality dest")
 	fs.StringVar(&f.clientID, "client-id", "", "VLESS client UUID; generated when empty")

@@ -362,11 +362,11 @@ func (h *clientAccessHandler) handler() http.HandlerFunc {
 			desc.ClientID = lease.Credential
 			// A relay with an access address is reached there by enrolled
 			// clients (ADR-006.1 Part A); the public directory keeps naming
-			// its public host. Nothing else in the descriptor changes. The
-			// access address is IPv6, so it is handed only to a client whose
-			// request arrived over IPv6; any other client keeps the public
-			// host it can reach.
-			if desc.AccessHost != "" && overIPv6 {
+			// its public host. Nothing else in the descriptor changes. An
+			// IPv6 access address is handed only to a client whose request
+			// arrived over IPv6, and any other client keeps the public host
+			// it can reach; an IPv4 access address is handed to every client.
+			if desc.AccessHost != "" && (overIPv6 || !relay.IsIPv6Host(desc.AccessHost)) {
 				desc.PublicHost = desc.AccessHost
 			}
 			out = append(out, desc)

@@ -5,6 +5,7 @@ package relayruntime
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 )
 
@@ -50,4 +51,66 @@ func VerifyAccessAddress(addr netip.Addr, configured []HostAddress) error {
 		return nil
 	}
 	return fmt.Errorf("%s is not configured on any host interface", addr)
+}
+
+// ipv4RouteProbeTarget is the route-lookup destination for IPv4RouteSource.
+// Nothing is sent to it: connecting a UDP socket only resolves the route and
+// the source address the kernel would use.
+const ipv4RouteProbeTarget = "1.1.1.1:53"
+
+// HostIPv4Addresses lists the IPv4 addresses configured on the host's
+// interfaces.
+func HostIPv4Addresses() ([]netip.Addr, error) {
+	interfaceAddrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil, fmt.Errorf("list interface addresses: %w", err)
+	}
+	var addresses []netip.Addr
+	for _, interfaceAddr := range interfaceAddrs {
+		if ip, ok := netip.AddrFromSlice(addressIP(interfaceAddr)); ok && ip.Unmap().Is4() {
+			addresses = append(addresses, ip.Unmap())
+		}
+	}
+	return addresses, nil
+}
+
+// IPv4RouteSource returns the source address the kernel picks for outgoing
+// IPv4 traffic to the internet, by connecting a UDP socket: a route lookup
+// that sends nothing and needs no capability.
+func IPv4RouteSource() (netip.Addr, error) {
+	conn, err := net.Dial("udp4", ipv4RouteProbeTarget)
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("IPv4 route lookup: %w", err)
+	}
+	defer conn.Close()
+	local, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok {
+		return netip.Addr{}, errors.New("IPv4 route lookup returned no source address")
+	}
+	source, _ := netip.AddrFromSlice(local.IP)
+	return source.Unmap(), nil
+}
+
+// VerifyIPv4AccessAddress reports whether addr is usable as the relay's IPv4
+// access address: present on an interface and not the source the kernel uses
+// for outgoing IPv4 (egressSource, from IPv4RouteSource). IPv4 has no
+// deprecated state, so an IPv4 access address is a secondary address the
+// routing table never selects, and the route lookup is what proves the
+// relay's own traffic — registration, heartbeats, client egress — stays on
+// the primary address.
+func VerifyIPv4AccessAddress(addr netip.Addr, configured []netip.Addr, egressSource netip.Addr) error {
+	present := false
+	for _, candidate := range configured {
+		if candidate == addr {
+			present = true
+			break
+		}
+	}
+	switch {
+	case !present:
+		return fmt.Errorf("%s is not configured on any host interface", addr)
+	case egressSource == addr:
+		return fmt.Errorf("%s is the source address of outgoing IPv4 connections, which must stay on the primary address", addr)
+	}
+	return nil
 }

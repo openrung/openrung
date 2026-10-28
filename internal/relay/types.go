@@ -113,13 +113,14 @@ type RegisterRequest struct {
 	// identity-bearing registrations can be lease-capable, because the sync
 	// endpoints authenticate with the registration's lease token.
 	AccessLeases bool `json:"access_leases,omitempty"`
-	// AccessHost is an optional IPv6 literal, distinct from PublicHost, that
-	// the relay serves on the same listener and that the broker may hand out
-	// in place of PublicHost in its access answer (ADR-006.1 Part A). The
-	// relay sends it only after confirming the address is configured on a
-	// host interface. Private registration material like OperatorContact:
-	// never part of the public directory, and not bound by the identity
-	// statement, so relays without it register unchanged.
+	// AccessHost is an optional IPv4 or IPv6 literal, distinct from
+	// PublicHost, that the relay serves on the same listener and that the
+	// broker may hand out in place of PublicHost in its access answer
+	// (ADR-006.1 Part A). The relay sends it only after confirming the
+	// address is configured on a host interface. Private registration
+	// material like OperatorContact: never part of the public directory, and
+	// not bound by the identity statement, so relays without it register
+	// unchanged.
 	AccessHost string `json:"access_host,omitempty"`
 }
 
@@ -209,7 +210,7 @@ type Descriptor struct {
 	// shown only in the operator inventory and relays page; serializing it
 	// into the public directory would publish every operator's address.
 	OperatorContact string `json:"-"`
-	// AccessHost is the IPv6 access address an identity-bearing registration
+	// AccessHost is the access address an identity-bearing registration
 	// advertised (empty otherwise). The broker substitutes it for PublicHost
 	// in the per-user access answer only; the public directory, the signed
 	// relay lists and the reachability probe keep PublicHost, and only the
@@ -484,24 +485,29 @@ func NormalizeOperatorContact(contact string) (string, error) {
 }
 
 // NormalizeAccessHost validates an access host and returns its canonical
-// spelling. Empty is allowed and returns "". Otherwise it must be a bare IPv6
+// spelling. Empty is allowed and returns "". Otherwise it must be a bare IP
 // literal (no brackets, zone, or IPv4-mapped form) that is a global unicast,
-// non-private address: the access address is something clients on the
-// internet dial, so nothing else is meaningful.
+// non-private address — for IPv4 also outside carrier-grade NAT space: the
+// access address is something clients on the internet dial, so nothing else
+// is meaningful.
 func NormalizeAccessHost(host string) (string, error) {
 	host = strings.TrimSpace(host)
 	if host == "" {
 		return "", nil
 	}
 	addr, err := netip.ParseAddr(host)
-	if err != nil || !addr.Is6() || addr.Is4In6() || addr.Zone() != "" {
-		return "", errors.New("access_host must be an IPv6 address literal")
+	if err != nil || addr.Is4In6() || addr.Zone() != "" {
+		return "", errors.New("access_host must be an IPv4 or IPv6 address literal")
 	}
-	if !addr.IsGlobalUnicast() || addr.IsPrivate() {
-		return "", errors.New("access_host must be a global unicast IPv6 address")
+	if !addr.IsGlobalUnicast() || addr.IsPrivate() || sharedAddressSpace.Contains(addr) {
+		return "", errors.New("access_host must be a global unicast address")
 	}
 	return addr.String(), nil
 }
+
+// sharedAddressSpace is carrier-grade NAT space (RFC 6598), which netip's
+// IsPrivate does not cover.
+var sharedAddressSpace = netip.MustParsePrefix("100.64.0.0/10")
 
 // MaxLabelLength bounds the operator-supplied relay label.
 const MaxLabelLength = 63

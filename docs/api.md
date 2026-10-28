@@ -712,21 +712,23 @@ inventory](#operational-relay-inventory) and the admin relays page: it is not
 bound by the identity statement and never appears in the registration response,
 relay lists, or any signed client-facing body.
 
-`access_host` (optional) is an IPv6 address, distinct from `public_host`, on
-which the relay serves the same listener. It must be a bare global unicast
-IPv6 literal (no brackets, zone or IPv4-mapped form, not unique-local), may not
-name the same address as `public_host`, and is accepted for direct transport
-only; anything else is refused with `400`. It is honoured only for
+`access_host` (optional) is an IPv4 or IPv6 address, distinct from
+`public_host`, on which the relay serves the same listener. It must be a bare
+global unicast IP literal (no brackets, zone or IPv4-mapped form; not
+unique-local, private or carrier-grade NAT space), may not name the same
+address as `public_host`, and is accepted for direct transport only; anything
+else is refused with `400`. It is honoured only for
 identity-bearing registrations (a legacy identityless registration's is
 dropped) and is replaced, or cleared, by every re-registration; heartbeats
 keep it. It is not bound by the identity statement. The broker uses it in one
-place: the [client access](#client-access) answer to a request that arrived
-over IPv6 names it as the relay's `public_host`. The registration response, relay lists, the [inbound
+place: the [client access](#client-access) answer names it as the relay's
+`public_host` — an IPv4 access address in every answer, an IPv6 one only in
+the answer to a request that arrived over IPv6. The registration response, relay lists, the [inbound
 reachability probe](#inbound-reachability-probe) and every other surface keep
 `public_host`; only the operator inventory and the admin relays page show the
 access address. The reference relay sends it (`OPENRUNG_ACCESS_HOST`) only after
-confirming the address is configured on a host interface; see
-`deploy/relay/README.md`.
+confirming the address is configured on a host interface and is not the
+source of the host's outgoing traffic; see `deploy/relay/README.md`.
 
 `access_leases` (optional, default `false`) declares that the relay installs
 broker-issued per-client credentials through the [relay lease
@@ -1578,11 +1580,12 @@ channel, without `limit`, and with the lease expiry:
 
 Each descriptor's `client_id` is the caller's credential for that relay; it
 stops being accepted at `lease_expires_at` (compare with `server_time`, not the
-local clock). For a relay that registered an `access_host`, and only when the
-access request itself arrived over IPv6 (as seen by the broker, through a
-trusted front the viewer's address), the descriptor's `public_host` is that
-access address instead of the address the public relay list carries. A request
-over IPv4 gets the public host. Every other field is the relay's public
+local clock). For a relay that registered an `access_host`, the descriptor's
+`public_host` is that access address instead of the address the public relay
+list carries: an IPv4 access address in every answer, an IPv6 one only when
+the access request itself arrived over IPv6 (as seen by the broker, through a
+trusted front the viewer's address), so a request over IPv4 gets the public
+host instead. Every other field is the relay's public
 descriptor either way. Clients must verify the signature and require
 `channel == "access"`; a public list never verifies here and an access body
 never verifies as a public list.

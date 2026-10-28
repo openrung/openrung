@@ -15,6 +15,8 @@ func TestNormalizeAccessHost(t *testing.T) {
 		{"  ", ""},
 		{"2001:db8:1::10", "2001:db8:1::10"},
 		{" 2001:DB8:1:0:0:0:0:10 ", "2001:db8:1::10"},
+		{"203.0.113.7", "203.0.113.7"},
+		{" 198.51.100.9 ", "198.51.100.9"},
 	} {
 		got, err := NormalizeAccessHost(tc.in)
 		if err != nil || got != tc.want {
@@ -22,7 +24,6 @@ func TestNormalizeAccessHost(t *testing.T) {
 		}
 	}
 	for _, in := range []string{
-		"203.0.113.7",        // IPv4
 		"::ffff:203.0.113.7", // IPv4-mapped
 		"[2001:db8::1]",      // bracketed
 		"2001:db8::1%eth0",   // zoned
@@ -32,6 +33,17 @@ func TestNormalizeAccessHost(t *testing.T) {
 		"fe80::1",            // link-local
 		"fd00::1",            // unique local
 		"ff02::1",            // multicast
+		"10.0.0.7",           // IPv4 private
+		"172.16.0.7",         // IPv4 private
+		"192.168.1.7",        // IPv4 private
+		"100.64.0.7",         // IPv4 carrier-grade NAT
+		"100.127.255.254",    // IPv4 carrier-grade NAT
+		"127.0.0.1",          // IPv4 loopback
+		"169.254.169.254",    // IPv4 link-local
+		"0.0.0.0",            // IPv4 unspecified
+		"224.0.0.1",          // IPv4 multicast
+		"255.255.255.255",    // IPv4 broadcast
+		"203.0.113.7:443",    // with a port
 	} {
 		if got, err := NormalizeAccessHost(in); err == nil {
 			t.Errorf("NormalizeAccessHost(%q) = %q, want an error", in, got)

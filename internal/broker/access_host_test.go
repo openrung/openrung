@@ -17,7 +17,10 @@ import (
 	"openrung/internal/relay"
 )
 
-const testAccessHost = "2001:db8:1::10"
+const (
+	testAccessHost     = "2001:db8:1::10"
+	testIPv4AccessHost = "198.51.100.9"
+)
 
 // TestRegisterStoresAccessHostPrivately covers the registration path end to
 // end: an identity-bearing registration's access host is stored, shown in
@@ -85,6 +88,30 @@ func TestRegisterStoresAccessHostPrivately(t *testing.T) {
 	}
 }
 
+// An IPv4 access address beside an IPv6 public host registers through the
+// same path and stays out of the public directory.
+func TestRegisterStoresIPv4AccessHostPrivately(t *testing.T) {
+	store := NewStore()
+	server := inventoryServer(t, store)
+	now := time.Now().UTC()
+	req := signedIdentityRequest(t, identityStoreSeedA, func(r *relay.RegisterRequest) {
+		r.PublicHost = "2001:db8:2::1"
+		r.AccessHost = " " + testIPv4AccessHost + " "
+	}, now)
+	if recorder := postRegistration(t, server, req); recorder.Code != http.StatusCreated {
+		t.Fatalf("register: expected 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	listed, err := store.List(now, 10)
+	if err != nil || len(listed) != 1 || listed[0].AccessHost != testIPv4AccessHost || listed[0].PublicHost != "2001:db8:2::1" {
+		t.Fatalf("stored = %+v, %v; want public 2001:db8:2::1 and access %q", listed, err, testIPv4AccessHost)
+	}
+	list := httptest.NewRecorder()
+	server.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/v1/relays", nil))
+	if body := list.Body.String(); list.Code != http.StatusOK || strings.Contains(body, testIPv4AccessHost) || strings.Contains(body, "access_host") {
+		t.Fatalf("public relay list (%d) leaked the access host: %s", list.Code, body)
+	}
+}
+
 func TestRegisterWithoutAccessHostOmitsIt(t *testing.T) {
 	store := NewStore()
 	server := inventoryServer(t, store)
@@ -99,7 +126,10 @@ func TestRegisterWithoutAccessHostOmitsIt(t *testing.T) {
 
 func TestRegisterRejectsInvalidAccessHost(t *testing.T) {
 	for name, mutate := range map[string]func(*relay.RegisterRequest){
-		"ipv4":           func(r *relay.RegisterRequest) { r.AccessHost = "198.51.100.9" },
+		"private ipv4":   func(r *relay.RegisterRequest) { r.AccessHost = "10.0.0.9" },
+		"cgnat ipv4":     func(r *relay.RegisterRequest) { r.AccessHost = "100.64.0.9" },
+		"ipv4-mapped":    func(r *relay.RegisterRequest) { r.AccessHost = "::ffff:198.51.100.9" },
+		"ipv4 public":    func(r *relay.RegisterRequest) { r.PublicHost = "198.51.100.9"; r.AccessHost = "198.51.100.9" },
 		"unique local":   func(r *relay.RegisterRequest) { r.AccessHost = "fd00::10" },
 		"link local":     func(r *relay.RegisterRequest) { r.AccessHost = "fe80::10" },
 		"bracketed":      func(r *relay.RegisterRequest) { r.AccessHost = "[" + testAccessHost + "]" },
@@ -279,6 +309,53 @@ func TestAccessAnswerSubstitutesAccessHostForIPv6Requests(t *testing.T) {
 	}
 	if len(answer.Relays) != 1 || answer.Relays[0].PublicHost != testAccessHost {
 		t.Fatalf("client-decoded access answer = %+v", answer.Relays)
+	}
+}
+
+// An IPv4 access address is stored like an IPv6 one and, in the access
+// answer, replaces the public host whatever family the request arrived over;
+// an IPv6 access address keeps the IPv6-only rule. Both are checked here
+// across IPv4 and IPv6 requests.
+func TestAccessAnswerSubstitutionByAccessAddressFamily(t *testing.T) {
+	h := newAccessHarness(t)
+	h.handler.clientIP = func(r *http.Request) string { return peerIP(r.RemoteAddr) }
+	v4Access := h.addRelay("v4", 'a', "FI", func(r *relay.RegisterRequest) {
+		r.PublicHost = "2001:db8:2::1"
+		r.AccessHost = testIPv4AccessHost
+	})
+	v6Access := h.addRelay("v6", 'b', "DE", func(r *relay.RegisterRequest) {
+		r.PublicHost = "203.0.113.7"
+		r.AccessHost = testAccessHost
+	})
+	h.autoAck(v4Access)
+	h.autoAck(v6Access)
+	if stored := h.store.relays[v4Access.ID]; stored.AccessHost != testIPv4AccessHost {
+		t.Fatalf("stored IPv4 access host = %q, want %q", stored.AccessHost, testIPv4AccessHost)
+	}
+	token, _ := h.token()
+
+	for _, tc := range []struct {
+		source string
+		want   map[string]string
+	}{
+		{"[2001:db8:9::5]:4000", map[string]string{v4Access.ID: testIPv4AccessHost, v6Access.ID: testAccessHost}},
+		{"203.0.113.10:4000", map[string]string{v4Access.ID: testIPv4AccessHost, v6Access.ID: "203.0.113.7"}},
+		{"[::ffff:203.0.113.10]:4000", map[string]string{v4Access.ID: testIPv4AccessHost, v6Access.ID: "203.0.113.7"}},
+	} {
+		h.source = tc.source
+		rec, resp := h.request(token, `{}`)
+		if rec.Code != http.StatusOK || len(resp.Relays) != 2 {
+			t.Fatalf("%s: access: %d %s", tc.source, rec.Code, rec.Body.String())
+		}
+		for _, desc := range resp.Relays {
+			if desc.PublicHost != tc.want[desc.ID] {
+				t.Fatalf("%s: relay %s public_host = %q, want %q", tc.source, desc.ID, desc.PublicHost, tc.want[desc.ID])
+			}
+		}
+	}
+	// The stored descriptor keeps the public host.
+	if stored := h.store.relays[v4Access.ID]; stored.PublicHost != "2001:db8:2::1" {
+		t.Fatalf("substitution leaked into the store: %q", stored.PublicHost)
 	}
 }
 

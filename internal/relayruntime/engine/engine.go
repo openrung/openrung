@@ -113,14 +113,15 @@ type Config struct {
 	// comes from the hub. A WSS relay binds xray to the IPv4 wildcard, so it
 	// should set this to the IPv4 address the directory must advertise.
 	PublicHost string
-	// AccessHost is an optional IPv6 address, distinct from PublicHost, that
-	// a direct relay serves on its one public listener and advertises at
-	// registration as access_host (cmd/relay's -access-host, ADR-006.1 Part
-	// A): the broker may hand it to enrolled clients in place of PublicHost.
-	// The host must configure it (the Foundation's fleet tooling does) as a
-	// deprecated address, so the relay's own traffic stays on the primary
-	// address; every registration first verifies that with a read-only
-	// netlink query and leaves the field out, with a log line, when the check
+	// AccessHost is an optional IPv4 or IPv6 address, distinct from
+	// PublicHost, that a direct relay serves on its one public listener and
+	// advertises at registration as access_host (cmd/relay's -access-host,
+	// ADR-006.1 Part A): the broker may hand it to enrolled clients in place
+	// of PublicHost. The host must configure it so the relay's own traffic
+	// stays on the primary address — an IPv6 one as a deprecated address, an
+	// IPv4 one as a secondary address the kernel never picks as the outgoing
+	// source; every registration first verifies that with read-only host
+	// queries and leaves the field out, with a log line, when the check
 	// fails. Direct mode only, with xray owning a wildcard listener.
 	AccessHost string
 	// PublicPort is the port a direct registration advertises (cmd/relay's
@@ -475,9 +476,9 @@ func (c Config) validate() error {
 // validateAccessHost enforces where an access address can be served: a
 // direct relay whose xray owns one wildcard listener. xray binds a wildcard
 // through Go's generic "tcp" network, which opens a single dual-stack socket,
-// so the IPv4 public endpoint and the IPv6 access address share it; a literal
-// listen host would serve only one of them, and the connection observer's
-// per-family listeners are not part of this posture.
+// so the public endpoint and an access address of either family share it; a
+// literal listen host would serve only one of them, and the connection
+// observer's per-family listeners are not part of this posture.
 func (c Config) validateAccessHost() error {
 	if strings.TrimSpace(c.AccessHost) == "" {
 		return nil
@@ -537,15 +538,40 @@ func (e *Engine) checkAccessHost(cfg Config, publicHost string) (string, error) 
 	if public, err := netip.ParseAddr(strings.TrimSpace(publicHost)); err == nil && public.Unmap().String() == access {
 		return access, errors.New("it is the public host this relay registers with")
 	}
+	addr := netip.MustParseAddr(access)
+	if addr.Is4() {
+		return access, e.checkIPv4AccessAddress(addr)
+	}
 	list := e.hostAddresses
 	if list == nil {
 		list = relayruntime.HostIPv6Addresses
 	}
 	configured, err := list()
 	if err == nil {
-		err = relayruntime.VerifyAccessAddress(netip.MustParseAddr(access), configured)
+		err = relayruntime.VerifyAccessAddress(addr, configured)
 	}
 	return access, err
+}
+
+// checkIPv4AccessAddress is the IPv4 host check: the address must be on an
+// interface and must not be the source the kernel picks for outgoing IPv4.
+func (e *Engine) checkIPv4AccessAddress(addr netip.Addr) error {
+	list, routeSource := e.hostIPv4Addresses, e.ipv4RouteSource
+	if list == nil {
+		list = relayruntime.HostIPv4Addresses
+	}
+	if routeSource == nil {
+		routeSource = relayruntime.IPv4RouteSource
+	}
+	configured, err := list()
+	if err != nil {
+		return err
+	}
+	source, err := routeSource()
+	if err != nil {
+		return err
+	}
+	return relayruntime.VerifyIPv4AccessAddress(addr, configured, source)
 }
 
 // Status is a UI-ready snapshot of the engine.
@@ -643,6 +669,11 @@ type Engine struct {
 	// hostAddresses lists the host's IPv6 addresses for the access-address
 	// check; nil means relayruntime.HostIPv6Addresses. Tests substitute a fake.
 	hostAddresses func() ([]relayruntime.HostAddress, error)
+	// hostIPv4Addresses and ipv4RouteSource back the IPv4 access-address
+	// check; nil means relayruntime.HostIPv4Addresses and
+	// relayruntime.IPv4RouteSource. Tests substitute fakes.
+	hostIPv4Addresses func() ([]netip.Addr, error)
+	ipv4RouteSource   func() (netip.Addr, error)
 }
 
 func New(cfg Config, events Events) *Engine {

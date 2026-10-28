@@ -386,8 +386,8 @@ not need to match.
   changes.
 
 - **Access address (Foundation, optional):** `OPENRUNG_ACCESS_HOST` names one
-  extra IPv6 address, distinct from the relay's primary address and its
-  `OPENRUNG_PUBLIC_HOST`, that the relay serves on the same listener and
+  extra IPv6 (or, see below, IPv4) address, distinct from the relay's primary
+  address and its `OPENRUNG_PUBLIC_HOST`, that the relay serves on the same listener and
   sends privately at registration as `access_host`. The broker then names
   that address instead of the public host in the per-user access answer
   (`POST /api/v1/access`, see [docs/api.md](../../docs/api.md)); the
@@ -441,6 +441,20 @@ not need to match.
   value, which re-registers the relay. The fleet audit reports `access=none`, or the address
   with `access_state=present|missing|preferred`, whether its unit is enabled
   and whether its re-assert timer is active (`access_reassert=`). Volunteer relays (`volunteer-up.sh`, the desktop app) never set it.
+
+  An access address may also be IPv4, typically beside an IPv6
+  `OPENRUNG_PUBLIC_HOST`. IPv4 has no deprecated state, so the host adds it
+  as a secondary address that the routing table never selects as the source
+  of outgoing IPv4 (for example
+  `ip -4 address add <IPv4>/32 dev <interface>` after the primary address,
+  with `ip -4 route get 1.1.1.1` still showing the primary as `src`). Before
+  every registration, and on the same 30-second recheck, the relay confirms
+  the address is on a host interface and that a route lookup for outgoing
+  IPv4 does not pick it as the source; otherwise it logs
+  `not advertising access host …` and registers without it. The broker
+  names an IPv4 access address in every access answer, whatever address
+  family the request arrived over. The listener, mode and public-host rules
+  are the same as for IPv6.
 
 ## Operations
 
