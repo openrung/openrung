@@ -119,8 +119,8 @@ type Config struct {
 	// ADR-006.1 Part A): the broker may hand it to enrolled clients in place
 	// of PublicHost. The host must configure it so the relay's own traffic
 	// stays on the primary address — an IPv6 one as a deprecated address, an
-	// IPv4 one as a secondary address the kernel never picks as the outgoing
-	// source; every registration first verifies that with read-only host
+	// IPv4 one beside routes that all name another preferred source (src),
+	// so the kernel never picks it as the outgoing source; every registration first verifies that with read-only host
 	// queries and leaves the field out, with a log line, when the check
 	// fails. Direct mode only, with xray owning a wildcard listener.
 	AccessHost string
@@ -554,24 +554,25 @@ func (e *Engine) checkAccessHost(cfg Config, publicHost string) (string, error) 
 }
 
 // checkIPv4AccessAddress is the IPv4 host check: the address must be on an
-// interface and must not be the source the kernel picks for outgoing IPv4.
+// interface, and every IPv4 unicast route must name another preferred source,
+// so the kernel never picks it for outgoing IPv4 to any destination.
 func (e *Engine) checkIPv4AccessAddress(addr netip.Addr) error {
-	list, routeSource := e.hostIPv4Addresses, e.ipv4RouteSource
+	list, routes := e.hostIPv4Addresses, e.ipv4Routes
 	if list == nil {
 		list = relayruntime.HostIPv4Addresses
 	}
-	if routeSource == nil {
-		routeSource = relayruntime.IPv4RouteSource
+	if routes == nil {
+		routes = relayruntime.HostIPv4UnicastRoutes
 	}
 	configured, err := list()
 	if err != nil {
 		return err
 	}
-	source, err := routeSource()
+	table, err := routes()
 	if err != nil {
 		return err
 	}
-	return relayruntime.VerifyIPv4AccessAddress(addr, configured, source)
+	return relayruntime.VerifyIPv4AccessAddress(addr, configured, table)
 }
 
 // Status is a UI-ready snapshot of the engine.
@@ -669,11 +670,11 @@ type Engine struct {
 	// hostAddresses lists the host's IPv6 addresses for the access-address
 	// check; nil means relayruntime.HostIPv6Addresses. Tests substitute a fake.
 	hostAddresses func() ([]relayruntime.HostAddress, error)
-	// hostIPv4Addresses and ipv4RouteSource back the IPv4 access-address
-	// check; nil means relayruntime.HostIPv4Addresses and
-	// relayruntime.IPv4RouteSource. Tests substitute fakes.
+	// hostIPv4Addresses and ipv4Routes back the IPv4 access-address check;
+	// nil means relayruntime.HostIPv4Addresses and
+	// relayruntime.HostIPv4UnicastRoutes. Tests substitute fakes.
 	hostIPv4Addresses func() ([]netip.Addr, error)
-	ipv4RouteSource   func() (netip.Addr, error)
+	ipv4Routes        func() ([]relayruntime.IPv4Route, error)
 }
 
 func New(cfg Config, events Events) *Engine {

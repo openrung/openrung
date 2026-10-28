@@ -25,8 +25,9 @@ type HostAddress struct {
 }
 
 // ErrHostAddressesUnsupported reports a platform without the read-only
-// address query VerifyAccessAddress needs (everything but Linux).
-var ErrHostAddressesUnsupported = errors.New("listing host interface addresses with their flags is supported on Linux only")
+// address and route queries the access-address checks need (everything but
+// Linux).
+var ErrHostAddressesUnsupported = errors.New("listing host interface addresses with their flags, and routing tables, is supported on Linux only")
 
 // VerifyAccessAddress reports whether addr is usable as the relay's access
 // address among the host's configured addresses: present on an interface,
@@ -53,10 +54,15 @@ func VerifyAccessAddress(addr netip.Addr, configured []HostAddress) error {
 	return fmt.Errorf("%s is not configured on any host interface", addr)
 }
 
-// ipv4RouteProbeTarget is the route-lookup destination for IPv4RouteSource.
-// Nothing is sent to it: connecting a UDP socket only resolves the route and
-// the source address the kernel would use.
-const ipv4RouteProbeTarget = "1.1.1.1:53"
+// IPv4Route is one IPv4 unicast route from any of the host's routing tables,
+// with the fields the IPv4 access-address check reads.
+type IPv4Route struct {
+	Table uint32
+	Dst   netip.Prefix
+	// PrefSrc is the route's preferred source address ("src"), or the zero
+	// Addr when the route names none and the kernel picks one per lookup.
+	PrefSrc netip.Addr
+}
 
 // HostIPv4Addresses lists the IPv4 addresses configured on the host's
 // interfaces.
@@ -74,31 +80,16 @@ func HostIPv4Addresses() ([]netip.Addr, error) {
 	return addresses, nil
 }
 
-// IPv4RouteSource returns the source address the kernel picks for outgoing
-// IPv4 traffic to the internet, by connecting a UDP socket: a route lookup
-// that sends nothing and needs no capability.
-func IPv4RouteSource() (netip.Addr, error) {
-	conn, err := net.Dial("udp4", ipv4RouteProbeTarget)
-	if err != nil {
-		return netip.Addr{}, fmt.Errorf("IPv4 route lookup: %w", err)
-	}
-	defer conn.Close()
-	local, ok := conn.LocalAddr().(*net.UDPAddr)
-	if !ok {
-		return netip.Addr{}, errors.New("IPv4 route lookup returned no source address")
-	}
-	source, _ := netip.AddrFromSlice(local.IP)
-	return source.Unmap(), nil
-}
-
 // VerifyIPv4AccessAddress reports whether addr is usable as the relay's IPv4
-// access address: present on an interface and not the source the kernel uses
-// for outgoing IPv4 (egressSource, from IPv4RouteSource). IPv4 has no
-// deprecated state, so an IPv4 access address is a secondary address the
-// routing table never selects, and the route lookup is what proves the
-// relay's own traffic — registration, heartbeats, client egress — stays on
-// the primary address.
-func VerifyIPv4AccessAddress(addr netip.Addr, configured []netip.Addr, egressSource netip.Addr) error {
+// access address: present on an interface, and never the source of outgoing
+// IPv4. IPv4 has no deprecated state, so the guarantee comes from the routing
+// tables instead: an unbound socket's source is the matching route's
+// preferred source when it names one, and otherwise an address the kernel
+// picks from the interface, which can be the access address. So every
+// unicast route in every table must name a preferred source other than addr.
+// Local and broadcast routes carry no outgoing internet traffic and are not
+// unicast routes, so they are not listed.
+func VerifyIPv4AccessAddress(addr netip.Addr, configured []netip.Addr, routes []IPv4Route) error {
 	present := false
 	for _, candidate := range configured {
 		if candidate == addr {
@@ -106,11 +97,16 @@ func VerifyIPv4AccessAddress(addr netip.Addr, configured []netip.Addr, egressSou
 			break
 		}
 	}
-	switch {
-	case !present:
+	if !present {
 		return fmt.Errorf("%s is not configured on any host interface", addr)
-	case egressSource == addr:
-		return fmt.Errorf("%s is the source address of outgoing IPv4 connections, which must stay on the primary address", addr)
+	}
+	for _, route := range routes {
+		switch {
+		case !route.PrefSrc.IsValid():
+			return fmt.Errorf("the route to %s (table %d) names no preferred source (src), so the kernel may pick %s as the source of outgoing IPv4, which must stay on the primary address", route.Dst, route.Table, addr)
+		case route.PrefSrc == addr:
+			return fmt.Errorf("the route to %s (table %d) uses %s as its source, which must stay on the primary address", route.Dst, route.Table, addr)
+		}
 	}
 	return nil
 }

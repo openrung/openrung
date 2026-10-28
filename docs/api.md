@@ -727,8 +727,8 @@ the answer to a request that arrived over IPv6. The registration response, relay
 reachability probe](#inbound-reachability-probe) and every other surface keep
 `public_host`; only the operator inventory and the admin relays page show the
 access address. The reference relay sends it (`OPENRUNG_ACCESS_HOST`) only after
-confirming the address is configured on a host interface and is not the
-source of the host's outgoing traffic; see `deploy/relay/README.md`.
+confirming the address is configured on a host interface and that the host
+never uses it as the source of outgoing traffic; see `deploy/relay/README.md`.
 
 `access_leases` (optional, default `false`) declares that the relay installs
 broker-issued per-client credentials through the [relay lease

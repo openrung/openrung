@@ -443,18 +443,21 @@ not need to match.
   and whether its re-assert timer is active (`access_reassert=`). Volunteer relays (`volunteer-up.sh`, the desktop app) never set it.
 
   An access address may also be IPv4, typically beside an IPv6
-  `OPENRUNG_PUBLIC_HOST`. IPv4 has no deprecated state, so the host adds it
-  as a secondary address that the routing table never selects as the source
-  of outgoing IPv4 (for example
-  `ip -4 address add <IPv4>/32 dev <interface>` after the primary address,
-  with `ip -4 route get 1.1.1.1` still showing the primary as `src`). Before
-  every registration, and on the same 30-second recheck, the relay confirms
-  the address is on a host interface and that a route lookup for outgoing
-  IPv4 does not pick it as the source; otherwise it logs
-  `not advertising access host …` and registers without it. The broker
-  names an IPv4 access address in every access answer, whatever address
-  family the request arrived over. The listener, mode and public-host rules
-  are the same as for IPv6.
+  `OPENRUNG_PUBLIC_HOST`. IPv4 has no deprecated state, so isolation comes
+  from the routing tables: an outgoing connection takes the matching route's
+  preferred source (`src`), and a route without one lets the kernel pick an
+  interface address, which may be the access address. The host therefore
+  adds it (for example `ip -4 address add <IPv4>/32 dev <interface>`) where
+  every IPv4 unicast route, in every table, names a `src` other than the
+  access address (`ip -4 route show table all type unicast` lists them; DHCP
+  routes from systemd-networkd carry one, a static route needs
+  `src <primary>`). Before every registration, and on the same 30-second
+  recheck, the relay confirms with read-only netlink dumps that the address
+  is on a host interface and that rule holds; otherwise it logs
+  `not advertising access host …` with the offending route and registers
+  without it. The broker names an IPv4 access address in every access
+  answer, whatever address family the request arrived over. The listener,
+  mode and public-host rules are the same as for IPv6.
 
 ## Operations
 

@@ -172,17 +172,17 @@ func TestRegistrationCarriesVerifiedAccessHostOnly(t *testing.T) {
 }
 
 // fakeIPv4Host is a switchable stand-in for the IPv4 interface list and the
-// outgoing route lookup.
+// routing-table dump.
 type fakeIPv4Host struct {
 	mu        sync.Mutex
 	addresses []netip.Addr
-	source    netip.Addr
+	routes    []relayruntime.IPv4Route
 }
 
-func (f *fakeIPv4Host) set(addresses []netip.Addr, source netip.Addr) {
+func (f *fakeIPv4Host) set(addresses []netip.Addr, routes []relayruntime.IPv4Route) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.addresses, f.source = addresses, source
+	f.addresses, f.routes = addresses, routes
 }
 
 func (f *fakeIPv4Host) list() ([]netip.Addr, error) {
@@ -191,18 +191,15 @@ func (f *fakeIPv4Host) list() ([]netip.Addr, error) {
 	return f.addresses, nil
 }
 
-func (f *fakeIPv4Host) routeSource() (netip.Addr, error) {
+func (f *fakeIPv4Host) routeTable() ([]relayruntime.IPv4Route, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if !f.source.IsValid() {
-		return netip.Addr{}, errors.New("network is unreachable")
-	}
-	return f.source, nil
+	return f.routes, nil
 }
 
 // An IPv4 access address beside an IPv6 public host is advertised only while
-// it is on an interface and is not the kernel's source for outgoing IPv4; the
-// IPv6 address flags are never consulted for it.
+// it is on an interface and no route, for any destination, would make it the
+// source of outgoing IPv4; the IPv6 address flags are never consulted for it.
 func TestRegistrationCarriesVerifiedIPv4AccessHostOnly(t *testing.T) {
 	prev := accessRecheckInterval
 	accessRecheckInterval = 40 * time.Millisecond
@@ -225,10 +222,16 @@ func TestRegistrationCarriesVerifiedIPv4AccessHostOnly(t *testing.T) {
 	}, Events{Log: log})
 	eng.cfg.HeartbeatInterval = time.Hour // only the access recheck re-registers
 	primary, access := netip.MustParseAddr("203.0.113.7"), netip.MustParseAddr(testIPv4AccessHost)
+	addresses := []netip.Addr{primary, access}
+	route := func(dst string, src netip.Addr) relayruntime.IPv4Route {
+		return relayruntime.IPv4Route{Table: 254, Dst: netip.MustParsePrefix(dst), PrefSrc: src}
+	}
+	isolated := []relayruntime.IPv4Route{route("0.0.0.0/0", primary), route("172.31.1.1/32", primary)}
 	host := &fakeIPv4Host{}
-	// Present, but the kernel would source outgoing IPv4 from it.
-	host.set([]netip.Addr{access, primary}, access)
-	eng.hostIPv4Addresses, eng.ipv4RouteSource = host.list, host.routeSource
+	// The default route uses the primary, but one destination is sourced
+	// from the access address.
+	host.set(addresses, append(append([]relayruntime.IPv4Route(nil), isolated...), route("192.0.2.0/24", access)))
+	eng.hostIPv4Addresses, eng.ipv4Routes = host.list, host.routeTable
 	eng.hostAddresses = func() ([]relayruntime.HostAddress, error) {
 		t.Error("IPv6 address flags queried for an IPv4 access host")
 		return nil, nil
@@ -247,15 +250,15 @@ func TestRegistrationCarriesVerifiedIPv4AccessHostOnly(t *testing.T) {
 		return registers == 1
 	})
 	if _, _, first := broker.stats(); first.AccessHost != "" {
-		t.Fatalf("egress-source access host was advertised: %q", first.AccessHost)
+		t.Fatalf("access host advertised although a route sources from it: %q", first.AccessHost)
 	}
 	if !strings.Contains(log.String(), "not advertising access host "+testIPv4AccessHost) ||
-		!strings.Contains(log.String(), "source address of outgoing IPv4") {
+		!strings.Contains(log.String(), "route to 192.0.2.0/24 (table 254) uses "+testIPv4AccessHost) {
 		t.Fatalf("missing refusal log line; log:\n%s", log.String())
 	}
 
-	// The operator moves egress back to the primary address.
-	host.set([]netip.Addr{primary, access}, primary)
+	// The operator removes that route; every route now names the primary.
+	host.set(addresses, isolated)
 	eventually(t, 5*time.Second, "advertised", func() bool {
 		registers, _, last := broker.stats()
 		return registers == 2 && last.AccessHost == testIPv4AccessHost
@@ -268,20 +271,21 @@ func TestRegistrationCarriesVerifiedIPv4AccessHostOnly(t *testing.T) {
 		t.Fatalf("identity proof with an IPv4 access_host does not verify: %v", err)
 	}
 
-	// No IPv4 route at all withdraws it: egress cannot be confirmed.
-	host.set([]netip.Addr{primary, access}, netip.Addr{})
-	eventually(t, 5*time.Second, "withdrawn without a route", func() bool {
+	// A route without a preferred source withdraws it: the kernel may pick
+	// the access address for that destination.
+	host.set(addresses, append(append([]relayruntime.IPv4Route(nil), isolated...), route("198.18.0.0/15", netip.Addr{})))
+	eventually(t, 5*time.Second, "withdrawn for a route without src", func() bool {
 		registers, _, last := broker.stats()
 		return registers == 3 && last.AccessHost == ""
 	})
 
 	// Restored, then the address leaves the interface.
-	host.set([]netip.Addr{primary, access}, primary)
+	host.set(addresses, isolated)
 	eventually(t, 5*time.Second, "restored", func() bool {
 		registers, _, last := broker.stats()
 		return registers == 4 && last.AccessHost == testIPv4AccessHost
 	})
-	host.set([]netip.Addr{primary}, primary)
+	host.set([]netip.Addr{primary}, isolated)
 	eventually(t, 5*time.Second, "withdrawn when absent", func() bool {
 		registers, _, last := broker.stats()
 		return registers == 5 && last.AccessHost == ""

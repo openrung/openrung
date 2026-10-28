@@ -9,3 +9,8 @@ package relayruntime
 func HostIPv6Addresses() ([]HostAddress, error) {
 	return nil, ErrHostAddressesUnsupported
 }
+
+// HostIPv4UnicastRoutes is unsupported off Linux, like HostIPv6Addresses.
+func HostIPv4UnicastRoutes() ([]IPv4Route, error) {
+	return nil, ErrHostAddressesUnsupported
+}

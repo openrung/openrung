@@ -78,3 +78,63 @@ func parseIPv6AddressMessages(messages []syscall.NetlinkMessage) ([]HostAddress,
 	}
 	return addresses, nil
 }
+
+// HostIPv4UnicastRoutes lists the unicast routes of every IPv4 routing table
+// with one RTM_GETROUTE netlink dump, which is read-only and unprivileged
+// like the address dump.
+func HostIPv4UnicastRoutes() ([]IPv4Route, error) {
+	rib, err := syscall.NetlinkRIB(syscall.RTM_GETROUTE, syscall.AF_INET)
+	if err != nil {
+		return nil, fmt.Errorf("netlink route dump: %w", err)
+	}
+	messages, err := syscall.ParseNetlinkMessage(rib)
+	if err != nil {
+		return nil, fmt.Errorf("parse netlink route dump: %w", err)
+	}
+	return parseIPv4RouteMessages(messages)
+}
+
+func parseIPv4RouteMessages(messages []syscall.NetlinkMessage) ([]IPv4Route, error) {
+	var routes []IPv4Route
+	for i := range messages {
+		message := &messages[i]
+		if message.Header.Type == syscall.NLMSG_DONE {
+			break
+		}
+		if message.Header.Type != syscall.RTM_NEWROUTE || len(message.Data) < syscall.SizeofRtMsg {
+			continue
+		}
+		// struct rtmsg: family, dst_len, src_len, tos, table, protocol,
+		// scope, type (one byte each), then the flags.
+		if message.Data[0] != syscall.AF_INET || message.Data[7] != syscall.RTN_UNICAST {
+			continue
+		}
+		dstLen := int(message.Data[1])
+		route := IPv4Route{Table: uint32(message.Data[4])}
+		dst := netip.IPv4Unspecified()
+		attributes, err := syscall.ParseNetlinkRouteAttr(message)
+		if err != nil {
+			return nil, fmt.Errorf("parse netlink route attributes: %w", err)
+		}
+		for _, attribute := range attributes {
+			switch attribute.Attr.Type {
+			case syscall.RTA_DST:
+				if parsed, ok := netip.AddrFromSlice(attribute.Value); ok {
+					dst = parsed
+				}
+			case syscall.RTA_PREFSRC:
+				if parsed, ok := netip.AddrFromSlice(attribute.Value); ok {
+					route.PrefSrc = parsed
+				}
+			case syscall.RTA_TABLE:
+				// The full table ID; rtm_table holds only eight bits.
+				if len(attribute.Value) >= 4 {
+					route.Table = binary.NativeEndian.Uint32(attribute.Value)
+				}
+			}
+		}
+		route.Dst = netip.PrefixFrom(dst, dstLen)
+		routes = append(routes, route)
+	}
+	return routes, nil
+}
