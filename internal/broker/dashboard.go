@@ -70,6 +70,9 @@ type dashboardServer struct {
 	// set; nil (only in tests that never exercise that page) renders every
 	// relay as offline.
 	relayDirectory relayDirectoryLister
+	// withholdUnreachable is the public list's reachability policy (probing
+	// enabled), so the relays page's lead shares match what clients get.
+	withholdUnreachable bool
 	// relayWeights backs the relays page's weight mutation endpoints; nil
 	// (only in tests that never touch them) answers them with 503. The
 	// column itself is fed by relayDirectory's ListRanked.

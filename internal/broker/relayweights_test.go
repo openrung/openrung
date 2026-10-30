@@ -384,7 +384,7 @@ func TestBuildRelaysPanelCarriesRankingWeights(t *testing.T) {
 		{ID: "relay-plain", NodeClass: relay.NodeClassVolunteer, PublicHost: "203.0.113.6", PublicPort: 443, MaxSessions: 100},
 	}
 	stats := relayTelemetryStats{Relays: []relayStatRow{{RelayID: "relay-gone", NodeClass: relay.NodeClassVolunteer, Failures: 1, LastSeenAt: now}}}
-	panel := buildRelaysPanel(descriptors, stats, RankingInputs{Weights: map[string]float64{"relay-online": 0.5, "relay-gone": 0}}, now, time.Hour)
+	panel := buildRelaysPanel(descriptors, stats, RankingInputs{Weights: map[string]float64{"relay-online": 0.5, "relay-gone": 0}}, false, now, time.Hour)
 	got := make(map[string]float64, len(panel.Relays))
 	for _, row := range panel.Relays {
 		got[row.RelayID] = row.RankingWeight

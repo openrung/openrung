@@ -222,11 +222,12 @@ type relayRanking struct {
 // rankRelays computes relayRanking for every relay in relays. Under weighted
 // sampling without replacement a relay is drawn first with probability equal
 // to its share of the total selection weight, so HeadShare is that share among
-// the relays the public list would carry: a relay withheld by a failed
+// the relays the public list would carry: when withholdUnreachable (probing
+// enabled, the public handler's own policy) a relay withheld by a failed
 // reachability probe gets 0 and is left out of the total. HeadShare ignores
 // the WSS reservation and the access answer's per-country candidate sets, so
 // it describes the public list, not every page.
-func rankRelays(relays []relay.Descriptor, inputs RankingInputs) map[string]relayRanking {
+func rankRelays(relays []relay.Descriptor, inputs RankingInputs, withholdUnreachable bool) map[string]relayRanking {
 	rankings := make(map[string]relayRanking, len(relays))
 	var total float64
 	for _, desc := range relays {
@@ -241,14 +242,14 @@ func rankRelays(relays []relay.Descriptor, inputs RankingInputs) map[string]rela
 			OverCapacityPenalty: parts.OverCapacityPenalty,
 			SelectionWeight:     relaySelectionWeight(score, rankingWeightFor(inputs.Weights, desc.ID)),
 		}
-		if !relayUnreachable(desc) {
+		if !withholdUnreachable || !relayUnreachable(desc) {
 			total += ranking.SelectionWeight
 		}
 		rankings[desc.ID] = ranking
 	}
 	if total > 0 {
 		for _, desc := range relays {
-			if relayUnreachable(desc) {
+			if withholdUnreachable && relayUnreachable(desc) {
 				continue
 			}
 			ranking := rankings[desc.ID]

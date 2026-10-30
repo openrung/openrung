@@ -354,8 +354,8 @@ type relayPanelRow struct {
 // crashed or expired relay stays visible for the retention window. An online
 // row's broker-attested descriptor class is authoritative; offline rows keep
 // the class retained with their telemetry.
-func buildRelaysPanel(descriptors []relay.Descriptor, stats relayTelemetryStats, inputs RankingInputs, now time.Time, window time.Duration) relaysPanelResponse {
-	rankings := rankRelays(descriptors, inputs)
+func buildRelaysPanel(descriptors []relay.Descriptor, stats relayTelemetryStats, inputs RankingInputs, withholdUnreachable bool, now time.Time, window time.Duration) relaysPanelResponse {
+	rankings := rankRelays(descriptors, inputs, withholdUnreachable)
 	response := relaysPanelResponse{GeneratedAt: now, Window: window.String(), Relays: []relayPanelRow{}}
 	statRows := make(map[string]relayStatRow, len(stats.Relays))
 	for _, row := range stats.Relays {
@@ -521,7 +521,7 @@ func (d *dashboardServer) relaysPanel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not build relay stats")
 		return
 	}
-	writeJSON(w, http.StatusOK, buildRelaysPanel(descriptors, stats, ranking, now, window))
+	writeJSON(w, http.StatusOK, buildRelaysPanel(descriptors, stats, ranking, d.withholdUnreachable, now, window))
 }
 
 func rankingPointer(rankings map[string]relayRanking, relayID string) *relayRanking {

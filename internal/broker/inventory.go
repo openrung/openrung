@@ -45,7 +45,9 @@ const (
 // holding the operational API token. The route is only registered when that
 // token is configured (see NewServer), so an unconfigured broker answers 404
 // rather than exposing the endpoint in an open state.
-func relayInventoryHandler(store RelayStore, apiToken string, s signer) http.HandlerFunc {
+// withholdUnreachable is the public list's reachability policy (probing
+// enabled), so head shares describe the list clients actually get.
+func relayInventoryHandler(store RelayStore, apiToken string, s signer, withholdUnreachable bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// A credentialed snapshot of live fleet state: no browser, proxy, or
 		// CDN edge may retain any part of it. Set before anything else so the
@@ -99,7 +101,7 @@ func relayInventoryHandler(store RelayStore, apiToken string, s signer) http.Han
 			Channel:    normalized.Channel,
 			// No limit field: the inventory is not request-shaped and is never
 			// truncated, so there is nothing to echo.
-			Relays: decorateInventory(normalized.Relays, ranking),
+			Relays: decorateInventory(normalized.Relays, ranking, withholdUnreachable),
 		})
 	}
 }
@@ -176,9 +178,9 @@ func (d inventoryDescriptor) MarshalJSON() ([]byte, error) {
 	return append(body, state[1:]...), nil
 }
 
-func decorateInventory(relays []relay.Descriptor, inputs RankingInputs) []inventoryDescriptor {
+func decorateInventory(relays []relay.Descriptor, inputs RankingInputs, withholdUnreachable bool) []inventoryDescriptor {
 	// Keep the wire shape an array for an empty fleet, like every signed channel.
-	rankings := rankRelays(relays, inputs)
+	rankings := rankRelays(relays, inputs, withholdUnreachable)
 	decorated := make([]inventoryDescriptor, len(relays))
 	for i, desc := range relays {
 		decorated[i] = inventoryDescriptor{Descriptor: desc, RankingWeight: rankingWeightFor(inputs.Weights, desc.ID), Ranking: rankings[desc.ID]}

@@ -221,7 +221,7 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 		operational := func(next http.HandlerFunc) http.HandlerFunc {
 			return rateLimited(operationalLimiter, clientIP, inventoryRetryAfterSeconds, next)
 		}
-		mux.HandleFunc("/admin/api/relays/inventory", operational(relayInventoryHandler(store, cfg.APIToken, relaySigner)))
+		mux.HandleFunc("/admin/api/relays/inventory", operational(relayInventoryHandler(store, cfg.APIToken, relaySigner, cfg.RelayProber != nil)))
 		mux.HandleFunc("/admin/api/relays/weights", operational(relayWeightsListHandler(store, cfg.APIToken)))
 		mux.HandleFunc("/admin/api/relays/{id}/weight", operational(relayWeightHandler(store, cfg.APIToken, clientIP.clientIP)))
 		if users != nil {
@@ -262,6 +262,7 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 		dashboard.version, dashboard.revision = cfg.Version, cfg.Revision
 		dashboard.relayDisplays = relayDisplayResolver(store)
 		dashboard.relayDirectory = store
+		dashboard.withholdUnreachable = cfg.RelayProber != nil
 		dashboard.relayWeights = store
 		dashboard.clientIP = clientIP.clientIP
 		// The users page follows the operational user routes: it exists

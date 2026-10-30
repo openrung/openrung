@@ -624,7 +624,7 @@ ranking each relay with, computed on read from the same snapshot the
 | `speed` | Average speed-test throughput over `max_mbps`; 0.5 without data. |
 | `over_capacity_penalty` | Up to 0.04 once active sessions exceed `max_sessions`. |
 | `selection_weight` | `score`¹² × `ranking_weight`: the weight the sampler draws with. |
-| `head_share` | The relay's share of the total `selection_weight` — its chance of heading a public relay-list response. Relays withheld by a failed reachability probe have `0` and are left out of the total. |
+| `head_share` | The relay's share of the total `selection_weight` — its chance of heading a public relay-list response. With reachability probing enabled, relays withheld by a failed probe have `0` and are left out of the total, matching the public list. |
 
 `head_share` describes the public list only: it ignores the WSS reservation
 and the access answer's per-country candidate sets.

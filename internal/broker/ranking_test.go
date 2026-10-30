@@ -268,7 +268,7 @@ func TestRankRelaysBreaksDownScoreAndHeadShare(t *testing.T) {
 		},
 	}
 
-	rankings := rankRelays(relays, inputs)
+	rankings := rankRelays(relays, inputs, true)
 
 	a := rankings["relay-a"]
 	parts := relayScoreBreakdown(relays[0], inputs.Snapshots["relay-a"])
@@ -296,9 +296,25 @@ func TestRankRelaysBreaksDownScoreAndHeadShare(t *testing.T) {
 func TestRankRelaysAllZeroWeightsHaveNoHeadShare(t *testing.T) {
 	relays := []relay.Descriptor{{ID: "relay-a"}, {ID: "relay-b"}}
 	inputs := RankingInputs{Weights: map[string]float64{"relay-a": 0, "relay-b": 0}}
-	for id, ranking := range rankRelays(relays, inputs) {
+	for id, ranking := range rankRelays(relays, inputs, true) {
 		if ranking.HeadShare != 0 || math.IsNaN(ranking.HeadShare) {
 			t.Fatalf("%s head share = %v, want 0", id, ranking.HeadShare)
+		}
+	}
+}
+
+// With probing disabled the public list keeps relays whose stored probe
+// failed, so their lead share must count too.
+func TestRankRelaysHonoursDisabledProbing(t *testing.T) {
+	now := time.Now().UTC()
+	relays := []relay.Descriptor{
+		{ID: "relay-a", MaxSessions: 8},
+		{ID: "relay-stale-failure", MaxSessions: 8, ReachabilityCheckedAt: now},
+	}
+	rankings := rankRelays(relays, RankingInputs{}, false)
+	for _, id := range []string{"relay-a", "relay-stale-failure"} {
+		if got := rankings[id].HeadShare; math.Abs(got-0.5) > 1e-12 {
+			t.Errorf("%s head_share = %v, want 0.5 with probing disabled", id, got)
 		}
 	}
 }

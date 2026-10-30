@@ -82,7 +82,7 @@ func TestRegisterStoresAccessHostPrivately(t *testing.T) {
 		t.Fatalf("access host appears %d times in the inventory: %s", count, inventory.Body.String())
 	}
 
-	panel := buildRelaysPanel(listed, relayTelemetryStats{}, RankingInputs{}, now, time.Hour)
+	panel := buildRelaysPanel(listed, relayTelemetryStats{}, RankingInputs{}, false, now, time.Hour)
 	if len(panel.Relays) != 1 || panel.Relays[0].AccessHost != testAccessHost || panel.Relays[0].Endpoint != "203.0.113.7:443" {
 		t.Fatalf("relays panel = %+v, want endpoint 203.0.113.7:443 with access host %q", panel.Relays, testAccessHost)
 	}
