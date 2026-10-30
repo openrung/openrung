@@ -63,10 +63,11 @@ type RelayStore interface {
 	// descriptor. See reachability.go.
 	UpdateReachability(id, leaseToken string, reachable bool, checkedAt time.Time) error
 	List(time.Time, int) ([]relay.Descriptor, error)
-	// ListRanked is List plus the operator ranking weights the ranking applied,
-	// so page-shaping steps after the sort (the WSS reservation) and the
-	// operator views can honour the same weights without a second read.
-	ListRanked(time.Time, int) ([]relay.Descriptor, map[string]float64, error)
+	// ListRanked is List plus the ranking inputs the sort applied (telemetry
+	// snapshots and operator weights), so page-shaping steps after the sort
+	// (the WSS reservation) and the operator views agree with the order
+	// without a second read.
+	ListRanked(time.Time, int) ([]relay.Descriptor, RankingInputs, error)
 	// RelayByID resolves one currently active descriptor for relay-bound ticket
 	// issuance. It must never return an expired row.
 	RelayByID(string, time.Time) (relay.Descriptor, error)
@@ -323,7 +324,7 @@ func (s *Store) List(now time.Time, limit int) ([]relay.Descriptor, error) {
 	return relays, err
 }
 
-func (s *Store) ListRanked(now time.Time, limit int) ([]relay.Descriptor, map[string]float64, error) {
+func (s *Store) ListRanked(now time.Time, limit int) ([]relay.Descriptor, RankingInputs, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -336,12 +337,13 @@ func (s *Store) ListRanked(now time.Time, limit int) ([]relay.Descriptor, map[st
 
 	snapshots, weights := s.metricSnapshotsLocked(now)
 	sortRelayCandidates(relays, snapshots, weights, rankingUniform)
+	inputs := RankingInputs{Weights: weights, Snapshots: snapshots}
 
 	if limit > 0 && len(relays) > limit {
-		return relays[:limit], weights, nil
+		return relays[:limit], inputs, nil
 	}
 
-	return relays, weights, nil
+	return relays, inputs, nil
 }
 
 func (s *Store) RelayByID(id string, now time.Time) (relay.Descriptor, error) {

@@ -501,7 +501,8 @@ minutes, so a stale inventory describes a fleet that no longer exists.
 The relay objects are the public directory descriptors plus operator-only
 keys: `ranking_weight` — the effective ranking weight the broker is applying to
 that relay right now (`1` unless an override is stored; see
-[Relay ranking weights](#relay-ranking-weights)) — and the latest [inbound
+[Relay ranking weights](#relay-ranking-weights)) — `ranking` (see
+[Ranking breakdown](#ranking-breakdown)), and the latest [inbound
 reachability probe](#inbound-reachability-probe): `reachable` is `null` until
 the broker has probed the relay (tunnel transport, probing off, or not yet),
 otherwise `true` or `false`, with `reachability_checked_at` giving the probe
@@ -525,7 +526,7 @@ Response:
   "key_id": "3097e2dee2cb4a34",
   "channel": "inventory",
   "relays": [
-    { "id": "relay_0a1b...", "public_host": "203.0.113.7", "public_port": 443, "node_class": "foundation", "...": "...", "ranking_weight": 1, "reachable": true, "reachability_checked_at": "2026-06-09T06:58:00Z", "operator_contact": "ops@example.org", "access_host": "2001:db8:1::10" }
+    { "id": "relay_0a1b...", "public_host": "203.0.113.7", "public_port": 443, "node_class": "foundation", "...": "...", "ranking_weight": 1, "ranking": { "score": 0.81, "reliability": 0.9, "headroom": 0.75, "latency": 0.8, "speed": 0.5, "over_capacity_penalty": 0, "selection_weight": 0.0798, "head_share": 0.31 }, "reachable": true, "reachability_checked_at": "2026-06-09T06:58:00Z", "operator_contact": "ops@example.org", "access_host": "2001:db8:1::10" }
   ]
 }
 ```
@@ -605,7 +606,28 @@ metadata is used first because a CDN front rewrites `Host` to the origin
 hostname, which would make the `Origin` comparison refuse every legitimate
 request through the front. Together with the cookie's `SameSite=Strict` this
 keeps a visited page from moving the dial. Each row of `GET /admin/api/dashboard/relays` carries the
-relay's effective `ranking_weight`, offline rows included.
+relay's effective `ranking_weight`, offline rows included, and online rows
+also carry `ranking` (see [Ranking breakdown](#ranking-breakdown)).
+
+### Ranking breakdown
+
+The inventory and the dashboard relays rows expose the inputs the broker is
+ranking each relay with, computed on read from the same snapshot the
+[relay list](#list-relays) sorts with; nothing is stored. `ranking` holds:
+
+| Key | Meaning |
+| --- | --- |
+| `score` | Telemetry score in `[0, 1]`: 0.5 × `reliability` + 0.2 × `headroom` + 0.2 × `latency` + 0.1 × `speed` − `over_capacity_penalty`. |
+| `reliability` | (successes + 1) / (successes + failures + 2) over the last 30 minutes. |
+| `headroom` | Free share of `max_sessions` (0.5 when the relay advertises none). |
+| `latency` | 1 at 100 ms average client latency, falling to 0 at 2000 ms; 0.5 without data. |
+| `speed` | Average speed-test throughput over `max_mbps`; 0.5 without data. |
+| `over_capacity_penalty` | Up to 0.04 once active sessions exceed `max_sessions`. |
+| `selection_weight` | `score`¹² × `ranking_weight`: the weight the sampler draws with. |
+| `head_share` | The relay's share of the total `selection_weight` — its chance of heading a public relay-list response. Relays withheld by a failed reachability probe have `0` and are left out of the total. |
+
+`head_share` describes the public list only: it ignores the WSS reservation
+and the access answer's per-country candidate sets.
 
 ## Health
 

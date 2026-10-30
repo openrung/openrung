@@ -631,13 +631,13 @@ func (s *PostgresStore) List(now time.Time, limit int) ([]relay.Descriptor, erro
 	return relays, err
 }
 
-func (s *PostgresStore) ListRanked(now time.Time, limit int) ([]relay.Descriptor, map[string]float64, error) {
+func (s *PostgresStore) ListRanked(now time.Time, limit int) ([]relay.Descriptor, RankingInputs, error) {
 	ctx, cancel := postgresOperationContext()
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx, `SELECT `+descriptorColumns+` FROM relay_descriptors WHERE expires_at > $1`, now)
 	if err != nil {
-		return nil, nil, err
+		return nil, RankingInputs{}, err
 	}
 	defer rows.Close()
 
@@ -645,23 +645,24 @@ func (s *PostgresStore) ListRanked(now time.Time, limit int) ([]relay.Descriptor
 	for rows.Next() {
 		desc, err := scanDescriptor(rows)
 		if err != nil {
-			return nil, nil, err
+			return nil, RankingInputs{}, err
 		}
 		relays = append(relays, desc)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, err
+		return nil, RankingInputs{}, err
 	}
 
 	snapshots, weights, err := s.metricSnapshots(ctx, now)
 	if err != nil {
-		return nil, nil, err
+		return nil, RankingInputs{}, err
 	}
 	sortRelayCandidates(relays, snapshots, weights, rankingUniform)
+	inputs := RankingInputs{Weights: weights, Snapshots: snapshots}
 	if limit > 0 && len(relays) > limit {
-		return relays[:limit], weights, nil
+		return relays[:limit], inputs, nil
 	}
-	return relays, weights, nil
+	return relays, inputs, nil
 }
 
 func (s *PostgresStore) RelayByID(id string, now time.Time) (relay.Descriptor, error) {

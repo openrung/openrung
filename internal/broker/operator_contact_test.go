@@ -81,7 +81,7 @@ func TestRegisterStoresOperatorContactPrivately(t *testing.T) {
 		t.Fatalf("inventory operator contact = %+v, want %q", envelope.Relays, testOperatorContact)
 	}
 
-	panel := buildRelaysPanel([]relay.Descriptor{stored}, relayTelemetryStats{}, nil, time.Now().UTC(), time.Hour)
+	panel := buildRelaysPanel([]relay.Descriptor{stored}, relayTelemetryStats{}, RankingInputs{}, time.Now().UTC(), time.Hour)
 	if len(panel.Relays) != 1 || panel.Relays[0].OperatorContact != testOperatorContact {
 		t.Fatalf("relays panel operator contact = %+v, want %q", panel.Relays, testOperatorContact)
 	}

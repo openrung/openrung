@@ -564,13 +564,13 @@ func listRelaysHandler(store RelayStore, telemetrySink TelemetrySink, clientIP *
 		// Ask both stores for the ranked set, then reserve one already-advertised
 		// per-relay WSS-capable Foundation descriptor in a short page. This never
 		// attaches a shared URL or changes ordering when the page already has one.
-		relays, weights, err := store.ListRanked(now, 0)
+		relays, ranking, err := store.ListRanked(now, 0)
 		if err != nil {
 			slog.Error("could not list relays", "error", err)
 			writeError(w, http.StatusServiceUnavailable, "could not list relays")
 			return
 		}
-		relays = reserveWSSCandidate(withoutUnreachable(relays, withholdUnreachable), limit, weights)
+		relays = reserveWSSCandidate(withoutUnreachable(relays, withholdUnreachable), limit, ranking.Weights)
 		s.writeSigned(w, relay.ListResponse{
 			Count:      len(relays),
 			ServerTime: now,

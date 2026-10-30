@@ -284,13 +284,13 @@ func (h *clientAccessHandler) handler() http.HandlerFunc {
 			return
 		}
 
-		relays, weights, err := h.store.ListRanked(now, 0)
+		relays, ranking, err := h.store.ListRanked(now, 0)
 		if err != nil {
 			slog.Error("could not list relays for access", "error", err)
 			writeError(w, http.StatusServiceUnavailable, "could not list relays")
 			return
 		}
-		page := reserveWSSCandidate(accessCandidates(withoutUnreachable(relays, h.withholdUnreachable), relayID, country), limit, weights)
+		page := reserveWSSCandidate(accessCandidates(withoutUnreachable(relays, h.withholdUnreachable), relayID, country), limit, ranking.Weights)
 		if len(page) == 0 || (relayID != "" && !relay.WellFormedRelayID(relayID)) {
 			h.writeAccess(w, now, nil, time.Time{})
 			return

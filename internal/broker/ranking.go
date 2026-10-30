@@ -158,23 +158,105 @@ func rankingWeightFor(weights map[string]float64, relayID string) float64 {
 // relayScore is the telemetry-driven candidate score in [0, 1]. The operator's
 // ranking weight is applied separately, in relaySelectionWeight.
 func relayScore(desc relay.Descriptor, snapshot RelayMetricsSnapshot) float64 {
+	return relayScoreBreakdown(desc, snapshot).score()
+}
+
+// relayScoreParts are relayScore's inputs, each in [0, 1] before its ranking
+// weight is applied, plus the over-capacity penalty subtracted at the end.
+type relayScoreParts struct {
+	Reliability         float64
+	Headroom            float64
+	Latency             float64
+	Speed               float64
+	OverCapacityPenalty float64
+}
+
+func relayScoreBreakdown(desc relay.Descriptor, snapshot RelayMetricsSnapshot) relayScoreParts {
 	headroom := 0.5
 	if desc.MaxSessions > 0 {
 		headroom = clamp01(float64(desc.MaxSessions-snapshot.ActiveSessions) / float64(desc.MaxSessions))
 	}
+	return relayScoreParts{
+		Reliability:         float64(snapshot.Successes+1) / float64(snapshot.Successes+snapshot.Failures+2),
+		Headroom:            headroom,
+		Latency:             observedLatencyScore(snapshot),
+		Speed:               observedSpeedScore(desc, snapshot),
+		OverCapacityPenalty: overCapacityPenalty(desc, snapshot),
+	}
+}
 
-	successRate := float64(snapshot.Successes+1) / float64(snapshot.Successes+snapshot.Failures+2)
-	latencyScore := observedLatencyScore(snapshot)
-	speedScore := observedSpeedScore(desc, snapshot)
-
+func (p relayScoreParts) score() float64 {
 	// Headroom declines continuously to zero at capacity. Beyond capacity, keep
 	// a small gradient rather than the old threshold multiplier: the bounded
 	// penalty supplies back-pressure without letting load dominate reliability.
-	score := rankingReliabilityWeight*successRate +
-		rankingHeadroomWeight*headroom +
-		rankingLatencyWeight*latencyScore +
-		rankingSpeedWeight*speedScore
-	return clamp01(score - overCapacityPenalty(desc, snapshot))
+	score := rankingReliabilityWeight*p.Reliability +
+		rankingHeadroomWeight*p.Headroom +
+		rankingLatencyWeight*p.Latency +
+		rankingSpeedWeight*p.Speed
+	return clamp01(score - p.OverCapacityPenalty)
+}
+
+// RankingInputs is what ListRanked sorted with: the 30-minute telemetry
+// snapshot per relay ID (absent for a relay without telemetry) and the
+// operator ranking-weight overrides. Page-shaping steps after the sort and the
+// operator views read them so they agree with the order without a second read.
+type RankingInputs struct {
+	Weights   map[string]float64
+	Snapshots map[string]RelayMetricsSnapshot
+}
+
+// relayRanking is the operator view of one relay's place in the ranking: the
+// telemetry score and its parts, the selection weight the sampler draws with,
+// and HeadShare, the chance the relay heads a public relay-list response.
+type relayRanking struct {
+	Score               float64 `json:"score"`
+	Reliability         float64 `json:"reliability"`
+	Headroom            float64 `json:"headroom"`
+	Latency             float64 `json:"latency"`
+	Speed               float64 `json:"speed"`
+	OverCapacityPenalty float64 `json:"over_capacity_penalty"`
+	SelectionWeight     float64 `json:"selection_weight"`
+	HeadShare           float64 `json:"head_share"`
+}
+
+// rankRelays computes relayRanking for every relay in relays. Under weighted
+// sampling without replacement a relay is drawn first with probability equal
+// to its share of the total selection weight, so HeadShare is that share among
+// the relays the public list would carry: a relay withheld by a failed
+// reachability probe gets 0 and is left out of the total. HeadShare ignores
+// the WSS reservation and the access answer's per-country candidate sets, so
+// it describes the public list, not every page.
+func rankRelays(relays []relay.Descriptor, inputs RankingInputs) map[string]relayRanking {
+	rankings := make(map[string]relayRanking, len(relays))
+	var total float64
+	for _, desc := range relays {
+		parts := relayScoreBreakdown(desc, inputs.Snapshots[desc.ID])
+		score := parts.score()
+		ranking := relayRanking{
+			Score:               score,
+			Reliability:         parts.Reliability,
+			Headroom:            parts.Headroom,
+			Latency:             parts.Latency,
+			Speed:               parts.Speed,
+			OverCapacityPenalty: parts.OverCapacityPenalty,
+			SelectionWeight:     relaySelectionWeight(score, rankingWeightFor(inputs.Weights, desc.ID)),
+		}
+		if !relayUnreachable(desc) {
+			total += ranking.SelectionWeight
+		}
+		rankings[desc.ID] = ranking
+	}
+	if total > 0 {
+		for _, desc := range relays {
+			if relayUnreachable(desc) {
+				continue
+			}
+			ranking := rankings[desc.ID]
+			ranking.HeadShare = ranking.SelectionWeight / total
+			rankings[desc.ID] = ranking
+		}
+	}
+	return rankings
 }
 
 func overCapacityPenalty(desc relay.Descriptor, snapshot RelayMetricsSnapshot) float64 {

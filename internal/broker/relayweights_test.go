@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -367,7 +368,7 @@ func TestDashboardRelayWeightEndpoints(t *testing.T) {
 
 	// The page carries the control the endpoints serve.
 	page := do(http.MethodGet, "/admin/dashboard/relays", "", nil)
-	for _, needle := range []string{"<th>Weight</th>", "weight-save", "weight-reset", "/admin/api/dashboard/relays/", "ranking_weight"} {
+	for _, needle := range []string{"<th>Weight</th>", "Lead share", "weight-save", "weight-reset", "/admin/api/dashboard/relays/", "ranking_weight"} {
 		if !strings.Contains(page.Body.String(), needle) {
 			t.Errorf("relays page lacks %q", needle)
 		}
@@ -383,7 +384,7 @@ func TestBuildRelaysPanelCarriesRankingWeights(t *testing.T) {
 		{ID: "relay-plain", NodeClass: relay.NodeClassVolunteer, PublicHost: "203.0.113.6", PublicPort: 443, MaxSessions: 100},
 	}
 	stats := relayTelemetryStats{Relays: []relayStatRow{{RelayID: "relay-gone", NodeClass: relay.NodeClassVolunteer, Failures: 1, LastSeenAt: now}}}
-	panel := buildRelaysPanel(descriptors, stats, map[string]float64{"relay-online": 0.5, "relay-gone": 0}, now, time.Hour)
+	panel := buildRelaysPanel(descriptors, stats, RankingInputs{Weights: map[string]float64{"relay-online": 0.5, "relay-gone": 0}}, now, time.Hour)
 	got := make(map[string]float64, len(panel.Relays))
 	for _, row := range panel.Relays {
 		got[row.RelayID] = row.RankingWeight
@@ -392,6 +393,19 @@ func TestBuildRelaysPanelCarriesRankingWeights(t *testing.T) {
 	for id, weight := range want {
 		if got[id] != weight {
 			t.Errorf("row %s ranking_weight = %v, want %v", id, got[id], weight)
+		}
+	}
+
+	// Online rows carry the ranking breakdown; the half-weighted relay holds a
+	// third of the lead (0.5 against 1 at equal scores). Offline rows have none.
+	for _, row := range panel.Relays {
+		switch {
+		case row.Online && row.Ranking == nil:
+			t.Errorf("online row %s has no ranking", row.RelayID)
+		case !row.Online && row.Ranking != nil:
+			t.Errorf("offline row %s ranking = %+v, want none", row.RelayID, row.Ranking)
+		case row.RelayID == "relay-online" && math.Abs(row.Ranking.HeadShare-1.0/3) > 1e-12:
+			t.Errorf("relay-online head_share = %v, want 1/3", row.Ranking.HeadShare)
 		}
 	}
 }

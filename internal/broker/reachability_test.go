@@ -636,7 +636,7 @@ func TestRelaysPanelReportsUnreachableRelays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	panel := buildRelaysPanel(descriptors, relayTelemetryStats{}, nil, now, time.Hour)
+	panel := buildRelaysPanel(descriptors, relayTelemetryStats{}, RankingInputs{}, now, time.Hour)
 	if panel.Totals.UnreachableRelays != 1 || panel.Totals.OnlineRelays != 3 {
 		t.Fatalf("totals = %+v", panel.Totals)
 	}

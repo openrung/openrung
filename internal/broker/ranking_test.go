@@ -253,3 +253,52 @@ func TestSortRelayCandidatesRankingWeightScalesLeadShare(t *testing.T) {
 		}
 	}
 }
+
+func TestRankRelaysBreaksDownScoreAndHeadShare(t *testing.T) {
+	now := time.Now().UTC()
+	relays := []relay.Descriptor{
+		{ID: "relay-a", MaxSessions: 8, MaxMbps: 20},
+		{ID: "relay-b", MaxSessions: 8, MaxMbps: 20},
+		{ID: "relay-withheld", MaxSessions: 8, MaxMbps: 20, ReachabilityCheckedAt: now},
+	}
+	inputs := RankingInputs{
+		Weights: map[string]float64{"relay-b": 0.5},
+		Snapshots: map[string]RelayMetricsSnapshot{
+			"relay-a": {ActiveSessions: 2, Successes: 8, Failures: 2, TCPMS: metricValue{total: 300, count: 1}},
+		},
+	}
+
+	rankings := rankRelays(relays, inputs)
+
+	a := rankings["relay-a"]
+	parts := relayScoreBreakdown(relays[0], inputs.Snapshots["relay-a"])
+	if a.Score != relayScore(relays[0], inputs.Snapshots["relay-a"]) || a.Reliability != parts.Reliability ||
+		a.Headroom != parts.Headroom || a.Latency != parts.Latency || a.Speed != parts.Speed {
+		t.Fatalf("relay-a ranking %+v does not match its score parts %+v", a, parts)
+	}
+	b := rankings["relay-b"]
+	if want := relaySelectionWeight(b.Score, 0.5); b.SelectionWeight != want {
+		t.Fatalf("relay-b selection weight = %v, want %v (operator weight applied)", b.SelectionWeight, want)
+	}
+
+	withheld := rankings["relay-withheld"]
+	if withheld.SelectionWeight <= 0 || withheld.HeadShare != 0 {
+		t.Fatalf("withheld relay = %+v, want a selection weight but no head share", withheld)
+	}
+	if got := a.HeadShare + b.HeadShare; math.Abs(got-1) > 1e-12 {
+		t.Fatalf("head shares of listed relays sum to %v, want 1", got)
+	}
+	if want := a.SelectionWeight / (a.SelectionWeight + b.SelectionWeight); math.Abs(a.HeadShare-want) > 1e-12 {
+		t.Fatalf("relay-a head share = %v, want %v", a.HeadShare, want)
+	}
+}
+
+func TestRankRelaysAllZeroWeightsHaveNoHeadShare(t *testing.T) {
+	relays := []relay.Descriptor{{ID: "relay-a"}, {ID: "relay-b"}}
+	inputs := RankingInputs{Weights: map[string]float64{"relay-a": 0, "relay-b": 0}}
+	for id, ranking := range rankRelays(relays, inputs) {
+		if ranking.HeadShare != 0 || math.IsNaN(ranking.HeadShare) {
+			t.Fatalf("%s head share = %v, want 0", id, ranking.HeadShare)
+		}
+	}
+}
