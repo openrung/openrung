@@ -882,7 +882,9 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 // metricSnapshots builds the ranking inputs: the 30-minute telemetry snapshot
 // per relay plus, as a parallel map, the operator ranking-weight overrides (a
 // relay without telemetry has no snapshot entry, so the weight cannot ride
-// inside it without its zero value reading as weight 0).
+// inside it without its zero value reading as weight 0). Each latency is the
+// median of the window's positive values; nulls and values <= 0 are not
+// measurements.
 func (s *PostgresStore) metricSnapshots(ctx context.Context, now time.Time) (map[string]RelayMetricsSnapshot, map[string]float64, error) {
 	weights, err := s.rankingWeights(ctx)
 	if err != nil {
@@ -920,14 +922,9 @@ func (s *PostgresStore) metricSnapshots(ctx context.Context, now time.Time) (map
 			relay_id,
 			COALESCE(SUM(success_count), 0)::bigint,
 			COALESCE(SUM(failure_count), 0)::bigint,
-			COALESCE(SUM(tcp_ms), 0)::bigint,
-			COUNT(tcp_ms)::bigint,
-			COALESCE(SUM(tunnel_start_ms), 0)::bigint,
-			COUNT(tunnel_start_ms)::bigint,
-			COALESCE(SUM(internet_probe_ms), 0)::bigint,
-			COUNT(internet_probe_ms)::bigint,
-			COALESCE(SUM(ttfb_ms), 0)::bigint,
-			COUNT(ttfb_ms)::bigint,
+			COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY tcp_ms::double precision) FILTER (WHERE tcp_ms > 0), 0),
+			COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY internet_probe_ms::double precision) FILTER (WHERE internet_probe_ms > 0), 0),
+			COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY ttfb_ms::double precision) FILTER (WHERE ttfb_ms > 0), 0),
 			COALESCE(SUM(speed_test_count), 0)::bigint,
 			COALESCE(SUM(download_mbps_milli), 0)::bigint
 		FROM relay_metrics
@@ -941,21 +938,15 @@ func (s *PostgresStore) metricSnapshots(ctx context.Context, now time.Time) (map
 	for metricRows.Next() {
 		var relayID string
 		var successes, failures int64
-		var tcpTotal, tcpCount, tunnelTotal, tunnelCount int64
-		var internetTotal, internetCount, ttfbTotal, ttfbCount int64
+		var tcpMedian, internetMedian, ttfbMedian float64
 		var speedTests, speedTotal int64
 		if err := metricRows.Scan(
 			&relayID,
 			&successes,
 			&failures,
-			&tcpTotal,
-			&tcpCount,
-			&tunnelTotal,
-			&tunnelCount,
-			&internetTotal,
-			&internetCount,
-			&ttfbTotal,
-			&ttfbCount,
+			&tcpMedian,
+			&internetMedian,
+			&ttfbMedian,
 			&speedTests,
 			&speedTotal,
 		); err != nil {
@@ -964,10 +955,9 @@ func (s *PostgresStore) metricSnapshots(ctx context.Context, now time.Time) (map
 		snapshot := snapshots[relayID]
 		snapshot.Successes = int(successes)
 		snapshot.Failures = int(failures)
-		snapshot.TCPMS = metricValue{total: float64(tcpTotal), count: int(tcpCount)}
-		snapshot.TunnelStartMS = metricValue{total: float64(tunnelTotal), count: int(tunnelCount)}
-		snapshot.InternetProbeMS = metricValue{total: float64(internetTotal), count: int(internetCount)}
-		snapshot.TTFBMS = metricValue{total: float64(ttfbTotal), count: int(ttfbCount)}
+		snapshot.TCPMS = tcpMedian
+		snapshot.InternetProbeMS = internetMedian
+		snapshot.TTFBMS = ttfbMedian
 		snapshot.SpeedTests = int(speedTests)
 		snapshot.DownloadMbpsTotal = float64(speedTotal) / 1000
 		snapshots[relayID] = snapshot

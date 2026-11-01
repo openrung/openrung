@@ -500,7 +500,6 @@ func (s *Store) recordRelayTelemetryLocked(record TelemetryRecord, now time.Time
 			RelayID:           event.RelayID,
 			Success:           true,
 			TCPMs:             event.Measurements["relay_tcp_ms"],
-			TunnelStartMs:     event.Measurements["tunnel_start_ms"],
 			InternetProbeMs:   event.Measurements["internet_probe_ms"],
 			DownloadMbpsMilli: 0,
 		})
@@ -556,6 +555,15 @@ func (s *Store) metricSnapshotsLocked(now time.Time) (map[string]RelayMetricsSna
 		snapshots[session.RelayID] = snapshot
 	}
 
+	// Positive latency samples per relay, reduced to medians below.
+	type latencySamples struct{ tcp, internetProbe, ttfb []float64 }
+	samples := make(map[string]*latencySamples)
+	addSample := func(values *[]float64, measured int64) {
+		if measured > 0 {
+			*values = append(*values, float64(measured))
+		}
+	}
+
 	windowStart := now.Add(-rankingWindow)
 	for _, observation := range s.observations {
 		if observation.ObservedAt.Before(windowStart) || observation.ObservedAt.After(now) {
@@ -568,15 +576,26 @@ func (s *Store) metricSnapshotsLocked(now time.Time) (map[string]RelayMetricsSna
 		if observation.Failure {
 			snapshot.Failures++
 		}
-		addMetricValue(&snapshot.TCPMS, observation.TCPMs)
-		addMetricValue(&snapshot.TunnelStartMS, observation.TunnelStartMs)
-		addMetricValue(&snapshot.InternetProbeMS, observation.InternetProbeMs)
-		addMetricValue(&snapshot.TTFBMS, observation.TTFBMs)
+		relaySamples := samples[observation.RelayID]
+		if relaySamples == nil {
+			relaySamples = &latencySamples{}
+			samples[observation.RelayID] = relaySamples
+		}
+		addSample(&relaySamples.tcp, observation.TCPMs)
+		addSample(&relaySamples.internetProbe, observation.InternetProbeMs)
+		addSample(&relaySamples.ttfb, observation.TTFBMs)
 		if observation.IncludesSpeedTest && observation.DownloadMbpsMilli > 0 {
 			snapshot.SpeedTests++
 			snapshot.DownloadMbpsTotal += float64(observation.DownloadMbpsMilli) / 1000
 		}
 		snapshots[observation.RelayID] = snapshot
+	}
+	for relayID, relaySamples := range samples {
+		snapshot := snapshots[relayID]
+		snapshot.TCPMS = median(relaySamples.tcp)
+		snapshot.InternetProbeMS = median(relaySamples.internetProbe)
+		snapshot.TTFBMS = median(relaySamples.ttfb)
+		snapshots[relayID] = snapshot
 	}
 	return snapshots, s.rankingWeightsLocked()
 }
