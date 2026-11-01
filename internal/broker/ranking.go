@@ -37,6 +37,21 @@ const (
 	// below another is drawn ahead of it about one time in five, and one
 	// scoring a third lower less than one time in a hundred.
 	rankingSelectionSharpness = 12
+
+	// Each latency measurement is scored from its median over rankingWindow:
+	// 1 at or below its fast bound, falling linearly to 0 at its slow bound.
+	// TCP connect is one handshake with the relay.
+	rankingTCPFastMS = 100
+	rankingTCPSlowMS = 1000
+	// The internet probe and time to first byte each make a full round trip
+	// through the tunnel, so they share a ramp ten times as long.
+	rankingTunnelRoundTripFastMS = 1000
+	rankingTunnelRoundTripSlowMS = 10000
+
+	// rankingDefaultLatencyScore is the latency score of a relay without
+	// latency measurements when no relay in the ranking pass has any either.
+	// Otherwise such a relay gets the pass's median (see neutralLatencyScore).
+	rankingDefaultLatencyScore = 0.5
 )
 
 // rankingUniform is the [0, 1) source the stores draw ranking keys from. It is
@@ -44,19 +59,15 @@ const (
 // is safe for concurrent use.
 var rankingUniform = rand.Float64
 
-type metricValue struct {
-	total float64
-	count int
-}
-
 type RelayMetricsSnapshot struct {
-	ActiveSessions    int
-	Successes         int
-	Failures          int
-	TCPMS             metricValue
-	TunnelStartMS     metricValue
-	InternetProbeMS   metricValue
-	TTFBMS            metricValue
+	ActiveSessions int
+	Successes      int
+	Failures       int
+	// Median latencies over rankingWindow in milliseconds; 0 means the relay
+	// has no positive measurement of that kind in the window.
+	TCPMS             float64
+	InternetProbeMS   float64
+	TTFBMS            float64
 	SpeedTests        int
 	DownloadMbpsTotal float64
 }
@@ -75,7 +86,6 @@ type relayMetricObservation struct {
 	Success           bool
 	Failure           bool
 	TCPMs             int64
-	TunnelStartMs     int64
 	InternetProbeMs   int64
 	TTFBMs            int64
 	DownloadMbpsMilli int64
@@ -97,13 +107,18 @@ type relayMetricObservation struct {
 // plain best-selection-weight-first order. Relays with selection weight 0
 // (operator weight 0, or a telemetry score of 0) always sort after every
 // positive-weight relay.
+//
+// relays must be the whole ranking pass: it sets the latency score of relays
+// without measurements (see neutralLatencyScore), and rankRelays derives the
+// same value from the same set.
 func sortRelayCandidates(relays []relay.Descriptor, snapshots map[string]RelayMetricsSnapshot, weights map[string]float64, uniform func() float64) {
+	neutralLatency := neutralLatencyScore(relays, snapshots)
 	// Efraimidis–Spirakis keys: sorting by U^(1/w) descending is weighted
 	// sampling without replacement. The log form, ln(U)/w, orders identically
 	// and stays finite for tiny weights.
 	keys := make(map[string]float64, len(relays))
 	for _, desc := range relays {
-		weight := relaySelectionWeight(relayScore(desc, snapshots[desc.ID]), rankingWeightFor(weights, desc.ID))
+		weight := relaySelectionWeight(relayScore(desc, snapshots[desc.ID], neutralLatency), rankingWeightFor(weights, desc.ID))
 		if weight <= 0 {
 			keys[desc.ID] = math.Inf(-1)
 			continue
@@ -157,8 +172,9 @@ func rankingWeightFor(weights map[string]float64, relayID string) float64 {
 
 // relayScore is the telemetry-driven candidate score in [0, 1]. The operator's
 // ranking weight is applied separately, in relaySelectionWeight.
-func relayScore(desc relay.Descriptor, snapshot RelayMetricsSnapshot) float64 {
-	return relayScoreBreakdown(desc, snapshot).score()
+// neutralLatency is the ranking pass's neutralLatencyScore.
+func relayScore(desc relay.Descriptor, snapshot RelayMetricsSnapshot, neutralLatency float64) float64 {
+	return relayScoreBreakdown(desc, snapshot, neutralLatency).score()
 }
 
 // relayScoreParts are relayScore's inputs, each in [0, 1] before its ranking
@@ -171,7 +187,7 @@ type relayScoreParts struct {
 	OverCapacityPenalty float64
 }
 
-func relayScoreBreakdown(desc relay.Descriptor, snapshot RelayMetricsSnapshot) relayScoreParts {
+func relayScoreBreakdown(desc relay.Descriptor, snapshot RelayMetricsSnapshot, neutralLatency float64) relayScoreParts {
 	headroom := 0.5
 	if desc.MaxSessions > 0 {
 		headroom = clamp01(float64(desc.MaxSessions-snapshot.ActiveSessions) / float64(desc.MaxSessions))
@@ -179,7 +195,7 @@ func relayScoreBreakdown(desc relay.Descriptor, snapshot RelayMetricsSnapshot) r
 	return relayScoreParts{
 		Reliability:         float64(snapshot.Successes+1) / float64(snapshot.Successes+snapshot.Failures+2),
 		Headroom:            headroom,
-		Latency:             observedLatencyScore(snapshot),
+		Latency:             observedLatencyScore(snapshot, neutralLatency),
 		Speed:               observedSpeedScore(desc, snapshot),
 		OverCapacityPenalty: overCapacityPenalty(desc, snapshot),
 	}
@@ -227,11 +243,15 @@ type relayRanking struct {
 // reachability probe gets 0 and is left out of the total. HeadShare ignores
 // the WSS reservation and the access answer's per-country candidate sets, so
 // it describes the public list, not every page.
+//
+// relays must be the same set ListRanked sorted, so the latency score of
+// relays without measurements matches the one the sort used.
 func rankRelays(relays []relay.Descriptor, inputs RankingInputs, withholdUnreachable bool) map[string]relayRanking {
 	rankings := make(map[string]relayRanking, len(relays))
+	neutralLatency := neutralLatencyScore(relays, inputs.Snapshots)
 	var total float64
 	for _, desc := range relays {
-		parts := relayScoreBreakdown(desc, inputs.Snapshots[desc.ID])
+		parts := relayScoreBreakdown(desc, inputs.Snapshots[desc.ID], neutralLatency)
 		score := parts.score()
 		ranking := relayRanking{
 			Score:               score,
@@ -268,26 +288,55 @@ func overCapacityPenalty(desc relay.Descriptor, snapshot RelayMetricsSnapshot) f
 	return rankingMaxOverCapacityPenalty * clamp01(overCapacityRatio)
 }
 
-func observedLatencyScore(snapshot RelayMetricsSnapshot) float64 {
-	latencies := []float64{
-		snapshot.TCPMS.average(),
-		snapshot.InternetProbeMS.average(),
-		snapshot.TTFBMS.average(),
+// observedLatencyScore is the relay's measuredLatencyScore, or neutralLatency
+// when the relay has no latency measurements in the window.
+func observedLatencyScore(snapshot RelayMetricsSnapshot, neutralLatency float64) float64 {
+	if score, ok := measuredLatencyScore(snapshot); ok {
+		return score
+	}
+	return neutralLatency
+}
+
+// measuredLatencyScore averages the scores of the latency measurements the
+// relay has, each scored from its median on its own ramp. ok is false when it
+// has none.
+func measuredLatencyScore(snapshot RelayMetricsSnapshot) (score float64, ok bool) {
+	measurements := []struct{ medianMS, fastMS, slowMS float64 }{
+		{snapshot.TCPMS, rankingTCPFastMS, rankingTCPSlowMS},
+		{snapshot.InternetProbeMS, rankingTunnelRoundTripFastMS, rankingTunnelRoundTripSlowMS},
+		{snapshot.TTFBMS, rankingTunnelRoundTripFastMS, rankingTunnelRoundTripSlowMS},
 	}
 	var total float64
 	var count int
-	for _, value := range latencies {
-		if value <= 0 {
+	for _, m := range measurements {
+		if m.medianMS <= 0 {
 			continue
 		}
-		total += value
+		total += 1 - clamp01((m.medianMS-m.fastMS)/(m.slowMS-m.fastMS))
 		count++
 	}
 	if count == 0 {
-		return 0.5
+		return 0, false
 	}
-	average := total / float64(count)
-	return 1 - clamp01((average-100)/1900)
+	return total / float64(count), true
+}
+
+// neutralLatencyScore is the latency score given to relays without latency
+// measurements: the median measuredLatencyScore of the relays in the pass that
+// have one, or rankingDefaultLatencyScore when none does. A fixed middle value
+// would sit below a typical measured relay and keep a new relay off page heads
+// before it could collect any measurements.
+func neutralLatencyScore(relays []relay.Descriptor, snapshots map[string]RelayMetricsSnapshot) float64 {
+	var scores []float64
+	for _, desc := range relays {
+		if score, ok := measuredLatencyScore(snapshots[desc.ID]); ok {
+			scores = append(scores, score)
+		}
+	}
+	if len(scores) == 0 {
+		return rankingDefaultLatencyScore
+	}
+	return median(scores)
 }
 
 func observedSpeedScore(desc relay.Descriptor, snapshot RelayMetricsSnapshot) float64 {
@@ -298,19 +347,19 @@ func observedSpeedScore(desc relay.Descriptor, snapshot RelayMetricsSnapshot) fl
 	return clamp01(averageMbps / float64(desc.MaxMbps))
 }
 
-func addMetricValue(value *metricValue, measured int64) {
-	if measured <= 0 {
-		return
-	}
-	value.total += float64(measured)
-	value.count++
-}
-
-func (v metricValue) average() float64 {
-	if v.count == 0 {
+// median returns the middle of values, averaging the two middle values of an
+// even count as Postgres's percentile_cont(0.5) does, or 0 for no values. It
+// sorts values in place.
+func median(values []float64) float64 {
+	if len(values) == 0 {
 		return 0
 	}
-	return v.total / float64(v.count)
+	sort.Float64s(values)
+	mid := len(values) / 2
+	if len(values)%2 == 1 {
+		return values[mid]
+	}
+	return (values[mid-1] + values[mid]) / 2
 }
 
 func clamp01(value float64) float64 {

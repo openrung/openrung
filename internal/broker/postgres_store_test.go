@@ -504,3 +504,16 @@ func TestPostgresStoreExpiredFoundationEndpointIsReclaimable(t *testing.T) {
 		t.Fatalf("reclaimed node_class = %q, want %q", reclaimed.NodeClass, relay.NodeClassVolunteer)
 	}
 }
+
+func TestPostgresStoreMetricSnapshotsUseLatencyMedians(t *testing.T) {
+	now := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	store := newTestPostgresStore(t)
+	if err := store.RecordRelayTelemetry(context.Background(), latencyMedianEvents("relay_median", now), now); err != nil {
+		t.Fatalf("record telemetry: %v", err)
+	}
+	snapshots, _, err := store.metricSnapshots(context.Background(), now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("metric snapshots: %v", err)
+	}
+	assertLatencyMedians(t, snapshots["relay_median"])
+}

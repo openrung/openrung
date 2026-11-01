@@ -620,7 +620,7 @@ ranking each relay with, computed on read from the same snapshot the
 | `score` | Telemetry score in `[0, 1]`: 0.5 × `reliability` + 0.2 × `headroom` + 0.2 × `latency` + 0.1 × `speed` − `over_capacity_penalty`. |
 | `reliability` | (successes + 1) / (successes + failures + 2) over the last 30 minutes. |
 | `headroom` | Free share of `max_sessions` (0.5 when the relay advertises none). |
-| `latency` | 1 at 100 ms average client latency, falling to 0 at 2000 ms; 0.5 without data. |
+| `latency` | Mean of the scores of the relay's measured latencies, each from its median over the last 30 minutes: TCP connect scores 1 at 100 ms, falling to 0 at 1000 ms; the internet probe and time to first byte score 1 at 1000 ms, falling to 0 at 10000 ms. A relay with no latency measurements gets the median `latency` of the relays that have them, or 0.5 when none has. |
 | `speed` | Average speed-test throughput over `max_mbps`; 0.5 without data. |
 | `over_capacity_penalty` | Up to 0.04 once active sessions exceed `max_sessions`. |
 | `selection_weight` | `score`¹² × `ranking_weight`: the weight the sampler draws with. |
@@ -1231,8 +1231,11 @@ The order of `relays` is the broker's candidate ranking. A direct relay whose
 latest [inbound reachability probe](#inbound-reachability-probe) failed is
 left out before ranking and page shaping. The broker uses recent
 connection successes/failures, active sessions, observed client latency, and
-speed-test telemetry. The latency it scores is aggregated across all clients,
-so it cannot describe any one client's path. The order is drawn per response by
+speed-test telemetry. The latency it scores is the median per measurement
+(TCP connect, internet probe, time to first byte) across all clients, so it
+cannot describe any one client's path; each measurement is scored on its own
+scale, and a relay without latency measurements is scored at the median of the
+relays that have them (see [Ranking breakdown](#ranking-breakdown)). The order is drawn per response by
 weighted random sampling without replacement, with each relay's weight rising
 steeply with its score: a clearly better relay leads almost every response,
 while relays with similar scores take turns at the head, so concurrent clients
