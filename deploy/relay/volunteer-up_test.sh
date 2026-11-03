@@ -44,6 +44,10 @@ DMI_DIR=$TEST_TMP/dmi
 OUTPUT=$TEST_TMP/output
 TTY_FILE=$TEST_TMP/tty
 PASSWD_FILE=$TEST_TMP/passwd
+PROC_NET_IPV4=$TEST_TMP/proc-net-ipv4
+SYSCTL_DIR=$TEST_TMP/sysctl.d
+MODULES_LOAD_DIR=$TEST_TMP/modules-load.d
+TCP_LOG=$TEST_TMP/tcp.log
 OPERATOR_HOME=$TEST_TMP/home/alice
 CONTACT_QUESTION='volunteer-up: contact email for this relay (Optional, we will only contact you if there is an issue with your relay)'
 
@@ -62,13 +66,17 @@ sed \
     -e "s|^    DMI_DIR=/sys/class/dmi/id$|    DMI_DIR='$DMI_DIR'|" \
     -e "s|^    TTY_DEVICE=/dev/tty$|    TTY_DEVICE='$TTY_FILE'|" \
     -e "s|^    PASSWD_FILE=/etc/passwd$|    PASSWD_FILE='$PASSWD_FILE'|" \
+    -e "s|^    PROC_NET_IPV4=/proc/sys/net/ipv4$|    PROC_NET_IPV4='$PROC_NET_IPV4'|" \
+    -e "s|^    SYSCTL_DIR=/etc/sysctl.d$|    SYSCTL_DIR='$SYSCTL_DIR'|" \
+    -e "s|^    MODULES_LOAD_DIR=/etc/modules-load.d$|    MODULES_LOAD_DIR='$MODULES_LOAD_DIR'|" \
     -e "s|/etc/openrung/volunteer.env|$LEGACY_ENV_FILE|g" \
     "$SCRIPT" >"$RUN_SCRIPT" || exit 1
 grep -q "DMI_DIR='$DMI_DIR'" "$RUN_SCRIPT" || {
     echo "FAIL: volunteer-up.sh no longer assigns DMI_DIR where the suite expects" >&2
     exit 1
 }
-for expected in "TTY_DEVICE='$TTY_FILE'" "PASSWD_FILE='$PASSWD_FILE'"; do
+for expected in "TTY_DEVICE='$TTY_FILE'" "PASSWD_FILE='$PASSWD_FILE'" \
+    "PROC_NET_IPV4='$PROC_NET_IPV4'" "SYSCTL_DIR='$SYSCTL_DIR'" "MODULES_LOAD_DIR='$MODULES_LOAD_DIR'"; do
     grep -qF "$expected" "$RUN_SCRIPT" || {
         echo "FAIL: volunteer-up.sh no longer assigns ${expected%%=*} where the suite expects" >&2
         exit 1
@@ -127,6 +135,17 @@ exit 0
 EOF
 
 chmod +x "$FAKE_BIN/ufw" "$FAKE_BIN/firewall-cmd"
+
+# The kernel's TCP keys live in a directory standing in for
+# /proc/sys/net/ipv4. modprobe makes BBR available, as on a stock distro
+# kernel, unless SIM_BBR=absent (a kernel or container without it).
+cat >"$FAKE_BIN/modprobe" <<EOF
+#!/bin/sh
+printf 'modprobe %s\n' "\$*" >>'$TCP_LOG'
+[ "\${SIM_BBR:-module}" = module ] || exit 1
+printf 'reno cubic bbr\n' >'$PROC_NET_IPV4/tcp_available_congestion_control'
+EOF
+chmod +x "$FAKE_BIN/modprobe"
 
 cat >"$FAKE_BIN/docker" <<'EOF'
 #!/bin/sh
@@ -499,6 +518,12 @@ reset_simulation() {
     rm -f "$LEGACY_ENV_FILE" "$SIM_DIR/logs_calls" "$TTY_FILE"
     rm -rf "$DMI_DIR"
     mkdir -p "$DMI_DIR"
+    rm -rf "$PROC_NET_IPV4" "$SYSCTL_DIR" "$MODULES_LOAD_DIR"
+    mkdir -p "$PROC_NET_IPV4"
+    printf 'cubic\n' >"$PROC_NET_IPV4/tcp_congestion_control"
+    printf 'reno cubic\n' >"$PROC_NET_IPV4/tcp_available_congestion_control"
+    printf '1\n' >"$PROC_NET_IPV4/tcp_slow_start_after_idle"
+    : >"$TCP_LOG"
 }
 
 write_env() {
@@ -1227,6 +1252,111 @@ test_bad_wait_value_is_refused_before_mutation() {
     assert_output_has "bad wait value" 'OPENRUNG_REACHABILITY_WAIT must be a whole number'
 }
 
+tcp_key() { # key
+    cat "$PROC_NET_IPV4/$1"
+}
+
+assert_tcp_untouched() { # label
+    if [ "$(tcp_key tcp_slow_start_after_idle)" = 1 ] \
+        && [ ! -e "$SYSCTL_DIR" ] && [ ! -e "$MODULES_LOAD_DIR" ]; then
+        pass
+    else
+        fail "$1: host TCP settings were changed or persisted"
+    fi
+}
+
+# The default run loads BBR, applies it with no slow start after idle, and
+# persists both; a re-run finds them in place and leaves the same files.
+test_tcp_tuning_enables_and_persists_bbr() {
+    reset_simulation
+    write_env
+    run_volunteer_up ok
+    expected_sysctl=$(printf 'net.ipv4.tcp_congestion_control = bbr\nnet.ipv4.tcp_slow_start_after_idle = 0')
+    if [ "$RUN_RC" -eq 0 ] \
+        && [ "$(tcp_key tcp_congestion_control)" = bbr ] \
+        && [ "$(tcp_key tcp_slow_start_after_idle)" = 0 ] \
+        && [ "$(cat "$SYSCTL_DIR/90-openrung-tcp.conf")" = "$expected_sysctl" ] \
+        && [ "$(cat "$MODULES_LOAD_DIR/openrung-tcp.conf")" = tcp_bbr ] \
+        && [ "$(cat "$TCP_LOG")" = 'modprobe tcp_bbr' ]; then
+        pass
+    else
+        fail "TCP tuning: expected bbr applied and persisted, got cc=$(tcp_key tcp_congestion_control) rc=$RUN_RC log=$(cat "$TCP_LOG")"
+    fi
+    assert_output_has "TCP tuning" 'TCP congestion control: bbr'
+    assert_candidate_is_live "TCP tuning"
+
+    run_volunteer_up ok
+    if [ "$RUN_RC" -eq 0 ] \
+        && [ "$(tcp_key tcp_congestion_control)" = bbr ] \
+        && [ "$(cat "$SYSCTL_DIR/90-openrung-tcp.conf")" = "$expected_sysctl" ] \
+        && [ "$(cat "$TCP_LOG")" = 'modprobe tcp_bbr' ]; then
+        pass
+    else
+        fail "TCP tuning re-run: expected the same settings without another modprobe, got cc=$(tcp_key tcp_congestion_control) log=$(cat "$TCP_LOG")"
+    fi
+}
+
+test_tcp_tuning_opt_out_leaves_host_alone() {
+    reset_simulation
+    write_env
+    run_volunteer_up ok OPENRUNG_TCP_TUNING=0
+    if [ "$RUN_RC" -eq 0 ] && [ "$(tcp_key tcp_congestion_control)" = cubic ] && [ ! -s "$TCP_LOG" ]; then
+        pass
+    else
+        fail "TCP tuning opt-out: expected cubic and no modprobe, got cc=$(tcp_key tcp_congestion_control) rc=$RUN_RC"
+    fi
+    assert_tcp_untouched "TCP tuning opt-out"
+    assert_output_has "TCP tuning opt-out" 'TCP tuning: skipped'
+}
+
+# A congestion control other than the kernel defaults is the operator's choice.
+test_tcp_tuning_keeps_operator_choice() {
+    reset_simulation
+    write_env
+    printf 'htcp\n' >"$PROC_NET_IPV4/tcp_congestion_control"
+    run_volunteer_up ok
+    if [ "$RUN_RC" -eq 0 ] && [ "$(tcp_key tcp_congestion_control)" = htcp ] && [ ! -s "$TCP_LOG" ]; then
+        pass
+    else
+        fail "TCP operator choice: expected htcp kept, got cc=$(tcp_key tcp_congestion_control) rc=$RUN_RC"
+    fi
+    assert_tcp_untouched "TCP operator choice"
+    assert_output_has "TCP operator choice" "leaving congestion control 'htcp'"
+}
+
+# A kernel without BBR warns and still installs the relay.
+test_tcp_tuning_without_bbr_still_installs() {
+    reset_simulation
+    write_env
+    run_volunteer_up ok SIM_BBR=absent
+    if [ "$RUN_RC" -eq 0 ] && [ "$(tcp_key tcp_congestion_control)" = cubic ]; then
+        pass
+    else
+        fail "TCP without BBR: expected success with cubic kept, got cc=$(tcp_key tcp_congestion_control) rc=$RUN_RC"
+    fi
+    assert_tcp_untouched "TCP without BBR"
+    assert_output_has "TCP without BBR" 'offers no BBR congestion control'
+    assert_candidate_is_live "TCP without BBR"
+}
+
+# Host TCP settings change only after every refusal check has passed.
+test_tcp_tuning_waits_for_preflight() {
+    reset_simulation
+    write_env
+    run_volunteer_up ok OPENRUNG_TCP_TUNING=yes
+    assert_nonzero "$RUN_RC" "bad TCP tuning value"
+    assert_no_mutating_docker_calls "bad TCP tuning value"
+    assert_output_has "bad TCP tuning value" 'OPENRUNG_TCP_TUNING must be 0 or 1'
+    assert_tcp_untouched "bad TCP tuning value"
+
+    reset_simulation
+    write_env 'OPENRUNG_FOUNDATION_TOKEN=foundation-secret'
+    run_volunteer_up ok
+    assert_nonzero "$RUN_RC" "Foundation-owned env"
+    if [ "$(tcp_key tcp_congestion_control)" = cubic ]; then pass; else fail "Foundation-owned env: host TCP settings changed before the refusal"; fi
+    assert_tcp_untouched "Foundation-owned env"
+}
+
 test_special_ipv4_ranges() {
     expect_public_ipv4 1.1.1.1
     expect_public_ipv4 8.8.8.8
@@ -1277,6 +1407,11 @@ test_unreachable_prints_provider_fix_and_promotes
 test_unreachable_wait_sees_the_port_open
 test_late_refusal_is_still_promoted
 test_bad_wait_value_is_refused_before_mutation
+test_tcp_tuning_enables_and_persists_bbr
+test_tcp_tuning_opt_out_leaves_host_alone
+test_tcp_tuning_keeps_operator_choice
+test_tcp_tuning_without_bbr_still_installs
+test_tcp_tuning_waits_for_preflight
 
 if [ "$FAIL" -ne 0 ]; then
     echo "volunteer-up tests: $PASS passed, $FAIL failed" >&2

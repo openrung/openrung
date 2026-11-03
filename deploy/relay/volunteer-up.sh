@@ -46,8 +46,24 @@
 #                         (default 600 on a terminal, 0 when output is not a
 #                         terminal, e.g. under cloud-init). 0 reports the
 #                         verdict once and moves on.
+#   OPENRUNG_TCP_TUNING   1 (default) applies the host TCP tuning described
+#                         below; 0 leaves the host's TCP settings alone.
+#                         Read on every run.
 # Overrides configure the FIRST run; once /etc/openrung/relay.env exists it is
-# authoritative and overrides are ignored (edit the file instead).
+# authoritative and overrides are ignored (edit the file instead). The
+# exceptions are the run-time knobs OPENRUNG_REACHABILITY_WAIT and
+# OPENRUNG_TCP_TUNING, which no file records.
+#
+# TCP tuning: the relay shares the host's network stack, so the script switches
+# the host to BBR congestion control and turns off the congestion-window reset
+# after idle (net.ipv4.tcp_slow_start_after_idle = 0), the Foundation fleet's
+# settings. This is host-wide: it applies to every TCP connection the server
+# makes, not only the relay's. It persists in
+# /etc/sysctl.d/90-openrung-tcp.conf, with tcp_bbr loaded at boot through
+# /etc/modules-load.d/openrung-tcp.conf. A host already running a congestion
+# control other than the kernel defaults (cubic, reno) is left as its operator
+# configured it, and a kernel without BBR (some container-based VPSes) only
+# gets a warning. To undo, delete those two files and reboot.
 #
 # The one question: on a first run with a terminal attached, the script asks
 # for an optional contact email (Enter skips; a suggestion found on the host,
@@ -406,6 +422,51 @@ open_host_firewall() {
     fi
 }
 
+# --- TCP tuning -------------------------------------------------------------
+# Switches the host to BBR with no slow start after idle and persists both
+# (see the header). Runs before the relay starts, so its connections use the
+# new settings from the first one. Writes /proc directly: sysctl(8) is not on
+# every minimal image, and these keys are plain files there. Never fatal; the
+# relay serves either way.
+tune_tcp() {
+    if [ "$TCP_TUNING" = 0 ]; then
+        log "TCP tuning: skipped (OPENRUNG_TCP_TUNING=0)"
+        return 0
+    fi
+    tcp_current="$(cat "$PROC_NET_IPV4/tcp_congestion_control" 2>/dev/null)" || tcp_current=""
+    case "$tcp_current" in
+        cubic | reno | bbr) ;;
+        '')
+            log "warning: could not read the host's TCP congestion control; TCP tuning skipped"
+            return 0
+            ;;
+        *)
+            log "TCP tuning: leaving congestion control '$tcp_current' as this host's operator configured it"
+            return 0
+            ;;
+    esac
+    if ! grep -qw bbr "$PROC_NET_IPV4/tcp_available_congestion_control" 2>/dev/null; then
+        modprobe tcp_bbr >/dev/null 2>&1 || :
+    fi
+    if ! grep -qw bbr "$PROC_NET_IPV4/tcp_available_congestion_control" 2>/dev/null; then
+        log "warning: this kernel offers no BBR congestion control; the relay keeps '$tcp_current'"
+        return 0
+    fi
+    if ! { printf 'bbr\n' >"$PROC_NET_IPV4/tcp_congestion_control" \
+        && printf '0\n' >"$PROC_NET_IPV4/tcp_slow_start_after_idle"; } 2>/dev/null; then
+        log "warning: could not change the host's TCP settings; the relay keeps '$tcp_current'"
+        return 0
+    fi
+    if { mkdir -p "$SYSCTL_DIR" "$MODULES_LOAD_DIR" \
+        && printf 'tcp_bbr\n' >"$MODULES_LOAD_DIR/openrung-tcp.conf" \
+        && printf 'net.ipv4.tcp_congestion_control = bbr\nnet.ipv4.tcp_slow_start_after_idle = 0\n' \
+            >"$SYSCTL_DIR/90-openrung-tcp.conf"; } 2>/dev/null; then
+        log "TCP congestion control: bbr (persisted in $SYSCTL_DIR/90-openrung-tcp.conf; set OPENRUNG_TCP_TUNING=0 to skip)"
+    else
+        log "warning: TCP congestion control is bbr until the next reboot; could not persist it in $SYSCTL_DIR"
+    fi
+}
+
 # Prints a provider token (aws, hetzner, gcp, azure, oracle, digitalocean,
 # vultr, alibaba, tencent) from the DMI tables the hypervisor fills, or
 # nothing when unknown. DMI needs no network and no metadata-service
@@ -593,12 +654,17 @@ main() {
     DMI_DIR=/sys/class/dmi/id
     TTY_DEVICE=/dev/tty
     PASSWD_FILE=/etc/passwd
+    PROC_NET_IPV4=/proc/sys/net/ipv4
+    SYSCTL_DIR=/etc/sysctl.d
+    MODULES_LOAD_DIR=/etc/modules-load.d
     CONTACT_QUESTION="volunteer-up: contact email for this relay (Optional, we will only contact you if there is an issue with your relay)"
     # A terminal has someone to open the port while we wait; automation
     # (cloud-init, a non-interactive shell) gets the verdict once and moves on.
     if [ -t 1 ]; then REACHABILITY_WAIT_DEFAULT=600; else REACHABILITY_WAIT_DEFAULT=0; fi
     REACHABILITY_WAIT="${OPENRUNG_REACHABILITY_WAIT:-$REACHABILITY_WAIT_DEFAULT}"
     case "$REACHABILITY_WAIT" in *[!0-9]* | '') die "OPENRUNG_REACHABILITY_WAIT must be a whole number of seconds" ;; esac
+    TCP_TUNING="${OPENRUNG_TCP_TUNING:-1}"
+    case "$TCP_TUNING" in 0 | 1) ;; *) die "OPENRUNG_TCP_TUNING must be 0 or 1" ;; esac
     CONTAINER=openrung-relay
     OLD_CONTAINER=openrung-relay-old
     NEW_CONTAINER=openrung-relay-new
@@ -703,6 +769,7 @@ main() {
     # Before the relay registers: the broker probes the port in the
     # registration request, and a host firewall opened first passes it.
     open_host_firewall
+    tune_tcp
 
     # Pull before naming: random_label asks this image for the name, and the
     # env file written below must record whatever it returns.
