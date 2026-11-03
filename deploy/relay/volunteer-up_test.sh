@@ -48,6 +48,11 @@ PROC_NET_IPV4=$TEST_TMP/proc-net-ipv4
 SYSCTL_DIR=$TEST_TMP/sysctl.d
 MODULES_LOAD_DIR=$TEST_TMP/modules-load.d
 TCP_LOG=$TEST_TMP/tcp.log
+EGRESS_LIMIT_BIN=$TEST_TMP/sbin/openrung-egress-limit
+EGRESS_LIMIT_UNIT=$TEST_TMP/systemd/openrung-egress-limit.service
+SYSTEMD_RUN_DIR=$TEST_TMP/run-systemd
+EGRESS_LOG=$TEST_TMP/egress.log
+NFT_INSTALLED=$TEST_TMP/nft-installed
 OPERATOR_HOME=$TEST_TMP/home/alice
 CONTACT_QUESTION='volunteer-up: contact email for this relay (Optional, we will only contact you if there is an issue with your relay)'
 
@@ -69,6 +74,9 @@ sed \
     -e "s|^    PROC_NET_IPV4=/proc/sys/net/ipv4$|    PROC_NET_IPV4='$PROC_NET_IPV4'|" \
     -e "s|^    SYSCTL_DIR=/etc/sysctl.d$|    SYSCTL_DIR='$SYSCTL_DIR'|" \
     -e "s|^    MODULES_LOAD_DIR=/etc/modules-load.d$|    MODULES_LOAD_DIR='$MODULES_LOAD_DIR'|" \
+    -e "s|^    EGRESS_LIMIT_BIN=/usr/local/sbin/openrung-egress-limit$|    EGRESS_LIMIT_BIN='$EGRESS_LIMIT_BIN'|" \
+    -e "s|^    EGRESS_LIMIT_UNIT=/etc/systemd/system/openrung-egress-limit.service$|    EGRESS_LIMIT_UNIT='$EGRESS_LIMIT_UNIT'|" \
+    -e "s|^    SYSTEMD_RUN_DIR=/run/systemd/system$|    SYSTEMD_RUN_DIR='$SYSTEMD_RUN_DIR'|" \
     -e "s|/etc/openrung/volunteer.env|$LEGACY_ENV_FILE|g" \
     "$SCRIPT" >"$RUN_SCRIPT" || exit 1
 grep -q "DMI_DIR='$DMI_DIR'" "$RUN_SCRIPT" || {
@@ -76,7 +84,8 @@ grep -q "DMI_DIR='$DMI_DIR'" "$RUN_SCRIPT" || {
     exit 1
 }
 for expected in "TTY_DEVICE='$TTY_FILE'" "PASSWD_FILE='$PASSWD_FILE'" \
-    "PROC_NET_IPV4='$PROC_NET_IPV4'" "SYSCTL_DIR='$SYSCTL_DIR'" "MODULES_LOAD_DIR='$MODULES_LOAD_DIR'"; do
+    "PROC_NET_IPV4='$PROC_NET_IPV4'" "SYSCTL_DIR='$SYSCTL_DIR'" "MODULES_LOAD_DIR='$MODULES_LOAD_DIR'" \
+    "EGRESS_LIMIT_BIN='$EGRESS_LIMIT_BIN'" "EGRESS_LIMIT_UNIT='$EGRESS_LIMIT_UNIT'" "SYSTEMD_RUN_DIR='$SYSTEMD_RUN_DIR'"; do
     grep -qF "$expected" "$RUN_SCRIPT" || {
         echo "FAIL: volunteer-up.sh no longer assigns ${expected%%=*} where the suite expects" >&2
         exit 1
@@ -146,6 +155,26 @@ printf 'modprobe %s\n' "\$*" >>'$TCP_LOG'
 printf 'reno cubic bbr\n' >'$PROC_NET_IPV4/tcp_available_congestion_control'
 EOF
 chmod +x "$FAKE_BIN/modprobe"
+
+# nftables is installed unless SIM_NFT=absent; then the apt-get stub installs
+# it (unless SIM_APT=fail). nft is probed with --version, so a real nft or
+# apt-get later on PATH is never reached. systemctl only records its calls.
+cat >"$FAKE_BIN/nft" <<EOF
+#!/bin/sh
+[ "\${SIM_NFT:-present}" = present ] || [ -e '$NFT_INSTALLED' ] || exit 127
+exit 0
+EOF
+cat >"$FAKE_BIN/apt-get" <<EOF
+#!/bin/sh
+printf 'apt-get %s\n' "\$*" >>'$EGRESS_LOG'
+[ "\${SIM_APT:-ok}" = ok ] || exit 100
+case "\$*" in *'install -y nftables'*) : >'$NFT_INSTALLED' ;; esac
+EOF
+cat >"$FAKE_BIN/systemctl" <<EOF
+#!/bin/sh
+printf 'systemctl %s\n' "\$*" >>'$EGRESS_LOG'
+EOF
+chmod +x "$FAKE_BIN/nft" "$FAKE_BIN/apt-get" "$FAKE_BIN/systemctl"
 
 cat >"$FAKE_BIN/docker" <<'EOF'
 #!/bin/sh
@@ -243,6 +272,22 @@ case "$op" in
         ;;
     run)
         printf 'run %s\n' "$*" >>"$log"
+        # The egress-limit copy-out: a stand-in script that records how the
+        # host runs it (SIM_EGRESS_SCRIPT=missing models an image without
+        # one; SIM_EGRESS_APPLY=fail a ruleset nft refuses).
+        if [ "$#" -eq 9 ] && [ "$1 $2 $3 $4 $5 $6 $7" = '--rm --network none --cap-drop ALL --entrypoint cat' ] \
+            && [ "$9" = /usr/local/bin/egress-limit ]; then
+            [ "${SIM_EGRESS_SCRIPT:-ok}" = ok ] || exit 1
+            cat <<SCRIPT
+#!/bin/sh
+printf 'egress-limit %s\\n' "\$*" >>'${DOCKER_LOG%/*}/egress.log'
+case "\$1" in
+    apply) [ "${SIM_EGRESS_APPLY:-ok}" = ok ] ;;
+    unit) printf '[Unit]\\nDescription=stand-in egress limit\\n' ;;
+esac
+SCRIPT
+            exit 0
+        fi
         if [ "$#" -ne 5 ] \
             || [ "$1" != --rm ] \
             || [ "$2" != --entrypoint ] \
@@ -524,6 +569,9 @@ reset_simulation() {
     printf 'reno cubic\n' >"$PROC_NET_IPV4/tcp_available_congestion_control"
     printf '1\n' >"$PROC_NET_IPV4/tcp_slow_start_after_idle"
     : >"$TCP_LOG"
+    rm -rf "${EGRESS_LIMIT_BIN%/*}" "${EGRESS_LIMIT_UNIT%/*}" "$SYSTEMD_RUN_DIR" "$NFT_INSTALLED"
+    mkdir -p "${EGRESS_LIMIT_UNIT%/*}" "$SYSTEMD_RUN_DIR"
+    : >"$EGRESS_LOG"
 }
 
 write_env() {
@@ -1357,6 +1405,126 @@ test_tcp_tuning_waits_for_preflight() {
     assert_tcp_untouched "Foundation-owned env"
 }
 
+egress_log_is() { # label expected
+    if [ "$(cat "$EGRESS_LOG")" = "$2" ]; then
+        pass
+    else
+        fail "$1: host egress-limit calls were '$(cat "$EGRESS_LOG")', expected '$2'"
+    fi
+}
+
+# A verified update loads the image's limit with the host's nft and enables its
+# boot unit, after the candidate is promoted.
+test_egress_limit_loaded_after_promotion() {
+    reset_simulation
+    write_env
+    run_volunteer_up ok
+    egress_log_is "egress limit" "$(printf 'egress-limit apply 10\negress-limit unit\nsystemctl daemon-reload\nsystemctl enable openrung-egress-limit.service')"
+    if [ "$RUN_RC" -eq 0 ] \
+        && [ -x "$EGRESS_LIMIT_BIN" ] && head -n 1 "$EGRESS_LIMIT_BIN" | grep -qx '#!/bin/sh' \
+        && grep -qx 'Description=stand-in egress limit' "$EGRESS_LIMIT_UNIT" \
+        && [ ! -e "$EGRESS_LIMIT_BIN.new" ] && [ ! -e "$EGRESS_LIMIT_UNIT.new" ]; then
+        pass
+    else
+        fail "egress limit: expected the script and its boot unit installed, rc=$RUN_RC"
+    fi
+    if grep -qx 'run --rm --network none --cap-drop ALL --entrypoint cat ghcr.io/openrung/openrung-relay:main /usr/local/bin/egress-limit' "$DOCKER_LOG"; then
+        pass
+    else
+        fail "egress limit: the script was not copied out of the image by a capability-less, network-less container"
+    fi
+    promotion_line=$(sed -n '/^rename openrung-relay-new openrung-relay$/=' "$DOCKER_LOG" | head -1)
+    copy_line=$(sed -n '/--entrypoint cat/=' "$DOCKER_LOG" | head -1)
+    if [ -n "$promotion_line" ] && [ -n "$copy_line" ] && [ "$promotion_line" -lt "$copy_line" ]; then
+        pass
+    else
+        fail "egress limit: loaded before the verified candidate was promoted"
+    fi
+    assert_output_has "egress limit" 'new-destination limit: 10/s'
+}
+
+test_egress_limit_rate_and_off() {
+    reset_simulation
+    write_env
+    run_volunteer_up ok OPENRUNG_NEW_DEST_RATE=25
+    egress_log_is "egress rate 25" "$(printf 'egress-limit apply 25\negress-limit unit\nsystemctl daemon-reload\nsystemctl enable openrung-egress-limit.service')"
+    assert_output_has "egress rate 25" 'new-destination limit: 25/s'
+
+    reset_simulation
+    write_env
+    run_volunteer_up ok OPENRUNG_NEW_DEST_RATE=off
+    egress_log_is "egress off" 'egress-limit apply off'
+    assert_output_has "egress off" 'new-destination limit: off (removed)'
+    if [ "$RUN_RC" -eq 0 ] && [ ! -s "$EGRESS_LIMIT_UNIT" ]; then pass; else fail "egress off: expected success without a boot unit"; fi
+
+    reset_simulation
+    write_env
+    run_volunteer_up ok OPENRUNG_NEW_DEST_RATE=fast
+    assert_nonzero "$RUN_RC" "bad egress rate"
+    assert_no_mutating_docker_calls "bad egress rate"
+    assert_output_has "bad egress rate" "OPENRUNG_NEW_DEST_RATE must be a positive whole number or 'off'"
+    egress_log_is "bad egress rate" ''
+}
+
+# A rolled-back update never touches the host firewall.
+test_egress_limit_skipped_on_rollback() {
+    reset_simulation
+    write_env
+    run_volunteer_up start_fail
+    assert_nonzero "$RUN_RC" "egress on rollback"
+    egress_log_is "egress on rollback" ''
+    if grep -q -- '--entrypoint cat' "$DOCKER_LOG" || [ -e "$EGRESS_LIMIT_BIN" ]; then
+        fail "egress on rollback: the limit was installed although the update rolled back"
+    else
+        pass
+    fi
+}
+
+test_egress_limit_installs_missing_nftables() {
+    reset_simulation
+    write_env
+    run_volunteer_up ok SIM_NFT=absent
+    egress_log_is "nftables install" "$(printf 'apt-get -o DPkg::Lock::Timeout=300 update\napt-get -o DPkg::Lock::Timeout=300 install -y nftables\negress-limit apply 10\negress-limit unit\nsystemctl daemon-reload\nsystemctl enable openrung-egress-limit.service')"
+    assert_output_has "nftables install" 'installing nftables'
+
+    reset_simulation
+    write_env
+    run_volunteer_up ok SIM_NFT=absent SIM_APT=fail
+    if [ "$RUN_RC" -eq 0 ] && ! grep -q '^egress-limit ' "$EGRESS_LOG" && [ ! -e "$EGRESS_LIMIT_BIN" ]; then
+        pass
+    else
+        fail "nftables unavailable: expected success without loading the limit, got rc=$RUN_RC log=$(cat "$EGRESS_LOG")"
+    fi
+    assert_output_has "nftables unavailable" 'nftables is not installed'
+    assert_candidate_is_live "nftables unavailable"
+}
+
+# Every egress failure warns and leaves the verified relay serving.
+test_egress_limit_failures_only_warn() {
+    reset_simulation
+    write_env
+    run_volunteer_up ok SIM_EGRESS_SCRIPT=missing
+    if [ "$RUN_RC" -eq 0 ] && [ ! -s "$EGRESS_LOG" ] && [ ! -e "$EGRESS_LIMIT_BIN" ]; then pass; else fail "image without egress-limit: expected success, nothing installed"; fi
+    assert_output_has "image without egress-limit" 'carries no egress-limit script'
+    assert_candidate_is_live "image without egress-limit"
+
+    reset_simulation
+    write_env
+    run_volunteer_up ok SIM_EGRESS_APPLY=fail
+    egress_log_is "egress apply failure" 'egress-limit apply 10'
+    assert_output_has "egress apply failure" 'new-destination limit could not be loaded'
+    if [ "$RUN_RC" -eq 0 ]; then pass; else fail "egress apply failure: run failed (rc=$RUN_RC)"; fi
+    assert_candidate_is_live "egress apply failure"
+
+    reset_simulation
+    write_env
+    rm -rf "$SYSTEMD_RUN_DIR"
+    run_volunteer_up ok
+    egress_log_is "egress without systemd" 'egress-limit apply 10'
+    assert_output_has "egress without systemd" 'until the next reboot'
+    if [ "$RUN_RC" -eq 0 ] && [ ! -e "$EGRESS_LIMIT_UNIT" ]; then pass; else fail "egress without systemd: expected success without a boot unit"; fi
+}
+
 test_special_ipv4_ranges() {
     expect_public_ipv4 1.1.1.1
     expect_public_ipv4 8.8.8.8
@@ -1412,6 +1580,11 @@ test_tcp_tuning_opt_out_leaves_host_alone
 test_tcp_tuning_keeps_operator_choice
 test_tcp_tuning_without_bbr_still_installs
 test_tcp_tuning_waits_for_preflight
+test_egress_limit_loaded_after_promotion
+test_egress_limit_rate_and_off
+test_egress_limit_skipped_on_rollback
+test_egress_limit_installs_missing_nftables
+test_egress_limit_failures_only_warn
 
 if [ "$FAIL" -ne 0 ]; then
     echo "volunteer-up tests: $PASS passed, $FAIL failed" >&2

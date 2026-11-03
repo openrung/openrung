@@ -151,6 +151,13 @@ generic instructions) and keeps checking for up to ten minutes while you do.
 The relay is installed either way and registers by itself once the port
 opens.
 
+The script also gives the server the Foundation fleet's host settings: BBR
+TCP congestion control, and a limit on how fast the server may connect to
+addresses it has not contacted recently, which keeps a client from using
+your relay to scan the internet. Both apply to the whole server;
+[`deploy/relay/README.md`](deploy/relay/README.md#one-line-volunteer-vps-bring-up)
+explains them and how to opt out.
+
 Afterwards:
 
 - **Check later** with `docker logs openrung-relay 2>&1 | grep -E 'registered
