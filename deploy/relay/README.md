@@ -192,6 +192,16 @@ running without restarts before it is promoted. A failed start, crash loop, or
 registration timeout automatically restores the previous container. The env
 file (and with it the relay identity) is preserved throughout.
 
+The script also sets the host's TCP stack the way the Foundation fleet runs
+it: BBR congestion control and no slow start after idle
+(`net.ipv4.tcp_slow_start_after_idle = 0`), persisted in
+`/etc/sysctl.d/90-openrung-tcp.conf` with `tcp_bbr` loaded at boot through
+`/etc/modules-load.d/openrung-tcp.conf`. The relay shares the host network,
+so the setting is host-wide. A host already using a congestion control other
+than the kernel defaults (cubic, reno) is left as configured, a kernel without
+BBR only gets a warning, and `OPENRUNG_TCP_TUNING=0` in the one-line command
+skips the step on any run. To undo it, delete the two files and reboot.
+
 Overrides pass through `sudo env`, e.g.:
 
 ```sh
