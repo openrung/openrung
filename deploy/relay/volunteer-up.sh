@@ -49,10 +49,16 @@
 #   OPENRUNG_TCP_TUNING   1 (default) applies the host TCP tuning described
 #                         below; 0 leaves the host's TCP settings alone.
 #                         Read on every run.
+#   OPENRUNG_NEW_DEST_RATE
+#                         new destination addresses per second the host may
+#                         open connections to (default 10; see the
+#                         new-destination limit below); 'off' removes the
+#                         limit. Read on every run.
 # Overrides configure the FIRST run; once /etc/openrung/relay.env exists it is
 # authoritative and overrides are ignored (edit the file instead). The
-# exceptions are the run-time knobs OPENRUNG_REACHABILITY_WAIT and
-# OPENRUNG_TCP_TUNING, which no file records.
+# exceptions are the run-time knobs OPENRUNG_REACHABILITY_WAIT,
+# OPENRUNG_TCP_TUNING and OPENRUNG_NEW_DEST_RATE, which no file records, so
+# pass them on every run.
 #
 # TCP tuning: the relay shares the host's network stack, so the script switches
 # the host to BBR congestion control and turns off the congestion-window reset
@@ -64,6 +70,20 @@
 # control other than the kernel defaults (cubic, reno) is left as its operator
 # configured it, and a kernel without BBR (some container-based VPSes) only
 # gets a warning. To undo, delete those two files and reboot.
+#
+# New-destination limit: once the updated relay is verified and serving, the
+# script loads the relay image's egress-limit nftables ruleset on the host, as
+# the Foundation fleet does: the host may open connections to at most 10
+# addresses per second that it has not contacted in the last 10 minutes
+# (deploy/relay/egress-limit.sh has the details). Addresses in use are never
+# limited, so browsing is unaffected; what it bounds is a client using the
+# relay to scan, which is what draws abuse reports to a server's owner. Like
+# the TCP tuning it is host-wide, but it lives in its own nftables table
+# (inet openrung_egress) and leaves ufw, firewalld and any other ruleset
+# alone. The script installs nftables on apt-based systems when missing,
+# installs the image's script as /usr/local/sbin/openrung-egress-limit, and
+# enables the boot unit it prints. OPENRUNG_NEW_DEST_RATE=off removes the
+# limit. A failure only warns: the relay already serves.
 #
 # The one question: on a first run with a terminal attached, the script asks
 # for an optional contact email (Enter skips; a suggestion found on the host,
@@ -467,6 +487,68 @@ tune_tcp() {
     fi
 }
 
+# --- new-destination limit ---------------------------------------------------
+# The image ships the ruleset script as /usr/local/bin/egress-limit, so it
+# versions with the relay. As on the Foundation fleet, a capability-less,
+# network-less container only copies it out; the host installs it at
+# EGRESS_LIMIT_BIN and runs it with its own nft, which keeps userspace and
+# kernel in step, then installs the boot unit the same script prints. Runs
+# after the verified candidate is promoted, so the rules come from the image
+# now serving and a rolled-back update leaves the host as it was. Never fatal.
+apply_egress_limit() {
+    if ! nft --version >/dev/null 2>&1; then
+        if [ "$NEW_DEST_RATE" = off ]; then
+            log "new-destination limit: off"
+            return 0
+        fi
+        # Same installer as Docker above; on other distros nftables is the
+        # volunteer's step, reported below.
+        if command -v apt-get >/dev/null 2>&1; then
+            log "installing nftables"
+            { apt-get -o DPkg::Lock::Timeout=300 update \
+                && apt-get -o DPkg::Lock::Timeout=300 install -y nftables; } </dev/null >/dev/null 2>&1 || :
+        fi
+        if ! nft --version >/dev/null 2>&1; then
+            log "warning: nftables is not installed, so the new-destination limit was not loaded; install nftables and re-run"
+            return 0
+        fi
+    fi
+    el_script="$(docker run --rm --network none --cap-drop ALL --entrypoint cat "$IMAGE" /usr/local/bin/egress-limit 2>/dev/null)" || el_script=""
+    case "$el_script" in
+        '#!/bin/sh'*) ;;
+        *)
+            log "warning: $IMAGE carries no egress-limit script; the new-destination limit was not loaded"
+            return 0
+            ;;
+    esac
+    if ! { mkdir -p "${EGRESS_LIMIT_BIN%/*}" \
+        && printf '%s\n' "$el_script" >"$EGRESS_LIMIT_BIN.new" \
+        && chmod 0755 "$EGRESS_LIMIT_BIN.new" \
+        && mv "$EGRESS_LIMIT_BIN.new" "$EGRESS_LIMIT_BIN" \
+        && "$EGRESS_LIMIT_BIN" apply "$NEW_DEST_RATE" >/dev/null; }; then
+        rm -f "$EGRESS_LIMIT_BIN.new"
+        log "warning: the new-destination limit could not be loaded; re-run to retry"
+        return 0
+    fi
+    if [ "$NEW_DEST_RATE" = off ]; then
+        log "new-destination limit: off (removed)"
+        return 0
+    fi
+    # The saved ruleset survives a reboot only through the boot unit, and only
+    # a host booted with systemd runs one.
+    if [ -d "$SYSTEMD_RUN_DIR" ] \
+        && "$EGRESS_LIMIT_BIN" unit >"$EGRESS_LIMIT_UNIT.new" \
+        && chmod 0644 "$EGRESS_LIMIT_UNIT.new" \
+        && mv "$EGRESS_LIMIT_UNIT.new" "$EGRESS_LIMIT_UNIT" \
+        && systemctl daemon-reload >/dev/null 2>&1 \
+        && systemctl enable "${EGRESS_LIMIT_UNIT##*/}" >/dev/null 2>&1; then
+        log "new-destination limit: ${NEW_DEST_RATE}/s (OPENRUNG_NEW_DEST_RATE=off removes it)"
+    else
+        rm -f "$EGRESS_LIMIT_UNIT.new"
+        log "warning: new-destination limit: ${NEW_DEST_RATE}/s until the next reboot; its boot unit could not be installed (re-run after a reboot to reload it)"
+    fi
+}
+
 # Prints a provider token (aws, hetzner, gcp, azure, oracle, digitalocean,
 # vultr, alibaba, tencent) from the DMI tables the hypervisor fills, or
 # nothing when unknown. DMI needs no network and no metadata-service
@@ -657,6 +739,9 @@ main() {
     PROC_NET_IPV4=/proc/sys/net/ipv4
     SYSCTL_DIR=/etc/sysctl.d
     MODULES_LOAD_DIR=/etc/modules-load.d
+    EGRESS_LIMIT_BIN=/usr/local/sbin/openrung-egress-limit
+    EGRESS_LIMIT_UNIT=/etc/systemd/system/openrung-egress-limit.service
+    SYSTEMD_RUN_DIR=/run/systemd/system
     CONTACT_QUESTION="volunteer-up: contact email for this relay (Optional, we will only contact you if there is an issue with your relay)"
     # A terminal has someone to open the port while we wait; automation
     # (cloud-init, a non-interactive shell) gets the verdict once and moves on.
@@ -665,6 +750,12 @@ main() {
     case "$REACHABILITY_WAIT" in *[!0-9]* | '') die "OPENRUNG_REACHABILITY_WAIT must be a whole number of seconds" ;; esac
     TCP_TUNING="${OPENRUNG_TCP_TUNING:-1}"
     case "$TCP_TUNING" in 0 | 1) ;; *) die "OPENRUNG_TCP_TUNING must be 0 or 1" ;; esac
+    # Same rule as egress-limit's own rate check, enforced before anything runs.
+    NEW_DEST_RATE="${OPENRUNG_NEW_DEST_RATE:-10}"
+    case "$NEW_DEST_RATE" in
+        off) ;;
+        '' | *[!0-9]* | 0*) die "OPENRUNG_NEW_DEST_RATE must be a positive whole number or 'off'" ;;
+    esac
     CONTAINER=openrung-relay
     OLD_CONTAINER=openrung-relay-old
     NEW_CONTAINER=openrung-relay-new
@@ -954,6 +1045,7 @@ main() {
     fi
 
     log "installed: $CONTAINER is the live volunteer-class OpenRung relay on this host"
+    apply_egress_limit
     report_reachability "$CONTAINER"
     log "  logs:    docker logs -f $CONTAINER"
     log "  update:  re-run the same one-line command (identity in $ENV_FILE is preserved)"

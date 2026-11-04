@@ -202,6 +202,18 @@ than the kernel defaults (cubic, reno) is left as configured, a kernel without
 BBR only gets a warning, and `OPENRUNG_TCP_TUNING=0` in the one-line command
 skips the step on any run. To undo it, delete the two files and reboot.
 
+Once the relay is verified and serving, the script also loads the relay
+image's [new-destination limit](#networking-notes) on the host, as the Foundation
+fleet does: the host may connect to at most 10 addresses per second that it
+has not contacted in the last 10 minutes. Addresses already in use are never
+limited, so ordinary traffic is unaffected; it bounds a client using the relay
+to scan, which is what draws abuse reports to a server's owner. It lives in
+its own nftables table and leaves ufw, firewalld and other rulesets alone.
+The script installs `nftables` on apt-based systems when missing and enables
+the limit's boot unit; `OPENRUNG_NEW_DEST_RATE` sets the rate on any run, and
+`OPENRUNG_NEW_DEST_RATE=off` removes the limit. A host where it cannot load
+only gets a warning; the relay serves either way.
+
 Overrides pass through `sudo env`, e.g.:
 
 ```sh
@@ -391,9 +403,11 @@ not need to match.
   The Foundation's fleet audit reports, per host, the relay version,
   whether the saved rules and the installed script match that relay's image,
   whether the host has `nftables`, whether the table is loaded, whether the
-  boot unit is enabled, and the access address state (below). Volunteer
-  relays (`volunteer-up.sh`, the desktop app) never get host firewall
-  changes.
+  boot unit is enabled, and the access address state (below).
+  `volunteer-up.sh` loads the same limit after every verified install or
+  update (`OPENRUNG_NEW_DEST_RATE` on its one-line command sets the rate;
+  `off` removes it). The desktop volunteer app never changes the host
+  firewall.
 
 - **Access address (Foundation, optional):** `OPENRUNG_ACCESS_HOST` names one
   extra IPv6 (or, see below, IPv4) address, distinct from the relay's primary
