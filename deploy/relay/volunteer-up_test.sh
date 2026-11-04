@@ -53,6 +53,7 @@ EGRESS_LIMIT_UNIT=$TEST_TMP/systemd/openrung-egress-limit.service
 SYSTEMD_RUN_DIR=$TEST_TMP/run-systemd
 EGRESS_LOG=$TEST_TMP/egress.log
 NFT_INSTALLED=$TEST_TMP/nft-installed
+SYSTEMD_UNIT_DIR=$TEST_TMP/systemd-units
 OPERATOR_HOME=$TEST_TMP/home/alice
 CONTACT_QUESTION='volunteer-up: contact email for this relay (Optional, we will only contact you if there is an issue with your relay)'
 
@@ -77,6 +78,7 @@ sed \
     -e "s|^    EGRESS_LIMIT_BIN=/usr/local/sbin/openrung-egress-limit$|    EGRESS_LIMIT_BIN='$EGRESS_LIMIT_BIN'|" \
     -e "s|^    EGRESS_LIMIT_UNIT=/etc/systemd/system/openrung-egress-limit.service$|    EGRESS_LIMIT_UNIT='$EGRESS_LIMIT_UNIT'|" \
     -e "s|^    SYSTEMD_RUN_DIR=/run/systemd/system$|    SYSTEMD_RUN_DIR='$SYSTEMD_RUN_DIR'|" \
+    -e "s|^    SYSTEMD_UNIT_DIR=/etc/systemd/system$|    SYSTEMD_UNIT_DIR='$SYSTEMD_UNIT_DIR'|" \
     -e "s|/etc/openrung/volunteer.env|$LEGACY_ENV_FILE|g" \
     "$SCRIPT" >"$RUN_SCRIPT" || exit 1
 grep -q "DMI_DIR='$DMI_DIR'" "$RUN_SCRIPT" || {
@@ -85,7 +87,8 @@ grep -q "DMI_DIR='$DMI_DIR'" "$RUN_SCRIPT" || {
 }
 for expected in "TTY_DEVICE='$TTY_FILE'" "PASSWD_FILE='$PASSWD_FILE'" \
     "PROC_NET_IPV4='$PROC_NET_IPV4'" "SYSCTL_DIR='$SYSCTL_DIR'" "MODULES_LOAD_DIR='$MODULES_LOAD_DIR'" \
-    "EGRESS_LIMIT_BIN='$EGRESS_LIMIT_BIN'" "EGRESS_LIMIT_UNIT='$EGRESS_LIMIT_UNIT'" "SYSTEMD_RUN_DIR='$SYSTEMD_RUN_DIR'"; do
+    "EGRESS_LIMIT_BIN='$EGRESS_LIMIT_BIN'" "EGRESS_LIMIT_UNIT='$EGRESS_LIMIT_UNIT'" "SYSTEMD_RUN_DIR='$SYSTEMD_RUN_DIR'" \
+    "SYSTEMD_UNIT_DIR='$SYSTEMD_UNIT_DIR'"; do
     grep -qF "$expected" "$RUN_SCRIPT" || {
         echo "FAIL: volunteer-up.sh no longer assigns ${expected%%=*} where the suite expects" >&2
         exit 1
@@ -156,9 +159,92 @@ printf 'reno cubic bbr\n' >'$PROC_NET_IPV4/tcp_available_congestion_control'
 EOF
 chmod +x "$FAKE_BIN/modprobe"
 
+# The host's IPv6 state for the access address. SIM_IPV6 picks the server:
+# none (no IPv6 default route), routed (a global /64 on eth0, as on most VPS
+# providers), single (one /128, as on providers that assign addresses one
+# by one), ula_first (a unique local /64 listed before the public one) or
+# ula_only. Addresses the helper adds live in $SIM_DIR/ip6 as "address flag",
+# flag "deprecated" or "-" (SIM_DEPRECATE=no models a kernel that ignored
+# preferred_lft). Every call is recorded in $SIM_DIR/ip.log.
+cat >"$FAKE_BIN/ip" <<'EOF'
+#!/bin/sh
+printf 'ip %s\n' "$*" >>"$SIM_DIR/ip.log"
+state=$SIM_DIR/ip6
+touch "$state"
+show_added() {
+    while read -r show_addr show_flag; do
+        [ -z "${1:-}" ] || [ "$show_addr" = "$1" ] || continue
+        [ "$show_flag" = - ] && show_flag=''
+        printf '2: eth0    inet6 %s/128 scope global %s\\       valid_lft forever preferred_lft 0sec\n' "$show_addr" "$show_flag"
+    done <"$state"
+}
+drop() {
+    grep -v "^$1 " "$state" >"$state.tmp"
+    mv "$state.tmp" "$state"
+}
+case "$*" in
+    '-6 route show default')
+        [ "${SIM_IPV6:-none}" = none ] || echo 'default via fe80::1 dev eth0 proto static metric 1024 pref medium'
+        ;;
+    '-6 -o address show dev eth0 scope global')
+        case "${SIM_IPV6:-none}" in
+            routed) echo '2: eth0    inet6 2001:db8:a:b::1/64 scope global \       valid_lft forever preferred_lft forever' ;;
+            single) echo '2: eth0    inet6 2001:db8:a:b::1/128 scope global dynamic noprefixroute \       valid_lft 400sec preferred_lft 100sec' ;;
+            ula_first)
+                echo '2: eth0    inet6 FD12:3456:789A:1::1/64 scope global \       valid_lft forever preferred_lft forever'
+                echo '2: eth0    inet6 2001:db8:a:b::1/64 scope global \       valid_lft forever preferred_lft forever'
+                ;;
+            ula_only) echo '2: eth0    inet6 fd12:3456:789a:1::1/64 scope global \       valid_lft forever preferred_lft forever' ;;
+        esac
+        show_added
+        ;;
+    '-6 address add '*'/128 dev eth0 preferred_lft 0 nodad' | '-6 address replace '*'/128 dev eth0 preferred_lft 0 nodad')
+        addr=${4%/128}
+        if [ "$3" = add ] && grep -q "^$addr " "$state"; then exit 2; fi
+        drop "$addr"
+        if [ "${SIM_DEPRECATE:-yes}" = yes ]; then flag=deprecated; else flag=-; fi
+        printf '%s %s\n' "$addr" "$flag" >>"$state"
+        ;;
+    '-6 -o address show to '*'/128')
+        show_added "${6%/128}"
+        ;;
+    '-o address show to '*)
+        show_added "$5"
+        ;;
+    '-6 address delete '*'/128 dev eth0')
+        grep -q "^${4%/128} " "$state" || exit 2
+        drop "${4%/128}"
+        ;;
+    *)
+        echo "unexpected ip call: $*" >&2
+        exit 2
+        ;;
+esac
+EOF
+
+# curl is only used by the access-address probe here (tests pass the public
+# host): SIM_ACCESS_PROBE=ok answers a request bound to an address, anything
+# else times out, and the source address must be on the interface.
+cat >"$FAKE_BIN/curl" <<'EOF'
+#!/bin/sh
+printf 'curl %s\n' "$*" >>"$SIM_DIR/curl.log"
+bound=''
+while [ "$#" -gt 0 ]; do
+    case "$1" in --interface) bound=$2; shift ;; esac
+    shift
+done
+[ -n "$bound" ] || exit 6
+grep -q "^$bound " "$SIM_DIR/ip6" 2>/dev/null || exit 45
+[ "${SIM_ACCESS_PROBE:-ok}" = ok ] || exit 28
+exit 0
+EOF
+
+chmod +x "$FAKE_BIN/ip" "$FAKE_BIN/curl"
+
 # nftables is installed unless SIM_NFT=absent; then the apt-get stub installs
 # it (unless SIM_APT=fail). nft is probed with --version, so a real nft or
-# apt-get later on PATH is never reached. systemctl only records its calls.
+# apt-get later on PATH is never reached. systemctl records its calls;
+# SIM_SYSTEMCTL=fail makes enabling a unit fail.
 cat >"$FAKE_BIN/nft" <<EOF
 #!/bin/sh
 [ "\${SIM_NFT:-present}" = present ] || [ -e '$NFT_INSTALLED' ] || exit 127
@@ -173,6 +259,8 @@ EOF
 cat >"$FAKE_BIN/systemctl" <<EOF
 #!/bin/sh
 printf 'systemctl %s\n' "\$*" >>'$EGRESS_LOG'
+if [ "\${SIM_SYSTEMCTL:-ok}" = fail ] && [ "\${1:-}" = enable ]; then exit 1; fi
+exit 0
 EOF
 chmod +x "$FAKE_BIN/nft" "$FAKE_BIN/apt-get" "$FAKE_BIN/systemctl"
 
@@ -572,6 +660,9 @@ reset_simulation() {
     rm -rf "${EGRESS_LIMIT_BIN%/*}" "${EGRESS_LIMIT_UNIT%/*}" "$SYSTEMD_RUN_DIR" "$NFT_INSTALLED"
     mkdir -p "${EGRESS_LIMIT_UNIT%/*}" "$SYSTEMD_RUN_DIR"
     : >"$EGRESS_LOG"
+    rm -rf "$SYSTEMD_UNIT_DIR"
+    mkdir -p "$SYSTEMD_UNIT_DIR"
+    rm -f "$SIM_DIR/ip6" "$SIM_DIR/ip.log" "$SIM_DIR/curl.log"
 }
 
 write_env() {
@@ -1405,6 +1496,243 @@ test_tcp_tuning_waits_for_preflight() {
     assert_tcp_untouched "Foundation-owned env"
 }
 
+# --- IPv6 access address ---------------------------------------------------
+
+access_env_line() {
+    grep '^OPENRUNG_ACCESS_HOST=' "$ENV_FILE"
+}
+
+assert_no_access_address() { # label
+    if ! grep -q '^OPENRUNG_ACCESS_HOST=' "$ENV_FILE" \
+        && [ ! -s "$SIM_DIR/ip6" ] \
+        && [ -z "$(ls -A "$SYSTEMD_UNIT_DIR")" ]; then
+        pass
+    else
+        fail "$1: expected no access address, env line, or units; env='$(access_env_line)' ip6='$(cat "$SIM_DIR/ip6" 2>/dev/null)' units='$(ls "$SYSTEMD_UNIT_DIR")'"
+    fi
+}
+
+test_access_address_added_on_routed_ipv6() {
+    reset_simulation
+    mkdir -p "$SYSTEMD_RUN_DIR"
+    write_env
+    run_volunteer_up ok OPENRUNG_ACCESS_ADDRESS=1 SIM_IPV6=routed
+    access_line=$(access_env_line)
+    access_addr=${access_line#OPENRUNG_ACCESS_HOST=}
+    case "$access_addr" in
+        2001:db8:a:b:[0-9a-f][0-9a-f][0-9a-f][0-9a-f]:[0-9a-f][0-9a-f][0-9a-f][0-9a-f]:[0-9a-f][0-9a-f][0-9a-f][0-9a-f]:[0-9a-f][0-9a-f][0-9a-f][0-9a-f]) pass ;;
+        *) fail "access address: expected a random address in 2001:db8:a:b::/64 in the env file, got '$access_line' (rc=$RUN_RC)" ;;
+    esac
+    if [ "$(cat "$SIM_DIR/ip6")" = "$access_addr deprecated" ]; then
+        pass
+    else
+        fail "access address: expected exactly '$access_addr deprecated' on the interface, got '$(cat "$SIM_DIR/ip6")'"
+    fi
+    if grep -qx "ExecStart=$FAKE_BIN/ip -6 address replace $access_addr/128 dev eth0 preferred_lft 0 nodad" \
+            "$SYSTEMD_UNIT_DIR/openrung-access-address.service" \
+        && grep -q '^Before=docker.service$' "$SYSTEMD_UNIT_DIR/openrung-access-address.service" \
+        && grep -q "show to $access_addr/128 | grep -q deprecated" "$SYSTEMD_UNIT_DIR/openrung-access-address-reassert.service" \
+        && grep -q '^OnUnitActiveSec=1min$' "$SYSTEMD_UNIT_DIR/openrung-access-address-reassert.timer" \
+        && grep -qx 'systemctl enable --now openrung-access-address-reassert.timer' "$EGRESS_LOG" \
+        && grep -q -- "--interface $access_addr" "$SIM_DIR/curl.log"; then
+        pass
+    else
+        fail "access address: units, timer, or routing probe missing; systemctl='$(cat "$EGRESS_LOG" 2>/dev/null)'"
+    fi
+    assert_output_has "access address" "IPv6 access address: $access_addr on eth0"
+    assert_candidate_is_live "access address"
+
+    # A re-run keeps the recorded address: no new address, no second line.
+    reset_simulation_containers_only
+    run_volunteer_up ok OPENRUNG_ACCESS_ADDRESS=1 SIM_IPV6=routed
+    if [ "$(grep -c '^OPENRUNG_ACCESS_HOST=' "$ENV_FILE")" = 1 ] \
+        && [ "$(access_env_line)" = "$access_line" ] \
+        && ! grep -q 'address add' "$SIM_DIR/ip.log"; then
+        pass
+    else
+        fail "access address re-run: expected the recorded address kept, got '$(access_env_line)'"
+    fi
+    assert_output_has "access address re-run" "IPv6 access address: $access_addr\$"
+}
+
+# Keeps the env file, the host's addresses and units; resets containers and logs.
+reset_simulation_containers_only() {
+    rm -rf "$CONTAINERS"
+    mkdir -p "$CONTAINERS"
+    printf 'true 0 yes prior id-prior\n' >"$CONTAINERS/openrung-relay"
+    : >"$DOCKER_LOG"
+    : >"$SIM_DIR/ip.log"
+    rm -f "$SIM_DIR/logs_calls"
+}
+
+test_access_address_unrouted_is_removed() {
+    reset_simulation
+    mkdir -p "$SYSTEMD_RUN_DIR"
+    write_env
+    run_volunteer_up ok OPENRUNG_ACCESS_ADDRESS=1 SIM_IPV6=routed SIM_ACCESS_PROBE=timeout
+    assert_no_access_address "unrouted access address"
+    assert_output_has "unrouted access address" 'IPv6 access address: none (the provider does not route'
+    assert_candidate_is_live "unrouted access address"
+}
+
+test_access_address_not_deprecated_is_removed() {
+    reset_simulation
+    mkdir -p "$SYSTEMD_RUN_DIR"
+    write_env
+    run_volunteer_up ok OPENRUNG_ACCESS_ADDRESS=1 SIM_IPV6=routed SIM_DEPRECATE=no
+    assert_no_access_address "non-deprecated access address"
+    if [ -f "$SIM_DIR/curl.log" ]; then fail "non-deprecated access address: probed before removing"; else pass; fi
+    assert_candidate_is_live "non-deprecated access address"
+}
+
+test_access_address_unit_failure_is_removed() {
+    reset_simulation
+    mkdir -p "$SYSTEMD_RUN_DIR"
+    write_env
+    run_volunteer_up ok OPENRUNG_ACCESS_ADDRESS=1 SIM_IPV6=routed SIM_SYSTEMCTL=fail
+    assert_no_access_address "access unit failure"
+    assert_output_has "access unit failure" 'could not install the systemd units'
+    assert_candidate_is_live "access unit failure"
+}
+
+test_access_address_needs_routed_prefix() {
+    reset_simulation
+    mkdir -p "$SYSTEMD_RUN_DIR"
+    write_env
+    run_volunteer_up ok OPENRUNG_ACCESS_ADDRESS=1 SIM_IPV6=single
+    assert_no_access_address "single IPv6 address"
+    assert_output_has "single IPv6 address" 'IPv6 access address: none (no global IPv6 /64 on eth0)'
+
+    reset_simulation
+    mkdir -p "$SYSTEMD_RUN_DIR"
+    write_env
+    run_volunteer_up ok OPENRUNG_ACCESS_ADDRESS=1 SIM_IPV6=none
+    assert_no_access_address "no IPv6"
+    assert_output_has "no IPv6" 'IPv6 access address: none (no IPv6 default route)'
+
+    # Without systemd the address would not survive a reboot.
+    reset_simulation
+    write_env
+    rm -rf "$SYSTEMD_RUN_DIR"
+    run_volunteer_up ok OPENRUNG_ACCESS_ADDRESS=1 SIM_IPV6=routed
+    assert_no_access_address "no systemd"
+    assert_output_has "no systemd" 'needs systemd'
+    assert_candidate_is_live "no systemd"
+}
+
+# The broker checks only the public endpoint, and nothing on the host can
+# test inbound IPv6 TCP 443 from outside: an outbound routing check that
+# passes says nothing about the provider firewall. So without the operator's
+# opt-in no address is added even where the routing check would pass.
+test_access_address_is_opt_in() {
+    reset_simulation
+    write_env
+    run_volunteer_up ok SIM_IPV6=routed SIM_ACCESS_PROBE=ok
+    assert_no_access_address "access default off"
+    if [ ! -f "$SIM_DIR/curl.log" ] && ! grep -q 'address add' "$SIM_DIR/ip.log" 2>/dev/null; then
+        pass
+    else
+        fail "access default off: the host was probed or changed without the opt-in"
+    fi
+    assert_output_has "access default off" 'IPv6 access address: off (to add one, allow inbound TCP 443 over IPv6'
+    assert_candidate_is_live "access default off"
+
+    # An empty recorded value (the documented removal) wins over the opt-in.
+    reset_simulation
+    write_env 'OPENRUNG_ACCESS_HOST='
+    run_volunteer_up ok OPENRUNG_ACCESS_ADDRESS=1 SIM_IPV6=routed
+    if [ "$(access_env_line)" = 'OPENRUNG_ACCESS_HOST=' ] && [ ! -s "$SIM_DIR/ip6" ]; then
+        pass
+    else
+        fail "access recorded none: expected the empty value kept and no address, got '$(access_env_line)'"
+    fi
+    assert_candidate_is_live "access recorded none"
+}
+
+test_access_address_skips_unique_local_prefix() {
+    reset_simulation
+    write_env
+    run_volunteer_up ok OPENRUNG_ACCESS_ADDRESS=1 SIM_IPV6=ula_first
+    case "$(access_env_line)" in
+        OPENRUNG_ACCESS_HOST=2001:db8:a:b:*) pass ;;
+        *) fail "ULA before public /64: expected an address in the public /64, got '$(access_env_line)'" ;;
+    esac
+
+    reset_simulation
+    write_env
+    run_volunteer_up ok OPENRUNG_ACCESS_ADDRESS=1 SIM_IPV6=ula_only
+    assert_no_access_address "ULA only"
+    assert_output_has "ULA only" 'no global IPv6 /64 on eth0'
+}
+
+# A hand-edited env file may end without a newline; appended settings must
+# still land on lines of their own.
+test_env_append_ends_unterminated_last_line() {
+    reset_simulation
+    printf 'OPENRUNG_BROKER_URL=https://broker-origin.openrung.org\nOPENRUNG_PUBLIC_HOST=8.8.8.8\nOPENRUNG_IDENTITY_SEED=test-identity-seed\nOPENRUNG_LISTEN_PORT=443' >"$ENV_FILE"
+    run_volunteer_up ok OPENRUNG_ACCESS_ADDRESS=1 SIM_IPV6=routed
+    if grep -qx 'OPENRUNG_LISTEN_PORT=443' "$ENV_FILE" \
+        && grep -qx 'OPENRUNG_LABEL=amber-alpaca' "$ENV_FILE" \
+        && grep -Eqx 'OPENRUNG_ACCESS_HOST=2001:db8:a:b:[0-9a-f:]+' "$ENV_FILE" \
+        && [ "$(tail -c 1 "$ENV_FILE" | od -An -c | tr -d ' ')" = '\n' ]; then
+        pass
+    else
+        fail "unterminated env file: appended settings merged into the last line: $(cat "$ENV_FILE")"
+    fi
+    assert_candidate_is_live "unterminated env file"
+
+    reset_simulation
+    printf 'OPENRUNG_BROKER_URL=https://broker-origin.openrung.org\nOPENRUNG_PUBLIC_HOST=8.8.8.8\nOPENRUNG_IDENTITY_SEED=test-identity-seed\nOPENRUNG_LABEL=kept\nOPENRUNG_LISTEN_PORT=443' >"$ENV_FILE"
+    run_volunteer_up ok OPENRUNG_OPERATOR_CONTACT=ops@example.org
+    if grep -qx 'OPENRUNG_LISTEN_PORT=443' "$ENV_FILE" \
+        && grep -qx 'OPENRUNG_OPERATOR_CONTACT=ops@example.org' "$ENV_FILE"; then
+        pass
+    else
+        fail "unterminated env file (contact): appended setting merged into the last line: $(cat "$ENV_FILE")"
+    fi
+}
+
+test_access_address_skips_customised_relay() {
+    reset_simulation
+    mkdir -p "$SYSTEMD_RUN_DIR"
+    write_env 'OPENRUNG_CONNECTION_LOG=true'
+    run_volunteer_up ok OPENRUNG_ACCESS_ADDRESS=1 SIM_IPV6=routed
+    assert_no_access_address "connection logging relay"
+    reset_simulation
+    mkdir -p "$SYSTEMD_RUN_DIR"
+    write_env 'OPENRUNG_LISTEN_HOST=203.0.113.9'
+    run_volunteer_up ok OPENRUNG_ACCESS_ADDRESS=1 SIM_IPV6=routed
+    assert_no_access_address "literal listen host relay"
+}
+
+test_bad_access_value_is_refused_before_mutation() {
+    reset_simulation
+    write_env
+    run_volunteer_up ok OPENRUNG_ACCESS_ADDRESS=yes
+    assert_nonzero "$RUN_RC" "bad access value"
+    assert_no_mutating_docker_calls "bad access value"
+    assert_output_has "bad access value" 'OPENRUNG_ACCESS_ADDRESS must be 0 or 1'
+}
+
+expect_expanded_ipv6() { # input expected
+    got=$("$TEST_SHELL" -c '. "$1"; expand_ipv6 "$2"' sh "$LIB_SCRIPT" "$1" 2>/dev/null) || got='<fail>'
+    if [ "$got" = "$2" ]; then pass; else fail "expand_ipv6 '$1': expected '$2', got '$got'"; fi
+}
+
+test_expand_ipv6() {
+    expect_expanded_ipv6 2001:db8:a:b::1 2001:db8:a:b:0:0:0:1
+    expect_expanded_ipv6 2a01:4f8:c17::1 2a01:4f8:c17:0:0:0:0:1
+    expect_expanded_ipv6 1:2:3:4:5:6:7:8 1:2:3:4:5:6:7:8
+    expect_expanded_ipv6 fe80:: fe80:0:0:0:0:0:0:0
+    expect_expanded_ipv6 '' '<fail>'
+    expect_expanded_ipv6 1:2:3:4:5:6:7 '<fail>'
+    expect_expanded_ipv6 1::2::3 '<fail>'
+    expect_expanded_ipv6 1:::2 '<fail>'
+    expect_expanded_ipv6 ::ffff:1.2.3.4 '<fail>'
+    expect_expanded_ipv6 12345::1 '<fail>'
+    expect_expanded_ipv6 1:2:3:4:5:6:7:8::9 '<fail>'
+}
+
 egress_log_is() { # label expected
     if [ "$(cat "$EGRESS_LOG")" = "$2" ]; then
         pass
@@ -1585,6 +1913,17 @@ test_egress_limit_rate_and_off
 test_egress_limit_skipped_on_rollback
 test_egress_limit_installs_missing_nftables
 test_egress_limit_failures_only_warn
+test_access_address_added_on_routed_ipv6
+test_access_address_unrouted_is_removed
+test_access_address_not_deprecated_is_removed
+test_access_address_unit_failure_is_removed
+test_access_address_needs_routed_prefix
+test_access_address_is_opt_in
+test_access_address_skips_unique_local_prefix
+test_env_append_ends_unterminated_last_line
+test_access_address_skips_customised_relay
+test_bad_access_value_is_refused_before_mutation
+test_expand_ipv6
 
 if [ "$FAIL" -ne 0 ]; then
     echo "volunteer-up tests: $PASS passed, $FAIL failed" >&2

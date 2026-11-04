@@ -49,6 +49,10 @@
 #   OPENRUNG_TCP_TUNING   1 (default) applies the host TCP tuning described
 #                         below; 0 leaves the host's TCP settings alone.
 #                         Read on every run.
+#   OPENRUNG_ACCESS_ADDRESS
+#                         1 gives the relay an IPv6 access address as
+#                         described below; 0 (default) leaves it without one.
+#                         Read on every run until relay.env records an address.
 #   OPENRUNG_NEW_DEST_RATE
 #                         new destination addresses per second the host may
 #                         open connections to (default 10; see the
@@ -58,7 +62,25 @@
 # authoritative and overrides are ignored (edit the file instead). The
 # exceptions are the run-time knobs OPENRUNG_REACHABILITY_WAIT,
 # OPENRUNG_TCP_TUNING and OPENRUNG_NEW_DEST_RATE, which no file records, so
-# pass them on every run.
+# pass them on every run, and OPENRUNG_ACCESS_ADDRESS, read until relay.env
+# records an address.
+#
+# Addresses: the relay's public address (OPENRUNG_PUBLIC_HOST, listed in the
+# public relay directory) is the server's IPv4. With OPENRUNG_ACCESS_ADDRESS=1
+# on a server with a public IPv6 /64, the relay also gets an access address:
+# one more IPv6 address from that /64, which the relay sends privately at
+# registration and the broker hands only to enrolled IPv6 clients in place of
+# the public address. The broker checks only that the public address accepts
+# connections, so the access address is opt-in: set it only after allowing
+# inbound TCP 443 over IPv6 (::/0) in the provider's firewall. The address is
+# recorded as OPENRUNG_ACCESS_HOST in relay.env and kept on the interface by
+# two systemd units (openrung-access-address.service and
+# openrung-access-address-reassert.timer). A server whose provider does not
+# route its /64 to it, or that runs without systemd, simply has none. To
+# remove it: systemctl disable --now openrung-access-address-reassert.timer
+# openrung-access-address.service, delete both units' files (and the
+# reassert .service) from /etc/systemd/system, set OPENRUNG_ACCESS_HOST= (empty)
+# in relay.env, and re-run.
 #
 # TCP tuning: the relay shares the host's network stack, so the script switches
 # the host to BBR congestion control and turns off the congestion-window reset
@@ -487,6 +509,251 @@ tune_tcp() {
     fi
 }
 
+# --- IPv6 access address ----------------------------------------------------
+# The access address is a random address in the /64 of the server's global
+# IPv6 on its default-route interface, added deprecated (preferred_lft 0): the
+# kernel accepts and answers connections to it but never picks it as the source
+# of a new one, so the relay's own traffic (registration, heartbeats, client
+# egress) stays on the primary addresses, and the relay checks exactly that
+# before every registration. nodad skips duplicate address detection, which
+# would hold the address tentative; 64 random bits make a collision negligible.
+#
+# Most VPS providers route the whole /64 to the server; some assign addresses
+# one by one (AWS, Google Cloud, Azure, others), and an address they did not
+# assign is unreachable. So before keeping it, the script proves the return
+# path: one HTTPS request sent from that address to a large public DNS
+# resolver's web front. When that fails, or anything else is missing, the
+# address is removed again and the relay runs with its public address only.
+# Never fatal. That proves routing, not that inbound TCP 443 is open: nothing
+# here can test that from outside, which is why the operator opts in.
+ACCESS_UNIT_NAME=openrung-access-address.service
+ACCESS_REASSERT_NAME=openrung-access-address-reassert
+ACCESS_PROBE_URLS="https://one.one.one.one https://dns.google"
+
+# The last value of a key in the env file (docker --env-file: last wins).
+env_value() { # key
+    sed -n "s/^$1=//p" "$ENV_FILE" | tail -n 1
+}
+
+# Appends one KEY=value line to the env file, first ending a hand-edited last
+# line that has no newline, so the two never run together into one setting.
+append_env() { # line
+    umask 077
+    {
+        cat "$ENV_FILE" \
+            && if [ -n "$(tail -c 1 "$ENV_FILE")" ]; then printf '\n'; fi \
+            && printf '%s\n' "$1"
+    } >"$ENV_FILE.tmp" || die "could not stage ${1%%=*} into $ENV_FILE.tmp"
+    mv "$ENV_FILE.tmp" "$ENV_FILE"
+}
+
+# Prints an IPv6 address as eight colon-separated groups, or fails on anything
+# that is not a plain IPv6 address (embedded IPv4 included).
+expand_ipv6() { # address
+    printf '%s\n' "$1" | awk '
+        NR > 1 || $0 == "" || /[^0-9A-Fa-f:]/ || /:::/ { bad = 1; exit }
+        {
+            halves = split($0, half, "::")
+            if (halves > 2) { bad = 1; exit }
+            nh = half[1] == "" ? 0 : split(half[1], h, ":")
+            nt = (halves == 2 && half[2] != "") ? split(half[2], t, ":") : 0
+            fill = 8 - nh - nt
+            if ((halves == 1 && fill != 0) || (halves == 2 && fill < 1)) { bad = 1; exit }
+            n = 0
+            for (i = 1; i <= nh; i++) g[++n] = h[i]
+            for (i = 1; i <= fill; i++) g[++n] = "0"
+            for (i = 1; i <= nt; i++) g[++n] = t[i]
+            out = ""
+            for (i = 1; i <= 8; i++) {
+                if (g[i] == "" || length(g[i]) > 4) { bad = 1; exit }
+                out = out (i > 1 ? ":" : "") g[i]
+            }
+        }
+        END { if (bad || out == "") exit 1; print out }'
+}
+
+# The first four groups of the interface's first stable /64 address in the
+# public unicast space 2000::/3 (not deprecated, temporary or tentative).
+# Linux reports unique local addresses (fc00::/7) as scope global too; the
+# relay refuses those as an access address, so they are skipped here.
+ipv6_prefix64() { # dev
+    p6_addr="$(ip -6 -o address show dev "$1" scope global 2>/dev/null \
+        | awk '/ (deprecated|tentative|temporary|dadfailed)( |$)/ { next }
+               { a = tolower($4) }
+               a ~ /^[23][0-9a-f][0-9a-f][0-9a-f]:.*\/64$/ { sub(/\/64$/, "", a); print a; exit }')" || return 1
+    [ -n "$p6_addr" ] || return 1
+    p6_full="$(expand_ipv6 "$p6_addr")" || return 1
+    printf '%s' "$p6_full" | cut -d: -f1-4
+}
+
+# Succeeds when the address is on an interface and deprecated.
+access_in_place() { # address
+    ip -6 -o address show to "$1/128" 2>/dev/null | grep -q deprecated
+}
+
+# Succeeds when a request sent from the address gets any HTTP answer, which
+# proves the provider routes the address back to this server.
+access_routed() { # address
+    for ar_url in $ACCESS_PROBE_URLS; do
+        if curl -6 -s -o /dev/null --max-time 10 --interface "$1" "$ar_url" >/dev/null 2>&1; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+access_address_unit() { # address dev
+    cat <<UNIT
+[Unit]
+Description=OpenRung relay access address
+After=network-online.target
+Wants=network-online.target
+Before=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=$IP_BIN -6 address replace $1/128 dev $2 preferred_lft 0 nodad
+ExecStop=-$IP_BIN -6 address delete $1/128 dev $2
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+}
+
+# A network manager that reconfigures the interface (systemd-networkd restarted
+# by unattended upgrades, for one) drops addresses it does not own, while the
+# one-shot unit above stays "active". Every minute this re-adds the address
+# when it is missing or no longer deprecated, logging a warning only then.
+access_reassert_service() { # address dev
+    cat <<UNIT
+[Unit]
+Description=Re-add the OpenRung relay access address if it is missing
+After=${ACCESS_UNIT_NAME}
+
+[Service]
+Type=oneshot
+LogLevelMax=notice
+ExecCondition=$SYSTEMCTL_BIN is-active --quiet ${ACCESS_UNIT_NAME}
+ExecStart=/bin/sh -c '$IP_BIN -6 -o address show to $1/128 | grep -q deprecated || { $IP_BIN -6 address replace $1/128 dev $2 preferred_lft 0 nodad && echo "<4>re-added access address $1 on $2"; }'
+UNIT
+}
+
+access_reassert_timer() {
+    cat <<UNIT
+[Unit]
+Description=Re-assert the OpenRung relay access address every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
+UNIT
+}
+
+# Writes and starts the boot unit and the re-assert timer for the address.
+install_access_units() { # address dev
+    (
+        umask 022
+        access_address_unit "$1" "$2" >"$SYSTEMD_UNIT_DIR/$ACCESS_UNIT_NAME" \
+            && access_reassert_service "$1" "$2" >"$SYSTEMD_UNIT_DIR/$ACCESS_REASSERT_NAME.service" \
+            && access_reassert_timer >"$SYSTEMD_UNIT_DIR/$ACCESS_REASSERT_NAME.timer"
+    ) 2>/dev/null \
+        && systemctl daemon-reload >/dev/null 2>&1 \
+        && systemctl enable "$ACCESS_UNIT_NAME" >/dev/null 2>&1 \
+        && systemctl restart "$ACCESS_UNIT_NAME" >/dev/null 2>&1 \
+        && systemctl enable --now "$ACCESS_REASSERT_NAME.timer" >/dev/null 2>&1
+}
+
+# Undoes install_access_units and removes the address. Best effort.
+remove_access_address() { # address dev
+    systemctl disable --now "$ACCESS_REASSERT_NAME.timer" "$ACCESS_UNIT_NAME" >/dev/null 2>&1 || :
+    rm -f "$SYSTEMD_UNIT_DIR/$ACCESS_UNIT_NAME" "$SYSTEMD_UNIT_DIR/$ACCESS_REASSERT_NAME.service" \
+        "$SYSTEMD_UNIT_DIR/$ACCESS_REASSERT_NAME.timer"
+    systemctl daemon-reload >/dev/null 2>&1 || :
+    ip -6 address delete "$1/128" dev "$2" >/dev/null 2>&1 || :
+}
+
+access_none() { # reason
+    log "IPv6 access address: none ($1); clients reach this relay at its public address"
+}
+
+# Gives the relay its access address when the operator asked for one and
+# relay.env does not already record one (or record none). Runs before the
+# candidate is created, so the candidate's first registration carries it.
+setup_access_address() {
+    if grep -q '^OPENRUNG_ACCESS_HOST=' "$ENV_FILE"; then
+        sa_addr="$(env_value OPENRUNG_ACCESS_HOST)"
+        if [ -z "$sa_addr" ]; then
+            log "IPv6 access address: none (OPENRUNG_ACCESS_HOST is empty in $ENV_FILE)"
+        elif ip -o address show to "$sa_addr" 2>/dev/null | grep -q .; then
+            log "IPv6 access address: $sa_addr"
+        else
+            log "warning: the access address $sa_addr in $ENV_FILE is not on this host, so the relay does not advertise it; to pick a new one, delete the OPENRUNG_ACCESS_HOST line from $ENV_FILE and re-run"
+        fi
+        return 0
+    fi
+    if [ "$ACCESS_ADDRESS" = 0 ]; then
+        log "IPv6 access address: off (to add one, allow inbound TCP 443 over IPv6 in the provider's firewall, then re-run with OPENRUNG_ACCESS_ADDRESS=1)"
+        return 0
+    fi
+    # The relay refuses an access address outside direct mode, with
+    # connection logging, or with a literal listen host, and would exit at
+    # startup; leave hand-customised relays alone.
+    if grep -Eq '^OPENRUNG_(MODE|TUNNEL|HUB_ADDR|WSS_FRONTS|CONNECTION_LOG)=.' "$ENV_FILE"; then
+        access_none "$ENV_FILE sets a relay mode, tunnel, hub, WSS fronts or connection logging"
+        return 0
+    fi
+    case "$(env_value OPENRUNG_LISTEN_HOST)" in
+        '' | '::') ;;
+        *) access_none "$ENV_FILE sets OPENRUNG_LISTEN_HOST"; return 0 ;;
+    esac
+    if [ ! -d "$SYSTEMD_RUN_DIR" ] || ! SYSTEMCTL_BIN="$(command -v systemctl)"; then
+        access_none "keeping it across reboots needs systemd"
+        return 0
+    fi
+    if ! IP_BIN="$(command -v ip)" || ! command -v curl >/dev/null 2>&1 || ! command -v od >/dev/null 2>&1; then
+        access_none "needs the ip, curl and od commands"
+        return 0
+    fi
+    sa_dev="$(ip -6 route show default 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n 1)" || sa_dev=""
+    case "$sa_dev" in
+        '') access_none "no IPv6 default route"; return 0 ;;
+        *[!A-Za-z0-9._@-]*) access_none "unexpected interface name"; return 0 ;;
+    esac
+    if ! sa_prefix="$(ipv6_prefix64 "$sa_dev")"; then
+        access_none "no global IPv6 /64 on $sa_dev"
+        return 0
+    fi
+    sa_iid="$(od -An -tx2 -N8 /dev/urandom | awk 'NF == 4 { print $1 ":" $2 ":" $3 ":" $4 }')" || sa_iid=""
+    [ -n "$sa_iid" ] || { access_none "could not draw a random address"; return 0; }
+    sa_addr="$sa_prefix:$sa_iid"
+    if ! ip -6 address add "$sa_addr/128" dev "$sa_dev" preferred_lft 0 nodad >/dev/null 2>&1; then
+        access_none "could not add an address on $sa_dev"
+        return 0
+    fi
+    if ! access_in_place "$sa_addr"; then
+        remove_access_address "$sa_addr" "$sa_dev"
+        access_none "the kernel did not mark the address deprecated"
+        return 0
+    fi
+    if ! access_routed "$sa_addr"; then
+        remove_access_address "$sa_addr" "$sa_dev"
+        access_none "the provider does not route other addresses of this server's /64 to it"
+        return 0
+    fi
+    if ! install_access_units "$sa_addr" "$sa_dev" || ! access_in_place "$sa_addr"; then
+        remove_access_address "$sa_addr" "$sa_dev"
+        log "warning: could not install the systemd units that keep the IPv6 access address; the relay runs with its public address only"
+        return 0
+    fi
+    append_env "OPENRUNG_ACCESS_HOST=$sa_addr"
+    log "IPv6 access address: $sa_addr on $sa_dev (sent privately to the broker; never published; kept by $ACCESS_UNIT_NAME)"
+}
+
 # --- new-destination limit ---------------------------------------------------
 # The image ships the ruleset script as /usr/local/bin/egress-limit, so it
 # versions with the relay. As on the Foundation fleet, a capability-less,
@@ -756,6 +1023,9 @@ main() {
         off) ;;
         '' | *[!0-9]* | 0*) die "OPENRUNG_NEW_DEST_RATE must be a positive whole number or 'off'" ;;
     esac
+    ACCESS_ADDRESS="${OPENRUNG_ACCESS_ADDRESS:-0}"
+    case "$ACCESS_ADDRESS" in 0 | 1) ;; *) die "OPENRUNG_ACCESS_ADDRESS must be 0 or 1" ;; esac
+    SYSTEMD_UNIT_DIR=/etc/systemd/system
     CONTAINER=openrung-relay
     OLD_CONTAINER=openrung-relay-old
     NEW_CONTAINER=openrung-relay-new
@@ -882,10 +1152,7 @@ main() {
                 LABEL="$(random_label)"
                 [ -n "$LABEL" ] || die "could not generate a relay name"
             fi
-            umask 077
-            { cat "$ENV_FILE" && printf 'OPENRUNG_LABEL=%s\n' "$LABEL"; } >"$ENV_FILE.tmp" \
-                || die "could not stage the relay name into $ENV_FILE.tmp"
-            mv "$ENV_FILE.tmp" "$ENV_FILE"
+            append_env "OPENRUNG_LABEL=$LABEL"
             log "pinned relay name '${LABEL}' into $ENV_FILE (this relay was unnamed; its dashboard name changed on every restart)"
         elif [ -n "${OPENRUNG_LABEL:-}" ]; then
             log "note: OPENRUNG_LABEL does not change an existing name — edit $ENV_FILE and re-run instead"
@@ -895,10 +1162,7 @@ main() {
         # and the question is never asked again.
         effective_contact="$(sed -n 's/^OPENRUNG_OPERATOR_CONTACT=//p' "$ENV_FILE" | tail -1)" || effective_contact=""
         if [ -z "$effective_contact" ] && [ -n "$OPERATOR_CONTACT" ]; then
-            umask 077
-            { cat "$ENV_FILE" && printf 'OPENRUNG_OPERATOR_CONTACT=%s\n' "$OPERATOR_CONTACT"; } >"$ENV_FILE.tmp" \
-                || die "could not stage the operator contact into $ENV_FILE.tmp"
-            mv "$ENV_FILE.tmp" "$ENV_FILE"
+            append_env "OPENRUNG_OPERATOR_CONTACT=$OPERATOR_CONTACT"
             log "saved operator contact '${OPERATOR_CONTACT}' in $ENV_FILE (sent privately to the broker; never published)"
         elif [ -n "$OPERATOR_CONTACT" ] && [ "$OPERATOR_CONTACT" != "$effective_contact" ]; then
             log "note: OPENRUNG_OPERATOR_CONTACT does not change an existing contact — edit $ENV_FILE and re-run instead"
@@ -953,6 +1217,7 @@ main() {
             log "operator contact '${OPERATOR_CONTACT}' is sent privately to the broker and never published"
         fi
     fi
+    setup_access_address
 
     # Updates are a recoverable transaction. Host networking prevents the old
     # and new relay from listening on 443 simultaneously, so retain the exact
