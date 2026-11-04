@@ -214,21 +214,25 @@ the limit's boot unit; `OPENRUNG_NEW_DEST_RATE` sets the rate on any run, and
 `OPENRUNG_NEW_DEST_RATE=off` removes the limit. A host where it cannot load
 only gets a warning; the relay serves either way.
 
-The relay's public address is the server's IPv4. When the server also has an
-IPv6 /64, the script gives the relay an **access address** (see Networking
-notes): a random address in that /64, added deprecated so the relay's own
-traffic never uses it, recorded as `OPENRUNG_ACCESS_HOST` in the env file and
-kept by `openrung-access-address.service` and
+The relay's public address is the server's IPv4. On a server with a public
+IPv6 /64, `OPENRUNG_ACCESS_ADDRESS=1` in the one-line command also gives the
+relay an **access address** (see Networking notes): a random address in that
+/64, added deprecated so the relay's own traffic never uses it, recorded as
+`OPENRUNG_ACCESS_HOST` in the env file and kept by
+`openrung-access-address.service` and
 `openrung-access-address-reassert.timer`, named as on the Foundation fleet. The
 relay sends it privately at registration; it never appears in the public relay
-directory. Before keeping the address, the script sends one HTTPS request from
-it to a public DNS resolver's web front, proving the provider routes the
-address to the server; providers that assign IPv6 addresses one by one (AWS,
-Google Cloud, Azure and others) fail that check, and the address is removed
-again. A server without IPv6, without systemd, or with a hand-customised mode,
-listen host or connection logging gets none, and the relay serves on its
-public address alone. `OPENRUNG_ACCESS_ADDRESS=0` records
-`OPENRUNG_ACCESS_HOST=` (none) instead; a recorded value, empty or not, is
+directory, and the broker hands it to enrolled IPv6 clients instead of the
+public address. The broker checks only that the public address accepts
+connections, so this is opt-in: allow inbound TCP 443 over IPv6 (`::/0`) in
+the provider's firewall first. Before keeping the address, the script sends
+one HTTPS request from it to a public DNS resolver's web front, proving the
+provider routes the address to the server; providers that assign IPv6
+addresses one by one (AWS, Google Cloud, Azure and others) fail that check,
+and the address is removed again. Unique local (`fc00::/7`) prefixes are
+never used. A server without a public IPv6 /64, without systemd, or with a
+hand-customised mode, listen host or connection logging gets none, and the
+relay serves on its public address alone. A recorded value, empty or not, is
 kept on every later run. To remove an address, disable and delete the three
 units, set `OPENRUNG_ACCESS_HOST=` in the env file and re-run.
 
@@ -483,7 +487,7 @@ not need to match.
   value, which re-registers the relay. The fleet audit reports `access=none`, or the address
   with `access_state=present|missing|preferred`, whether its unit is enabled
   and whether its re-assert timer is active (`access_reassert=`). `volunteer-up.sh`
-  gives volunteer relays an IPv6 access address the same way (see the one-line
+  gives volunteer relays an IPv6 access address on request (see the one-line
   bring-up above); the desktop app never sets one.
 
   An access address may also be IPv4, typically beside an IPv6

@@ -161,8 +161,9 @@ chmod +x "$FAKE_BIN/modprobe"
 
 # The host's IPv6 state for the access address. SIM_IPV6 picks the server:
 # none (no IPv6 default route), routed (a global /64 on eth0, as on most VPS
-# providers) or single (one /128, as on providers that assign addresses one
-# by one). Addresses the helper adds live in $SIM_DIR/ip6 as "address flag",
+# providers), single (one /128, as on providers that assign addresses one
+# by one), ula_first (a unique local /64 listed before the public one) or
+# ula_only. Addresses the helper adds live in $SIM_DIR/ip6 as "address flag",
 # flag "deprecated" or "-" (SIM_DEPRECATE=no models a kernel that ignored
 # preferred_lft). Every call is recorded in $SIM_DIR/ip.log.
 cat >"$FAKE_BIN/ip" <<'EOF'
@@ -189,6 +190,11 @@ case "$*" in
         case "${SIM_IPV6:-none}" in
             routed) echo '2: eth0    inet6 2001:db8:a:b::1/64 scope global \       valid_lft forever preferred_lft forever' ;;
             single) echo '2: eth0    inet6 2001:db8:a:b::1/128 scope global dynamic noprefixroute \       valid_lft 400sec preferred_lft 100sec' ;;
+            ula_first)
+                echo '2: eth0    inet6 FD12:3456:789A:1::1/64 scope global \       valid_lft forever preferred_lft forever'
+                echo '2: eth0    inet6 2001:db8:a:b::1/64 scope global \       valid_lft forever preferred_lft forever'
+                ;;
+            ula_only) echo '2: eth0    inet6 fd12:3456:789a:1::1/64 scope global \       valid_lft forever preferred_lft forever' ;;
         esac
         show_added
         ;;
@@ -1510,7 +1516,7 @@ test_access_address_added_on_routed_ipv6() {
     reset_simulation
     mkdir -p "$SYSTEMD_RUN_DIR"
     write_env
-    run_volunteer_up ok SIM_IPV6=routed
+    run_volunteer_up ok OPENRUNG_ACCESS_ADDRESS=1 SIM_IPV6=routed
     access_line=$(access_env_line)
     access_addr=${access_line#OPENRUNG_ACCESS_HOST=}
     case "$access_addr" in
@@ -1538,7 +1544,7 @@ test_access_address_added_on_routed_ipv6() {
 
     # A re-run keeps the recorded address: no new address, no second line.
     reset_simulation_containers_only
-    run_volunteer_up ok SIM_IPV6=routed
+    run_volunteer_up ok OPENRUNG_ACCESS_ADDRESS=1 SIM_IPV6=routed
     if [ "$(grep -c '^OPENRUNG_ACCESS_HOST=' "$ENV_FILE")" = 1 ] \
         && [ "$(access_env_line)" = "$access_line" ] \
         && ! grep -q 'address add' "$SIM_DIR/ip.log"; then
@@ -1563,7 +1569,7 @@ test_access_address_unrouted_is_removed() {
     reset_simulation
     mkdir -p "$SYSTEMD_RUN_DIR"
     write_env
-    run_volunteer_up ok SIM_IPV6=routed SIM_ACCESS_PROBE=timeout
+    run_volunteer_up ok OPENRUNG_ACCESS_ADDRESS=1 SIM_IPV6=routed SIM_ACCESS_PROBE=timeout
     assert_no_access_address "unrouted access address"
     assert_output_has "unrouted access address" 'IPv6 access address: none (the provider does not route'
     assert_candidate_is_live "unrouted access address"
@@ -1573,7 +1579,7 @@ test_access_address_not_deprecated_is_removed() {
     reset_simulation
     mkdir -p "$SYSTEMD_RUN_DIR"
     write_env
-    run_volunteer_up ok SIM_IPV6=routed SIM_DEPRECATE=no
+    run_volunteer_up ok OPENRUNG_ACCESS_ADDRESS=1 SIM_IPV6=routed SIM_DEPRECATE=no
     assert_no_access_address "non-deprecated access address"
     if [ -f "$SIM_DIR/curl.log" ]; then fail "non-deprecated access address: probed before removing"; else pass; fi
     assert_candidate_is_live "non-deprecated access address"
@@ -1583,7 +1589,7 @@ test_access_address_unit_failure_is_removed() {
     reset_simulation
     mkdir -p "$SYSTEMD_RUN_DIR"
     write_env
-    run_volunteer_up ok SIM_IPV6=routed SIM_SYSTEMCTL=fail
+    run_volunteer_up ok OPENRUNG_ACCESS_ADDRESS=1 SIM_IPV6=routed SIM_SYSTEMCTL=fail
     assert_no_access_address "access unit failure"
     assert_output_has "access unit failure" 'could not install the systemd units'
     assert_candidate_is_live "access unit failure"
@@ -1593,14 +1599,14 @@ test_access_address_needs_routed_prefix() {
     reset_simulation
     mkdir -p "$SYSTEMD_RUN_DIR"
     write_env
-    run_volunteer_up ok SIM_IPV6=single
+    run_volunteer_up ok OPENRUNG_ACCESS_ADDRESS=1 SIM_IPV6=single
     assert_no_access_address "single IPv6 address"
     assert_output_has "single IPv6 address" 'IPv6 access address: none (no global IPv6 /64 on eth0)'
 
     reset_simulation
     mkdir -p "$SYSTEMD_RUN_DIR"
     write_env
-    run_volunteer_up ok SIM_IPV6=none
+    run_volunteer_up ok OPENRUNG_ACCESS_ADDRESS=1 SIM_IPV6=none
     assert_no_access_address "no IPv6"
     assert_output_has "no IPv6" 'IPv6 access address: none (no IPv6 default route)'
 
@@ -1608,42 +1614,94 @@ test_access_address_needs_routed_prefix() {
     reset_simulation
     write_env
     rm -rf "$SYSTEMD_RUN_DIR"
-    run_volunteer_up ok SIM_IPV6=routed
+    run_volunteer_up ok OPENRUNG_ACCESS_ADDRESS=1 SIM_IPV6=routed
     assert_no_access_address "no systemd"
     assert_output_has "no systemd" 'needs systemd'
     assert_candidate_is_live "no systemd"
 }
 
-test_access_address_opt_out_is_recorded() {
+# The broker checks only the public endpoint, and nothing on the host can
+# test inbound IPv6 TCP 443 from outside: an outbound routing check that
+# passes says nothing about the provider firewall. So without the operator's
+# opt-in no address is added even where the routing check would pass.
+test_access_address_is_opt_in() {
     reset_simulation
-    mkdir -p "$SYSTEMD_RUN_DIR"
     write_env
-    run_volunteer_up ok SIM_IPV6=routed OPENRUNG_ACCESS_ADDRESS=0
+    run_volunteer_up ok SIM_IPV6=routed SIM_ACCESS_PROBE=ok
+    assert_no_access_address "access default off"
+    if [ ! -f "$SIM_DIR/curl.log" ] && ! grep -q 'address add' "$SIM_DIR/ip.log" 2>/dev/null; then
+        pass
+    else
+        fail "access default off: the host was probed or changed without the opt-in"
+    fi
+    assert_output_has "access default off" 'IPv6 access address: off (to add one, allow inbound TCP 443 over IPv6'
+    assert_candidate_is_live "access default off"
+
+    # An empty recorded value (the documented removal) wins over the opt-in.
+    reset_simulation
+    write_env 'OPENRUNG_ACCESS_HOST='
+    run_volunteer_up ok OPENRUNG_ACCESS_ADDRESS=1 SIM_IPV6=routed
     if [ "$(access_env_line)" = 'OPENRUNG_ACCESS_HOST=' ] && [ ! -s "$SIM_DIR/ip6" ]; then
         pass
     else
-        fail "access opt-out: expected an empty OPENRUNG_ACCESS_HOST recorded and no address, got '$(access_env_line)'"
+        fail "access recorded none: expected the empty value kept and no address, got '$(access_env_line)'"
     fi
-    reset_simulation_containers_only
-    run_volunteer_up ok SIM_IPV6=routed
-    if [ "$(access_env_line)" = 'OPENRUNG_ACCESS_HOST=' ] && [ ! -s "$SIM_DIR/ip6" ]; then
+    assert_candidate_is_live "access recorded none"
+}
+
+test_access_address_skips_unique_local_prefix() {
+    reset_simulation
+    write_env
+    run_volunteer_up ok OPENRUNG_ACCESS_ADDRESS=1 SIM_IPV6=ula_first
+    case "$(access_env_line)" in
+        OPENRUNG_ACCESS_HOST=2001:db8:a:b:*) pass ;;
+        *) fail "ULA before public /64: expected an address in the public /64, got '$(access_env_line)'" ;;
+    esac
+
+    reset_simulation
+    write_env
+    run_volunteer_up ok OPENRUNG_ACCESS_ADDRESS=1 SIM_IPV6=ula_only
+    assert_no_access_address "ULA only"
+    assert_output_has "ULA only" 'no global IPv6 /64 on eth0'
+}
+
+# A hand-edited env file may end without a newline; appended settings must
+# still land on lines of their own.
+test_env_append_ends_unterminated_last_line() {
+    reset_simulation
+    printf 'OPENRUNG_BROKER_URL=https://broker-origin.openrung.org\nOPENRUNG_PUBLIC_HOST=8.8.8.8\nOPENRUNG_IDENTITY_SEED=test-identity-seed\nOPENRUNG_LISTEN_PORT=443' >"$ENV_FILE"
+    run_volunteer_up ok OPENRUNG_ACCESS_ADDRESS=1 SIM_IPV6=routed
+    if grep -qx 'OPENRUNG_LISTEN_PORT=443' "$ENV_FILE" \
+        && grep -qx 'OPENRUNG_LABEL=amber-alpaca' "$ENV_FILE" \
+        && grep -Eqx 'OPENRUNG_ACCESS_HOST=2001:db8:a:b:[0-9a-f:]+' "$ENV_FILE" \
+        && [ "$(tail -c 1 "$ENV_FILE" | od -An -c | tr -d ' ')" = '\n' ]; then
         pass
     else
-        fail "access opt-out re-run: the recorded opt-out was not respected"
+        fail "unterminated env file: appended settings merged into the last line: $(cat "$ENV_FILE")"
     fi
-    assert_candidate_is_live "access opt-out"
+    assert_candidate_is_live "unterminated env file"
+
+    reset_simulation
+    printf 'OPENRUNG_BROKER_URL=https://broker-origin.openrung.org\nOPENRUNG_PUBLIC_HOST=8.8.8.8\nOPENRUNG_IDENTITY_SEED=test-identity-seed\nOPENRUNG_LABEL=kept\nOPENRUNG_LISTEN_PORT=443' >"$ENV_FILE"
+    run_volunteer_up ok OPENRUNG_OPERATOR_CONTACT=ops@example.org
+    if grep -qx 'OPENRUNG_LISTEN_PORT=443' "$ENV_FILE" \
+        && grep -qx 'OPENRUNG_OPERATOR_CONTACT=ops@example.org' "$ENV_FILE"; then
+        pass
+    else
+        fail "unterminated env file (contact): appended setting merged into the last line: $(cat "$ENV_FILE")"
+    fi
 }
 
 test_access_address_skips_customised_relay() {
     reset_simulation
     mkdir -p "$SYSTEMD_RUN_DIR"
     write_env 'OPENRUNG_CONNECTION_LOG=true'
-    run_volunteer_up ok SIM_IPV6=routed
+    run_volunteer_up ok OPENRUNG_ACCESS_ADDRESS=1 SIM_IPV6=routed
     assert_no_access_address "connection logging relay"
     reset_simulation
     mkdir -p "$SYSTEMD_RUN_DIR"
     write_env 'OPENRUNG_LISTEN_HOST=203.0.113.9'
-    run_volunteer_up ok SIM_IPV6=routed
+    run_volunteer_up ok OPENRUNG_ACCESS_ADDRESS=1 SIM_IPV6=routed
     assert_no_access_address "literal listen host relay"
 }
 
@@ -1860,7 +1918,9 @@ test_access_address_unrouted_is_removed
 test_access_address_not_deprecated_is_removed
 test_access_address_unit_failure_is_removed
 test_access_address_needs_routed_prefix
-test_access_address_opt_out_is_recorded
+test_access_address_is_opt_in
+test_access_address_skips_unique_local_prefix
+test_env_append_ends_unterminated_last_line
 test_access_address_skips_customised_relay
 test_bad_access_value_is_refused_before_mutation
 test_expand_ipv6

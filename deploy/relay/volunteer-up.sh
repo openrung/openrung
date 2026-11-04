@@ -50,9 +50,9 @@
 #                         below; 0 leaves the host's TCP settings alone.
 #                         Read on every run.
 #   OPENRUNG_ACCESS_ADDRESS
-#                         1 (default) gives the relay an IPv6 access address
-#                         as described below; 0 records in relay.env that it
-#                         has none. Read until relay.env records either.
+#                         1 gives the relay an IPv6 access address as
+#                         described below; 0 (default) leaves it without one.
+#                         Read on every run until relay.env records an address.
 #   OPENRUNG_NEW_DEST_RATE
 #                         new destination addresses per second the host may
 #                         open connections to (default 10; see the
@@ -63,13 +63,16 @@
 # exceptions are the run-time knobs OPENRUNG_REACHABILITY_WAIT,
 # OPENRUNG_TCP_TUNING and OPENRUNG_NEW_DEST_RATE, which no file records, so
 # pass them on every run, and OPENRUNG_ACCESS_ADDRESS, read until relay.env
-# records a decision.
+# records an address.
 #
 # Addresses: the relay's public address (OPENRUNG_PUBLIC_HOST, listed in the
-# public relay directory) is the server's IPv4. When the server has an IPv6
-# /64, the relay also gets an access address: one more IPv6 address from that
-# /64, which the relay sends privately at registration and the broker hands
-# only to enrolled clients in place of the public address. The address is
+# public relay directory) is the server's IPv4. With OPENRUNG_ACCESS_ADDRESS=1
+# on a server with a public IPv6 /64, the relay also gets an access address:
+# one more IPv6 address from that /64, which the relay sends privately at
+# registration and the broker hands only to enrolled IPv6 clients in place of
+# the public address. The broker checks only that the public address accepts
+# connections, so the access address is opt-in: set it only after allowing
+# inbound TCP 443 over IPv6 (::/0) in the provider's firewall. The address is
 # recorded as OPENRUNG_ACCESS_HOST in relay.env and kept on the interface by
 # two systemd units (openrung-access-address.service and
 # openrung-access-address-reassert.timer). A server whose provider does not
@@ -521,7 +524,8 @@ tune_tcp() {
 # path: one HTTPS request sent from that address to a large public DNS
 # resolver's web front. When that fails, or anything else is missing, the
 # address is removed again and the relay runs with its public address only.
-# Never fatal.
+# Never fatal. That proves routing, not that inbound TCP 443 is open: nothing
+# here can test that from outside, which is why the operator opts in.
 ACCESS_UNIT_NAME=openrung-access-address.service
 ACCESS_REASSERT_NAME=openrung-access-address-reassert
 ACCESS_PROBE_URLS="https://one.one.one.one https://dns.google"
@@ -529,6 +533,18 @@ ACCESS_PROBE_URLS="https://one.one.one.one https://dns.google"
 # The last value of a key in the env file (docker --env-file: last wins).
 env_value() { # key
     sed -n "s/^$1=//p" "$ENV_FILE" | tail -n 1
+}
+
+# Appends one KEY=value line to the env file, first ending a hand-edited last
+# line that has no newline, so the two never run together into one setting.
+append_env() { # line
+    umask 077
+    {
+        cat "$ENV_FILE" \
+            && if [ -n "$(tail -c 1 "$ENV_FILE")" ]; then printf '\n'; fi \
+            && printf '%s\n' "$1"
+    } >"$ENV_FILE.tmp" || die "could not stage ${1%%=*} into $ENV_FILE.tmp"
+    mv "$ENV_FILE.tmp" "$ENV_FILE"
 }
 
 # Prints an IPv6 address as eight colon-separated groups, or fails on anything
@@ -556,12 +572,15 @@ expand_ipv6() { # address
         END { if (bad || out == "") exit 1; print out }'
 }
 
-# The first four groups of the interface's first global, stable /64 address
-# (not deprecated, temporary or tentative).
+# The first four groups of the interface's first stable /64 address in the
+# public unicast space 2000::/3 (not deprecated, temporary or tentative).
+# Linux reports unique local addresses (fc00::/7) as scope global too; the
+# relay refuses those as an access address, so they are skipped here.
 ipv6_prefix64() { # dev
     p6_addr="$(ip -6 -o address show dev "$1" scope global 2>/dev/null \
         | awk '/ (deprecated|tentative|temporary|dadfailed)( |$)/ { next }
-               $4 ~ /\/64$/ { sub(/\/64$/, "", $4); print $4; exit }')" || return 1
+               { a = tolower($4) }
+               a ~ /^[23][0-9a-f][0-9a-f][0-9a-f]:.*\/64$/ { sub(/\/64$/, "", a); print a; exit }')" || return 1
     [ -n "$p6_addr" ] || return 1
     p6_full="$(expand_ipv6 "$p6_addr")" || return 1
     printf '%s' "$p6_full" | cut -d: -f1-4
@@ -658,20 +677,13 @@ remove_access_address() { # address dev
     ip -6 address delete "$1/128" dev "$2" >/dev/null 2>&1 || :
 }
 
-append_env() { # line
-    umask 077
-    { cat "$ENV_FILE" && printf '%s\n' "$1"; } >"$ENV_FILE.tmp" \
-        || die "could not stage ${1%%=*} into $ENV_FILE.tmp"
-    mv "$ENV_FILE.tmp" "$ENV_FILE"
-}
-
 access_none() { # reason
     log "IPv6 access address: none ($1); clients reach this relay at its public address"
 }
 
-# Gives the relay its access address unless relay.env already records one (or
-# records none). Runs before the candidate is created, so the candidate's first
-# registration carries the address.
+# Gives the relay its access address when the operator asked for one and
+# relay.env does not already record one (or record none). Runs before the
+# candidate is created, so the candidate's first registration carries it.
 setup_access_address() {
     if grep -q '^OPENRUNG_ACCESS_HOST=' "$ENV_FILE"; then
         sa_addr="$(env_value OPENRUNG_ACCESS_HOST)"
@@ -685,8 +697,7 @@ setup_access_address() {
         return 0
     fi
     if [ "$ACCESS_ADDRESS" = 0 ]; then
-        append_env 'OPENRUNG_ACCESS_HOST='
-        log "IPv6 access address: none (OPENRUNG_ACCESS_ADDRESS=0, recorded in $ENV_FILE)"
+        log "IPv6 access address: off (to add one, allow inbound TCP 443 over IPv6 in the provider's firewall, then re-run with OPENRUNG_ACCESS_ADDRESS=1)"
         return 0
     fi
     # The relay refuses an access address outside direct mode, with
@@ -1012,7 +1023,7 @@ main() {
         off) ;;
         '' | *[!0-9]* | 0*) die "OPENRUNG_NEW_DEST_RATE must be a positive whole number or 'off'" ;;
     esac
-    ACCESS_ADDRESS="${OPENRUNG_ACCESS_ADDRESS:-1}"
+    ACCESS_ADDRESS="${OPENRUNG_ACCESS_ADDRESS:-0}"
     case "$ACCESS_ADDRESS" in 0 | 1) ;; *) die "OPENRUNG_ACCESS_ADDRESS must be 0 or 1" ;; esac
     SYSTEMD_UNIT_DIR=/etc/systemd/system
     CONTAINER=openrung-relay
@@ -1141,10 +1152,7 @@ main() {
                 LABEL="$(random_label)"
                 [ -n "$LABEL" ] || die "could not generate a relay name"
             fi
-            umask 077
-            { cat "$ENV_FILE" && printf 'OPENRUNG_LABEL=%s\n' "$LABEL"; } >"$ENV_FILE.tmp" \
-                || die "could not stage the relay name into $ENV_FILE.tmp"
-            mv "$ENV_FILE.tmp" "$ENV_FILE"
+            append_env "OPENRUNG_LABEL=$LABEL"
             log "pinned relay name '${LABEL}' into $ENV_FILE (this relay was unnamed; its dashboard name changed on every restart)"
         elif [ -n "${OPENRUNG_LABEL:-}" ]; then
             log "note: OPENRUNG_LABEL does not change an existing name — edit $ENV_FILE and re-run instead"
@@ -1154,10 +1162,7 @@ main() {
         # and the question is never asked again.
         effective_contact="$(sed -n 's/^OPENRUNG_OPERATOR_CONTACT=//p' "$ENV_FILE" | tail -1)" || effective_contact=""
         if [ -z "$effective_contact" ] && [ -n "$OPERATOR_CONTACT" ]; then
-            umask 077
-            { cat "$ENV_FILE" && printf 'OPENRUNG_OPERATOR_CONTACT=%s\n' "$OPERATOR_CONTACT"; } >"$ENV_FILE.tmp" \
-                || die "could not stage the operator contact into $ENV_FILE.tmp"
-            mv "$ENV_FILE.tmp" "$ENV_FILE"
+            append_env "OPENRUNG_OPERATOR_CONTACT=$OPERATOR_CONTACT"
             log "saved operator contact '${OPERATOR_CONTACT}' in $ENV_FILE (sent privately to the broker; never published)"
         elif [ -n "$OPERATOR_CONTACT" ] && [ "$OPERATOR_CONTACT" != "$effective_contact" ]; then
             log "note: OPENRUNG_OPERATOR_CONTACT does not change an existing contact — edit $ENV_FILE and re-run instead"
