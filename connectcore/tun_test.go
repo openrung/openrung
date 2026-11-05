@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -112,7 +113,7 @@ func TestTUNConnectSkipsProxyPortAndOSProxy(t *testing.T) {
 	s.OSProxy = proxy
 	store := &fakePersistence{}
 	s.Persistence = store
-	s.FakeIPCachePath = "/private/openrung/fakeip.db"
+	s.FakeIPCachePath = filepath.Join(t.TempDir(), "fakeip.db")
 	if err := s.SetMode(ModeTUN); err != nil {
 		t.Fatal(err)
 	}

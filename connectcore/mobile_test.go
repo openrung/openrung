@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -1142,7 +1143,7 @@ func TestMobileReadinessTimeoutMatchesDesktopAndPreservesCancellation(t *testing
 }
 
 func TestMobileFakeIPCacheOwnedByHostSettings(t *testing.T) {
-	for _, path := range []string{"", "/private/mobile/fakeip.db"} {
+	for _, path := range []string{"", filepath.Join(t.TempDir(), "fakeip.db")} {
 		t.Run(path, func(t *testing.T) {
 			s, rt, relay := mobileTestEngine(t)
 			s.FakeIPCachePath = "/private/desktop/fakeip.db"

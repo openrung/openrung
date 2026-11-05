@@ -166,22 +166,65 @@ type SingBoxConfigInput struct {
 	// suppresses fake answers because its routing needs real destination IPs.
 	// Proxy mode ignores this field.
 	FakeIPCachePath string
+	// FakeIPBlock selects which of the FakeIPBlockCount disjoint blocks of
+	// the synthetic ranges the cache answers from, in [0, FakeIPBlockCount).
+	// Keep it while runs end cleanly, so the cached mappings stay valid; move
+	// to another block after a run that may not have closed the cache.
+	// sing-box saves its allocation position only on a clean close (and on a
+	// timer), so after a crash it would hand out again, for other hostnames,
+	// addresses apps may still hold. A changed block makes sing-box start a
+	// fresh table, and the previous block's addresses are then refused like
+	// any unmapped synthetic address. connectcore's engine manages this.
+	FakeIPBlock int
 }
 
 const (
-	fakeIPv4Range = "198.18.0.0/15"
-	fakeIPv6Range = "fc00::/18"
+	fakeIPv4Range   = "198.18.0.0/15"
+	fakeIPv6Range   = "fc00::/18"
+	fakeIPBlockBits = 4
+	// FakeIPBlockCount is the number of disjoint blocks SingBoxConfigInput.
+	// FakeIPBlock selects from.
+	FakeIPBlockCount = 1 << fakeIPBlockBits
 )
+
+// UsesFakeIP reports whether the built config answers address queries with
+// fake IPs from the cache at FakeIPCachePath.
+func (input SingBoxConfigInput) UsesFakeIP() bool {
+	return fakeIPEnabled(input)
+}
 
 func fakeIPEnabled(input SingBoxConfigInput) bool {
 	return input.Mode == ModeTUN && input.FakeIPCachePath != "" &&
 		(input.SplitTunnel == nil || (!input.SplitTunnel.BypassLAN && len(input.SplitTunnel.BypassCountries) == 0))
 }
 
-func fakeIPServerObject() map[string]any {
+// fakeIPBlockRange returns block n of a synthetic range: n written into the
+// fakeIPBlockBits bits that follow the parent prefix.
+func fakeIPBlockRange(parent string, n int) string {
+	prefix := netip.MustParsePrefix(parent)
+	raw := prefix.Addr().As16()
+	first := prefix.Bits()
+	if prefix.Addr().Is4() {
+		first += 96 // As16 holds an IPv4 address in its last four bytes.
+	}
+	for i := range fakeIPBlockBits {
+		if n&(1<<(fakeIPBlockBits-1-i)) != 0 {
+			bit := first + i
+			raw[bit/8] |= 1 << (7 - bit%8)
+		}
+	}
+	addr := netip.AddrFrom16(raw)
+	if prefix.Addr().Is4() {
+		addr = addr.Unmap()
+	}
+	return netip.PrefixFrom(addr, prefix.Bits()+fakeIPBlockBits).String()
+}
+
+func fakeIPServerObject(block int) map[string]any {
 	return map[string]any{
 		"tag": "fakeip", "type": "fakeip",
-		"inet4_range": fakeIPv4Range, "inet6_range": fakeIPv6Range,
+		"inet4_range": fakeIPBlockRange(fakeIPv4Range, block),
+		"inet6_range": fakeIPBlockRange(fakeIPv6Range, block),
 	}
 }
 
@@ -197,6 +240,9 @@ func BuildSingBoxConfig(input SingBoxConfigInput) ([]byte, error) {
 	}
 	if err := validateSplitTunnel(input); err != nil {
 		return nil, err
+	}
+	if fakeIPEnabled(input) && (input.FakeIPBlock < 0 || input.FakeIPBlock >= FakeIPBlockCount) {
+		return nil, fmt.Errorf("fake-IP block %d is outside [0, %d)", input.FakeIPBlock, FakeIPBlockCount)
 	}
 
 	tunnelIPv4Address := input.TunnelIPv4Address
@@ -408,7 +454,7 @@ func buildDNSConfig(input SingBoxConfigInput, dnsServers, probeSuffixes []string
 			"final":   "dns-0",
 		}
 		if fakeIPEnabled(input) {
-			dns["servers"] = append(dns["servers"].([]any), fakeIPServerObject())
+			dns["servers"] = append(dns["servers"].([]any), fakeIPServerObject(input.FakeIPBlock))
 			dns["rules"] = []any{fakeIPDNSRule()}
 		}
 		return dns
@@ -441,7 +487,7 @@ func buildDNSConfig(input SingBoxConfigInput, dnsServers, probeSuffixes []string
 		})
 	}
 	if fakeIPEnabled(input) {
-		servers = append(servers, fakeIPServerObject())
+		servers = append(servers, fakeIPServerObject(input.FakeIPBlock))
 	}
 	for _, country := range bypassCountries {
 		resolver := splitTunnelDirectResolvers[country]

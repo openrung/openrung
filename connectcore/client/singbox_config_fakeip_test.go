@@ -3,6 +3,7 @@
 package client
 
 import (
+	"net/netip"
 	"reflect"
 	"testing"
 	"time"
@@ -28,7 +29,7 @@ func TestFakeIPCacheAndBypass(t *testing.T) {
 				server := raw.(map[string]any)
 				if server["type"] == "fakeip" {
 					found = true
-					if server["inet4_range"] != "198.18.0.0/15" || server["inet6_range"] != "fc00::/18" {
+					if server["inet4_range"] != "198.18.0.0/19" || server["inet6_range"] != "fc00::/22" {
 						t.Fatal(server)
 					}
 				}
@@ -77,6 +78,40 @@ func TestProxyModePassesHostnamesToTheRelay(t *testing.T) {
 	for _, rule := range routeRulesOf(cfg) {
 		if rule["action"] == "resolve" || rule["override_address"] != nil {
 			t.Fatal("proxy route rewrites destination")
+		}
+	}
+}
+
+func TestFakeIPBlocksAreDisjointAndInsideTheReservedRanges(t *testing.T) {
+	var v4, v6 []netip.Prefix
+	for n := range FakeIPBlockCount {
+		inet4 := netip.MustParsePrefix(fakeIPBlockRange(fakeIPv4Range, n))
+		inet6 := netip.MustParsePrefix(fakeIPBlockRange(fakeIPv6Range, n))
+		if inet4.Bits() != 19 || !netip.MustParsePrefix(fakeIPv4Range).Contains(inet4.Addr()) || inet4 != inet4.Masked() {
+			t.Fatalf("block %d: bad IPv4 range %s", n, inet4)
+		}
+		if inet6.Bits() != 22 || !netip.MustParsePrefix(fakeIPv6Range).Contains(inet6.Addr()) || inet6 != inet6.Masked() {
+			t.Fatalf("block %d: bad IPv6 range %s", n, inet6)
+		}
+		for i := range v4 {
+			if v4[i].Overlaps(inet4) || v6[i].Overlaps(inet6) {
+				t.Fatalf("block %d overlaps block %d", n, i)
+			}
+		}
+		v4, v6 = append(v4, inet4), append(v6, inet6)
+	}
+	if got := fakeIPBlockRange(fakeIPv4Range, FakeIPBlockCount-1); got != "198.19.224.0/19" {
+		t.Fatal(got)
+	}
+	cfg := buildDecoded(t, SingBoxConfigInput{Relay: validRelay(time.Now()), FakeIPCachePath: "/private/fakeip.db", FakeIPBlock: 5})
+	for _, raw := range cfg["dns"].(map[string]any)["servers"].([]any) {
+		if server := raw.(map[string]any); server["type"] == "fakeip" && (server["inet4_range"] != "198.18.160.0/19" || server["inet6_range"] != "fc00:1400::/22") {
+			t.Fatal(server)
+		}
+	}
+	for _, block := range []int{-1, FakeIPBlockCount} {
+		if _, err := BuildSingBoxConfig(SingBoxConfigInput{Relay: validRelay(time.Now()), FakeIPCachePath: "/private/fakeip.db", FakeIPBlock: block}); err == nil {
+			t.Fatalf("accepted block %d", block)
 		}
 	}
 }

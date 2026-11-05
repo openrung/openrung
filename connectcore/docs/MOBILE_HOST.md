@@ -222,18 +222,32 @@ sing-box owns the cache, its file lock, and address allocation. Keep the same
 path across relays, reconnects and app/extension handoffs, and stop/join the old
 run before starting another. The cache contains **queried hostnames and their
 synthetic addresses on disk**; choose storage and backup policies accordingly.
-Do not use a per-run temporary file. Cache-open failures are startup errors.
+Do not use a per-run temporary file. The directory must be writable: the engine
+keeps a run-state file beside the cache (`<path>.run`, a block number and a
+clean-close flag, no hostnames).
+
+sing-box saves its allocation position only when it closes cleanly (and on a
+timer), so after a crash or a jetsam kill it would hand out again, for other
+hostnames, addresses apps still hold. The engine therefore keeps a run's address
+block (one of 16 within the ranges below) and cache only when the previous run
+closed cleanly; otherwise it deletes the cache and moves to the next block, and
+the stale addresses are refused. A run counts as clean only when the
+`MobileTunnelRun` implements `CleanExitReporter` and reports a stop it asked for
+that closed libbox's services; without it every run starts with an empty cache,
+which is safe but keeps no mappings. If the tunnel does not start with the
+cache, the engine retries that run once with DNS through the tunnel.
 
 LAN/country bypass uses real DNS because its IP rules need real destinations.
 Every TUN config reserves `198.18.0.0/15` and `fc00::/18` for synthetic addresses
 and rejects unmapped destinations in those ranges before bypass rules, including
 when opt-in is removed. Per-app exclusion is unchanged.
 
-Use ordinary shutdown to flush the cache. Deleting it is a DNS-state reset:
-disconnect the tunnel and close applications holding DNS answers before clearing
-it. Do not delete it during a run. On-device acceptance must cover resolver
-handling of A/AAAA answers with TTL 1, clean restarts with cached answers, and
-switches between fake-IP and split-tunnel configurations.
+Use ordinary shutdown to flush the cache. Do not delete it during a run; to
+clear it, disconnect and delete the cache together with its `.run` file, after
+which the next run starts on a random block. On-device acceptance must cover
+resolver handling of A/AAAA answers with TTL 1, clean restarts with cached
+answers, a killed extension followed by a reconnect, and switches between
+fake-IP and split-tunnel configurations.
 
 ## Outbox migration ordering
 

@@ -59,7 +59,10 @@ type MobileTunnelSettings struct {
 	// FakeIPCachePath opts into relay-side resolution and stores queried
 	// hostnames in sing-box's cache. Use a stable absolute path in private,
 	// non-backed-up app storage across every run; empty keeps real DNS.
-	// LAN/country bypass uses real DNS even when a path is supplied.
+	// LAN/country bypass uses real DNS even when a path is supplied. The
+	// cache keeps its mappings across runs only when the MobileTunnelRun
+	// implements CleanExitReporter; otherwise each run starts it empty on
+	// another address block (see Engine.FakeIPCachePath).
 	FakeIPCachePath string
 }
 

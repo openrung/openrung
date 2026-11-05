@@ -31,7 +31,12 @@ import (
 // recorders. No DNS query or application data leaves the test process.
 func loadFakeIPTestBox(t *testing.T, cachePath string, lan bool, outbounds []any) (*box.Box, context.Context) {
 	t.Helper()
-	input := client.SingBoxConfigInput{FakeIPCachePath: cachePath, Relay: brokerapi.RelayDescriptor{
+	return loadFakeIPTestBoxOnBlock(t, cachePath, 0, lan, outbounds)
+}
+
+func loadFakeIPTestBoxOnBlock(t *testing.T, cachePath string, block int, lan bool, outbounds []any) (*box.Box, context.Context) {
+	t.Helper()
+	input := client.SingBoxConfigInput{FakeIPCachePath: cachePath, FakeIPBlock: block, Relay: brokerapi.RelayDescriptor{
 		ID: "test", PublicHost: "203.0.113.10", PublicPort: 443,
 		Protocol: brokerapi.ProtocolVLESSRealityVision, Flow: brokerapi.FlowVision, ExitMode: brokerapi.ExitModeDirect,
 		ClientID: "2c08df10-4ef4-4ab9-95c6-cb1e94cdb2ff", RealityPublicKey: "public-key", ShortID: "5f7a8d9c01ab23cd", ServerName: "example.org",

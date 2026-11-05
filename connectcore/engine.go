@@ -207,6 +207,12 @@ type candidateResult struct {
 	torndown   bool
 	punch      *PunchPath // live punched path, nil when using the hub
 
+	// fakeIPCache is the fake-IP cache the live run opened ("" when none),
+	// and fakeIPBlock the block it answers from; teardown records a clean
+	// close of that run (see beginFakeIPRun).
+	fakeIPCache string
+	fakeIPBlock int
+
 	// The WSS adapter remains alive until the tunnel run has been stopped.
 	// Its separate context preserves that teardown order.
 	wssBridge    wssBridge
@@ -279,9 +285,7 @@ func (c *candidateResult) teardown() {
 	if c.healthDone != nil {
 		<-c.healthDone
 	}
-	if c.run != nil {
-		_ = c.run.Stop(c.stopGrace)
-	}
+	c.stopRun()
 	c.reporter.retire()
 	if c.punch != nil {
 		_ = c.punch.Close()
@@ -294,6 +298,21 @@ func (c *candidateResult) teardown() {
 	}
 	if c.wssDone != nil {
 		<-c.wssDone
+	}
+}
+
+// stopRun stops the live tunnel run, and records a clean close of the fake-IP
+// cache when the run reports one; anything else leaves the cache's run state
+// "not closed", so the next run moves to another block.
+func (c *candidateResult) stopRun() {
+	if c.run == nil {
+		return
+	}
+	_ = c.run.Stop(c.stopGrace)
+	if c.fakeIPCache != "" {
+		if reporter, ok := c.run.(CleanExitReporter); ok && reporter.ExitedCleanly() {
+			_ = endFakeIPRun(c.fakeIPCache, c.fakeIPBlock)
+		}
 	}
 }
 
@@ -334,7 +353,11 @@ type Engine struct {
 
 	// FakeIPCachePath opts desktop/CLI TUN runs into relay-side resolution.
 	// The host supplies a stable path in private storage. sing-box owns the
-	// hostname/address cache and its locking; connectcore does not allocate IPs.
+	// hostname/address cache and its locking. The engine keeps a run-state
+	// file beside it (path + ".run") and, after a run that did not close the
+	// cache cleanly, starts the next one on another address block with an
+	// empty cache (see beginFakeIPRun); a run that cannot start with the
+	// cache retries once with DNS through the tunnel.
 	FakeIPCachePath string
 
 	// SingBoxPath overrides the sing-box binary path (defaults to "sing-box"
@@ -1228,50 +1251,29 @@ func (s *Engine) candidateConfigInput(cand brokerapi.RelayDescriptor, port int) 
 // startCandidate owns path-independent config, run launch, readiness, and
 // end-to-end validation. Every path uses identical inner Reality settings.
 func (s *Engine) startCandidate(res *candidateResult, configInput client.SingBoxConfigInput) (*candidateResult, error) {
-	configJSON, err := client.BuildSingBoxConfig(configInput)
-	if err != nil {
-		res.teardown()
-		return nil, markLocalCandidateError("config", err)
-	}
-
 	res.stopGrace = s.candidateStopGrace()
-	var run TunnelRun
-	if s.Mobile != nil {
-		res.mobileRun, err = s.Mobile.Runtime.Run(res.ctx, configJSON, res.reporter)
-		run = res.mobileRun
-	} else {
-		run, err = s.tunnelRuntime().Run(res.ctx, configJSON)
-	}
-	if err == nil && run == nil {
-		err = errors.New("runtime returned no run")
+	startMS, err := s.launchTunnel(res, configInput)
+	if err != nil && res.fakeIPCache != "" && res.ctx.Err() == nil {
+		if _, transportFailure := wssTransportStage(err); !transportFailure {
+			// The cache may be held by a run that has not let go of it, or
+			// be unusable; sing-box then refuses to start rather than invent
+			// a fresh table. Resolve through the tunnel for this run instead
+			// of failing every candidate the same way.
+			s.appendLog(fmt.Sprintf("tunnel did not start with the fake-IP DNS cache (%v); retrying with DNS through the tunnel", err))
+			res.stopRun()
+			res.run, res.runDone, res.mobileRun, res.fakeIPCache = nil, nil, nil, ""
+			if res.reporter != nil {
+				// Every mobile Run gets a fresh reporter.
+				res.reporter.retire()
+				res.reporter = &RunTelemetry{manager: res.reporter.manager, relayID: res.reporter.relayID}
+			}
+			configInput.FakeIPCachePath = ""
+			startMS, err = s.launchTunnel(res, configInput)
+		}
 	}
 	if err != nil {
-		res.teardown()
-		// A launch failure defaults to the tunnel_start stage; a runtime that
-		// already staged its error (the subprocess default marks a temp-file
-		// failure config_file) keeps its own.
-		if _, local := localCandidateErrorStage(err); local {
-			return nil, err
-		}
-		return nil, markLocalCandidateError("tunnel_start", err)
-	}
-	res.run = run
-	res.runDone = run.Done()
-	if err := res.ctx.Err(); err != nil {
 		res.teardown()
 		return nil, err
-	}
-
-	// Wait until sing-box binds the mixed inbound (a real start measurement, and
-	// far faster than a fixed grace when the engine is ready in tens of ms), or
-	// it dies first — either way the candidate is decided before the probe.
-	startMS, err := s.awaitTunnelReady(res.ctx, res, res.proxyPort)
-	if err != nil {
-		res.teardown()
-		if _, transportFailure := wssTransportStage(err); transportFailure {
-			return nil, err
-		}
-		return nil, markLocalCandidateError("tunnel_start", err)
 	}
 	res.startMS = startMS
 
@@ -1306,6 +1308,68 @@ func (s *Engine) startCandidate(res *candidateResult, configInput client.SingBox
 	res.probeMS = probeMS
 	s.appendLog(fmt.Sprintf("internet access verified in %d ms", probeMS))
 	return res, nil
+}
+
+// launchTunnel builds the candidate's config, starts its tunnel run, and waits
+// for it to come up. A fake-IP run first records its block beside the cache
+// (beginFakeIPRun); if that fails the run resolves through the tunnel. On
+// failure the error is staged, the run (if any) is left in res for the
+// caller to stop, and the candidate is not torn down.
+func (s *Engine) launchTunnel(res *candidateResult, configInput client.SingBoxConfigInput) (int64, error) {
+	if configInput.UsesFakeIP() {
+		block, err := beginFakeIPRun(configInput.FakeIPCachePath)
+		if err != nil {
+			s.appendLog(fmt.Sprintf("could not record the fake-IP DNS cache state (%v); resolving DNS through the tunnel for this run", err))
+			configInput.FakeIPCachePath = ""
+		} else {
+			configInput.FakeIPBlock = block
+		}
+	}
+	configJSON, err := client.BuildSingBoxConfig(configInput)
+	if err != nil {
+		return 0, markLocalCandidateError("config", err)
+	}
+	if configInput.UsesFakeIP() {
+		res.fakeIPCache, res.fakeIPBlock = configInput.FakeIPCachePath, configInput.FakeIPBlock
+	}
+
+	var run TunnelRun
+	if s.Mobile != nil {
+		res.mobileRun, err = s.Mobile.Runtime.Run(res.ctx, configJSON, res.reporter)
+		run = res.mobileRun
+	} else {
+		run, err = s.tunnelRuntime().Run(res.ctx, configJSON)
+	}
+	if err == nil && run == nil {
+		err = errors.New("runtime returned no run")
+	}
+	if err != nil {
+		res.mobileRun = nil
+		// A launch failure defaults to the tunnel_start stage; a runtime that
+		// already staged its error (the subprocess default marks a temp-file
+		// failure config_file) keeps its own.
+		if _, local := localCandidateErrorStage(err); local {
+			return 0, err
+		}
+		return 0, markLocalCandidateError("tunnel_start", err)
+	}
+	res.run = run
+	res.runDone = run.Done()
+	if err := res.ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	// Wait until sing-box binds the mixed inbound (a real start measurement, and
+	// far faster than a fixed grace when the engine is ready in tens of ms), or
+	// it dies first — either way the candidate is decided before the probe.
+	startMS, err := s.awaitTunnelReady(res.ctx, res, res.proxyPort)
+	if err != nil {
+		if _, transportFailure := wssTransportStage(err); transportFailure {
+			return 0, err
+		}
+		return 0, markLocalCandidateError("tunnel_start", err)
+	}
+	return startMS, nil
 }
 
 // probeCandidate watches both the tunnel run and WSS adapter while the
