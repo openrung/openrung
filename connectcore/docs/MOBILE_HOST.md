@@ -211,29 +211,29 @@ UI change in this PR.
 
 ### Fake-IP DNS opt-in (connectcore 0.10.0)
 
-`MobileTunnelSettings.FakeIP` lets a host have the relay resolve destination
-hostnames: A and AAAA lookups through the TUN are answered locally with fake
-addresses, and a connection to one carries its hostname in the VLESS request.
-It is off unless the host sets it, so a pin bump alone changes nothing. The
-probe-pinned domains keep the proxied DoH chain ahead of the fake-IP rule, so
-the fresh-DNS probe still proves real resolution through the tunnel; probe
-names and suffix pins must therefore still agree. The setting is ignored while
-`SplitTunnel` bypasses the LAN or any country: those bypasses match real
-destination addresses, which a connection mapped back to a hostname no longer
-has (per-app exclusion is unaffected). The fake-address table lives only in a
-run's memory; the engine gives each run the next of 16 address blocks, so a new
-run never reuses the previous run's addresses. That rotation has to survive a
-process restart, so the engine refuses to connect with `FakeIP` set unless
-`Engine.Persistence` implements `FakeIPBlockPersistence`, which records only
-the last block number. `AllocateFakeIPBlock` must read, advance and record it
-atomically against every process sharing the record (for example the Network
-Extension and the app on iOS, if both run tunnels); a run whose allocation
-fails resolves through the tunnel instead. The route refuses any fake address
-the current run did not hand out, so an app holding a stale one resolves
-again; once a block has been recorded (`HasFakeIPBlock`), every TUN run keeps
-that refusal ahead of the bypass rules, including runs with `FakeIP` off or
-suppressed by a bypass. Before enabling it, check on device that the platform resolver
-accepts `198.18.0.0/15` and `fc00::/18` answers with a 1-second TTL.
+Set `MobileTunnelSettings.FakeIPCachePath` to a stable absolute database path
+in private, non-backed-up app storage to opt in. Empty keeps real DNS; the
+engine does not inherit the desktop setting or require a persistence adapter.
+A/AAAA queries then receive local synthetic answers, and the connection carries
+the original hostname to the relay for resolution. Probe-pinned domains keep
+the uncached proxied DoH chain; other query types keep real DNS.
+
+sing-box owns the cache, its file lock, and address allocation. Keep the same
+path across relays, reconnects and app/extension handoffs, and stop/join the old
+run before starting another. The cache contains **queried hostnames and their
+synthetic addresses on disk**; choose storage and backup policies accordingly.
+Do not use a per-run temporary file. Cache-open failures are startup errors.
+
+LAN/country bypass uses real DNS because its IP rules need real destinations.
+Every TUN config reserves `198.18.0.0/15` and `fc00::/18` for synthetic addresses
+and rejects unmapped destinations in those ranges before bypass rules, including
+when opt-in is removed. Per-app exclusion is unchanged.
+
+Use ordinary shutdown to flush the cache. Deleting it is a DNS-state reset:
+disconnect the tunnel and close applications holding DNS answers before clearing
+it. Do not delete it during a run. On-device acceptance must cover resolver
+handling of A/AAAA answers with TTL 1, clean restarts with cached answers, and
+switches between fake-IP and split-tunnel configurations.
 
 ## Outbox migration ordering
 

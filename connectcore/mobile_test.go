@@ -1141,192 +1141,46 @@ func TestMobileReadinessTimeoutMatchesDesktopAndPreservesCancellation(t *testing
 	}
 }
 
-// Mobile owns the fake-IP decision: the engine's TUN default must not leak
-// into a mobile run that did not opt in, an opt-in reaches the config, and
-// consecutive runs never share a block.
-func TestMobileFakeIPFollowsHostSettings(t *testing.T) {
-	for _, optIn := range []bool{false, true} {
-		t.Run(map[bool]string{false: "default", true: "opt-in"}[optIn], func(t *testing.T) {
-			s, rt, r := mobileTestEngine(t)
-			s.Persistence = &fakePersistence{}
+func TestMobileFakeIPCacheOwnedByHostSettings(t *testing.T) {
+	for _, path := range []string{"", "/private/mobile/fakeip.db"} {
+		t.Run(path, func(t *testing.T) {
+			s, rt, relay := mobileTestEngine(t)
+			s.FakeIPCachePath = "/private/desktop/fakeip.db"
 			s.Mobile.Settings = func(context.Context) (MobileTunnelSettings, error) {
-				return MobileTunnelSettings{MTU: 1400, LogLevel: "warn", ClashAPI: true, FakeIP: optIn}, nil
+				return MobileTunnelSettings{MTU: 1400, LogLevel: "warn", FakeIPCachePath: path}, nil
 			}
-			var generated [][]byte
-			rt.launch = func(_ context.Context, b []byte, _ *RunTelemetry) (MobileTunnelRun, error) {
-				generated = append(generated, append([]byte(nil), b...))
+			runs := 0
+			rt.launch = func(_ context.Context, raw []byte, _ *RunTelemetry) (MobileTunnelRun, error) {
+				runs++
+				var cfg struct {
+					Experimental struct {
+						CacheFile *struct {
+							Path string `json:"path"`
+						} `json:"cache_file"`
+					} `json:"experimental"`
+				}
+				if err := json.Unmarshal(raw, &cfg); err != nil {
+					t.Fatal(err)
+				}
+				cache := cfg.Experimental.CacheFile
+				if path == "" && cache != nil {
+					t.Fatal("mobile inherited desktop opt-in")
+				}
+				if path != "" && (cache == nil || cache.Path != path) {
+					t.Fatalf("wrong mobile cache: %+v", cache)
+				}
 				return newMobileTestRun(PathAndroidVPN), nil
 			}
-			// Two runs, as a candidate switch would start them.
 			for range 2 {
-				res, err := s.attemptCandidate(t.Context(), mobileTestConnection(), r, 0, 1)
+				res, err := s.attemptCandidate(t.Context(), mobileTestConnection(), relay, 0, 1)
 				if err != nil {
 					t.Fatal(err)
 				}
 				res.teardown()
 			}
-			var ranges []string
-			for _, config := range generated {
-				if got := strings.Contains(string(config), `"type": "fakeip"`); got != optIn {
-					t.Fatalf("fakeip server emitted=%v, host opted in=%v", got, optIn)
-				}
-				if got := strings.Contains(string(config), `"198.18.0.0/15"`); got != optIn {
-					t.Fatalf("stale fake-range refusal emitted=%v, host opted in=%v", got, optIn)
-				}
-				ranges = append(ranges, fakeIPv4RangeOf(t, config)...)
-			}
-			// A new run must never answer from the previous run's block.
-			if optIn && (len(ranges) != 2 || ranges[0] == ranges[1]) {
-				t.Fatalf("consecutive runs' fake-IP ranges = %v", ranges)
+			if runs != 2 {
+				t.Fatalf("runs=%d", runs)
 			}
 		})
-	}
-}
-
-// A mobile host may opt in only with a durable block rotation.
-func TestMobileFakeIPRequiresBlockPersistence(t *testing.T) {
-	s, _, r := mobileTestEngine(t)
-	s.Mobile.Settings = func(context.Context) (MobileTunnelSettings, error) {
-		return MobileTunnelSettings{MTU: 1400, LogLevel: "warn", FakeIP: true}, nil
-	}
-	_, err := s.attemptCandidate(t.Context(), mobileTestConnection(), r, 0, 1)
-	if _, local := localCandidateErrorStage(err); !local || !strings.Contains(err.Error(), "FakeIPBlockPersistence") {
-		t.Fatalf("want a local config error naming FakeIPBlockPersistence, got %v", err)
-	}
-}
-
-// Once fake addresses have been issued — the stored block shows it — a run
-// that hands out none still refuses the fake ranges, ahead of the LAN bypass:
-// apps may hold answers from before, and a fc00::/18 address would
-// otherwise match ip_is_private and go direct.
-func TestMobileFakeIPOffKeepsStaleRefusal(t *testing.T) {
-	s, rt, r := mobileTestEngine(t)
-	s.Persistence = &fakePersistence{fakeIPBlock: 4, hasFakeIPBlock: true}
-	s.Mobile.Settings = func(context.Context) (MobileTunnelSettings, error) {
-		return MobileTunnelSettings{MTU: 1400, LogLevel: "warn", SplitTunnel: &client.SplitTunnelRules{BypassLAN: true}}, nil
-	}
-	var generated []byte
-	rt.launch = func(_ context.Context, b []byte, _ *RunTelemetry) (MobileTunnelRun, error) {
-		generated = append([]byte(nil), b...)
-		return newMobileTestRun(PathAndroidVPN), nil
-	}
-	res, err := s.attemptCandidate(t.Context(), mobileTestConnection(), r, 0, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer res.teardown()
-	if strings.Contains(string(generated), `"type": "fakeip"`) {
-		t.Fatal("fake-IP server emitted without an opt-in")
-	}
-	var decoded struct {
-		Route struct {
-			Rules []map[string]any `json:"rules"`
-		} `json:"route"`
-	}
-	if err := json.Unmarshal(generated, &decoded); err != nil {
-		t.Fatal(err)
-	}
-	refused, lan := -1, -1
-	for i, rule := range decoded.Route.Rules {
-		if rule["ip_cidr"] != nil && rule["action"] == "reject" {
-			refused = i
-		}
-		if rule["ip_is_private"] == true {
-			lan = i
-		}
-	}
-	if refused < 0 || lan < 0 || refused > lan {
-		t.Fatalf("stale refusal at %d, LAN bypass at %d: %v", refused, lan, decoded.Route.Rules)
-	}
-}
-
-func fakeIPv4RangeOf(t *testing.T, config []byte) []string {
-	t.Helper()
-	var decoded struct {
-		DNS struct {
-			Servers []map[string]any `json:"servers"`
-		} `json:"dns"`
-	}
-	if err := json.Unmarshal(config, &decoded); err != nil {
-		t.Fatal(err)
-	}
-	var ranges []string
-	for _, server := range decoded.DNS.Servers {
-		if server["type"] == "fakeip" {
-			ranges = append(ranges, server["inet4_range"].(string))
-		}
-	}
-	return ranges
-}
-
-// fakeIPRunConfig starts one TUN candidate on s and returns its config.
-func fakeIPRunConfig(t *testing.T, s *Engine) []byte {
-	t.Helper()
-	configs := make(chan []byte, 1)
-	s.TunnelRuntime = runFuncRuntime(func(ctx context.Context, config []byte) error {
-		configs <- append([]byte(nil), config...)
-		<-ctx.Done()
-		return nil
-	})
-	relay := relayAt("a", "JP", "Tokyo", "Japan", "127.0.0.10")
-	input := s.candidateConfigInput(relay, 0)
-	s.tunnelReady = func(context.Context, int) error { return nil }
-	s.probeTunnel = func(context.Context, int) (int64, error) { return 1, nil }
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	res, err := s.startCandidate(&candidateResult{relay: relay, ctx: ctx, cancel: cancel}, input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer res.teardown()
-	return <-configs
-}
-
-func newFakeIPEngine(t *testing.T, store *fakePersistence) *Engine {
-	t.Helper()
-	s := New()
-	s.Persistence = store
-	if err := s.SetMode(ModeTUN); err != nil {
-		t.Fatal(err)
-	}
-	return s
-}
-
-// Every run allocates from the shared store's current state: the desktop app
-// and the CLI hand off to each other — or restart — without either
-// repeating the block the other just used, and a block comes round again only
-// after all the others.
-func TestFakeIPBlockAllocatedFromSharedStateEveryRun(t *testing.T) {
-	store := &fakePersistence{fakeIPBlock: 4, hasFakeIPBlock: true}
-	desktop, cli := newFakeIPEngine(t, store), newFakeIPEngine(t, store)
-	restarted := newFakeIPEngine(t, store)
-	var ranges []string
-	for _, engine := range []*Engine{desktop, cli, desktop, restarted} {
-		ranges = append(ranges, fakeIPv4RangeOf(t, fakeIPRunConfig(t, engine))...)
-	}
-	want := []string{"198.18.160.0/19", "198.18.192.0/19", "198.18.224.0/19", "198.19.0.0/19"}
-	if !reflect.DeepEqual(ranges, want) || !reflect.DeepEqual(store.fakeIPAllocs, []int{5, 6, 7, 8}) {
-		t.Fatalf("ranges %v, allocations %v", ranges, store.fakeIPAllocs)
-	}
-	for i := range client.FakeIPBlockCount - 4 {
-		if block, ok := desktop.allocateFakeIPBlock(); !ok || block != (9+i)%client.FakeIPBlockCount {
-			t.Fatalf("allocation %d = %d, %v", i, block, ok)
-		}
-	}
-}
-
-// A run whose block could not be recorded might repeat the previous run's
-// block, so it hands out no fake addresses — in this engine or a restarted
-// one — and still refuses the fake ranges.
-func TestFakeIPUnrecordedBlockFallsBackToRealDNS(t *testing.T) {
-	store := &fakePersistence{fakeIPBlock: 4, hasFakeIPBlock: true, fakeIPErr: errors.New("disk full")}
-	for run := range 2 {
-		config := fakeIPRunConfig(t, newFakeIPEngine(t, store))
-		if strings.Contains(string(config), `"type": "fakeip"`) {
-			t.Fatalf("run %d handed out fake addresses without a recorded block", run)
-		}
-		if !strings.Contains(string(config), `"198.18.0.0/15"`) {
-			t.Fatalf("run %d dropped the stale fake-range refusal", run)
-		}
 	}
 }

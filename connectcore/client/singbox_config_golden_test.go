@@ -171,26 +171,11 @@ func goldenCases() []goldenCase {
 				},
 			},
 		},
-
-		// Fake-IP DNS (relay-side hostname resolution) from block 3: the
-		// desktop/CLI TUN shape the engine now builds, and the mobile DoH
-		// shape a host opts into.
-		{
-			name:  "tun-fakeip",
-			input: SingBoxConfigInput{Relay: hostRelay, FakeIP: true, FakeIPBlock: 3},
-		},
-		{
-			name: "mobile-tun-ios-fakeip",
-			input: SingBoxConfigInput{
-				Relay:       ipRelay,
-				MTU:         1400,
-				LogLevel:    "warn",
-				DNSShape:    DNSShapeDoHFailover,
-				ClashAPI:    true,
-				FakeIP:      true,
-				FakeIPBlock: 3,
-			},
-		},
+		{name: "tun-fakeip", input: SingBoxConfigInput{Relay: hostRelay, FakeIPCachePath: "/private/openrung/fakeip.db"}},
+		{name: "mobile-tun-ios-fakeip", input: SingBoxConfigInput{
+			Relay: ipRelay, MTU: 1400, LogLevel: "warn", DNSShape: DNSShapeDoHFailover,
+			ClashAPI: true, FakeIPCachePath: "/private/openrung/fakeip.db",
+		}},
 	}
 }
 

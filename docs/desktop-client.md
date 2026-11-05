@@ -249,22 +249,27 @@ The generated config uses:
   behaviour Windows, Android and iOS already had, because they point the
   system at the tunnel resolver; the rule makes macOS and other Linux
   setups match, and keeps a bypassed LAN from becoming a plaintext DNS leak.
-- Fake-IP answers for A and AAAA queries: sing-box replies at once, locally,
-  with an address from a reserved range (one of 16 blocks of `198.18.0.0/15`
-  and `fc00::/18`, with a 1-second TTL). A connection to that address is
-  mapped back to its hostname before routing, so the VLESS request carries the
-  hostname and the relay resolves it; no DNS exchange through the tunnel
-  precedes the connection. The table lives only in the run's memory and is
-  never written to disk. Each new run (reconnect, failover, a restart, or a
-  switch between the desktop app and the CLI) answers from the block after the
-  last one any of them used, so it never reuses the previous run's addresses.
-  The block number alone is recorded, in `fakeip-block.json` in the shared
-  client state directory, read and advanced under a file lock on every run; a
-  run whose block cannot be recorded resolves DNS through the tunnel instead. A
-  route rule right after the DNS hijack rules refuses any fake address the
-  current run did not hand out: an app holding a stale one gets an immediate
-  refusal and resolves again. Proxy mode needs none of this: the mixed inbound
-  already passes the hostname a browser sends to the relay.
+- Fake-IP answers for A and AAAA queries when private cache storage is available:
+  sing-box replies locally from `198.18.0.0/15` and `fc00::/18` with TTL 1.
+  Connections carry the original hostname in VLESS and the relay resolves it,
+  removing the preceding DNS exchange through the tunnel. Proxy mode already
+  passes hostnames supplied by HTTP CONNECT/SOCKS clients to the relay.
+- sing-box's `experimental.cache_file` with `store_fakeip` retains mappings
+  across ordinary relay changes and clean restarts. Desktop and CLI use the
+  same cache for an installation; stop one tunnel before starting the other.
+  sing-box owns the database lock and allocation. There is no OpenRung block
+  allocator or allocation-state file.
+- The cache **stores queried hostnames and their synthetic addresses on disk**.
+  Normal runs use `fakeip.db` in the private client state directory. Elevated
+  Unix runs use a private `.openrung-dns` directory under root's account home,
+  with a database name derived from the canonical installation state path.
+  If private storage cannot be prepared, the host uses real DNS. An error
+  opening a configured database stops that tunnel run.
+- Every TUN config rejects unmapped addresses in the synthetic ranges before
+  LAN/country bypass rules, even with fake-IP disabled. LAN/country bypass
+  itself uses real DNS. The cache is flushed on ordinary shutdown; deleting it
+  resets DNS state. Disconnect and close applications holding DNS answers
+  before clearing it, and never delete it during a run.
 - DNS servers detoured through the proxy over TCP, for every other query type
   (HTTPS, SRV, TXT, PTR, ...) and for sing-box's own lookups. The relay
   outbound carries no UDP at all; UDP 443 (QUIC) is rejected outright so

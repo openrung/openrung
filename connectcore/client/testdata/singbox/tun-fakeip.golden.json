@@ -25,12 +25,19 @@
         "type": "tcp"
       },
       {
-        "inet4_range": "198.18.96.0/19",
-        "inet6_range": "fc00:c00::/22",
+        "inet4_range": "198.18.0.0/15",
+        "inet6_range": "fc00::/18",
         "tag": "fakeip",
         "type": "fakeip"
       }
     ]
+  },
+  "experimental": {
+    "cache_file": {
+      "enabled": true,
+      "path": "/private/openrung/fakeip.db",
+      "store_fakeip": true
+    }
   },
   "inbounds": [
     {

@@ -56,16 +56,11 @@ type MobileTunnelSettings struct {
 	SplitTunnel         *client.SplitTunnelRules
 	RouteFindProcess    bool
 	ClashAPI            bool
-	// FakeIP opts the run into relay-side hostname resolution
-	// (client.SingBoxConfigInput.FakeIP): A/AAAA lookups through the TUN are
-	// answered locally with fake IPs, except the probe-pinned domains, which
-	// keep the proxied DoH chain the fresh-DNS probe must exercise. Ignored
-	// while SplitTunnel bypasses the LAN or any country. The engine picks
-	// each run's fake-IP block and refuses to connect unless Engine.Persistence
-	// implements FakeIPBlockPersistence, so the rotation survives a process
-	// restart. False keeps the emission unchanged until fake addresses have
-	// been issued; from then on every TUN run refuses the fake ranges.
-	FakeIP bool
+	// FakeIPCachePath opts into relay-side resolution and stores queried
+	// hostnames in sing-box's cache. Use a stable absolute path in private,
+	// non-backed-up app storage across every run; empty keeps real DNS.
+	// LAN/country bypass uses real DNS even when a path is supplied.
+	FakeIPCachePath string
 }
 
 // MobileRuntime owns libbox and local configuration validation. Preflight must
@@ -201,10 +196,7 @@ func (s *Engine) mobileConfig(ctx context.Context, input client.SingBoxConfigInp
 	}
 	input.RouteFindProcess = settings.RouteFindProcess
 	input.ClashAPI = settings.ClashAPI
-	if settings.FakeIP && s.fakeIPPersistence() == nil {
-		return input, errors.New("mobile FakeIP requires Persistence implementing FakeIPBlockPersistence")
-	}
-	input.FakeIP = settings.FakeIP
+	input.FakeIPCachePath = settings.FakeIPCachePath
 	input.DNSShape = client.DNSShapeDoHFailover
 	input.BridgeOwnsOuterSocket = true
 	ipv4 := input.TunnelIPv4Address

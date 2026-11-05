@@ -112,6 +112,7 @@ func TestTUNConnectSkipsProxyPortAndOSProxy(t *testing.T) {
 	s.OSProxy = proxy
 	store := &fakePersistence{}
 	s.Persistence = store
+	s.FakeIPCachePath = "/private/openrung/fakeip.db"
 	if err := s.SetMode(ModeTUN); err != nil {
 		t.Fatal(err)
 	}
@@ -158,13 +159,9 @@ func TestTUNConnectSkipsProxyPortAndOSProxy(t *testing.T) {
 	if len(excluded) != 1 || excluded[0] != "127.0.0.10/32" {
 		t.Fatalf("relay IP not excluded from the TUN routes: %v", excluded)
 	}
-	// TUN mode answers address lookups with fake IPs, so the relay resolves
-	// destination hostnames, and records the block for the next run.
-	if !strings.Contains(string(configJSON), `"type": "fakeip"`) {
-		t.Fatalf("TUN config lacks the fake-IP DNS server:\n%s", configJSON)
-	}
-	if !store.HasFakeIPBlock() {
-		t.Fatal("TUN run did not record its fake-IP block")
+	cache := decoded["experimental"].(map[string]any)["cache_file"].(map[string]any)
+	if cache["path"] != s.FakeIPCachePath || cache["store_fakeip"] != true {
+		t.Fatalf("TUN run did not use the host's persistent DNS cache: %v", cache)
 	}
 
 	if err := s.Disconnect(); err != nil {
@@ -351,20 +348,3 @@ func TestTUNUsesTheLongerReadyTimeout(t *testing.T) {
 type permitElevation struct{}
 
 func (permitElevation) Elevate(context.Context) error { return nil }
-
-// Fake IPs need a block rotation that survives a restart, so a TUN host
-// without FakeIPBlockPersistence keeps real answers.
-func TestTUNFakeIPNeedsBlockPersistence(t *testing.T) {
-	s := New()
-	if err := s.SetMode(ModeTUN); err != nil {
-		t.Fatal(err)
-	}
-	relay := relayAt("a", "JP", "Tokyo", "Japan", "127.0.0.10")
-	if s.candidateConfigInput(relay, 0).FakeIP {
-		t.Fatal("FakeIP without a block store")
-	}
-	s.Persistence = &fakePersistence{}
-	if !s.candidateConfigInput(relay, 0).FakeIP {
-		t.Fatal("FakeIP off despite a block store")
-	}
-}
