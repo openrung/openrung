@@ -508,7 +508,7 @@ func TestMobileIdentityTelemetryOwnershipAndRestart(t *testing.T) {
 			}
 			continue
 		}
-		if e.Attributes["engine"] != "connectcore" || e.Attributes["engine_version"] != "0.9.1" || e.Attributes["platform"] != "android" || e.Attributes["app_version"] != "0.3.9" || e.Attributes["device_model"] != "test" {
+		if e.Attributes["engine"] != "connectcore" || e.Attributes["engine_version"] != "0.10.0" || e.Attributes["platform"] != "android" || e.Attributes["app_version"] != "0.3.9" || e.Attributes["device_model"] != "test" {
 			t.Fatalf("release metadata %+v", e.Attributes)
 		}
 		if e.Event == "connection_ended" {
@@ -1136,6 +1136,32 @@ func TestMobileReadinessTimeoutMatchesDesktopAndPreservesCancellation(t *testing
 			_, desktopErr := s.awaitTunnelReady(t.Context(), &candidateResult{}, 0)
 			if err == nil || err.Error() != desktopErr.Error() || clienttelemetry.ClassifyError(err) != clienttelemetry.ClassifyError(desktopErr) {
 				t.Fatalf("mobile timeout %v differs from desktop %v", err, desktopErr)
+			}
+		})
+	}
+}
+
+// Mobile owns the fake-IP decision: the engine's TUN default must not leak
+// into a mobile run that did not opt in, and an opt-in reaches the config.
+func TestMobileFakeIPFollowsHostSettings(t *testing.T) {
+	for _, optIn := range []bool{false, true} {
+		t.Run(map[bool]string{false: "default", true: "opt-in"}[optIn], func(t *testing.T) {
+			s, rt, r := mobileTestEngine(t)
+			s.Mobile.Settings = func(context.Context) (MobileTunnelSettings, error) {
+				return MobileTunnelSettings{MTU: 1400, LogLevel: "warn", ClashAPI: true, FakeIP: optIn}, nil
+			}
+			var generated []byte
+			rt.launch = func(_ context.Context, b []byte, _ *RunTelemetry) (MobileTunnelRun, error) {
+				generated = append([]byte(nil), b...)
+				return newMobileTestRun(PathAndroidVPN), nil
+			}
+			res, err := s.attemptCandidate(t.Context(), mobileTestConnection(), r, 0, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer res.teardown()
+			if got := strings.Contains(string(generated), `"type": "fakeip"`); got != optIn {
+				t.Fatalf("fakeip server emitted=%v, host opted in=%v", got, optIn)
 			}
 		})
 	}

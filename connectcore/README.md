@@ -14,7 +14,8 @@ cache, and the internet/readiness probes. Its subpackages carry the rest of
 the client policy layer:
 
 - `client` — the sing-box config builder (TUN and proxy inbounds, mobile's
-  DoH-failover DNS shape, split tunneling), the sing-box process runner, relay
+  DoH-failover DNS shape, fake-IP DNS so the relay resolves destination
+  hostnames, split tunneling), the sing-box process runner, relay
   selection and usability, and the thin broker-client adapters.
 - `clienttelemetry` — the closed failure-reason classifier and the telemetry
   event model, outbox, and session manager shared with the mobile apps.

@@ -56,6 +56,12 @@ type MobileTunnelSettings struct {
 	SplitTunnel         *client.SplitTunnelRules
 	RouteFindProcess    bool
 	ClashAPI            bool
+	// FakeIP opts the run into relay-side hostname resolution
+	// (client.SingBoxConfigInput.FakeIP): A/AAAA lookups through the TUN are
+	// answered locally with fake IPs, except the probe-pinned domains, which
+	// keep the proxied DoH chain the fresh-DNS probe must exercise. Ignored
+	// while SplitTunnel bypasses countries. False keeps the emission unchanged.
+	FakeIP bool
 }
 
 // MobileRuntime owns libbox and local configuration validation. Preflight must
@@ -191,6 +197,7 @@ func (s *Engine) mobileConfig(ctx context.Context, input client.SingBoxConfigInp
 	}
 	input.RouteFindProcess = settings.RouteFindProcess
 	input.ClashAPI = settings.ClashAPI
+	input.FakeIP = settings.FakeIP
 	input.DNSShape = client.DNSShapeDoHFailover
 	input.BridgeOwnsOuterSocket = true
 	ipv4 := input.TunnelIPv4Address

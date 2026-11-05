@@ -158,6 +158,11 @@ func TestTUNConnectSkipsProxyPortAndOSProxy(t *testing.T) {
 	if len(excluded) != 1 || excluded[0] != "127.0.0.10/32" {
 		t.Fatalf("relay IP not excluded from the TUN routes: %v", excluded)
 	}
+	// TUN mode answers address lookups with fake IPs, so the relay resolves
+	// destination hostnames.
+	if !strings.Contains(string(configJSON), `"type": "fakeip"`) {
+		t.Fatalf("TUN config lacks the fake-IP DNS server:\n%s", configJSON)
+	}
 
 	if err := s.Disconnect(); err != nil {
 		t.Fatal(err)

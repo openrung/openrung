@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net"
 	"net/netip"
 	"strings"
@@ -97,6 +98,91 @@ func validateDoHDNSServers(dnsServers []string) error {
 	return nil
 }
 
+// Fake-IP DNS (SingBoxConfigInput.FakeIP). The reserved benchmarking range
+// 198.18.0.0/15 and the ULA prefix fc00::/18 are each split into
+// fakeIPBlockCount disjoint blocks, and every built config draws one block at
+// random. sing-box keeps the address-to-hostname table in memory only and
+// allocates from the start of its range, so a fresh run (failover, reconnect)
+// would otherwise hand out the very addresses an app may still hold from the
+// previous run — for a different hostname. Drawing a new block per run makes
+// a stale address far more likely to miss the table (the connection is
+// refused, and the app resolves again) than to reach the wrong host.
+const (
+	fakeIPBlockBits  = 4
+	fakeIPBlockCount = 1 << fakeIPBlockBits
+	// fakeIPTTL is the TTL of every fake answer: the address costs nothing to
+	// hand out again, and a short TTL keeps OS and app caches from holding an
+	// address across a run that no longer knows it.
+	fakeIPTTL = 1
+)
+
+var (
+	fakeIPv4Range = netip.MustParsePrefix("198.18.0.0/15")
+	fakeIPv6Range = netip.MustParsePrefix("fc00::/18")
+	// fakeIPBlock picks this config's block; tests pin it.
+	fakeIPBlock = func() int { return rand.IntN(fakeIPBlockCount) }
+)
+
+// fakeIPRanges returns block n of the fake IPv4 and IPv6 ranges.
+func fakeIPRanges(n int) (netip.Prefix, netip.Prefix) {
+	return fakeIPSubBlock(fakeIPv4Range, n), fakeIPSubBlock(fakeIPv6Range, n)
+}
+
+// fakeIPSubBlock returns the n-th of the fakeIPBlockCount equal sub-prefixes
+// of parent: n written into the fakeIPBlockBits bits that follow its prefix.
+func fakeIPSubBlock(parent netip.Prefix, n int) netip.Prefix {
+	raw := parent.Addr().As16()
+	first := parent.Bits()
+	if parent.Addr().Is4() {
+		first += 96 // As16 holds an IPv4 address in its last four bytes.
+	}
+	for i := range fakeIPBlockBits {
+		if n&(1<<(fakeIPBlockBits-1-i)) != 0 {
+			bit := first + i
+			raw[bit/8] |= 1 << (7 - bit%8)
+		}
+	}
+	addr := netip.AddrFrom16(raw)
+	if parent.Addr().Is4() {
+		addr = addr.Unmap()
+	}
+	return netip.PrefixFrom(addr, parent.Bits()+fakeIPBlockBits)
+}
+
+// fakeIPEnabled reports whether the config answers address queries with fake
+// IPs (see SingBoxConfigInput.FakeIP for when the request is ignored).
+func fakeIPEnabled(input SingBoxConfigInput) bool {
+	if !input.FakeIP || input.Mode != ModeTUN {
+		return false
+	}
+	return input.SplitTunnel == nil || len(input.SplitTunnel.BypassCountries) == 0
+}
+
+// fakeIPServerObject is the fake-IP DNS server, drawing a fresh block.
+func fakeIPServerObject() map[string]any {
+	inet4, inet6 := fakeIPRanges(fakeIPBlock())
+	return map[string]any{
+		"tag":         "fakeip",
+		"type":        "fakeip",
+		"inet4_range": inet4.String(),
+		"inet6_range": inet6.String(),
+	}
+}
+
+// fakeIPDNSRule answers A and AAAA queries from the fake-IP server. Every
+// other query type (HTTPS, SRV, TXT, PTR, ...) carries data an app consumes
+// as-is, so it keeps the real, proxied resolvers. sing-box consults fake-IP
+// rules only for queries arriving through the inbound — its own lookups (the
+// route's default_domain_resolver, a direct outbound dialing a hostname) skip
+// them and always get real addresses.
+func fakeIPDNSRule() map[string]any {
+	return map[string]any{
+		"query_type":  []string{"A", "AAAA"},
+		"server":      "fakeip",
+		"rewrite_ttl": fakeIPTTL,
+	}
+}
+
 // Per-evaluate budget before the next resolver runs, and the terminal/global
 // budget (DNSShapeDoHFailover only).
 const (
@@ -159,6 +245,21 @@ type SingBoxConfigInput struct {
 	// sing-box's traffic accounting, which feeds the cumulative
 	// bytes_sent/bytes_received counters mobile reports with session telemetry.
 	ClashAPI bool
+	// FakeIP makes the relay resolve destination hostnames. TUN-captured A
+	// and AAAA queries are answered at once, locally, with addresses from a
+	// reserved range; a connection to such an address is mapped back to its
+	// hostname before routing, so the VLESS request carries the hostname and
+	// the relay resolves it. That removes the through-tunnel DNS exchange that
+	// otherwise precedes every connection to a new hostname. Other query
+	// types, DNSShapeDoHFailover's probe-pinned domains and sing-box's own
+	// lookups keep the real, proxied resolvers.
+	//
+	// Ignored in ModeProxy, whose mixed inbound already hands hostnames to
+	// the outbound unresolved, and when SplitTunnel bypasses countries: that
+	// bypass also matches destination addresses against per-country geoip
+	// rule sets, which a fake address would defeat. False keeps the emission
+	// byte-identical.
+	FakeIP bool
 }
 
 func BuildSingBoxConfig(input SingBoxConfigInput) ([]byte, error) {
@@ -362,14 +463,21 @@ func dnsServerObjects(servers []string) []any {
 }
 
 // buildDNSConfig emits the DNS block for the selected shape. The TCP shape is
-// the original desktop/CLI emission, byte-identical; the DoH failover shape is
-// mobile's (see DNSShapeDoHFailover).
+// the original desktop/CLI emission, byte-identical unless fake IPs are on;
+// the DoH failover shape is mobile's (see DNSShapeDoHFailover).
 func buildDNSConfig(input SingBoxConfigInput, dnsServers, probeSuffixes []string) map[string]any {
+	fakeIP := fakeIPEnabled(input)
 	if input.DNSShape != DNSShapeDoHFailover {
-		return map[string]any{
-			"servers": dnsServerObjects(dnsServers),
+		servers := dnsServerObjects(dnsServers)
+		dns := map[string]any{
+			"servers": servers,
 			"final":   "dns-0",
 		}
+		if fakeIP {
+			dns["servers"] = append(servers, fakeIPServerObject())
+			dns["rules"] = []any{fakeIPDNSRule()}
+		}
+		return dns
 	}
 
 	var bypassCountries []string
@@ -397,6 +505,9 @@ func buildDNSConfig(input SingBoxConfigInput, dnsServers, probeSuffixes []string
 				"server_name": dohTLSServerNames[server],
 			},
 		})
+	}
+	if fakeIP {
+		servers = append(servers, fakeIPServerObject())
 	}
 	for _, country := range bypassCountries {
 		resolver := splitTunnelDirectResolvers[country]
@@ -428,6 +539,12 @@ func buildDNSConfig(input SingBoxConfigInput, dnsServers, probeSuffixes []string
 	rules := dnsFailoverRules(dnsServers, probeSuffixes, true)
 	for _, country := range bypassCountries {
 		rules = append(rules, countryDNSRules(country)...)
+	}
+	if fakeIP {
+		// After the probe pins, so a probe lookup still proves real
+		// resolution through the tunnel; ahead of the failover chain, which
+		// then serves only the query types fake IPs do not answer.
+		rules = append(rules, fakeIPDNSRule())
 	}
 	// Real failover for everything else: a static final would never consult a
 	// second resolver. evaluate is non-terminal on a transport error, timeout,

@@ -249,9 +249,20 @@ The generated config uses:
   behaviour Windows, Android and iOS already had, because they point the
   system at the tunnel resolver; the rule makes macOS and other Linux
   setups match, and keeps a bypassed LAN from becoming a plaintext DNS leak.
-- DNS servers detoured through the proxy over TCP. The relay outbound carries
-  no UDP at all; UDP 443 (QUIC) is rejected outright so browsers fall back to
-  TCP immediately, and every other UDP flow is dropped.
+- Fake-IP answers for A and AAAA queries: sing-box replies at once, locally,
+  with an address from a reserved range (a block of `198.18.0.0/15` and of
+  `fc00::/18`, drawn afresh for every run, with a 1-second TTL). A connection
+  to that address is mapped back to its hostname before routing, so the VLESS
+  request carries the hostname and the relay resolves it; no DNS exchange
+  through the tunnel precedes the connection. The table lives only in memory
+  and is never written to disk; an address an app cached during an earlier run
+  almost always falls outside the new run's block, so the connection is
+  refused and the app resolves again rather than reaching another host. Proxy mode needs none of this: the
+  mixed inbound already passes the hostname a browser sends to the relay.
+- DNS servers detoured through the proxy over TCP, for every other query type
+  (HTTPS, SRV, TXT, PTR, ...) and for sing-box's own lookups. The relay
+  outbound carries no UDP at all; UDP 443 (QUIC) is rejected outright so
+  browsers fall back to TCP immediately, and every other UDP flow is dropped.
 - `route_exclude_address` for the literal relay IP (and, on a punched path, the
   relay's reflexive UDP IP), so the client's own connection to the relay stays
   on the real network interface instead of being routed back into the TUN.

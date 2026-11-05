@@ -209,6 +209,22 @@ pins and selects the intended relay; country-grouped map markers must not become
 the identity of the recent list. This remains a UI acceptance check, not a mobile
 UI change in this PR.
 
+### Fake-IP DNS opt-in (connectcore 0.10.0)
+
+`MobileTunnelSettings.FakeIP` lets a host have the relay resolve destination
+hostnames: A and AAAA lookups through the TUN are answered locally with fake
+addresses, and a connection to one carries its hostname in the VLESS request.
+It is off unless the host sets it, so a pin bump alone changes nothing. The
+probe-pinned domains keep the proxied DoH chain ahead of the fake-IP rule, so
+the fresh-DNS probe still proves real resolution through the tunnel; probe
+names and suffix pins must therefore still agree. The setting is ignored while
+`SplitTunnel` bypasses countries, whose geoip match needs real destination
+addresses (LAN-only bypass is unaffected). The fake-address table is in memory
+only and is rebuilt per run from a freshly drawn block, so after a candidate
+switch an app holding an old address almost always gets a refused connection
+and resolves again. Before enabling it, check on device that the platform
+resolver accepts `198.18.0.0/15` and `fc00::/18` answers with a 1-second TTL.
+
 ## Outbox migration ordering
 
 1. Initialize native install identity and paths without changing process

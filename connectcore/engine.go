@@ -1206,12 +1206,16 @@ func (s *Engine) attemptDirectCandidate(ctx context.Context, conn *connection, c
 // candidateConfigInput is the mode-shaped base every candidate's config starts
 // from: the loopback mixed inbound in proxy mode, or the full-device TUN
 // inbound (whose shape — auto_route, strict_route, DNS hijack, and the relay
-// route exclusions — BuildSingBoxConfig owns) in TUN mode.
+// route exclusions — BuildSingBoxConfig owns) in TUN mode. TUN mode answers
+// address lookups with fake IPs so the relay resolves destination hostnames
+// (client.SingBoxConfigInput.FakeIP); a mobile host decides that itself
+// (MobileTunnelSettings.FakeIP).
 func (s *Engine) candidateConfigInput(cand brokerapi.RelayDescriptor, port int) client.SingBoxConfigInput {
 	mode := s.Mode()
 	input := client.SingBoxConfigInput{Relay: cand, Mode: mode.inboundMode()}
 	if mode == ModeTUN {
 		input.MTU = s.TunnelMTU
+		input.FakeIP = true
 		return input
 	}
 	input.ProxyListenAddress = proxyconfig.Host
