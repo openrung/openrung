@@ -433,6 +433,24 @@ type fakePersistence struct {
 	saveErr   error
 	loadCalls int
 	saveCalls int
+
+	fakeIPBlock    int
+	hasFakeIPBlock bool
+	fakeIPSaves    []int
+}
+
+func (f *fakePersistence) LoadFakeIPBlock() (int, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.fakeIPBlock, f.hasFakeIPBlock
+}
+
+func (f *fakePersistence) SaveFakeIPBlock(block int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fakeIPBlock, f.hasFakeIPBlock = block, true
+	f.fakeIPSaves = append(f.fakeIPSaves, block)
+	return nil
 }
 
 func (f *fakePersistence) LoadRecents() []RecentNode {

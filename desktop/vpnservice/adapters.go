@@ -59,14 +59,26 @@ func (a storeAdapter) ClearProxySnapshot() error {
 }
 
 var (
-	_ connectcore.UserIDPersistence = storeAdapter{}
-	_ connectcore.InstallationKey   = (*clientstate.InstallationKey)(nil)
+	_ connectcore.UserIDPersistence      = storeAdapter{}
+	_ connectcore.FakeIPBlockPersistence = storeAdapter{}
+	_ connectcore.InstallationKey        = (*clientstate.InstallationKey)(nil)
 )
 
 // SaveUserID makes the adapter a connectcore.UserIDPersistence: the engine
 // records the broker-assigned user ID after authenticating.
 func (a storeAdapter) SaveUserID(userID string) error {
 	return a.store.SaveUserID(userID)
+}
+
+// LoadFakeIPBlock and SaveFakeIPBlock make the adapter a
+// connectcore.FakeIPBlockPersistence: the fake-IP block rotation survives a
+// restart, which is what lets the engine answer DNS with fake IPs.
+func (a storeAdapter) LoadFakeIPBlock() (int, bool) {
+	return a.store.LoadFakeIPBlock()
+}
+
+func (a storeAdapter) SaveFakeIPBlock(block int) error {
+	return a.store.SaveFakeIPBlock(block)
 }
 
 // helperStore must return a nil interface, never a nil pointer inside one, which

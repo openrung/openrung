@@ -1,7 +1,7 @@
 // Package clientstate stores small pieces of end-user client state on disk:
 // the "recents" row, the stable local proxy endpoint, the installation key and
-// broker user ID (installation_key.go), and, while connected, the OS proxy
-// snapshot used to recover after a crash. Files live under
+// broker user ID (installation_key.go), the last fake-IP block (fakeip.go),
+// and, while connected, the OS proxy snapshot used to recover after a crash. Files live under
 // os.UserConfigDir()/openrung, next to the telemetry client-id, so all
 // per-install state is in one place. The desktop app and the TUI client share
 // this directory, so the file names and formats here are a compatibility
@@ -268,7 +268,7 @@ func (s *Store) writeFile(name string, data []byte) error {
 func repairableStateFile(name string) bool {
 	switch name {
 	case recentsFile, proxyPortFile, proxyPortLockFile, proxySnapshotHdr, "client-id",
-		installationKeyFile, installationKeyLockFile, userIDFile:
+		installationKeyFile, installationKeyLockFile, userIDFile, fakeIPBlockFile:
 		return true
 	}
 	if !strings.HasPrefix(name, "proxy-env-") || !strings.HasSuffix(name, ".sh") {

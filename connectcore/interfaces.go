@@ -137,6 +137,19 @@ type UserIDPersistence interface {
 	SaveUserID(userID string) error
 }
 
+// FakeIPBlockPersistence is an optional extension of Persistence that keeps
+// the fake-IP block of the most recent tunnel run (a number in
+// [0, client.FakeIPBlockCount), never a hostname), so the block rotation
+// survives a restart of the host: a new run must never answer from the block
+// an app may still hold addresses from. The engine answers DNS with fake IPs
+// (client.SingBoxConfigInput.FakeIP) only for hosts that implement it.
+type FakeIPBlockPersistence interface {
+	// LoadFakeIPBlock returns the stored block and whether one was stored.
+	LoadFakeIPBlock() (int, bool)
+	// SaveFakeIPBlock records the block a run is about to answer from.
+	SaveFakeIPBlock(block int) error
+}
+
 // InstallationKey is the installation's P-256 identity key (ADR-006): the
 // broker derives a stable user ID from it and issues per-user relay
 // credentials to whoever proves possession. Implementations load the key

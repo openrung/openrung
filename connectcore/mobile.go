@@ -61,7 +61,10 @@ type MobileTunnelSettings struct {
 	// answered locally with fake IPs, except the probe-pinned domains, which
 	// keep the proxied DoH chain the fresh-DNS probe must exercise. Ignored
 	// while SplitTunnel bypasses the LAN or any country. The engine picks
-	// each run's fake-IP block. False keeps the emission unchanged.
+	// each run's fake-IP block and refuses to connect unless Engine.Persistence
+	// implements FakeIPBlockPersistence, so the rotation survives a process
+	// restart. False keeps the emission unchanged until fake addresses have
+	// been issued; from then on every TUN run refuses the fake ranges.
 	FakeIP bool
 }
 
@@ -198,6 +201,9 @@ func (s *Engine) mobileConfig(ctx context.Context, input client.SingBoxConfigInp
 	}
 	input.RouteFindProcess = settings.RouteFindProcess
 	input.ClashAPI = settings.ClashAPI
+	if settings.FakeIP && s.fakeIPPersistence() == nil {
+		return input, errors.New("mobile FakeIP requires Persistence implementing FakeIPBlockPersistence")
+	}
 	input.FakeIP = settings.FakeIP
 	input.DNSShape = client.DNSShapeDoHFailover
 	input.BridgeOwnsOuterSocket = true

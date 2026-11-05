@@ -155,32 +155,68 @@ func TestFakeIPDoHShapeKeepsProbePinsFirst(t *testing.T) {
 	}
 }
 
-// Where fake IPs do not apply the request changes nothing: proxy mode already
-// hands hostnames through, and the LAN and country bypasses need real
-// destination addresses for their private-range and geoip matches.
-func TestFakeIPIgnoredWhereItDoesNotApply(t *testing.T) {
+// Proxy mode already hands hostnames through, so FakeIP changes nothing
+// there; RejectFakeIPRanges is TUN-only too.
+func TestFakeIPIgnoredInProxyMode(t *testing.T) {
+	now := time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC)
+	input := SingBoxConfigInput{Relay: validRelay(now), Mode: ModeProxy, ProxyListenPort: 7890}
+	without, _ := buildRawDecoded(t, input)
+	input.FakeIP, input.FakeIPBlock, input.RejectFakeIPRanges = true, 7, true
+	with, _ := buildRawDecoded(t, input)
+	if !bytes.Equal(with, without) {
+		t.Fatalf("fake-IP inputs changed a proxy-mode config:\n%s", with)
+	}
+}
+
+// The LAN and country bypasses need real destination addresses, so they hand
+// out no fake addresses — but a TUN run asked for fake IPs, or told some may
+// still be cached, keeps refusing the fake ranges ahead of every bypass rule,
+// and that refusal is the only difference.
+func TestFakeIPSuppressedByBypassKeepsStaleRefusal(t *testing.T) {
 	now := time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC)
 	cases := map[string]SingBoxConfigInput{
-		"proxy": {Relay: validRelay(now), Mode: ModeProxy, ProxyListenPort: 7890},
 		"lan-bypass": {
 			Relay: validRelay(now), DNSShape: DNSShapeDoHFailover,
 			SplitTunnel: &SplitTunnelRules{BypassLAN: true},
 		},
 		"country-bypass": {
 			Relay: validRelay(now), DNSShape: DNSShapeDoHFailover,
-			SplitTunnel: &SplitTunnelRules{BypassCountries: []string{SplitTunnelCountryCN}, RuleSetDirectory: "/rules"},
+			SplitTunnel: &SplitTunnelRules{BypassLAN: true, BypassCountries: []string{SplitTunnelCountryCN}, RuleSetDirectory: "/rules"},
 		},
+		"fake-ip-off": {Relay: validRelay(now)},
 	}
-	for name, input := range cases {
-		t.Run(name, func(t *testing.T) {
-			without, _ := buildRawDecoded(t, input)
-			input.FakeIP = true
-			input.FakeIPBlock = 7
-			with, _ := buildRawDecoded(t, input)
-			if !bytes.Equal(with, without) {
-				t.Fatalf("FakeIP changed a config it does not apply to:\n%s", with)
+	for name, base := range cases {
+		requests := map[string]func(*SingBoxConfigInput){
+			"fakeip":      func(in *SingBoxConfigInput) { in.FakeIP, in.FakeIPBlock = true, 7 },
+			"stale-guard": func(in *SingBoxConfigInput) { in.RejectFakeIPRanges = true },
+		}
+		for request, apply := range requests {
+			if name == "fake-ip-off" && request == "fakeip" {
+				continue
 			}
-		})
+			t.Run(name+"/"+request, func(t *testing.T) {
+				_, without := buildRawDecoded(t, base)
+				input := base
+				apply(&input)
+				raw, with := buildRawDecoded(t, input)
+				if bytes.Contains(raw, []byte(`"fakeip"`)) {
+					t.Fatalf("fake-IP DNS emitted where it does not apply:\n%s", raw)
+				}
+				rules := with["route"].(map[string]any)["rules"].([]any)
+				want := map[string]any{
+					"ip_cidr": []any{"198.18.0.0/15", "fc00::/18"},
+					"action":  "reject",
+					"no_drop": true,
+				}
+				if !reflect.DeepEqual(rules[2], want) {
+					t.Fatalf("rule 2 = %v, want the stale fake-range refusal", rules[2])
+				}
+				with["route"].(map[string]any)["rules"] = append(append([]any{}, rules[:2]...), rules[3:]...)
+				if !reflect.DeepEqual(with, without) {
+					t.Fatal("more than the stale refusal changed")
+				}
+			})
+		}
 	}
 }
 

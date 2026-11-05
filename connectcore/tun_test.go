@@ -159,9 +159,12 @@ func TestTUNConnectSkipsProxyPortAndOSProxy(t *testing.T) {
 		t.Fatalf("relay IP not excluded from the TUN routes: %v", excluded)
 	}
 	// TUN mode answers address lookups with fake IPs, so the relay resolves
-	// destination hostnames.
+	// destination hostnames, and records the block for the next run.
 	if !strings.Contains(string(configJSON), `"type": "fakeip"`) {
 		t.Fatalf("TUN config lacks the fake-IP DNS server:\n%s", configJSON)
+	}
+	if _, stored := store.LoadFakeIPBlock(); !stored {
+		t.Fatal("TUN run did not record its fake-IP block")
 	}
 
 	if err := s.Disconnect(); err != nil {
@@ -348,3 +351,20 @@ func TestTUNUsesTheLongerReadyTimeout(t *testing.T) {
 type permitElevation struct{}
 
 func (permitElevation) Elevate(context.Context) error { return nil }
+
+// Fake IPs need a block rotation that survives a restart, so a TUN host
+// without FakeIPBlockPersistence keeps real answers.
+func TestTUNFakeIPNeedsBlockPersistence(t *testing.T) {
+	s := New()
+	if err := s.SetMode(ModeTUN); err != nil {
+		t.Fatal(err)
+	}
+	relay := relayAt("a", "JP", "Tokyo", "Japan", "127.0.0.10")
+	if s.candidateConfigInput(relay, 0).FakeIP {
+		t.Fatal("FakeIP without a block store")
+	}
+	s.Persistence = &fakePersistence{}
+	if !s.candidateConfigInput(relay, 0).FakeIP {
+		t.Fatal("FakeIP off despite a block store")
+	}
+}

@@ -1142,11 +1142,13 @@ func TestMobileReadinessTimeoutMatchesDesktopAndPreservesCancellation(t *testing
 }
 
 // Mobile owns the fake-IP decision: the engine's TUN default must not leak
-// into a mobile run that did not opt in, and an opt-in reaches the config.
+// into a mobile run that did not opt in, an opt-in reaches the config, and
+// consecutive runs never share a block.
 func TestMobileFakeIPFollowsHostSettings(t *testing.T) {
 	for _, optIn := range []bool{false, true} {
 		t.Run(map[bool]string{false: "default", true: "opt-in"}[optIn], func(t *testing.T) {
 			s, rt, r := mobileTestEngine(t)
+			s.Persistence = &fakePersistence{}
 			s.Mobile.Settings = func(context.Context) (MobileTunnelSettings, error) {
 				return MobileTunnelSettings{MTU: 1400, LogLevel: "warn", ClashAPI: true, FakeIP: optIn}, nil
 			}
@@ -1168,19 +1170,10 @@ func TestMobileFakeIPFollowsHostSettings(t *testing.T) {
 				if got := strings.Contains(string(config), `"type": "fakeip"`); got != optIn {
 					t.Fatalf("fakeip server emitted=%v, host opted in=%v", got, optIn)
 				}
-				var decoded struct {
-					DNS struct {
-						Servers []map[string]any `json:"servers"`
-					} `json:"dns"`
+				if got := strings.Contains(string(config), `"198.18.0.0/15"`); got != optIn {
+					t.Fatalf("stale fake-range refusal emitted=%v, host opted in=%v", got, optIn)
 				}
-				if err := json.Unmarshal(config, &decoded); err != nil {
-					t.Fatal(err)
-				}
-				for _, server := range decoded.DNS.Servers {
-					if server["type"] == "fakeip" {
-						ranges = append(ranges, server["inet4_range"].(string))
-					}
-				}
+				ranges = append(ranges, fakeIPv4RangeOf(t, config)...)
 			}
 			// A new run must never answer from the previous run's block.
 			if optIn && (len(ranges) != 2 || ranges[0] == ranges[1]) {
@@ -1190,23 +1183,107 @@ func TestMobileFakeIPFollowsHostSettings(t *testing.T) {
 	}
 }
 
-// Rotation gives every run a different block from the run before it, and
-// reuses a block only after all the others.
-func TestNextFakeIPBlockRotates(t *testing.T) {
-	s := New()
-	first := s.nextFakeIPBlock()
-	if first < 0 || first >= client.FakeIPBlockCount {
-		t.Fatalf("first block %d out of range", first)
+// A mobile host may opt in only with a durable block rotation.
+func TestMobileFakeIPRequiresBlockPersistence(t *testing.T) {
+	s, _, r := mobileTestEngine(t)
+	s.Mobile.Settings = func(context.Context) (MobileTunnelSettings, error) {
+		return MobileTunnelSettings{MTU: 1400, LogLevel: "warn", FakeIP: true}, nil
 	}
-	seen := map[int]bool{first: true}
-	for i := 1; i < client.FakeIPBlockCount; i++ {
-		block := s.nextFakeIPBlock()
-		if block != (first+i)%client.FakeIPBlockCount || seen[block] {
+	_, err := s.attemptCandidate(t.Context(), mobileTestConnection(), r, 0, 1)
+	if _, local := localCandidateErrorStage(err); !local || !strings.Contains(err.Error(), "FakeIPBlockPersistence") {
+		t.Fatalf("want a local config error naming FakeIPBlockPersistence, got %v", err)
+	}
+}
+
+// Once fake addresses have been issued — the stored block shows it — a run
+// that hands out none still refuses the fake ranges, ahead of the LAN bypass:
+// apps may hold answers from before, and a fc00::/18 address would
+// otherwise match ip_is_private and go direct.
+func TestMobileFakeIPOffKeepsStaleRefusal(t *testing.T) {
+	s, rt, r := mobileTestEngine(t)
+	s.Persistence = &fakePersistence{fakeIPBlock: 4, hasFakeIPBlock: true}
+	s.Mobile.Settings = func(context.Context) (MobileTunnelSettings, error) {
+		return MobileTunnelSettings{MTU: 1400, LogLevel: "warn", SplitTunnel: &client.SplitTunnelRules{BypassLAN: true}}, nil
+	}
+	var generated []byte
+	rt.launch = func(_ context.Context, b []byte, _ *RunTelemetry) (MobileTunnelRun, error) {
+		generated = append([]byte(nil), b...)
+		return newMobileTestRun(PathAndroidVPN), nil
+	}
+	res, err := s.attemptCandidate(t.Context(), mobileTestConnection(), r, 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.teardown()
+	if strings.Contains(string(generated), `"type": "fakeip"`) {
+		t.Fatal("fake-IP server emitted without an opt-in")
+	}
+	var decoded struct {
+		Route struct {
+			Rules []map[string]any `json:"rules"`
+		} `json:"route"`
+	}
+	if err := json.Unmarshal(generated, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	refused, lan := -1, -1
+	for i, rule := range decoded.Route.Rules {
+		if rule["ip_cidr"] != nil && rule["action"] == "reject" {
+			refused = i
+		}
+		if rule["ip_is_private"] == true {
+			lan = i
+		}
+	}
+	if refused < 0 || lan < 0 || refused > lan {
+		t.Fatalf("stale refusal at %d, LAN bypass at %d: %v", refused, lan, decoded.Route.Rules)
+	}
+}
+
+func fakeIPv4RangeOf(t *testing.T, config []byte) []string {
+	t.Helper()
+	var decoded struct {
+		DNS struct {
+			Servers []map[string]any `json:"servers"`
+		} `json:"dns"`
+	}
+	if err := json.Unmarshal(config, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	var ranges []string
+	for _, server := range decoded.DNS.Servers {
+		if server["type"] == "fakeip" {
+			ranges = append(ranges, server["inet4_range"].(string))
+		}
+	}
+	return ranges
+}
+
+// Rotation continues from the block the host stored for its last run — the
+// one before a restart — gives every run a different block from the run
+// before it, reuses a block only after all the others, and records each.
+func TestNextFakeIPBlockRotatesAcrossRestarts(t *testing.T) {
+	store := &fakePersistence{fakeIPBlock: client.FakeIPBlockCount - 1, hasFakeIPBlock: true}
+	s := New()
+	s.Persistence = store
+	for i := range client.FakeIPBlockCount + 1 {
+		if block := s.nextFakeIPBlock(); block != i%client.FakeIPBlockCount {
 			t.Fatalf("run %d got block %d", i, block)
 		}
-		seen[block] = true
 	}
-	if again := s.nextFakeIPBlock(); again != first {
-		t.Fatalf("after a full rotation got %d, want %d", again, first)
+	if len(store.fakeIPSaves) != client.FakeIPBlockCount+1 || store.fakeIPBlock != 0 {
+		t.Fatalf("saved %v", store.fakeIPSaves)
+	}
+	// A restarted engine resumes after the last saved block.
+	restarted := New()
+	restarted.Persistence = store
+	if block := restarted.nextFakeIPBlock(); block != 1 {
+		t.Fatalf("after restart got block %d, want 1", block)
+	}
+	// Without a stored block the start is random but in range.
+	fresh := New()
+	fresh.Persistence = &fakePersistence{}
+	if block := fresh.nextFakeIPBlock(); block < 0 || block >= client.FakeIPBlockCount {
+		t.Fatalf("first block %d out of range", block)
 	}
 }

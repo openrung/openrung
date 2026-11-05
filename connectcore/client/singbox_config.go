@@ -254,7 +254,9 @@ type SingBoxConfigInput struct {
 	// the outbound unresolved, and whenever SplitTunnel bypasses the LAN or
 	// any country: those bypasses match real destination addresses (private
 	// ranges, per-country geoip rule sets), and a connection mapped back to a
-	// hostname has none. False keeps the emission byte-identical.
+	// hostname has none. Even then a TUN config keeps refusing the fake
+	// ranges (see RejectFakeIPRanges). False keeps the emission byte-identical
+	// unless RejectFakeIPRanges is set.
 	FakeIP bool
 	// FakeIPBlock selects which of the FakeIPBlockCount disjoint blocks the
 	// fake addresses come from, in [0, FakeIPBlockCount). The table of fake
@@ -265,6 +267,13 @@ type SingBoxConfigInput struct {
 	// rejects fake addresses outside this block, so a stale one fails at once
 	// and the app resolves again. Ignored unless FakeIP applies.
 	FakeIPBlock int
+	// RejectFakeIPRanges keeps that refusal of the fake ranges in a TUN
+	// config that hands out no fake addresses itself (FakeIP false, or
+	// ignored because of a LAN or country bypass). Apps can hold fake answers
+	// from an earlier run; without the refusal such an address would be
+	// routed as a real one — a fc00::/18 address matches the LAN bypass.
+	// A TUN config with FakeIP set always refuses them.
+	RejectFakeIPRanges bool
 }
 
 func BuildSingBoxConfig(input SingBoxConfigInput) ([]byte, error) {
@@ -684,14 +693,16 @@ func buildRouteConfig(input SingBoxConfigInput, probeSuffixes []string) map[stri
 			"action": "hijack-dns",
 		},
 	}
-	if fakeIPEnabled(input) {
+	if input.Mode == ModeTUN && (input.FakeIP || input.RejectFakeIPRanges) {
 		// A fake address of this run has already been mapped back to its
 		// hostname here, so it carries no IP to match. One that still has an
 		// IP is stale — another block, from an earlier run — and must never
 		// be routed as a real address: refusing it at once makes the app
 		// resolve again instead of waiting on an address nothing answers.
-		// no_drop keeps a burst of stale connections after a reconnect from
-		// downgrading the reject to a silent drop.
+		// Ahead of every bypass rule, and kept even when this run hands out
+		// no fake addresses (RejectFakeIPRanges). no_drop keeps a burst of
+		// stale connections after a reconnect from downgrading the reject to
+		// a silent drop.
 		rules = append(rules, map[string]any{
 			"ip_cidr": []string{fakeIPv4Range.String(), fakeIPv6Range.String()},
 			"action":  "reject",

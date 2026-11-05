@@ -255,11 +255,13 @@ The generated config uses:
   mapped back to its hostname before routing, so the VLESS request carries the
   hostname and the relay resolves it; no DNS exchange through the tunnel
   precedes the connection. The table lives only in the run's memory and is
-  never written to disk. Each new run (reconnect, failover) answers from the
-  next block in rotation, so it never reuses the previous run's addresses, and
-  a route rule right after the DNS hijack rules refuses any fake address the
-  current run did not hand out: an app holding a stale one gets an immediate
-  refusal and resolves again. Proxy mode needs none of this: the mixed inbound
+  never written to disk. Each new run (reconnect, failover, or the first run
+  after the app or CLI restarts) answers from the next block in rotation, so it
+  never reuses the previous run's addresses; only the block number is stored,
+  in `fakeip-block.json` in the client state directory. A route rule right
+  after the DNS hijack rules refuses any fake address the current run did not
+  hand out: an app holding a stale one gets an immediate refusal and resolves
+  again. Proxy mode needs none of this: the mixed inbound
   already passes the hostname a browser sends to the relay.
 - DNS servers detoured through the proxy over TCP, for every other query type
   (HTTPS, SRV, TXT, PTR, ...) and for sing-box's own lookups. The relay
