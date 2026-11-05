@@ -436,21 +436,32 @@ type fakePersistence struct {
 
 	fakeIPBlock    int
 	hasFakeIPBlock bool
-	fakeIPSaves    []int
+	fakeIPErr      error // every AllocateFakeIPBlock fails with it
+	fakeIPAllocs   []int
 }
 
-func (f *fakePersistence) LoadFakeIPBlock() (int, bool) {
+// AllocateFakeIPBlock mirrors clientstate's locked read-increment-write: one
+// fakePersistence shared by several engines stands in for the store the
+// desktop app and the CLI share.
+func (f *fakePersistence) AllocateFakeIPBlock(count, initial int) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.fakeIPBlock, f.hasFakeIPBlock
+	if f.fakeIPErr != nil {
+		return 0, f.fakeIPErr
+	}
+	next := initial
+	if f.hasFakeIPBlock {
+		next = (f.fakeIPBlock + 1) % count
+	}
+	f.fakeIPBlock, f.hasFakeIPBlock = next, true
+	f.fakeIPAllocs = append(f.fakeIPAllocs, next)
+	return next, nil
 }
 
-func (f *fakePersistence) SaveFakeIPBlock(block int) error {
+func (f *fakePersistence) HasFakeIPBlock() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.fakeIPBlock, f.hasFakeIPBlock = block, true
-	f.fakeIPSaves = append(f.fakeIPSaves, block)
-	return nil
+	return f.hasFakeIPBlock
 }
 
 func (f *fakePersistence) LoadRecents() []RecentNode {

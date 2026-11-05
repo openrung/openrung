@@ -163,7 +163,7 @@ func TestTUNConnectSkipsProxyPortAndOSProxy(t *testing.T) {
 	if !strings.Contains(string(configJSON), `"type": "fakeip"`) {
 		t.Fatalf("TUN config lacks the fake-IP DNS server:\n%s", configJSON)
 	}
-	if _, stored := store.LoadFakeIPBlock(); !stored {
+	if !store.HasFakeIPBlock() {
 		t.Fatal("TUN run did not record its fake-IP block")
 	}
 

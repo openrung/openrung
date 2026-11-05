@@ -70,15 +70,16 @@ func (a storeAdapter) SaveUserID(userID string) error {
 	return a.store.SaveUserID(userID)
 }
 
-// LoadFakeIPBlock and SaveFakeIPBlock make the adapter a
-// connectcore.FakeIPBlockPersistence: the fake-IP block rotation survives a
-// restart, which is what lets the engine answer DNS with fake IPs.
-func (a storeAdapter) LoadFakeIPBlock() (int, bool) {
-	return a.store.LoadFakeIPBlock()
+// AllocateFakeIPBlock and HasFakeIPBlock make the adapter a
+// connectcore.FakeIPBlockPersistence: the fake-IP block rotation is shared
+// with every other client process on this install and survives restarts,
+// which is what lets the engine answer DNS with fake IPs.
+func (a storeAdapter) AllocateFakeIPBlock(count, initial int) (int, error) {
+	return a.store.AllocateFakeIPBlock(count, initial)
 }
 
-func (a storeAdapter) SaveFakeIPBlock(block int) error {
-	return a.store.SaveFakeIPBlock(block)
+func (a storeAdapter) HasFakeIPBlock() bool {
+	return a.store.HasFakeIPBlock()
 }
 
 // helperStore must return a nil interface, never a nil pointer inside one, which

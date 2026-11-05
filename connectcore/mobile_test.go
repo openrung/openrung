@@ -1259,31 +1259,74 @@ func fakeIPv4RangeOf(t *testing.T, config []byte) []string {
 	return ranges
 }
 
-// Rotation continues from the block the host stored for its last run — the
-// one before a restart — gives every run a different block from the run
-// before it, reuses a block only after all the others, and records each.
-func TestNextFakeIPBlockRotatesAcrossRestarts(t *testing.T) {
-	store := &fakePersistence{fakeIPBlock: client.FakeIPBlockCount - 1, hasFakeIPBlock: true}
+// fakeIPRunConfig starts one TUN candidate on s and returns its config.
+func fakeIPRunConfig(t *testing.T, s *Engine) []byte {
+	t.Helper()
+	configs := make(chan []byte, 1)
+	s.TunnelRuntime = runFuncRuntime(func(ctx context.Context, config []byte) error {
+		configs <- append([]byte(nil), config...)
+		<-ctx.Done()
+		return nil
+	})
+	relay := relayAt("a", "JP", "Tokyo", "Japan", "127.0.0.10")
+	input := s.candidateConfigInput(relay, 0)
+	s.tunnelReady = func(context.Context, int) error { return nil }
+	s.probeTunnel = func(context.Context, int) (int64, error) { return 1, nil }
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	res, err := s.startCandidate(&candidateResult{relay: relay, ctx: ctx, cancel: cancel}, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.teardown()
+	return <-configs
+}
+
+func newFakeIPEngine(t *testing.T, store *fakePersistence) *Engine {
+	t.Helper()
 	s := New()
 	s.Persistence = store
-	for i := range client.FakeIPBlockCount + 1 {
-		if block := s.nextFakeIPBlock(); block != i%client.FakeIPBlockCount {
-			t.Fatalf("run %d got block %d", i, block)
+	if err := s.SetMode(ModeTUN); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// Every run allocates from the shared store's current state: the desktop app
+// and the CLI hand off to each other — or restart — without either
+// repeating the block the other just used, and a block comes round again only
+// after all the others.
+func TestFakeIPBlockAllocatedFromSharedStateEveryRun(t *testing.T) {
+	store := &fakePersistence{fakeIPBlock: 4, hasFakeIPBlock: true}
+	desktop, cli := newFakeIPEngine(t, store), newFakeIPEngine(t, store)
+	restarted := newFakeIPEngine(t, store)
+	var ranges []string
+	for _, engine := range []*Engine{desktop, cli, desktop, restarted} {
+		ranges = append(ranges, fakeIPv4RangeOf(t, fakeIPRunConfig(t, engine))...)
+	}
+	want := []string{"198.18.160.0/19", "198.18.192.0/19", "198.18.224.0/19", "198.19.0.0/19"}
+	if !reflect.DeepEqual(ranges, want) || !reflect.DeepEqual(store.fakeIPAllocs, []int{5, 6, 7, 8}) {
+		t.Fatalf("ranges %v, allocations %v", ranges, store.fakeIPAllocs)
+	}
+	for i := range client.FakeIPBlockCount - 4 {
+		if block, ok := desktop.allocateFakeIPBlock(); !ok || block != (9+i)%client.FakeIPBlockCount {
+			t.Fatalf("allocation %d = %d, %v", i, block, ok)
 		}
 	}
-	if len(store.fakeIPSaves) != client.FakeIPBlockCount+1 || store.fakeIPBlock != 0 {
-		t.Fatalf("saved %v", store.fakeIPSaves)
-	}
-	// A restarted engine resumes after the last saved block.
-	restarted := New()
-	restarted.Persistence = store
-	if block := restarted.nextFakeIPBlock(); block != 1 {
-		t.Fatalf("after restart got block %d, want 1", block)
-	}
-	// Without a stored block the start is random but in range.
-	fresh := New()
-	fresh.Persistence = &fakePersistence{}
-	if block := fresh.nextFakeIPBlock(); block < 0 || block >= client.FakeIPBlockCount {
-		t.Fatalf("first block %d out of range", block)
+}
+
+// A run whose block could not be recorded might repeat the previous run's
+// block, so it hands out no fake addresses — in this engine or a restarted
+// one — and still refuses the fake ranges.
+func TestFakeIPUnrecordedBlockFallsBackToRealDNS(t *testing.T) {
+	store := &fakePersistence{fakeIPBlock: 4, hasFakeIPBlock: true, fakeIPErr: errors.New("disk full")}
+	for run := range 2 {
+		config := fakeIPRunConfig(t, newFakeIPEngine(t, store))
+		if strings.Contains(string(config), `"type": "fakeip"`) {
+			t.Fatalf("run %d handed out fake addresses without a recorded block", run)
+		}
+		if !strings.Contains(string(config), `"198.18.0.0/15"`) {
+			t.Fatalf("run %d dropped the stale fake-range refusal", run)
+		}
 	}
 }

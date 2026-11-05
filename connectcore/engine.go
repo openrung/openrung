@@ -496,60 +496,50 @@ type Engine struct {
 	leaseClock           func() time.Time   // nil means the wall clock (lease renewal and token expiry)
 	leaseTimer           func(time.Duration) <-chan time.Time
 
-	// fakeIPMu guards the fake-IP block rotation (see nextFakeIPBlock).
+	// fakeIPMu guards fakeIPIssued and serializes this engine's allocations.
 	fakeIPMu     sync.Mutex
-	fakeIPLoaded bool // fakeIPNext has been seeded
 	fakeIPIssued bool // a run of this engine has answered from a block
-	fakeIPNext   int
 }
 
 // fakeIPPersistence returns the host's fake-IP block store, or nil. Without
-// one the engine never hands out fake addresses: the rotation could not
-// survive a host restart.
+// one the engine never hands out fake addresses: nothing would stop a later
+// run from reusing the block an earlier one answered from.
 func (s *Engine) fakeIPPersistence() FakeIPBlockPersistence {
 	store, _ := s.Persistence.(FakeIPBlockPersistence)
 	return store
 }
 
-// nextFakeIPBlock hands each tunnel run the block after the previous run's,
-// continuing from the block the host stored for its last run (a random one
-// when none is stored), and records the choice before the run starts.
-// sing-box's fake-address table lives and dies with its run, and every run
-// allocates from the start of its block, so a run must never share the
-// previous run's block — in this process or the one before a restart: an
-// address an app still caches would name a different hostname. Rotation
+// allocateFakeIPBlock returns the block a new tunnel run answers from, and
+// false when none could be recorded. sing-box's fake-address table lives and
+// dies with its run, and every run allocates from the start of its block, so
+// a run must never share the previous run's block — whether that run belonged
+// to this engine, to an earlier process, or to another host sharing the
+// store: an address an app still caches would name a different hostname. The
+// store allocates from its current shared state on every call, so rotation
 // reuses a block only after every other block has served a run, and the
 // route refuses addresses outside the current block
-// (client.SingBoxConfigInput.FakeIPBlock), so a stale address fails at once
-// and the app resolves again.
-func (s *Engine) nextFakeIPBlock() int {
+// (client.SingBoxConfigInput.FakeIPBlock), so a stale one fails at once and
+// the app resolves again.
+func (s *Engine) allocateFakeIPBlock() (int, bool) {
+	store := s.fakeIPPersistence()
+	if store == nil {
+		return 0, false
+	}
 	s.fakeIPMu.Lock()
 	defer s.fakeIPMu.Unlock()
-	store := s.fakeIPPersistence()
-	if !s.fakeIPLoaded {
-		s.fakeIPLoaded = true
-		s.fakeIPNext = rand.IntN(client.FakeIPBlockCount)
-		if store != nil {
-			if last, ok := store.LoadFakeIPBlock(); ok && last >= 0 && last < client.FakeIPBlockCount {
-				s.fakeIPNext = (last + 1) % client.FakeIPBlockCount
-			}
-		}
+	block, err := store.AllocateFakeIPBlock(client.FakeIPBlockCount, rand.IntN(client.FakeIPBlockCount))
+	if err != nil || block < 0 || block >= client.FakeIPBlockCount {
+		return 0, false
 	}
-	block := s.fakeIPNext
-	s.fakeIPNext = (block + 1) % client.FakeIPBlockCount
 	s.fakeIPIssued = true
-	if store != nil {
-		// Best-effort: a failed write still leaves this process's rotation
-		// correct, and only weakens the guarantee across a restart.
-		_ = store.SaveFakeIPBlock(block)
-	}
-	return block
+	return block, true
 }
 
 // fakeIPsMayBeCached reports whether apps may hold fake addresses from an
-// earlier run — of this engine, or of an earlier process, as the stored block
-// shows — so the run keeps refusing the fake ranges even when it hands out no
-// fake addresses itself (client.SingBoxConfigInput.RejectFakeIPRanges).
+// earlier run — of this engine, of an earlier process, or of another host
+// sharing the store — so the run keeps refusing the fake ranges even when it
+// hands out no fake addresses itself
+// (client.SingBoxConfigInput.RejectFakeIPRanges).
 func (s *Engine) fakeIPsMayBeCached() bool {
 	s.fakeIPMu.Lock()
 	issued := s.fakeIPIssued
@@ -557,11 +547,8 @@ func (s *Engine) fakeIPsMayBeCached() bool {
 	if issued {
 		return true
 	}
-	if store := s.fakeIPPersistence(); store != nil {
-		_, stored := store.LoadFakeIPBlock()
-		return stored
-	}
-	return false
+	store := s.fakeIPPersistence()
+	return store != nil && store.HasFakeIPBlock()
 }
 
 func (s *Engine) tunnelReadyProbe() func(context.Context, int) error {
@@ -1296,7 +1283,16 @@ func (s *Engine) candidateConfigInput(cand brokerapi.RelayDescriptor, port int) 
 // end-to-end validation. Every path uses identical inner Reality settings.
 func (s *Engine) startCandidate(res *candidateResult, configInput client.SingBoxConfigInput) (*candidateResult, error) {
 	if configInput.FakeIP {
-		configInput.FakeIPBlock = s.nextFakeIPBlock()
+		if block, ok := s.allocateFakeIPBlock(); ok {
+			configInput.FakeIPBlock = block
+		} else {
+			// Without a recorded block this run could repeat the last one,
+			// so it resolves through the tunnel instead — and still refuses
+			// whatever fake addresses earlier runs handed out.
+			configInput.FakeIP = false
+			configInput.RejectFakeIPRanges = true
+			s.appendLog("could not record the fake-IP block; resolving DNS through the tunnel for this run")
+		}
 	}
 	if configInput.Mode == client.ModeTUN && s.fakeIPsMayBeCached() {
 		configInput.RejectFakeIPRanges = true

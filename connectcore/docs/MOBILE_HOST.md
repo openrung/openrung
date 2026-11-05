@@ -224,11 +224,15 @@ has (per-app exclusion is unaffected). The fake-address table lives only in a
 run's memory; the engine gives each run the next of 16 address blocks, so a new
 run never reuses the previous run's addresses. That rotation has to survive a
 process restart, so the engine refuses to connect with `FakeIP` set unless
-`Engine.Persistence` implements `FakeIPBlockPersistence`, which stores only the
-last block number. The route refuses any fake address the current run did not
-hand out, so an app holding a stale one resolves again; once a block has been
-stored, every TUN run keeps that refusal ahead of the bypass rules, including
-runs with `FakeIP` off or suppressed by a bypass. Before enabling it, check on device that the platform resolver
+`Engine.Persistence` implements `FakeIPBlockPersistence`, which records only
+the last block number. `AllocateFakeIPBlock` must read, advance and record it
+atomically against every process sharing the record (for example the Network
+Extension and the app on iOS, if both run tunnels); a run whose allocation
+fails resolves through the tunnel instead. The route refuses any fake address
+the current run did not hand out, so an app holding a stale one resolves
+again; once a block has been recorded (`HasFakeIPBlock`), every TUN run keeps
+that refusal ahead of the bypass rules, including runs with `FakeIP` off or
+suppressed by a bypass. Before enabling it, check on device that the platform resolver
 accepts `198.18.0.0/15` and `fc00::/18` answers with a 1-second TTL.
 
 ## Outbox migration ordering

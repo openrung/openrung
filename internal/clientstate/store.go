@@ -268,7 +268,7 @@ func (s *Store) writeFile(name string, data []byte) error {
 func repairableStateFile(name string) bool {
 	switch name {
 	case recentsFile, proxyPortFile, proxyPortLockFile, proxySnapshotHdr, "client-id",
-		installationKeyFile, installationKeyLockFile, userIDFile, fakeIPBlockFile:
+		installationKeyFile, installationKeyLockFile, userIDFile, fakeIPBlockFile, fakeIPBlockLockFile:
 		return true
 	}
 	if !strings.HasPrefix(name, "proxy-env-") || !strings.HasSuffix(name, ".sh") {
