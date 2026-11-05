@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -212,6 +213,9 @@ type candidateResult struct {
 	// close of that run (see beginFakeIPRun).
 	fakeIPCache string
 	fakeIPBlock int
+	// Held before any cache/state access, through Stop and clean-close recording,
+	// including a real-DNS retry or a run with LAN/country bypass enabled.
+	fakeIPLock *os.File
 
 	// The WSS adapter remains alive until the tunnel run has been stopped.
 	// Its separate context preserves that teardown order.
@@ -285,7 +289,23 @@ func (c *candidateResult) teardown() {
 	if c.healthDone != nil {
 		<-c.healthDone
 	}
-	c.stopRun()
+	stopErr := c.stopRun()
+	if lock := c.fakeIPLock; lock != nil {
+		c.fakeIPLock = nil
+		if stopErr == nil {
+			_ = lock.Close()
+		} else {
+			// A failed Stop can leave the runtime alive. Retain ownership until
+			// its exit is confirmed, even though this candidate is retired.
+			run, done, cache, block := c.run, c.runDone, c.fakeIPCache, c.fakeIPBlock
+			go func() {
+				for range done {
+				}
+				recordFakeIPClose(run, cache, block)
+				_ = lock.Close()
+			}()
+		}
+	}
 	c.reporter.retire()
 	if c.punch != nil {
 		_ = c.punch.Close()
@@ -304,14 +324,21 @@ func (c *candidateResult) teardown() {
 // stopRun stops the live tunnel run, and records a clean close of the fake-IP
 // cache when the run reports one; anything else leaves the cache's run state
 // "not closed", so the next run moves to another block.
-func (c *candidateResult) stopRun() {
+func (c *candidateResult) stopRun() error {
 	if c.run == nil {
-		return
+		return nil
 	}
-	_ = c.run.Stop(c.stopGrace)
-	if c.fakeIPCache != "" {
-		if reporter, ok := c.run.(CleanExitReporter); ok && reporter.ExitedCleanly() {
-			_ = endFakeIPRun(c.fakeIPCache, c.fakeIPBlock)
+	if err := c.run.Stop(c.stopGrace); err != nil {
+		return err
+	}
+	recordFakeIPClose(c.run, c.fakeIPCache, c.fakeIPBlock)
+	return nil
+}
+
+func recordFakeIPClose(run TunnelRun, cache string, block int) {
+	if cache != "" {
+		if reporter, ok := run.(CleanExitReporter); ok && reporter.ExitedCleanly() {
+			_ = endFakeIPRun(cache, block)
 		}
 	}
 }
@@ -353,7 +380,9 @@ type Engine struct {
 
 	// FakeIPCachePath opts desktop/CLI TUN runs into relay-side resolution.
 	// The host supplies a stable path in private storage. sing-box owns the
-	// hostname/address cache and its locking. The engine keeps a run-state
+	// hostname/address cache. The engine holds path + ".lock" for the entire
+	// TUN run and rejects a concurrent owner before accessing the cache or
+	// state, including when bypass uses real DNS. It keeps a run-state
 	// file beside it (path + ".run") and, after a run that did not close the
 	// cache cleanly, starts the next one on another address block with an
 	// empty cache (see beginFakeIPRun); a run that cannot start with the
@@ -1259,8 +1288,11 @@ func (s *Engine) startCandidate(res *candidateResult, configInput client.SingBox
 			// be unusable; sing-box then refuses to start rather than invent
 			// a fresh table. Resolve through the tunnel for this run instead
 			// of failing every candidate the same way.
+			if stopErr := res.stopRun(); stopErr != nil {
+				res.teardown()
+				return nil, markLocalCandidateError("tunnel_start", stopErr)
+			}
 			s.appendLog(fmt.Sprintf("tunnel did not start with the fake-IP DNS cache (%v); retrying with DNS through the tunnel", err))
-			res.stopRun()
 			res.run, res.runDone, res.mobileRun, res.fakeIPCache = nil, nil, nil, ""
 			if res.reporter != nil {
 				// Every mobile Run gets a fresh reporter.
@@ -1311,11 +1343,19 @@ func (s *Engine) startCandidate(res *candidateResult, configInput client.SingBox
 }
 
 // launchTunnel builds the candidate's config, starts its tunnel run, and waits
-// for it to come up. A fake-IP run first records its block beside the cache
-// (beginFakeIPRun); if that fails the run resolves through the tunnel. On
+// for it to come up. A configured cache path first requires exclusive ownership.
+// A fake-IP run then records its block beside the cache (beginFakeIPRun); if
+// that fails the run resolves through the tunnel while retaining ownership. On
 // failure the error is staged, the run (if any) is left in res for the
 // caller to stop, and the candidate is not torn down.
 func (s *Engine) launchTunnel(res *candidateResult, configInput client.SingBoxConfigInput) (int64, error) {
+	if configInput.Mode == client.ModeTUN && configInput.FakeIPCachePath != "" && res.fakeIPLock == nil {
+		lock, err := acquireFakeIPLock(configInput.FakeIPCachePath)
+		if err != nil {
+			return 0, markLocalCandidateError("tunnel_start", err)
+		}
+		res.fakeIPLock = lock
+	}
 	if configInput.UsesFakeIP() {
 		block, err := beginFakeIPRun(configInput.FakeIPCachePath)
 		if err != nil {

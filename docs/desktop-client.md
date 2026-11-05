@@ -257,8 +257,12 @@ The generated config uses:
   passes hostnames supplied by HTTP CONNECT/SOCKS clients to the relay.
 - sing-box's `experimental.cache_file` with `store_fakeip` retains mappings
   across ordinary relay changes and clean restarts. Desktop and CLI use the
-  same cache for an installation; stop one tunnel before starting the other.
-  sing-box owns the database lock and allocation.
+  same cache for an installation. The engine holds `fakeip.db.lock` before
+  reading or changing the cache state and until the tunnel has exited and its
+  shutdown state is saved. A second connection is rejected, including with
+  LAN/country bypass enabled; disconnect the first tunnel before starting it.
+  sing-box owns the database lock and allocation. Keep the separate `.lock`
+  file in place, including when clearing the cache.
 - sing-box saves its allocation position only on a clean close (and on a
   timer), so after a crash, a forced kill or power loss it would hand out
   again, for other hostnames, addresses apps still hold. Beside the cache the

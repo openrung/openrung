@@ -220,8 +220,13 @@ the uncached proxied DoH chain; other query types keep real DNS.
 
 sing-box owns the cache, its file lock, and address allocation. Keep the same
 path across relays, reconnects and app/extension handoffs, and stop/join the old
-run before starting another. The cache contains **queried hostnames and their
-synthetic addresses on disk**; choose storage and backup policies accordingly.
+run before starting another. The engine holds a separate `<path>.lock` from
+before cache/state access until the runtime exits and shutdown state is saved.
+A concurrent connection is rejected, including with LAN/country bypass enabled.
+A failed Stop retains ownership until Done closes. Never remove or replace
+the `.lock` file, including when clearing the cache. The cache contains
+**queried hostnames and their synthetic addresses on disk**; choose storage and
+backup policies accordingly.
 Do not use a per-run temporary file. The directory must be writable: the engine
 keeps a run-state file beside the cache (`<path>.run`, a block number and a
 clean-close flag, no hostnames).

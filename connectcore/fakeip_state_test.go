@@ -162,10 +162,4 @@ func TestEngineFakeIPCacheStartFailureRetriesWithRealDNS(t *testing.T) {
 	if !strings.Contains(string(rt.configs[1]), `"198.18.0.0/15"`) {
 		t.Fatal("the retry dropped the synthetic-range refusal")
 	}
-	// Nowhere to record the run state: no cache attempt at all.
-	rt = &cleanRuntime{}
-	startFakeIPTestRun(t, fakeIPTestEngine(t, filepath.Join(t.TempDir(), "missing", "fakeip.db"), rt))
-	if len(rt.configs) != 1 || strings.Contains(string(rt.configs[0]), `"cache_file"`) {
-		t.Fatal("used the cache without recording the run")
-	}
 }

@@ -24,6 +24,8 @@ type fakeIPRunState struct {
 
 func fakeIPRunStatePath(cachePath string) string { return cachePath + ".run" }
 
+// The caller must hold acquireFakeIPLock through beginFakeIPRun, the runtime's
+// exit, and endFakeIPRun.
 // beginFakeIPRun picks the block for a run that is about to open the cache at
 // cachePath and records it, durably, as not yet closed. After a clean close
 // the block and the cache stay, so the cached mappings stay valid. After any
