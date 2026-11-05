@@ -250,15 +250,17 @@ The generated config uses:
   system at the tunnel resolver; the rule makes macOS and other Linux
   setups match, and keeps a bypassed LAN from becoming a plaintext DNS leak.
 - Fake-IP answers for A and AAAA queries: sing-box replies at once, locally,
-  with an address from a reserved range (a block of `198.18.0.0/15` and of
-  `fc00::/18`, drawn afresh for every run, with a 1-second TTL). A connection
-  to that address is mapped back to its hostname before routing, so the VLESS
-  request carries the hostname and the relay resolves it; no DNS exchange
-  through the tunnel precedes the connection. The table lives only in memory
-  and is never written to disk; an address an app cached during an earlier run
-  almost always falls outside the new run's block, so the connection is
-  refused and the app resolves again rather than reaching another host. Proxy mode needs none of this: the
-  mixed inbound already passes the hostname a browser sends to the relay.
+  with an address from a reserved range (one of 16 blocks of `198.18.0.0/15`
+  and `fc00::/18`, with a 1-second TTL). A connection to that address is
+  mapped back to its hostname before routing, so the VLESS request carries the
+  hostname and the relay resolves it; no DNS exchange through the tunnel
+  precedes the connection. The table lives only in the run's memory and is
+  never written to disk. Each new run (reconnect, failover) answers from the
+  next block in rotation, so it never reuses the previous run's addresses, and
+  a route rule right after the DNS hijack rules refuses any fake address the
+  current run did not hand out: an app holding a stale one gets an immediate
+  refusal and resolves again. Proxy mode needs none of this: the mixed inbound
+  already passes the hostname a browser sends to the relay.
 - DNS servers detoured through the proxy over TCP, for every other query type
   (HTTPS, SRV, TXT, PTR, ...) and for sing-box's own lookups. The relay
   outbound carries no UDP at all; UDP 443 (QUIC) is rejected outright so

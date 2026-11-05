@@ -218,12 +218,14 @@ It is off unless the host sets it, so a pin bump alone changes nothing. The
 probe-pinned domains keep the proxied DoH chain ahead of the fake-IP rule, so
 the fresh-DNS probe still proves real resolution through the tunnel; probe
 names and suffix pins must therefore still agree. The setting is ignored while
-`SplitTunnel` bypasses countries, whose geoip match needs real destination
-addresses (LAN-only bypass is unaffected). The fake-address table is in memory
-only and is rebuilt per run from a freshly drawn block, so after a candidate
-switch an app holding an old address almost always gets a refused connection
-and resolves again. Before enabling it, check on device that the platform
-resolver accepts `198.18.0.0/15` and `fc00::/18` answers with a 1-second TTL.
+`SplitTunnel` bypasses the LAN or any country: those bypasses match real
+destination addresses, which a connection mapped back to a hostname no longer
+has (per-app exclusion is unaffected). The fake-address table lives only in a
+run's memory; the engine gives each run the next of 16 address blocks, so a new
+run never reuses the previous run's addresses, and the route refuses any fake
+address the current run did not hand out, so an app holding a stale one
+resolves again. Before enabling it, check on device that the platform resolver
+accepts `198.18.0.0/15` and `fc00::/18` answers with a 1-second TTL.
 
 ## Outbox migration ordering
 

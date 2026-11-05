@@ -60,7 +60,8 @@ type MobileTunnelSettings struct {
 	// (client.SingBoxConfigInput.FakeIP): A/AAAA lookups through the TUN are
 	// answered locally with fake IPs, except the probe-pinned domains, which
 	// keep the proxied DoH chain the fresh-DNS probe must exercise. Ignored
-	// while SplitTunnel bypasses countries. False keeps the emission unchanged.
+	// while SplitTunnel bypasses the LAN or any country. The engine picks
+	// each run's fake-IP block. False keeps the emission unchanged.
 	FakeIP bool
 }
 

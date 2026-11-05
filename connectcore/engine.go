@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net"
 	"strconv"
 	"strings"
@@ -494,6 +495,31 @@ type Engine struct {
 	tunnelReadyLimit     time.Duration      // 0 means TunnelReadyTimeout
 	leaseClock           func() time.Time   // nil means the wall clock (lease renewal and token expiry)
 	leaseTimer           func(time.Duration) <-chan time.Time
+
+	// fakeIPMu guards the fake-IP block rotation (see nextFakeIPBlock).
+	fakeIPMu     sync.Mutex
+	fakeIPSeeded bool
+	fakeIPNext   int
+}
+
+// nextFakeIPBlock hands each tunnel run the next fake-IP block in rotation,
+// starting from a random one. sing-box's fake-address table lives and dies
+// with its run, and every run allocates from the start of its block, so a run
+// must never share the previous run's block: an address an app still caches
+// would name a different hostname. Rotation reuses a block only after every
+// other block has served a run, and the route rejects addresses outside the
+// current block (client.SingBoxConfigInput.FakeIPBlock), so a stale address
+// fails at once and the app resolves again.
+func (s *Engine) nextFakeIPBlock() int {
+	s.fakeIPMu.Lock()
+	defer s.fakeIPMu.Unlock()
+	if !s.fakeIPSeeded {
+		s.fakeIPNext = rand.IntN(client.FakeIPBlockCount)
+		s.fakeIPSeeded = true
+	}
+	block := s.fakeIPNext
+	s.fakeIPNext = (s.fakeIPNext + 1) % client.FakeIPBlockCount
+	return block
 }
 
 func (s *Engine) tunnelReadyProbe() func(context.Context, int) error {
@@ -1226,6 +1252,9 @@ func (s *Engine) candidateConfigInput(cand brokerapi.RelayDescriptor, port int) 
 // startCandidate owns path-independent config, run launch, readiness, and
 // end-to-end validation. Every path uses identical inner Reality settings.
 func (s *Engine) startCandidate(res *candidateResult, configInput client.SingBoxConfigInput) (*candidateResult, error) {
+	if configInput.FakeIP {
+		configInput.FakeIPBlock = s.nextFakeIPBlock()
+	}
 	configJSON, err := client.BuildSingBoxConfig(configInput)
 	if err != nil {
 		res.teardown()

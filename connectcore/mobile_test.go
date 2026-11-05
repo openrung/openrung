@@ -1150,19 +1150,63 @@ func TestMobileFakeIPFollowsHostSettings(t *testing.T) {
 			s.Mobile.Settings = func(context.Context) (MobileTunnelSettings, error) {
 				return MobileTunnelSettings{MTU: 1400, LogLevel: "warn", ClashAPI: true, FakeIP: optIn}, nil
 			}
-			var generated []byte
+			var generated [][]byte
 			rt.launch = func(_ context.Context, b []byte, _ *RunTelemetry) (MobileTunnelRun, error) {
-				generated = append([]byte(nil), b...)
+				generated = append(generated, append([]byte(nil), b...))
 				return newMobileTestRun(PathAndroidVPN), nil
 			}
-			res, err := s.attemptCandidate(t.Context(), mobileTestConnection(), r, 0, 1)
-			if err != nil {
-				t.Fatal(err)
+			// Two runs, as a candidate switch would start them.
+			for range 2 {
+				res, err := s.attemptCandidate(t.Context(), mobileTestConnection(), r, 0, 1)
+				if err != nil {
+					t.Fatal(err)
+				}
+				res.teardown()
 			}
-			defer res.teardown()
-			if got := strings.Contains(string(generated), `"type": "fakeip"`); got != optIn {
-				t.Fatalf("fakeip server emitted=%v, host opted in=%v", got, optIn)
+			var ranges []string
+			for _, config := range generated {
+				if got := strings.Contains(string(config), `"type": "fakeip"`); got != optIn {
+					t.Fatalf("fakeip server emitted=%v, host opted in=%v", got, optIn)
+				}
+				var decoded struct {
+					DNS struct {
+						Servers []map[string]any `json:"servers"`
+					} `json:"dns"`
+				}
+				if err := json.Unmarshal(config, &decoded); err != nil {
+					t.Fatal(err)
+				}
+				for _, server := range decoded.DNS.Servers {
+					if server["type"] == "fakeip" {
+						ranges = append(ranges, server["inet4_range"].(string))
+					}
+				}
+			}
+			// A new run must never answer from the previous run's block.
+			if optIn && (len(ranges) != 2 || ranges[0] == ranges[1]) {
+				t.Fatalf("consecutive runs' fake-IP ranges = %v", ranges)
 			}
 		})
+	}
+}
+
+// Rotation gives every run a different block from the run before it, and
+// reuses a block only after all the others.
+func TestNextFakeIPBlockRotates(t *testing.T) {
+	s := New()
+	first := s.nextFakeIPBlock()
+	if first < 0 || first >= client.FakeIPBlockCount {
+		t.Fatalf("first block %d out of range", first)
+	}
+	seen := map[int]bool{first: true}
+	for i := 1; i < client.FakeIPBlockCount; i++ {
+		block := s.nextFakeIPBlock()
+		if block != (first+i)%client.FakeIPBlockCount || seen[block] {
+			t.Fatalf("run %d got block %d", i, block)
+		}
+		seen[block] = true
+	}
+	if again := s.nextFakeIPBlock(); again != first {
+		t.Fatalf("after a full rotation got %d, want %d", again, first)
 	}
 }
