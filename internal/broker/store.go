@@ -62,6 +62,9 @@ type RelayStore interface {
 	// holding leaseToken so a late result never describes a replacement
 	// descriptor. See reachability.go.
 	UpdateReachability(id, leaseToken string, reachable bool, checkedAt time.Time) error
+	// UpdateAccessReachability is UpdateReachability for the probe of the
+	// relay's access address.
+	UpdateAccessReachability(id, leaseToken string, reachable bool, checkedAt time.Time) error
 	List(time.Time, int) ([]relay.Descriptor, error)
 	// ListRanked is List plus the ranking inputs the sort applied (telemetry
 	// snapshots and operator weights), so page-shaping steps after the sort
@@ -315,6 +318,23 @@ func (s *Store) UpdateReachability(id, leaseToken string, reachable bool, checke
 	}
 	desc.Reachable = reachable
 	desc.ReachabilityCheckedAt = checkedAt
+	s.relays[id] = desc
+	return nil
+}
+
+func (s *Store) UpdateAccessReachability(id, leaseToken string, reachable bool, checkedAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	desc, ok := s.relays[id]
+	if !ok {
+		return ErrRelayNotFound
+	}
+	if desc.IdentityPublicKey != "" && (desc.LeaseToken == "" || subtle.ConstantTimeCompare([]byte(desc.LeaseToken), []byte(leaseToken)) != 1) {
+		return ErrRelayNotFound
+	}
+	desc.AccessReachable = reachable
+	desc.AccessReachabilityCheckedAt = checkedAt
 	s.relays[id] = desc
 	return nil
 }

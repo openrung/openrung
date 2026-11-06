@@ -50,9 +50,10 @@
 #                         below; 0 leaves the host's TCP settings alone.
 #                         Read on every run.
 #   OPENRUNG_ACCESS_ADDRESS
-#                         1 gives the relay an IPv6 access address as
-#                         described below; 0 (default) leaves it without one.
-#                         Read on every run until relay.env records an address.
+#                         1 (default) gives the relay an IPv6 access address
+#                         as described below; 0 leaves it without one and
+#                         records that in relay.env. Read on every run until
+#                         relay.env records an address or none.
 #   OPENRUNG_NEW_DEST_RATE
 #                         new destination addresses per second the host may
 #                         open connections to (default 10; see the
@@ -63,20 +64,21 @@
 # exceptions are the run-time knobs OPENRUNG_REACHABILITY_WAIT,
 # OPENRUNG_TCP_TUNING and OPENRUNG_NEW_DEST_RATE, which no file records, so
 # pass them on every run, and OPENRUNG_ACCESS_ADDRESS, read until relay.env
-# records an address.
+# records an address or none.
 #
 # Addresses: the relay's public address (OPENRUNG_PUBLIC_HOST, listed in the
-# public relay directory) is the server's IPv4. With OPENRUNG_ACCESS_ADDRESS=1
-# on a server with a public IPv6 /64, the relay also gets an access address:
-# one more IPv6 address from that /64, which the relay sends privately at
-# registration and the broker hands only to enrolled IPv6 clients in place of
-# the public address. The broker checks only that the public address accepts
-# connections, so the access address is opt-in: set it only after allowing
-# inbound TCP 443 over IPv6 (::/0) in the provider's firewall. The address is
+# public relay directory) is the server's IPv4. On a server with a public
+# IPv6 /64, the relay also gets an access address: one more IPv6 address from
+# that /64, which the relay sends privately at registration and the broker
+# hands only to enrolled IPv6 clients in place of the public address. The
+# broker connects to the access address like the public one, and while it
+# cannot (inbound TCP 443 over IPv6, ::/0, closed in the provider's firewall)
+# those clients are handed the public address instead. The address is
 # recorded as OPENRUNG_ACCESS_HOST in relay.env and kept on the interface by
 # two systemd units (openrung-access-address.service and
 # openrung-access-address-reassert.timer). A server whose provider does not
-# route its /64 to it, or that runs without systemd, simply has none. To
+# route its /64 to it, or that runs without systemd, simply has none, and
+# OPENRUNG_ACCESS_ADDRESS=0 records none on purpose. To
 # remove it: systemctl disable --now openrung-access-address-reassert.timer
 # openrung-access-address.service, delete both units' files (and the
 # reassert .service) from /etc/systemd/system, set OPENRUNG_ACCESS_HOST= (empty)
@@ -525,7 +527,8 @@ tune_tcp() {
 # resolver's web front. When that fails, or anything else is missing, the
 # address is removed again and the relay runs with its public address only.
 # Never fatal. That proves routing, not that inbound TCP 443 is open: nothing
-# here can test that from outside, which is why the operator opts in.
+# here can test that from outside, so the broker does, and hands IPv6 clients
+# the public address while the access address does not accept connections.
 ACCESS_UNIT_NAME=openrung-access-address.service
 ACCESS_REASSERT_NAME=openrung-access-address-reassert
 ACCESS_PROBE_URLS="https://one.one.one.one https://dns.google"
@@ -681,8 +684,8 @@ access_none() { # reason
     log "IPv6 access address: none ($1); clients reach this relay at its public address"
 }
 
-# Gives the relay its access address when the operator asked for one and
-# relay.env does not already record one (or record none). Runs before the
+# Gives the relay its access address unless the operator turned it off or
+# relay.env already records one (or records none). Runs before the
 # candidate is created, so the candidate's first registration carries it.
 setup_access_address() {
     if grep -q '^OPENRUNG_ACCESS_HOST=' "$ENV_FILE"; then
@@ -697,7 +700,8 @@ setup_access_address() {
         return 0
     fi
     if [ "$ACCESS_ADDRESS" = 0 ]; then
-        log "IPv6 access address: off (to add one, allow inbound TCP 443 over IPv6 in the provider's firewall, then re-run with OPENRUNG_ACCESS_ADDRESS=1)"
+        append_env "OPENRUNG_ACCESS_HOST="
+        log "IPv6 access address: off (recorded as an empty OPENRUNG_ACCESS_HOST in $ENV_FILE; to add one, delete that line and re-run)"
         return 0
     fi
     # The relay refuses an access address outside direct mode, with
@@ -752,6 +756,7 @@ setup_access_address() {
     fi
     append_env "OPENRUNG_ACCESS_HOST=$sa_addr"
     log "IPv6 access address: $sa_addr on $sa_dev (sent privately to the broker; never published; kept by $ACCESS_UNIT_NAME)"
+    log "note: IPv6 clients use the access address only while inbound TCP 443 over IPv6 (::/0) is open in the provider's firewall; the broker checks, and hands them the public address otherwise"
 }
 
 # --- new-destination limit ---------------------------------------------------
@@ -1023,7 +1028,7 @@ main() {
         off) ;;
         '' | *[!0-9]* | 0*) die "OPENRUNG_NEW_DEST_RATE must be a positive whole number or 'off'" ;;
     esac
-    ACCESS_ADDRESS="${OPENRUNG_ACCESS_ADDRESS:-0}"
+    ACCESS_ADDRESS="${OPENRUNG_ACCESS_ADDRESS:-1}"
     case "$ACCESS_ADDRESS" in 0 | 1) ;; *) die "OPENRUNG_ACCESS_ADDRESS must be 0 or 1" ;; esac
     SYSTEMD_UNIT_DIR=/etc/systemd/system
     CONTAINER=openrung-relay

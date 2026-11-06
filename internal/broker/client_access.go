@@ -366,7 +366,9 @@ func (h *clientAccessHandler) handler() http.HandlerFunc {
 			// IPv6 access address is handed only to a client whose request
 			// arrived over IPv6, and any other client keeps the public host
 			// it can reach; an IPv4 access address is handed to every client.
-			if desc.AccessHost != "" && (overIPv6 || !relay.IsIPv6Host(desc.AccessHost)) {
+			// An access address whose latest probe failed is not handed out.
+			if desc.AccessHost != "" && (overIPv6 || !relay.IsIPv6Host(desc.AccessHost)) &&
+				!(h.withholdUnreachable && accessHostUnreachable(desc)) {
 				desc.PublicHost = desc.AccessHost
 			}
 			out = append(out, desc)

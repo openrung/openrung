@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -36,6 +37,12 @@ import (
 // out of the public directory and of access answers until a later probe
 // succeeds, staying registered and visible to operators (inventory, relays
 // page) with the result.
+//
+// A relay's access address (access_host, served on the public port and handed
+// to enrolled clients in place of public_host) is probed the same way, beside
+// the public endpoint and on the same interval, but it never gates admission
+// or listing: a conclusive failure only stops the access answer from naming
+// it, so those clients keep the public host until a later probe succeeds.
 //
 // Only direct transport is probed: a tunnel relay's advertised endpoint is the
 // relay hub, which fronts it precisely because the relay itself is not
@@ -263,23 +270,54 @@ func classifyProbeError(err error) error {
 }
 
 // probeRegistration runs the registration-time probe of req's advertised
-// endpoint. probed reports that a conclusive probe succeeded (the caller
-// records it); a non-nil err is a conclusive failure the registration must
-// be refused for. No prober, a non-direct transport or an inconclusive probe
-// yield (false, nil): the relay registers unprobed, as before probing.
-func probeRegistration(ctx context.Context, prober RelayProber, req relay.RegisterRequest) (probed bool, err error) {
+// endpoint and, concurrently, of its access address. probed reports that a
+// conclusive public probe succeeded (the caller records it); a non-nil err is
+// a conclusive public failure the registration must be refused for. No
+// prober, a non-direct transport or an inconclusive probe yield (false, nil):
+// the relay registers unprobed, as before probing. access is the access
+// address probe, which never refuses a registration.
+func probeRegistration(ctx context.Context, prober RelayProber, req relay.RegisterRequest) (probed bool, access accessProbe, err error) {
 	if prober == nil || normalizeTransport(req.Transport) != relay.TransportDirect {
-		return false, nil
+		return false, accessProbe{}, nil
+	}
+	accessDone := make(chan accessProbe, 1)
+	if req.AccessHost != "" {
+		go func() { accessDone <- probeAccessHost(ctx, prober, "", req.AccessHost, req.PublicPort) }()
+	} else {
+		accessDone <- accessProbe{}
 	}
 	err = prober.Probe(ctx, req.PublicHost, req.PublicPort)
+	access = <-accessDone
 	if err == nil {
-		return true, nil
+		return true, access, nil
 	}
 	if errors.Is(err, ErrProbeInconclusive) {
 		slog.Warn("relay reachability probe inconclusive", "public", req.PublicHost, "port", req.PublicPort, "error", err)
-		return false, nil
+		return false, access, nil
 	}
-	return false, err
+	return false, access, err
+}
+
+// accessProbe is the outcome of one access address probe: checked when it
+// was conclusive, and then whether the address accepted the connection.
+type accessProbe struct {
+	checked, reachable bool
+}
+
+// probeAccessHost probes an access address on the relay's public port and
+// logs a failure. relayID is empty at registration, before one is minted.
+func probeAccessHost(ctx context.Context, prober RelayProber, relayID, host string, port int) accessProbe {
+	err := prober.Probe(ctx, host, port)
+	switch {
+	case err == nil:
+		return accessProbe{checked: true, reachable: true}
+	case errors.Is(err, ErrProbeInconclusive):
+		slog.Warn("relay access address probe inconclusive", "relay_id", relayID, "access", host, "port", port, "error", err)
+		return accessProbe{}
+	default:
+		slog.Warn("relay access address unreachable, access answers name the public host", "relay_id", relayID, "access", host, "port", port, "error", err)
+		return accessProbe{checked: true}
+	}
 }
 
 // unreachableRegistrationMessage is the error body of a rejected
@@ -305,6 +343,29 @@ func recordReachability(store RelayStore, desc *relay.Descriptor, reachable bool
 	desc.ReachabilityCheckedAt = now
 }
 
+// recordAccessReachability is recordReachability for the access address.
+func recordAccessReachability(store RelayStore, desc *relay.Descriptor, reachable bool, now time.Time) {
+	if err := store.UpdateAccessReachability(desc.ID, desc.LeaseToken, reachable, now); err != nil {
+		if !errors.Is(err, ErrRelayNotFound) {
+			slog.Warn("could not store relay access address reachability", "relay_id", desc.ID, "error", err)
+		}
+		return
+	}
+	desc.AccessReachable = reachable
+	desc.AccessReachabilityCheckedAt = now
+}
+
+// accessProbeDue is relayProbeDue for the access address: never without one.
+func accessProbeDue(desc relay.Descriptor, now time.Time, interval time.Duration) bool {
+	if desc.Transport != relay.TransportDirect || desc.AccessHost == "" {
+		return false
+	}
+	if desc.AccessReachabilityCheckedAt.IsZero() {
+		return true
+	}
+	return now.Sub(desc.AccessReachabilityCheckedAt) >= interval
+}
+
 // relayProbeDue reports whether desc should be probed now: never for a
 // non-direct transport, always when it has no result yet, otherwise once the
 // stored result is interval old.
@@ -318,16 +379,38 @@ func relayProbeDue(desc relay.Descriptor, now time.Time, interval time.Duration)
 	return now.Sub(desc.ReachabilityCheckedAt) >= interval
 }
 
-// probeRelayReachability runs a due probe against desc's advertised endpoint
-// and persists the outcome, updating desc in place. Like resolveRelayGeo it
-// never fails the surrounding request: a store error or an inconclusive probe
-// leaves the stored result as it was. The write is scoped to this
-// registration's lease token so a result landing after a re-registration
-// cannot describe the replacement descriptor.
+// probeRelayReachability runs the due probes of desc's advertised endpoint
+// and access address, concurrently, and persists each conclusive outcome,
+// updating desc in place. Like resolveRelayGeo it never fails the surrounding
+// request: a store error or an inconclusive probe leaves the stored result as
+// it was. The writes are scoped to this registration's lease token so a
+// result landing after a re-registration cannot describe the replacement
+// descriptor.
 func probeRelayReachability(ctx context.Context, store RelayStore, prober RelayProber, interval time.Duration, desc *relay.Descriptor, now time.Time) {
-	if prober == nil || !relayProbeDue(*desc, now, interval) {
+	if prober == nil {
 		return
 	}
+	var wg sync.WaitGroup
+	var access accessProbe
+	if accessProbeDue(*desc, now, interval) {
+		wg.Add(1)
+		go func(id, host string, port int) {
+			defer wg.Done()
+			access = probeAccessHost(ctx, prober, id, host, port)
+		}(desc.ID, desc.AccessHost, desc.PublicPort)
+	}
+	if relayProbeDue(*desc, now, interval) {
+		probePublicEndpoint(ctx, store, prober, desc, now)
+	}
+	wg.Wait()
+	if access.checked {
+		recordAccessReachability(store, desc, access.reachable, now)
+	}
+}
+
+// probePublicEndpoint probes desc's advertised endpoint and persists a
+// conclusive outcome.
+func probePublicEndpoint(ctx context.Context, store RelayStore, prober RelayProber, desc *relay.Descriptor, now time.Time) {
 	err := prober.Probe(ctx, desc.PublicHost, desc.PublicPort)
 	if errors.Is(err, ErrProbeInconclusive) {
 		slog.Warn("relay reachability probe inconclusive", "relay_id", desc.ID, "public", desc.PublicHost, "port", desc.PublicPort, "error", err)
@@ -346,6 +429,12 @@ func probeRelayReachability(ctx context.Context, store RelayStore, prober RelayP
 // is not unreachable.
 func relayUnreachable(desc relay.Descriptor) bool {
 	return !desc.ReachabilityCheckedAt.IsZero() && !desc.Reachable
+}
+
+// accessHostUnreachable reports whether desc's access address failed its
+// most recent probe. Like relayUnreachable, an unprobed address is not.
+func accessHostUnreachable(desc relay.Descriptor) bool {
+	return !desc.AccessReachabilityCheckedAt.IsZero() && !desc.AccessReachable
 }
 
 // withoutUnreachable drops relays whose latest probe failed, preserving the
@@ -374,6 +463,15 @@ func reachablePointer(desc relay.Descriptor) *bool {
 		return nil
 	}
 	reachable := desc.Reachable
+	return &reachable
+}
+
+// accessReachablePointer is reachablePointer for the access address.
+func accessReachablePointer(desc relay.Descriptor) *bool {
+	if desc.AccessReachabilityCheckedAt.IsZero() {
+		return nil
+	}
+	reachable := desc.AccessReachable
 	return &reachable
 }
 

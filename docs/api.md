@@ -509,8 +509,9 @@ otherwise `true` or `false`, with `reachability_checked_at` giving the probe
 time when there is one. A `false` relay is registered but withheld from
 clients. `operator_contact` is the contact the relay registered with and
 `access_host` its access address (see [Register Relay](#register-relay));
-each is omitted when the relay sent none, and both appear only in this
-trailing operator block, never in the descriptor fields the inventory shares
+each is omitted when the relay sent none, and `access_reachable` is the
+latest probe of that address (omitted until there is one). All three appear
+only in this trailing operator block, never in the descriptor fields the inventory shares
 with the public directory. Lease
 tokens, stable-identity keys and proofs, hub-observed exit addresses,
 telemetry, and signing seeds never appear here; the endpoint exposes fleet
@@ -526,7 +527,7 @@ Response:
   "key_id": "3097e2dee2cb4a34",
   "channel": "inventory",
   "relays": [
-    { "id": "relay_0a1b...", "public_host": "203.0.113.7", "public_port": 443, "node_class": "foundation", "...": "...", "ranking_weight": 1, "ranking": { "score": 0.81, "reliability": 0.9, "headroom": 0.75, "latency": 0.8, "speed": 0.5, "over_capacity_penalty": 0, "selection_weight": 0.0798, "head_share": 0.31 }, "reachable": true, "reachability_checked_at": "2026-06-09T06:58:00Z", "operator_contact": "ops@example.org", "access_host": "2001:db8:1::10" }
+    { "id": "relay_0a1b...", "public_host": "203.0.113.7", "public_port": 443, "node_class": "foundation", "...": "...", "ranking_weight": 1, "ranking": { "score": 0.81, "reliability": 0.9, "headroom": 0.75, "latency": 0.8, "speed": 0.5, "over_capacity_penalty": 0, "selection_weight": 0.0798, "head_share": 0.31 }, "reachable": true, "reachability_checked_at": "2026-06-09T06:58:00Z", "operator_contact": "ops@example.org", "access_host": "2001:db8:1::10", "access_reachable": true }
   ]
 }
 ```
@@ -745,8 +746,9 @@ dropped) and is replaced, or cleared, by every re-registration; heartbeats
 keep it. It is not bound by the identity statement. The broker uses it in one
 place: the [client access](#client-access) answer names it as the relay's
 `public_host` — an IPv4 access address in every answer, an IPv6 one only in
-the answer to a request that arrived over IPv6. The registration response, relay lists, the [inbound
-reachability probe](#inbound-reachability-probe) and every other surface keep
+the answer to a request that arrived over IPv6 — while its latest [inbound
+reachability probe](#inbound-reachability-probe) has not failed. The
+registration response, relay lists and every other surface keep
 `public_host`; only the operator inventory and the admin relays page show the
 access address. The reference relay sends it (`OPENRUNG_ACCESS_HOST`) only after
 confirming the address is configured on a host interface and that the host
@@ -782,6 +784,15 @@ operator which firewall to open. The leading phrase `public endpoint
 unreachable` is therefore a contract. A successful probe registers the relay
 and reports `"reachable": true` in the response (absent when the broker did
 not probe).
+
+A relay's `access_host` is probed the same way, on `public_port`, beside the
+public endpoint, and re-probed on the same interval. Its result never refuses
+or withholds the relay: while the latest access probe has failed, the
+[client access](#client-access) answer names the relay's public host instead
+of the access address, and a later successful probe restores it. The
+registration response reports the registration-time result as
+`"access_reachable"` (absent when the broker did not probe one or the probe
+was inconclusive).
 
 Heartbeats re-probe once the stored result is older than the probe interval,
 so a relay that registered reachable and then went dark is **withheld from
@@ -1610,7 +1621,9 @@ local clock). For a relay that registered an `access_host`, the descriptor's
 list carries: an IPv4 access address in every answer, an IPv6 one only when
 the access request itself arrived over IPv6 (as seen by the broker, through a
 trusted front the viewer's address), so a request over IPv4 gets the public
-host instead. Every other field is the relay's public
+host instead. An access address whose latest [inbound reachability
+probe](#inbound-reachability-probe) failed is not named; the public host is.
+Every other field is the relay's public
 descriptor either way. Clients must verify the signature and require
 `channel == "access"`; a public list never verifies here and an access body
 never verifies as a public list.

@@ -320,6 +320,9 @@ type relayPanelRow struct {
 	// clients instead of the endpoint's host, if the relay advertised one.
 	// Operator-only.
 	AccessHost string `json:"access_host,omitempty"`
+	// AccessReachable is the latest probe of the access address: absent
+	// until probed, false while the access answer names the endpoint instead.
+	AccessReachable *bool `json:"access_reachable,omitempty"`
 	// Reachable is the latest inbound probe of the endpoint: absent until the
 	// broker has probed the relay, false while it is withheld from clients.
 	Reachable       *bool      `json:"reachable,omitempty"`
@@ -375,6 +378,7 @@ func buildRelaysPanel(descriptors []relay.Descriptor, stats relayTelemetryStats,
 			Endpoint:        net.JoinHostPort(desc.PublicHost, strconv.Itoa(desc.PublicPort)),
 			OperatorContact: desc.OperatorContact,
 			AccessHost:      desc.AccessHost,
+			AccessReachable: accessReachablePointer(desc),
 			Reachable:       reachablePointer(desc),
 			Transport:       desc.Transport,
 			City:            desc.City,
