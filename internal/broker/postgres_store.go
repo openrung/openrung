@@ -50,7 +50,9 @@ const descriptorColumns = `
 	reachable,
 	reachability_checked_at,
 	operator_contact,
-	access_host
+	access_host,
+	access_reachable,
+	access_reachability_checked_at
 `
 
 const postgresOperationTimeout = 5 * time.Second
@@ -217,6 +219,12 @@ ALTER TABLE relay_descriptors
 
 ALTER TABLE relay_descriptors
 	ADD COLUMN IF NOT EXISTS access_host text NOT NULL DEFAULT '';
+
+ALTER TABLE relay_descriptors
+	ADD COLUMN IF NOT EXISTS access_reachable boolean NOT NULL DEFAULT false;
+
+ALTER TABLE relay_descriptors
+	ADD COLUMN IF NOT EXISTS access_reachability_checked_at timestamptz;
 
 CREATE TABLE IF NOT EXISTS access_leases (
 	id text PRIMARY KEY,
@@ -465,7 +473,9 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 			operator_contact = EXCLUDED.operator_contact,
 			access_host = EXCLUDED.access_host,
 			reachable = false,
-			reachability_checked_at = NULL
+			reachability_checked_at = NULL,
+			access_reachable = false,
+			access_reachability_checked_at = NULL
 		WHERE relay_descriptors.node_class <> $27
 			OR EXCLUDED.node_class = $27
 			OR relay_descriptors.expires_at <= EXCLUDED.registered_at
@@ -614,6 +624,25 @@ func (s *PostgresStore) UpdateReachability(id, leaseToken string, reachable bool
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE relay_descriptors
 		SET reachable = $3, reachability_checked_at = $4
+		WHERE id = $1
+			AND (identity_public_key = '' OR (lease_token <> '' AND lease_token = $2))
+	`, id, leaseToken, reachable, checkedAt)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrRelayNotFound
+	}
+	return nil
+}
+
+func (s *PostgresStore) UpdateAccessReachability(id, leaseToken string, reachable bool, checkedAt time.Time) error {
+	ctx, cancel := postgresOperationContext()
+	defer cancel()
+
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE relay_descriptors
+		SET access_reachable = $3, access_reachability_checked_at = $4
 		WHERE id = $1
 			AND (identity_public_key = '' OR (lease_token <> '' AND lease_token = $2))
 	`, id, leaseToken, reachable, checkedAt)
@@ -1098,7 +1127,7 @@ func (s *PostgresStore) markSessionTerminal(ctx context.Context, tx pgx.Tx, even
 func scanDescriptor(row pgx.Row) (relay.Descriptor, error) {
 	var desc relay.Descriptor
 	var wssFrontsJSON []byte
-	var reachabilityCheckedAt sql.NullTime
+	var reachabilityCheckedAt, accessReachabilityCheckedAt sql.NullTime
 	err := row.Scan(
 		&desc.ID,
 		&desc.PublicHost,
@@ -1135,12 +1164,17 @@ func scanDescriptor(row pgx.Row) (relay.Descriptor, error) {
 		&reachabilityCheckedAt,
 		&desc.OperatorContact,
 		&desc.AccessHost,
+		&desc.AccessReachable,
+		&accessReachabilityCheckedAt,
 	)
 	if err != nil {
 		return relay.Descriptor{}, err
 	}
 	if reachabilityCheckedAt.Valid {
 		desc.ReachabilityCheckedAt = reachabilityCheckedAt.Time
+	}
+	if accessReachabilityCheckedAt.Valid {
+		desc.AccessReachabilityCheckedAt = accessReachabilityCheckedAt.Time
 	}
 	if len(wssFrontsJSON) != 0 {
 		if err := json.Unmarshal(wssFrontsJSON, &desc.WSSFronts); err != nil {

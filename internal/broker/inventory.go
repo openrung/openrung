@@ -140,7 +140,8 @@ type inventoryDescriptor struct {
 // descriptor. reachable is null until the broker has probed the relay (tunnel
 // transport, probing disabled, or not yet), then the latest outcome;
 // reachability_checked_at is omitted in the same case. operator_contact and
-// access_host are omitted when the registration carried none.
+// access_host are omitted when the registration carried none, and
+// access_reachable until the broker has probed the access address.
 type inventoryState struct {
 	RankingWeight         float64      `json:"ranking_weight"`
 	Ranking               relayRanking `json:"ranking"`
@@ -148,6 +149,7 @@ type inventoryState struct {
 	ReachabilityCheckedAt *time.Time   `json:"reachability_checked_at,omitempty"`
 	OperatorContact       string       `json:"operator_contact,omitempty"`
 	AccessHost            string       `json:"access_host,omitempty"`
+	AccessReachable       *bool        `json:"access_reachable,omitempty"`
 }
 
 // MarshalJSON emits the descriptor exactly as the public channels do (through
@@ -170,6 +172,7 @@ func (d inventoryDescriptor) MarshalJSON() ([]byte, error) {
 		ReachabilityCheckedAt: timePointer(d.ReachabilityCheckedAt),
 		OperatorContact:       d.OperatorContact,
 		AccessHost:            d.AccessHost,
+		AccessReachable:       accessReachablePointer(d.Descriptor),
 	})
 	if err != nil {
 		return nil, err

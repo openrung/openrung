@@ -28,13 +28,35 @@ type stubProber struct {
 	mu        sync.Mutex
 	err       error
 	endpoints []string
+	// hostErr, when it has an entry for the probed host, answers in place
+	// of err.
+	hostErr map[string]error
 }
 
 func (p *stubProber) Probe(_ context.Context, host string, port int) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.endpoints = append(p.endpoints, net.JoinHostPort(host, strconv.Itoa(port)))
+	if err, ok := p.hostErr[host]; ok {
+		return err
+	}
 	return p.err
+}
+
+func (p *stubProber) setHost(host string, err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.hostErr == nil {
+		p.hostErr = map[string]error{}
+	}
+	p.hostErr[host] = err
+}
+
+// probedEndpoints returns a copy of the endpoints probed so far.
+func (p *stubProber) probedEndpoints() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.endpoints...)
 }
 
 func (p *stubProber) set(err error) {

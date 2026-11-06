@@ -224,6 +224,12 @@ type Descriptor struct {
 	// public directory.
 	Reachable             bool      `json:"-"`
 	ReachabilityCheckedAt time.Time `json:"-"`
+	// AccessReachable and AccessReachabilityCheckedAt record the same probe
+	// of AccessHost on the public port, under the same rules. A failed access
+	// probe withholds only the access address: the access answer then names
+	// PublicHost, and the relay stays listed on its own probe result.
+	AccessReachable             bool      `json:"-"`
+	AccessReachabilityCheckedAt time.Time `json:"-"`
 	// NodeClass is the broker-attested operator class (NodeClassFoundation or
 	// NodeClassVolunteer). Always serialized, and covered by the relay-list
 	// signature like every other descriptor field; clients that predate it
@@ -254,7 +260,8 @@ type Descriptor struct {
 // public relay-list responses. It also reports the broker's registration-time
 // reachability probe as reachable (absent when the broker did not probe), so a
 // relay operator can see from the registration itself whether clients will be
-// handed the relay.
+// handed the relay, and the probe of its access address as access_reachable
+// (absent when the broker did not probe one).
 type RegisterResponse struct {
 	Descriptor Descriptor
 }
@@ -266,18 +273,25 @@ func (r RegisterResponse) MarshalJSON() ([]byte, error) {
 		value := r.Descriptor.Reachable
 		reachable = &value
 	}
+	var accessReachable *bool
+	if !r.Descriptor.AccessReachabilityCheckedAt.IsZero() {
+		value := r.Descriptor.AccessReachable
+		accessReachable = &value
+	}
 	return json.Marshal(struct {
 		descriptorAlias
 		VolunteerVersion string `json:"volunteer_version"`
 		LeaseToken       string `json:"lease_token,omitempty"`
 		AccessLeases     bool   `json:"access_leases,omitempty"`
 		Reachable        *bool  `json:"reachable,omitempty"`
+		AccessReachable  *bool  `json:"access_reachable,omitempty"`
 	}{
 		descriptorAlias:  descriptorAlias(r.Descriptor),
 		VolunteerVersion: r.Descriptor.RelayVersion,
 		LeaseToken:       r.Descriptor.LeaseToken,
 		AccessLeases:     r.Descriptor.LeaseCapable,
 		Reachable:        reachable,
+		AccessReachable:  accessReachable,
 	})
 }
 

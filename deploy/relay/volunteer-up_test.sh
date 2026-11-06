@@ -1620,24 +1620,47 @@ test_access_address_needs_routed_prefix() {
     assert_candidate_is_live "no systemd"
 }
 
-# The broker checks only the public endpoint, and nothing on the host can
-# test inbound IPv6 TCP 443 from outside: an outbound routing check that
-# passes says nothing about the provider firewall. So without the operator's
-# opt-in no address is added even where the routing check would pass.
-test_access_address_is_opt_in() {
+# The access address is on by default: the broker checks it from outside and
+# hands IPv6 clients the public address while it does not accept connections.
+# OPENRUNG_ACCESS_ADDRESS=0 turns it off and records that, so a later run
+# without the variable does not add one.
+test_access_address_default_and_opt_out() {
     reset_simulation
+    mkdir -p "$SYSTEMD_RUN_DIR"
     write_env
     run_volunteer_up ok SIM_IPV6=routed SIM_ACCESS_PROBE=ok
-    assert_no_access_address "access default off"
-    if [ ! -f "$SIM_DIR/curl.log" ] && ! grep -q 'address add' "$SIM_DIR/ip.log" 2>/dev/null; then
+    case "$(access_env_line)" in
+        OPENRUNG_ACCESS_HOST=2001:db8:a:b:*) pass ;;
+        *) fail "access default on: expected an address in 2001:db8:a:b::/64, got '$(access_env_line)' (rc=$RUN_RC)" ;;
+    esac
+    assert_output_has "access default on" 'the broker checks, and hands them the public address otherwise'
+    assert_candidate_is_live "access default on"
+
+    reset_simulation
+    mkdir -p "$SYSTEMD_RUN_DIR"
+    write_env
+    run_volunteer_up ok OPENRUNG_ACCESS_ADDRESS=0 SIM_IPV6=routed SIM_ACCESS_PROBE=ok
+    if [ "$(access_env_line)" = 'OPENRUNG_ACCESS_HOST=' ] && [ ! -s "$SIM_DIR/ip6" ] \
+        && [ ! -f "$SIM_DIR/curl.log" ] && ! grep -q 'address add' "$SIM_DIR/ip.log" 2>/dev/null \
+        && [ -z "$(ls -A "$SYSTEMD_UNIT_DIR")" ]; then
         pass
     else
-        fail "access default off: the host was probed or changed without the opt-in"
+        fail "access opt-out: expected an empty recorded value and the host untouched, got '$(access_env_line)'"
     fi
-    assert_output_has "access default off" 'IPv6 access address: off (to add one, allow inbound TCP 443 over IPv6'
-    assert_candidate_is_live "access default off"
+    assert_output_has "access opt-out" 'IPv6 access address: off (recorded as an empty OPENRUNG_ACCESS_HOST'
+    assert_candidate_is_live "access opt-out"
 
-    # An empty recorded value (the documented removal) wins over the opt-in.
+    # The recorded opt-out holds on a later run without the variable.
+    reset_simulation_containers_only
+    run_volunteer_up ok SIM_IPV6=routed SIM_ACCESS_PROBE=ok
+    if [ "$(grep -c '^OPENRUNG_ACCESS_HOST=' "$ENV_FILE")" = 1 ] && [ "$(access_env_line)" = 'OPENRUNG_ACCESS_HOST=' ] \
+        && [ ! -s "$SIM_DIR/ip6" ]; then
+        pass
+    else
+        fail "access opt-out re-run: expected the empty value kept and no address, got '$(access_env_line)'"
+    fi
+
+    # An empty recorded value (the documented removal) wins over an explicit 1.
     reset_simulation
     write_env 'OPENRUNG_ACCESS_HOST='
     run_volunteer_up ok OPENRUNG_ACCESS_ADDRESS=1 SIM_IPV6=routed
@@ -1918,7 +1941,7 @@ test_access_address_unrouted_is_removed
 test_access_address_not_deprecated_is_removed
 test_access_address_unit_failure_is_removed
 test_access_address_needs_routed_prefix
-test_access_address_is_opt_in
+test_access_address_default_and_opt_out
 test_access_address_skips_unique_local_prefix
 test_env_append_ends_unterminated_last_line
 test_access_address_skips_customised_relay

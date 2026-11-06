@@ -5,9 +5,11 @@ package broker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -148,23 +150,162 @@ func TestRegisterRejectsInvalidAccessHost(t *testing.T) {
 	}
 }
 
-// The broker's reachability probe targets the public endpoint, never the
-// access address.
-func TestRegistrationProbesThePublicEndpointNotTheAccessHost(t *testing.T) {
+// The registration probes the access address beside the public endpoint and
+// reports it as access_reachable. A closed access address never refuses the
+// registration: the relay registers on its public endpoint, and a later
+// heartbeat re-probe records the address once it opens.
+func TestRegistrationProbesTheAccessHost(t *testing.T) {
 	prober := &stubProber{}
-	server := probeServer(t, prober, time.Hour)
+	prober.setHost(testAccessHost, errors.New("connect: operation timed out"))
+	store := NewStore()
+	server := NewServer(store, Config{SigningSeed: testSigningSeed(), APIToken: testAPIToken, RelayProber: prober, RelayProbeInterval: time.Nanosecond})
 	req := signedIdentityRequest(t, identityStoreSeedA, func(r *relay.RegisterRequest) {
 		r.PublicHost = "203.0.113.7"
 		r.AccessHost = testAccessHost
 	}, time.Now().UTC())
-	if recorder := postRegistration(t, server, req); recorder.Code != http.StatusCreated {
-		t.Fatalf("register: expected 201, got %d: %s", recorder.Code, recorder.Body.String())
+	recorder := postRegistration(t, server, req)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("register with a closed access address: expected 201, got %d: %s", recorder.Code, recorder.Body.String())
 	}
-	prober.mu.Lock()
-	defer prober.mu.Unlock()
-	if len(prober.endpoints) != 1 || prober.endpoints[0] != "203.0.113.7:443" {
-		t.Fatalf("probed endpoints = %v, want only the public 203.0.113.7:443", prober.endpoints)
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(recorder.Body.Bytes(), &fields); err != nil {
+		t.Fatal(err)
 	}
+	if string(fields["reachable"]) != "true" || string(fields["access_reachable"]) != "false" {
+		t.Fatalf("registration reachable = %s, access_reachable = %s; want true, false", fields["reachable"], fields["access_reachable"])
+	}
+	probed := prober.probedEndpoints()
+	slices.Sort(probed)
+	if want := []string{"203.0.113.7:443", "[" + testAccessHost + "]:443"}; !slices.Equal(probed, want) {
+		t.Fatalf("probed endpoints = %v, want %v", probed, want)
+	}
+	listed, err := store.List(time.Now().UTC(), 10)
+	if err != nil || len(listed) != 1 || !accessHostUnreachable(listed[0]) || relayUnreachable(listed[0]) {
+		t.Fatalf("stored = %+v, %v; want a reachable relay with an unreachable access address", listed, err)
+	}
+	if body := getInventory(t, server).Body.String(); !strings.Contains(body, `"access_reachable":false`) {
+		t.Fatalf("inventory lacks access_reachable false: %s", body)
+	}
+
+	prober.setHost(testAccessHost, nil)
+	var desc relay.RegisterResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &desc); err != nil {
+		t.Fatal(err)
+	}
+	heartbeatOn(t, server, desc.Descriptor)
+	listed, err = store.List(time.Now().UTC(), 10)
+	if err != nil || len(listed) != 1 || accessHostUnreachable(listed[0]) || !listed[0].AccessReachable {
+		t.Fatalf("stored after the address opened = %+v, %v; want a reachable access address", listed, err)
+	}
+}
+
+// A relay without an access address is probed on its public endpoint only,
+// and its registration reports no access_reachable.
+func TestRegistrationWithoutAccessHostProbesOnlyThePublicEndpoint(t *testing.T) {
+	prober := &stubProber{}
+	server := probeServer(t, prober, time.Nanosecond)
+	desc, fields := registerOn(t, server, signedIdentityRequest(t, identityStoreSeedA, func(r *relay.RegisterRequest) {
+		r.PublicHost = "203.0.113.7"
+	}, time.Now().UTC()))
+	if _, ok := fields["access_reachable"]; ok {
+		t.Fatalf("registration without an access address reported access_reachable: %s", fields["access_reachable"])
+	}
+	heartbeatOn(t, server, desc)
+	if probed := prober.probedEndpoints(); len(probed) != 2 || probed[0] != "203.0.113.7:443" || probed[1] != "203.0.113.7:443" {
+		t.Fatalf("probed endpoints = %v, want only the public endpoint", probed)
+	}
+}
+
+// An inconclusive access probe records nothing, and the access address keeps
+// being handed out.
+func TestInconclusiveAccessProbeLeavesTheAddressInUse(t *testing.T) {
+	prober := &stubProber{}
+	prober.setHost(testAccessHost, errors.Join(ErrProbeInconclusive, errors.New("network is unreachable")))
+	store := NewStore()
+	server := NewServer(store, Config{SigningSeed: testSigningSeed(), RelayProber: prober, RelayProbeInterval: time.Hour})
+	_, fields := registerOn(t, server, signedIdentityRequest(t, identityStoreSeedA, func(r *relay.RegisterRequest) {
+		r.PublicHost = "203.0.113.7"
+		r.AccessHost = testAccessHost
+	}, time.Now().UTC()))
+	if _, ok := fields["access_reachable"]; ok {
+		t.Fatalf("inconclusive access probe reported a result: %s", fields["access_reachable"])
+	}
+	listed, err := store.List(time.Now().UTC(), 10)
+	if err != nil || len(listed) != 1 || accessHostUnreachable(listed[0]) || !listed[0].AccessReachabilityCheckedAt.IsZero() {
+		t.Fatalf("stored = %+v, %v; want an unprobed access address", listed, err)
+	}
+}
+
+// An access address whose latest probe failed is not handed out: the access
+// answer names the public host, as for a client that cannot use the address,
+// until a later probe succeeds. With probing off a stored failure is stale
+// and changes nothing.
+func TestAccessAnswerSkipsAnUnreachableAccessHost(t *testing.T) {
+	h := newAccessHarness(t)
+	h.handler.clientIP = func(r *http.Request) string { return peerIP(r.RemoteAddr) }
+	h.source = "[2001:db8:9::5]:4000"
+	desc := h.addRelay("v6", 'a', "FI", func(r *relay.RegisterRequest) {
+		r.PublicHost = "203.0.113.7"
+		r.AccessHost = testAccessHost
+	})
+	h.autoAck(desc)
+	if err := h.store.UpdateAccessReachability(desc.ID, desc.LeaseToken, false, h.now); err != nil {
+		t.Fatal(err)
+	}
+	token, _ := h.token()
+
+	host := func() string {
+		t.Helper()
+		rec, resp := h.request(token, `{}`)
+		if rec.Code != http.StatusOK || len(resp.Relays) != 1 {
+			t.Fatalf("access: %d %s", rec.Code, rec.Body.String())
+		}
+		return resp.Relays[0].PublicHost
+	}
+	if got := host(); got != testAccessHost {
+		t.Fatalf("access host with probing off = %q, want the access address", got)
+	}
+	h.handler.withholdUnreachable = true
+	if got := host(); got != "203.0.113.7" {
+		t.Fatalf("access host after a failed access probe = %q, want the public host", got)
+	}
+	if err := h.store.UpdateAccessReachability(desc.ID, desc.LeaseToken, true, h.now); err != nil {
+		t.Fatal(err)
+	}
+	if got := host(); got != testAccessHost {
+		t.Fatalf("access host after a successful access probe = %q, want the access address", got)
+	}
+}
+
+// Store conformance: the access probe result is scoped to the registration
+// holding the lease token, and a re-registration clears it.
+func TestStoreAccessReachabilityFollowsRegistration(t *testing.T) {
+	runIdentityStoreTest(t, func(t *testing.T, store RelayStore) {
+		now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+		withAccess := func(r *relay.RegisterRequest) { r.AccessHost = testAccessHost }
+		desc, err := store.Register(signedIdentityRequest(t, identityStoreSeedA, withAccess, now), now, time.Minute)
+		if err != nil {
+			t.Fatalf("register: %v", err)
+		}
+		if err := store.UpdateAccessReachability(desc.ID, "wrong-token", false, now); !errors.Is(err, ErrRelayNotFound) {
+			t.Fatalf("update with a stale lease token = %v, want ErrRelayNotFound", err)
+		}
+		if err := store.UpdateAccessReachability(desc.ID, desc.LeaseToken, false, now); err != nil {
+			t.Fatalf("update: %v", err)
+		}
+		got, err := store.RelayByID(desc.ID, now)
+		if err != nil || !accessHostUnreachable(got) || !got.AccessReachabilityCheckedAt.Equal(now) {
+			t.Fatalf("stored = %+v, %v; want an unreachable access address checked at %s", got, err, now)
+		}
+		later := now.Add(10 * time.Second)
+		if _, err := store.Register(signedIdentityRequest(t, identityStoreSeedA, withAccess, later), later, time.Minute); err != nil {
+			t.Fatalf("re-register: %v", err)
+		}
+		got, err = store.RelayByID(desc.ID, later)
+		if err != nil || !got.AccessReachabilityCheckedAt.IsZero() || got.AccessReachable {
+			t.Fatalf("re-registration kept the access probe result: %+v, %v", got, err)
+		}
+	})
 }
 
 // Store conformance: an identity-bearing registration keeps its access host

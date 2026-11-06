@@ -381,7 +381,9 @@ func registerHandler(store RelayStore, cfg Config, clientIP *clientIPResolver, l
 		// the host can reach is rejected with the reason, and the relay's own
 		// retry loop re-registers (and is re-probed) until it opens. See
 		// reachability.go. An inconclusive probe registers the relay unprobed.
-		probed, probeErr := probeRegistration(r.Context(), cfg.RelayProber, req)
+		// The access address is probed alongside; its result is recorded but
+		// never refuses the registration.
+		probed, accessProbed, probeErr := probeRegistration(r.Context(), cfg.RelayProber, req)
 		if probeErr != nil {
 			slog.Warn("relay registration rejected: endpoint unreachable", "node_class", maxClass, "public", req.PublicHost, "port", req.PublicPort, "version", req.RelayVersion, "error", probeErr)
 			writeError(w, http.StatusUnprocessableEntity, unreachableRegistrationMessage(req))
@@ -421,6 +423,11 @@ func registerHandler(store RelayStore, cfg Config, clientIP *clientIPResolver, l
 		resolveRelayGeo(r.Context(), store, cfg.GeoIP, &desc)
 		if probed {
 			recordReachability(store, &desc, true, now)
+		}
+		// The store keeps an access host only for an identity-bearing
+		// registration, so a probe of one it dropped is not recorded.
+		if accessProbed.checked && desc.AccessHost != "" {
+			recordAccessReachability(store, &desc, accessProbed.reachable, now)
 		}
 		slog.Info("relay registered", "relay_id", desc.ID, "node_class", desc.NodeClass, "public", desc.PublicHost, "port", desc.PublicPort, "city", desc.City, "country", desc.Country, "max_sessions", desc.MaxSessions, "version", desc.RelayVersion, "reachable", reachabilityLogValue(desc))
 
@@ -490,9 +497,10 @@ func heartbeatHandler(store RelayStore, cfg Config, ledger *relayIDLedger) http.
 		// Backfill relays whose registration-time lookup failed (or that
 		// registered before the broker resolved locations at all).
 		resolveRelayGeo(r.Context(), store, cfg.GeoIP, &desc)
-		// Re-probe the endpoint once the stored result is old enough, so a
-		// relay that went dark is withheld and a repaired one is relisted
-		// without waiting for a re-registration.
+		// Re-probe the endpoint and the access address once the stored result
+		// is old enough, so a relay that went dark is withheld (or loses its
+		// access address) and a repaired one is relisted without waiting for a
+		// re-registration.
 		probeRelayReachability(r.Context(), store, cfg.RelayProber, cfg.RelayProbeInterval, &desc, now)
 
 		// Echo the credential now being served so a rotating relay can retire
