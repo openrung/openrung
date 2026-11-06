@@ -17,9 +17,9 @@ type unsupportedDNSController struct{}
 
 func (unsupportedDNSController) Supported() bool { return false }
 
-func (unsupportedDNSController) Snapshot() (Snapshot, error) { return Snapshot{}, nil }
+func (unsupportedDNSController) Snapshot(prev Snapshot) (Snapshot, error) { return prev, nil }
 
-func (unsupportedDNSController) Set(string) error {
+func (unsupportedDNSController) Set(string, Snapshot) error {
 	return errors.New("system DNS control is not implemented on this platform")
 }
 

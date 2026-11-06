@@ -668,28 +668,41 @@ func (s *Engine) Start() {
 	if s.Persistence != nil {
 		// Crash recovery: a leftover proxy snapshot means a prior session died
 		// without restoring the OS proxy. Undo it before doing anything else.
-		// The slot holds whichever setting that session pointed at the tunnel
-		// (the OS proxy, or OS DNS in TUN mode); each hook restores its own
-		// part of the snapshot and leaves the rest alone.
-		if snap, ok := s.Persistence.LoadProxySnapshot(); ok {
-			restored := s.OSProxy != nil || s.OSDNS != nil
-			if s.OSProxy != nil && s.OSProxy.Restore(snap) != nil {
-				restored = false
-			}
-			if s.OSDNS != nil && s.OSDNS.Restore(snap) != nil {
-				restored = false
-			}
-			if restored {
-				_ = s.Persistence.ClearProxySnapshot()
-			} else {
-				s.appendLog("could not restore the saved system proxy or DNS settings; will retry on next launch")
-			}
+		if !s.restoreLeftoverSnapshot() {
+			s.appendLog("could not restore the saved system proxy or DNS settings; will retry on next launch")
 		}
 		recents := s.Persistence.LoadRecents()
 		s.mu.Lock()
 		s.core.recents = recents
 		s.mu.Unlock()
 	}
+}
+
+// restoreLeftoverSnapshot restores a snapshot that an earlier session
+// persisted and never restored, and reports whether none is left. The slot
+// holds whichever setting that session pointed at the tunnel (the OS proxy,
+// or OS DNS in TUN mode), so it goes to both hooks; each restores its own part
+// and leaves the rest alone. The snapshot is cleared only once every hook
+// succeeded.
+func (s *Engine) restoreLeftoverSnapshot() bool {
+	if s.Persistence == nil {
+		return true
+	}
+	snap, ok := s.Persistence.LoadProxySnapshot()
+	if !ok {
+		return true
+	}
+	restored := s.OSProxy != nil || s.OSDNS != nil
+	if s.OSProxy != nil && s.OSProxy.Restore(snap) != nil {
+		restored = false
+	}
+	if s.OSDNS != nil && s.OSDNS.Restore(snap) != nil {
+		restored = false
+	}
+	if restored {
+		_ = s.Persistence.ClearProxySnapshot()
+	}
+	return restored
 }
 
 // Stop tears down any live tunnel so the OS proxy is restored on quit. It is
@@ -1662,28 +1675,40 @@ func (s *Engine) applyProxy(conn *connection, port int) {
 // address inside the tunnel, so the system resolver's queries ride the tunnel
 // whichever interface it would otherwise have used. The snapshot policy is
 // applyProxy's: captured once per connection, persisted before Set for crash
-// recovery, restored on exit and during a recovery gap. Failure is non-fatal
-// and leaves the resolver configuration as it was.
+// recovery, restored on exit and during a recovery gap. Unlike the proxy, every
+// promote re-snapshots: the hook extends the captured snapshot with anything
+// new (a network service added mid-session) before Set may change it. Failure
+// is non-fatal and leaves the resolver configuration as it was.
 func (s *Engine) applyTunnelDNS(conn *connection) {
 	if s.OSDNS == nil || !s.OSDNS.Supported() {
 		return
 	}
-	if !conn.snapshotTaken {
-		snap, err := s.OSDNS.Snapshot()
-		if err != nil {
-			s.appendLog(fmt.Sprintf("could not read the system DNS settings (%v); leaving them unchanged", err))
-			return
-		}
-		conn.snapshot = snap
-		conn.snapshotTaken = true
+	// A snapshot an earlier session left unrestored holds the user's real
+	// settings, while the current ones may still point at a dead tunnel.
+	// Snapshotting now would overwrite it with those, so retry its restore
+	// first and change nothing until it succeeds.
+	if !conn.snapshotTaken && !s.restoreLeftoverSnapshot() {
+		s.appendLog("system settings from an earlier session are not restored yet; leaving system DNS unchanged")
+		return
 	}
+	var prev OSProxySnapshot
+	if conn.snapshotTaken {
+		prev = conn.snapshot
+	}
+	snap, err := s.OSDNS.Snapshot(prev)
+	if err != nil {
+		s.appendLog(fmt.Sprintf("could not read the system DNS settings (%v); leaving them unchanged", err))
+		return
+	}
+	conn.snapshot = snap
+	conn.snapshotTaken = true
 	if s.Persistence != nil {
 		_ = s.Persistence.SaveProxySnapshot(conn.snapshot) // persist for crash recovery
 	}
 	// Pending before Set, as in applyProxy: a failing Set may have changed
 	// some services already.
 	conn.proxySet = true
-	if err := s.OSDNS.Set(client.DefaultTunnelDNSAddress); err != nil {
+	if err := s.OSDNS.Set(client.DefaultTunnelDNSAddress, conn.snapshot); err != nil {
 		s.appendLog(fmt.Sprintf("could not point system DNS at the tunnel (%v); keeping the current settings", err))
 		if restoreErr := s.OSDNS.Restore(conn.snapshot); restoreErr != nil {
 			s.appendLog("system DNS restore after failed set failed; will retry on next launch")

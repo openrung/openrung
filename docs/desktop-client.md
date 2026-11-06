@@ -238,10 +238,12 @@ The generated config uses:
   systemd-resolved (it shells out to `resolvectl`). On macOS the client does
   it instead: once a TUN session connects, it sets the DNS servers of every
   enabled network service to 172.19.0.2 (`networksetup -setdnsservers`),
-  which the system resolver then reaches through the tunnel. The previous
-  per-service servers are saved first, restored on disconnect and while a
-  failover reconnects, and kept in the client state directory until then, so
-  the next launch restores them after a crash. Other Linux setups keep their
+  which the system resolver then reaches through the tunnel. Each service's
+  previous servers are saved before it is first changed (including a service
+  added during the session), restored on disconnect and while a failover
+  reconnects, and kept in the client state directory until then, so the next
+  launch restores them after a crash. A session does not change DNS while
+  settings saved by an earlier session are still unrestored. Other Linux setups keep their
   existing resolver.
 - A route rule that hijacks *any* port 53 traffic into the same resolver, so
   DNS still works when the system resolver was not repointed and the query

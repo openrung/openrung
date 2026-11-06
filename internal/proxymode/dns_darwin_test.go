@@ -17,6 +17,7 @@ type fakeDNSNetworksetup struct {
 	servers map[string]string
 	failSet map[string]bool
 	calls   []string
+	reads   []string
 }
 
 func (f *fakeDNSNetworksetup) run(args ...string) ([]byte, error) {
@@ -24,6 +25,7 @@ func (f *fakeDNSNetworksetup) run(args ...string) ([]byte, error) {
 	case "-listallnetworkservices":
 		return []byte("An asterisk (*) denotes that a network service is disabled.\nWi-Fi\nEthernet\n*Old Adapter\n"), nil
 	case "-getdnsservers":
+		f.reads = append(f.reads, args[1])
 		return []byte(f.servers[args[1]]), nil
 	case "-setdnsservers":
 		f.calls = append(f.calls, strings.Join(args, " "))
@@ -39,7 +41,7 @@ func TestDNSSnapshotCapturesManualServersPerEnabledService(t *testing.T) {
 		"Wi-Fi":    "There aren't any DNS Servers set on Wi-Fi.\n",
 		"Ethernet": "9.9.9.9\n2620:fe::fe\n",
 	}}
-	snap, err := (&darwinDNSController{run: fake.run}).Snapshot()
+	snap, err := (&darwinDNSController{run: fake.run}).Snapshot(Snapshot{})
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
@@ -62,23 +64,69 @@ func TestDNSSnapshotRefusesUnexpectedOutput(t *testing.T) {
 	fake := &fakeDNSNetworksetup{servers: map[string]string{
 		"Wi-Fi": "** Error: The parameters were not valid.\n",
 	}}
-	if _, err := (&darwinDNSController{run: fake.run}).Snapshot(); err == nil {
+	if _, err := (&darwinDNSController{run: fake.run}).Snapshot(Snapshot{}); err == nil {
 		t.Fatal("Snapshot accepted output that is not a DNS server list")
 	}
 }
 
-func TestDNSSetPointsEachEnabledServiceAtServer(t *testing.T) {
+// A re-snapshot keeps what it already captured (by then Set has replaced it
+// with the tunnel's server) and captures only services new since, so a
+// service that appeared mid-session is recorded before Set first changes it.
+func TestDNSSnapshotExtendsPreviousWithNewServicesOnly(t *testing.T) {
+	fake := &fakeDNSNetworksetup{servers: map[string]string{
+		"Wi-Fi":    "172.19.0.2\n",
+		"Ethernet": "There aren't any DNS Servers set on Ethernet.\n",
+	}}
+	prev := Snapshot{Platform: "darwin", DNS: []ServiceDNSState{{Name: "Wi-Fi", Servers: []string{"9.9.9.9"}}}}
+	snap, err := (&darwinDNSController{run: fake.run}).Snapshot(prev)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	want := []ServiceDNSState{{Name: "Wi-Fi", Servers: []string{"9.9.9.9"}}, {Name: "Ethernet"}}
+	if !reflect.DeepEqual(snap.DNS, want) {
+		t.Fatalf("snapshot = %+v; want %+v", snap.DNS, want)
+	}
+	if !reflect.DeepEqual(fake.reads, []string{"Ethernet"}) {
+		t.Fatalf("re-read services %v; want only the new Ethernet", fake.reads)
+	}
+	if len(prev.DNS) != 1 {
+		t.Fatalf("Snapshot mutated prev: %+v", prev.DNS)
+	}
+}
+
+// Set changes only enabled services the snapshot holds: anything else has no
+// captured setting to restore.
+func TestDNSSetChangesOnlyCapturedEnabledServices(t *testing.T) {
 	fake := &fakeDNSNetworksetup{}
 	c := &darwinDNSController{run: fake.run}
-	if err := c.Set("172.19.0.2"); err != nil {
+	snap := Snapshot{Platform: "darwin", DNS: []ServiceDNSState{{Name: "Wi-Fi"}, {Name: "Old Adapter"}}}
+	if err := c.Set("172.19.0.2", snap); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	want := []string{"-setdnsservers Wi-Fi 172.19.0.2", "-setdnsservers Ethernet 172.19.0.2"}
+	want := []string{"-setdnsservers Wi-Fi 172.19.0.2"}
 	if !reflect.DeepEqual(fake.calls, want) {
 		t.Fatalf("Set calls = %v; want %v", fake.calls, want)
 	}
-	if err := c.Set("not-an-ip"); err == nil {
+	if err := c.Set("not-an-ip", snap); err == nil {
 		t.Fatal("Set accepted a non-address server")
+	}
+}
+
+// A service deleted since the snapshot cannot be restored (networksetup exits
+// non-zero for it); skipping it keeps the snapshot from staying pending
+// forever. A disabled service still exists and is restored.
+func TestDNSRestoreSkipsDeletedServices(t *testing.T) {
+	fake := &fakeDNSNetworksetup{}
+	err := (&darwinDNSController{run: fake.run}).Restore(Snapshot{Platform: "darwin", DNS: []ServiceDNSState{
+		{Name: "Gone"},
+		{Name: "Old Adapter", Servers: []string{"10.0.0.53"}},
+	}})
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	want := []string{"-setdnsservers Old Adapter 10.0.0.53"}
+	if !reflect.DeepEqual(fake.calls, want) {
+		t.Fatalf("Restore calls = %v; want %v", fake.calls, want)
 	}
 }
 

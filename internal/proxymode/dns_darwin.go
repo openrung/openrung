@@ -36,13 +36,24 @@ type darwinDNSController struct {
 
 func (c *darwinDNSController) Supported() bool { return true }
 
-func (c *darwinDNSController) Snapshot() (Snapshot, error) {
+// Snapshot captures the enabled services that prev does not hold yet, so a
+// service that appeared since the last Set (a USB adapter plugged in during a
+// session) is recorded before Set first changes it.
+func (c *darwinDNSController) Snapshot(prev Snapshot) (Snapshot, error) {
+	if prev.Platform != "" && prev.Platform != "darwin" {
+		return Snapshot{}, fmt.Errorf("cannot extend %q snapshot on darwin", prev.Platform)
+	}
 	services, err := listServices(c.run)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	snap := Snapshot{Platform: "darwin", DNS: []ServiceDNSState{}}
+	snap := prev
+	snap.Platform = "darwin"
+	snap.DNS = append([]ServiceDNSState{}, prev.DNS...)
 	for _, name := range services {
+		if snapshotHolds(snap, name) {
+			continue
+		}
 		out, err := c.run("-getdnsservers", name)
 		if err != nil {
 			return Snapshot{}, fmt.Errorf("read DNS servers of %q: %w", name, err)
@@ -56,7 +67,10 @@ func (c *darwinDNSController) Snapshot() (Snapshot, error) {
 	return snap, nil
 }
 
-func (c *darwinDNSController) Set(server string) error {
+// Set changes only services that are both in snap and enabled now: a service
+// absent from snap has no captured setting to restore, and one disabled or
+// deleted since the snapshot carries no traffic.
+func (c *darwinDNSController) Set(server string, snap Snapshot) error {
 	if _, err := netip.ParseAddr(server); err != nil {
 		return fmt.Errorf("DNS server is not an IP address: %q", server)
 	}
@@ -65,6 +79,9 @@ func (c *darwinDNSController) Set(server string) error {
 		return err
 	}
 	for _, name := range services {
+		if !snapshotHolds(snap, name) {
+			continue
+		}
 		if _, err := c.run("-setdnsservers", name, server); err != nil {
 			return fmt.Errorf("set DNS servers of %q: %w", name, err)
 		}
@@ -72,16 +89,28 @@ func (c *darwinDNSController) Set(server string) error {
 	return nil
 }
 
-// Restore puts every captured service back, continuing past failures so one
-// broken service does not strand the others; the joined error keeps the
-// caller's snapshot for a retry. A snapshot without DNS state (a proxy
-// snapshot sharing the persisted slot) restores nothing.
+// Restore puts every captured service that still exists back, continuing past
+// failures so one broken service does not strand the others; the joined error
+// keeps the caller's snapshot for a retry. A service deleted since the
+// snapshot has nothing left to restore and is skipped, so it cannot hold the
+// snapshot pending forever. A snapshot without DNS state (a proxy snapshot
+// sharing the persisted slot) restores nothing.
 func (c *darwinDNSController) Restore(snap Snapshot) error {
 	if snap.Platform != "" && snap.Platform != "darwin" {
 		return fmt.Errorf("cannot restore %q DNS snapshot on darwin", snap.Platform)
 	}
+	if len(snap.DNS) == 0 {
+		return nil
+	}
+	existing, err := listAllServices(c.run)
+	if err != nil {
+		return err
+	}
 	var errs []error
 	for _, svc := range snap.DNS {
+		if !existing[svc.Name] {
+			continue
+		}
 		args := []string{"-setdnsservers", svc.Name}
 		if len(svc.Servers) == 0 {
 			args = append(args, "Empty") // networksetup's "none configured"
@@ -93,6 +122,34 @@ func (c *darwinDNSController) Restore(snap Snapshot) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func snapshotHolds(snap Snapshot, name string) bool {
+	for _, svc := range snap.DNS {
+		if svc.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// listAllServices returns every network service, enabled or not (networksetup
+// marks disabled ones with a leading "*").
+func listAllServices(run func(args ...string) ([]byte, error)) (map[string]bool, error) {
+	out, err := run("-listallnetworkservices")
+	if err != nil {
+		return nil, fmt.Errorf("list network services: %w", err)
+	}
+	all := map[string]bool{}
+	scanner := bufio.NewScanner(strings.NewReader(string(out)))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.Contains(line, "asterisk") {
+			continue // header line
+		}
+		all[strings.TrimPrefix(line, "*")] = true
+	}
+	return all, scanner.Err()
 }
 
 // parseDNSServers parses `networksetup -getdnsservers <service>` output: one

@@ -352,25 +352,42 @@ type permitElevation struct{}
 
 func (permitElevation) Elevate(context.Context) error { return nil }
 
-// fakeDNSController records the engine's use of the OSDNS hook.
+// fakeDNSController records the engine's use of the OSDNS hook. Snapshot
+// returns snap, or extend(prev) when set.
 type fakeDNSController struct {
 	mu         sync.Mutex
 	supported  bool
 	snap       OSProxySnapshot
+	extend     func(prev OSProxySnapshot) OSProxySnapshot
+	onSet      func(snap OSProxySnapshot)
 	setErr     error
 	restoreErr error
+	prevs      []OSProxySnapshot
 	servers    []string
+	setSnaps   []OSProxySnapshot
 	restores   []OSProxySnapshot
 }
 
 func (f *fakeDNSController) Supported() bool { return f.supported }
 
-func (f *fakeDNSController) Snapshot() (OSProxySnapshot, error) { return f.snap, nil }
+func (f *fakeDNSController) Snapshot(prev OSProxySnapshot) (OSProxySnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.prevs = append(f.prevs, prev)
+	if f.extend != nil {
+		return f.extend(prev), nil
+	}
+	return f.snap, nil
+}
 
-func (f *fakeDNSController) Set(server string) error {
+func (f *fakeDNSController) Set(server string, snap OSProxySnapshot) error {
+	if f.onSet != nil {
+		f.onSet(snap)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.servers = append(f.servers, server)
+	f.setSnaps = append(f.setSnaps, snap)
 	return f.setErr
 }
 
@@ -525,5 +542,90 @@ func TestStartRestoresLeftoverSnapshotThroughBothHooks(t *testing.T) {
 	}
 	if _, ok := store.LoadProxySnapshot(); ok {
 		t.Fatal("successful restore through both hooks must clear the snapshot")
+	}
+}
+
+// Every promote re-snapshots from the captured snapshot, so the hook can add a
+// network service that appeared mid-session; the extended snapshot is
+// persisted before Set and handed to Set, so nothing Set changes is missing
+// from the recovery file.
+func TestTunnelDNSResnapshotsBeforeEachSet(t *testing.T) {
+	store := &fakePersistence{}
+	dns := &fakeDNSController{supported: true}
+	dns.extend = func(prev OSProxySnapshot) OSProxySnapshot {
+		if prev == nil {
+			return testProxySnapshot{Server: "wifi"}
+		}
+		return testProxySnapshot{Server: prev.(testProxySnapshot).Server + "+usb"}
+	}
+	dns.onSet = func(snap OSProxySnapshot) {
+		if got, ok := store.LoadProxySnapshot(); !ok || got != snap {
+			t.Errorf("Set ran with %v before it was persisted (persisted %v)", snap, got)
+		}
+	}
+	s := New()
+	s.OSDNS = dns
+	s.Persistence = store
+	if err := s.SetMode(ModeTUN); err != nil {
+		t.Fatal(err)
+	}
+	conn := &connection{}
+
+	s.applyProxy(conn, 0)
+	if !s.releaseProxy(conn) { // a failover gap
+		t.Fatal("release failed")
+	}
+	s.applyProxy(conn, 0)
+
+	dns.mu.Lock()
+	defer dns.mu.Unlock()
+	if len(dns.prevs) != 2 || dns.prevs[0] != nil || dns.prevs[1] != (testProxySnapshot{Server: "wifi"}) {
+		t.Fatalf("Snapshot prevs = %v; want [nil wifi]", dns.prevs)
+	}
+	want := testProxySnapshot{Server: "wifi+usb"}
+	if len(dns.setSnaps) != 2 || dns.setSnaps[1] != want || conn.snapshot != want {
+		t.Fatalf("second Set got %v (conn holds %v); want %v", dns.setSnaps, conn.snapshot, want)
+	}
+}
+
+// A snapshot an earlier session left unrestored holds the user's real
+// settings. Until its restore succeeds a new session must not snapshot (it
+// would capture the tunnel's leftover server as the user's and overwrite the
+// original) or change anything.
+func TestTunnelDNSWaitsForLeftoverSnapshotRestore(t *testing.T) {
+	leftover := testProxySnapshot{Server: "dns:original"}
+	store := &fakePersistence{}
+	if err := store.SaveProxySnapshot(leftover); err != nil {
+		t.Fatal(err)
+	}
+	dns := &fakeDNSController{supported: true, snap: testProxySnapshot{Server: "dns:tunnel"}, restoreErr: errors.New("busy")}
+	s := New()
+	s.OSDNS = dns
+	s.Persistence = store
+	if err := s.SetMode(ModeTUN); err != nil {
+		t.Fatal(err)
+	}
+	s.Start() // the launch-time restore fails too
+
+	conn := &connection{}
+	s.applyProxy(conn, 0)
+	if got, ok := store.LoadProxySnapshot(); !ok || got != leftover {
+		t.Fatalf("persisted snapshot = %v (present %v); want the leftover kept", got, ok)
+	}
+	if prevs, servers := len(dns.prevs), len(dns.servers); prevs != 0 || servers != 0 || conn.snapshotTaken {
+		t.Fatalf("changed DNS over an unrestored snapshot: %d snapshots, %d sets", prevs, servers)
+	}
+
+	dns.restoreErr = nil
+	s.applyProxy(conn, 0)
+	_, restores := dns.calls()
+	if len(restores) != 3 || restores[2] != leftover {
+		t.Fatalf("restores = %v; want the leftover restored before the new snapshot", restores)
+	}
+	if servers, _ := dns.calls(); len(servers) != 1 || !conn.proxySet {
+		t.Fatalf("Set calls = %v after the leftover was restored; want one", servers)
+	}
+	if got, _ := store.LoadProxySnapshot(); got != (testProxySnapshot{Server: "dns:tunnel"}) {
+		t.Fatalf("persisted snapshot = %v; want this session's", got)
 	}
 }

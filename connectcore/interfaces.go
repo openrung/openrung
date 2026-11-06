@@ -196,10 +196,17 @@ type OSProxy interface {
 type OSDNS interface {
 	// Supported reports whether resolver control works here.
 	Supported() bool
-	// Snapshot captures the current resolver settings for a later Restore.
-	Snapshot() (OSProxySnapshot, error)
-	// Set points the OS resolver at server (an IP address inside the tunnel).
-	Set(server string) error
+	// Snapshot returns prev extended with the current settings of everything
+	// Set would now change that prev does not hold yet; prev is nil on a
+	// connection's first call. Settings prev holds keep their captured
+	// values, so a re-snapshot before a reconnect's Set never records the
+	// tunnel's own server as the user's. The engine persists the result
+	// before every Set.
+	Snapshot(prev OSProxySnapshot) (OSProxySnapshot, error)
+	// Set points the OS resolver at server (an IP address inside the tunnel)
+	// for what snap holds and changes nothing else, so every change is
+	// covered by the persisted snapshot.
+	Set(server string, snap OSProxySnapshot) error
 	// Restore reverts to a previously captured snapshot.
 	Restore(snap OSProxySnapshot) error
 }

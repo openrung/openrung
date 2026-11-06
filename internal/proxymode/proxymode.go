@@ -58,10 +58,14 @@ type ServiceDNSState struct {
 type DNSController interface {
 	// Supported reports whether resolver control works here.
 	Supported() bool
-	// Snapshot captures the current settings for a later Restore.
-	Snapshot() (Snapshot, error)
-	// Set points the OS resolver at server.
-	Set(server string) error
+	// Snapshot returns prev extended with the current settings of every
+	// service prev does not hold yet. Services prev already holds keep their
+	// captured settings, so a re-snapshot after Set never records the
+	// tunnel's own server as the user's. Pass a zero Snapshot first.
+	Snapshot(prev Snapshot) (Snapshot, error)
+	// Set points the resolver of every service snap holds at server and
+	// changes nothing else, so every change is covered by snap.
+	Set(server string, snap Snapshot) error
 	// Restore reverts to a previously captured snapshot.
 	Restore(snap Snapshot) error
 }
