@@ -589,43 +589,78 @@ func TestTunnelDNSResnapshotsBeforeEachSet(t *testing.T) {
 }
 
 // A snapshot an earlier session left unrestored holds the user's real
-// settings. Until its restore succeeds a new session must not snapshot (it
-// would capture the tunnel's leftover server as the user's and overwrite the
-// original) or change anything.
+// settings. Until its restore succeeds a session must not snapshot (it would
+// capture the tunnel's leftover server as the user's and overwrite the
+// original), change anything, or clear it on disconnect.
 func TestTunnelDNSWaitsForLeftoverSnapshotRestore(t *testing.T) {
+	fixtures := []brokerapi.RelayDescriptor{relayAt("a", "JP", "Tokyo", "Japan", "127.0.0.10")}
+	s, _ := newLadderService(t, func() []brokerapi.RelayDescriptor { return fixtures })
+	s.Elevation = permitElevation{}
 	leftover := testProxySnapshot{Server: "dns:original"}
 	store := &fakePersistence{}
 	if err := store.SaveProxySnapshot(leftover); err != nil {
 		t.Fatal(err)
 	}
-	dns := &fakeDNSController{supported: true, snap: testProxySnapshot{Server: "dns:tunnel"}, restoreErr: errors.New("busy")}
-	s := New()
+	session := testProxySnapshot{Server: "dns:session"}
+	dns := &fakeDNSController{supported: true, snap: session, restoreErr: errors.New("busy")}
 	s.OSDNS = dns
 	s.Persistence = store
 	if err := s.SetMode(ModeTUN); err != nil {
 		t.Fatal(err)
 	}
-	s.Start() // the launch-time restore fails too
+	s.TunnelRuntime = runFuncRuntime(func(ctx context.Context, _ []byte) error {
+		<-ctx.Done()
+		return nil
+	})
+	s.Start() // the launch-time restore fails
 
-	conn := &connection{}
-	s.applyProxy(conn, 0)
+	connectAndDisconnect := func() {
+		t.Helper()
+		if err := s.Connect("", "", ""); err != nil {
+			t.Fatalf("Connect: %v", err)
+		}
+		waitForStatus(t, s, StatusConnected)
+		if err := s.Disconnect(); err != nil {
+			t.Fatal(err)
+		}
+		waitIdle(t, s)
+	}
+
+	// The connect's retry fails as well: the session changes nothing, and its
+	// disconnect must not take the leftover's place for the next retry.
+	connectAndDisconnect()
 	if got, ok := store.LoadProxySnapshot(); !ok || got != leftover {
-		t.Fatalf("persisted snapshot = %v (present %v); want the leftover kept", got, ok)
+		t.Fatalf("after disconnect the persisted snapshot = %v (present %v); want the leftover kept", got, ok)
 	}
-	if prevs, servers := len(dns.prevs), len(dns.servers); prevs != 0 || servers != 0 || conn.snapshotTaken {
-		t.Fatalf("changed DNS over an unrestored snapshot: %d snapshots, %d sets", prevs, servers)
+	dns.mu.Lock()
+	prevs, sets := len(dns.prevs), len(dns.servers)
+	dns.mu.Unlock()
+	if prevs != 0 || sets != 0 {
+		t.Fatalf("changed DNS over an unrestored snapshot: %d snapshots, %d sets", prevs, sets)
 	}
 
+	// Once the retry succeeds, the session proceeds and its own snapshot
+	// replaces the restored leftover, then is cleared on disconnect.
 	dns.restoreErr = nil
-	s.applyProxy(conn, 0)
-	_, restores := dns.calls()
+	if err := s.Connect("", "", ""); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	waitForStatus(t, s, StatusConnected)
+	servers, restores := dns.calls()
 	if len(restores) != 3 || restores[2] != leftover {
 		t.Fatalf("restores = %v; want the leftover restored before the new snapshot", restores)
 	}
-	if servers, _ := dns.calls(); len(servers) != 1 || !conn.proxySet {
+	if len(servers) != 1 {
 		t.Fatalf("Set calls = %v after the leftover was restored; want one", servers)
 	}
-	if got, _ := store.LoadProxySnapshot(); got != (testProxySnapshot{Server: "dns:tunnel"}) {
+	if got, _ := store.LoadProxySnapshot(); got != session {
 		t.Fatalf("persisted snapshot = %v; want this session's", got)
+	}
+	if err := s.Disconnect(); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, s)
+	if _, ok := store.LoadProxySnapshot(); ok {
+		t.Fatal("the session's own snapshot survived a clean disconnect")
 	}
 }

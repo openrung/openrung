@@ -1754,8 +1754,9 @@ func (s *Engine) restoreOSSetting(snap OSProxySnapshot) error {
 }
 
 // cleanupConn tears down the live candidate (sing-box, punched path, temp
-// config — in that pinned order), restores the OS proxy, and clears the
-// persisted snapshot. Safe to call once per connection on exit.
+// config — in that pinned order), restores the OS proxy (or OS DNS), and
+// clears the persisted snapshot this connection took. Safe to call once per
+// connection on exit.
 func (s *Engine) cleanupConn(conn *connection) {
 	s.mu.Lock()
 	active := conn.active
@@ -1763,7 +1764,10 @@ func (s *Engine) cleanupConn(conn *connection) {
 	s.mu.Unlock()
 	active.teardown()
 	restored := s.releaseProxy(conn)
-	if restored && s.Persistence != nil {
+	// Only a connection that took a snapshot owns the persisted one. Any
+	// other snapshot there was left by an earlier session whose restore has
+	// not succeeded yet, and it stays until one does.
+	if restored && conn.snapshotTaken && s.Persistence != nil {
 		_ = s.Persistence.ClearProxySnapshot()
 	}
 }
