@@ -56,6 +56,16 @@ type TunnelRun interface {
 	Stop(grace time.Duration) error
 }
 
+// CleanExitReporter is an optional extension of TunnelRun and MobileTunnelRun.
+// ExitedCleanly reports, once the run has ended, whether the core stopped
+// because Stop asked it to and closed its services itself — for sing-box, the
+// close that flushes the fake-IP cache's allocation state. A run that does not
+// implement it is treated as never closing cleanly, which only costs the fake-IP
+// mappings across runs (see client.SingBoxConfigInput.FakeIPBlock).
+type CleanExitReporter interface {
+	ExitedCleanly() bool
+}
+
 // tunnelRuntime resolves the runtime that executes this candidate's tunnel
 // core: the host-injected one, else the subprocess default.
 func (s *Engine) tunnelRuntime() TunnelRuntime {
@@ -151,6 +161,17 @@ func (r *subprocessRun) Done() <-chan error { return r.done }
 // off disk before Stop returns, so a host that exits right after a shutdown
 // Stop never leaves it behind. On a stop that failed to take effect the
 // child may still be alive; cleanup then happens whenever it finally exits.
+// ExitedCleanly implements CleanExitReporter from the child's exit: a stop
+// Stop requested, finished in the graceful phase with a zero status.
+func (r *subprocessRun) ExitedCleanly() bool {
+	select {
+	case <-r.cleaned:
+	default:
+		return false
+	}
+	return r.process.ExitedCleanly()
+}
+
 func (r *subprocessRun) Stop(grace time.Duration) error {
 	if err := r.process.Stop(grace); err != nil {
 		return err

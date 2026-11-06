@@ -171,13 +171,18 @@ func goldenCases() []goldenCase {
 				},
 			},
 		},
+		{name: "tun-fakeip", input: SingBoxConfigInput{Relay: hostRelay, FakeIPCachePath: "/private/openrung/fakeip.db"}},
+		{name: "mobile-tun-ios-fakeip", input: SingBoxConfigInput{
+			Relay: ipRelay, MTU: 1400, LogLevel: "warn", DNSShape: DNSShapeDoHFailover,
+			ClashAPI: true, FakeIPCachePath: "/private/openrung/fakeip.db",
+		}},
 	}
 }
 
 // TestBuildSingBoxConfigGolden compares every case against its frozen file.
 // Regenerate deliberately with:
 //
-//	UPDATE_SINGBOX_GOLDEN=1 go test ./internal/client -run TestBuildSingBoxConfigGolden
+//	UPDATE_SINGBOX_GOLDEN=1 go test ./client -run TestBuildSingBoxConfigGolden
 func TestBuildSingBoxConfigGolden(t *testing.T) {
 	for _, tc := range goldenCases() {
 		t.Run(tc.name, func(t *testing.T) {

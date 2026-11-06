@@ -249,9 +249,45 @@ The generated config uses:
   behaviour Windows, Android and iOS already had, because they point the
   system at the tunnel resolver; the rule makes macOS and other Linux
   setups match, and keeps a bypassed LAN from becoming a plaintext DNS leak.
-- DNS servers detoured through the proxy over TCP. The relay outbound carries
-  no UDP at all; UDP 443 (QUIC) is rejected outright so browsers fall back to
-  TCP immediately, and every other UDP flow is dropped.
+- Fake-IP answers for A and AAAA queries when private cache storage is available:
+  sing-box replies locally from one block of `198.18.0.0/15` and `fc00::/18`
+  with TTL 1.
+  Connections carry the original hostname in VLESS and the relay resolves it,
+  removing the preceding DNS exchange through the tunnel. Proxy mode already
+  passes hostnames supplied by HTTP CONNECT/SOCKS clients to the relay.
+- sing-box's `experimental.cache_file` with `store_fakeip` retains mappings
+  across ordinary relay changes and clean restarts. Desktop and CLI use the
+  same cache for an installation. The engine holds `fakeip.db.lock` before
+  reading or changing the cache state and until the tunnel has exited and its
+  shutdown state is saved. A second connection is rejected, including with
+  LAN/country bypass enabled; disconnect the first tunnel before starting it.
+  sing-box owns the database lock and allocation. Keep the separate `.lock`
+  file in place, including when clearing the cache.
+- sing-box saves its allocation position only on a clean close (and on a
+  timer), so after a crash, a forced kill or power loss it would hand out
+  again, for other hostnames, addresses apps still hold. Beside the cache the
+  engine keeps `fakeip.db.run`, which records only the address block the last
+  run used and whether that run closed cleanly (the sing-box child stopped
+  on request, within the grace period, with exit status 0). A run keeps the
+  block and the cache only after a clean close; otherwise the engine deletes
+  the cache and moves to the next of 16 blocks, so stale addresses are
+  refused rather than reused. A run that does not start with the cache is
+  retried once with DNS through the tunnel.
+- The cache **stores queried hostnames and their synthetic addresses on disk**.
+  Normal runs use `fakeip.db` in the private client state directory. Elevated
+  Unix runs use a private `.openrung-dns` directory under root's account home,
+  with a database name derived from the canonical installation state path.
+  If private storage cannot be prepared, the host uses real DNS. An error
+  opening a configured database stops that tunnel run.
+- Every TUN config rejects unmapped addresses in the synthetic ranges before
+  LAN/country bypass rules, even with fake-IP disabled. LAN/country bypass
+  itself uses real DNS. The cache is flushed on ordinary shutdown. To clear
+  it, disconnect and delete `fakeip.db` together with `fakeip.db.run`; never
+  delete it during a run.
+- DNS servers detoured through the proxy over TCP, for every other query type
+  (HTTPS, SRV, TXT, PTR, ...) and for sing-box's own lookups. The relay
+  outbound carries no UDP at all; UDP 443 (QUIC) is rejected outright so
+  browsers fall back to TCP immediately, and every other UDP flow is dropped.
 - `route_exclude_address` for the literal relay IP (and, on a punched path, the
   relay's reflexive UDP IP), so the client's own connection to the relay stays
   on the real network interface instead of being routed back into the TUN.

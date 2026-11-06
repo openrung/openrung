@@ -285,8 +285,8 @@ func TestBuildSingBoxConfigRejectsUDP443Last(t *testing.T) {
 				t.Fatalf("udp-443 reject must set no_drop: %+v", last)
 			}
 			for _, rule := range rules[:len(rules)-1] {
-				if rule["action"] == "reject" {
-					t.Fatalf("reject rule must appear exactly once, as the last rule: %+v", rules)
+				if rule["action"] == "reject" && rule["port"] == float64(443) {
+					t.Fatalf("UDP 443 reject rule must appear exactly once, as the last rule: %+v", rules)
 				}
 			}
 		})

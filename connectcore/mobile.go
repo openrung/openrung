@@ -56,6 +56,14 @@ type MobileTunnelSettings struct {
 	SplitTunnel         *client.SplitTunnelRules
 	RouteFindProcess    bool
 	ClashAPI            bool
+	// FakeIPCachePath opts into relay-side resolution and stores queried
+	// hostnames in sing-box's cache. Use a stable absolute path in private,
+	// non-backed-up app storage across every run; empty keeps real DNS.
+	// LAN/country bypass uses real DNS even when a path is supplied. The
+	// cache keeps its mappings across runs only when the MobileTunnelRun
+	// implements CleanExitReporter; otherwise each run starts it empty on
+	// another address block (see Engine.FakeIPCachePath).
+	FakeIPCachePath string
 }
 
 // MobileRuntime owns libbox and local configuration validation. Preflight must
@@ -191,6 +199,7 @@ func (s *Engine) mobileConfig(ctx context.Context, input client.SingBoxConfigInp
 	}
 	input.RouteFindProcess = settings.RouteFindProcess
 	input.ClashAPI = settings.ClashAPI
+	input.FakeIPCachePath = settings.FakeIPCachePath
 	input.DNSShape = client.DNSShapeDoHFailover
 	input.BridgeOwnsOuterSocket = true
 	ipv4 := input.TunnelIPv4Address

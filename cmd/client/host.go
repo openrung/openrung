@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"runtime"
+	"time"
 
 	"github.com/openrung/openrung/connectcore"
 	"github.com/openrung/openrung/connectcore/proxyconfig"
@@ -47,6 +48,12 @@ func newEngineHost(sink connectcore.EventSink, singBoxPath string, externalSingB
 	if store, err := clientstate.New(); err == nil {
 		host.store = store
 		engine.Persistence = storeAdapter{store: store}
+		cachePath, cacheErr := store.FakeIPCachePath()
+		if cacheErr == nil {
+			engine.FakeIPCachePath = cachePath
+		} else if sink != nil {
+			sink.Log(connectcore.LogEntry{Time: time.Now(), Line: "DNS cache unavailable; using real DNS: " + cacheErr.Error()})
+		}
 		// The installation key enables per-user relay access (ADR-006); it
 		// is created in the same state directory on first use.
 		engine.Key = store.InstallationKey()

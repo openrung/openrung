@@ -157,6 +157,14 @@
       },
       {
         "action": "reject",
+        "ip_cidr": [
+          "198.18.0.0/15",
+          "fc00::/18"
+        ],
+        "no_drop": true
+      },
+      {
+        "action": "reject",
         "network": "udp",
         "no_drop": true,
         "port": 443

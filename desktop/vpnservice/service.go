@@ -142,6 +142,12 @@ func (s *Service) Startup(ctx context.Context) {
 	if store, err := clientstate.New(); err == nil {
 		s.store = store
 		s.engine.Persistence = storeAdapter{store: store}
+		cachePath, cacheErr := store.FakeIPCachePath()
+		if cacheErr == nil {
+			s.engine.FakeIPCachePath = cachePath
+		} else {
+			s.appendLog("DNS cache unavailable; using real DNS: " + cacheErr.Error())
+		}
 		// The installation key enables per-user relay access (ADR-006); it
 		// is created in the same state directory on first use.
 		s.engine.Key = store.InstallationKey()

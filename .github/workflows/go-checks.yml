@@ -25,8 +25,7 @@ jobs:
   # compile and run on Windows (connectcore/client/engine_windows_test.go);
   # the Ubuntu suite excludes them and the cross-build steps compile no test
   # files, so without this job those assertions would never execute in CI.
-  # Targeted at connectcore/client rather than a full windows sweep: this is
-  # where the Windows-only behavior lives.
+  # Also exercise shared cache ownership with Windows' native file locks.
   go-windows:
     runs-on: windows-latest
     steps:
@@ -39,12 +38,14 @@ jobs:
       # bash, not the default pwsh: pwsh run blocks surface only the LAST
       # command's exit code, so a vet failure followed by a passing test
       # would slip through.
-      - name: connectcore client on Windows (vet + test)
+      - name: connectcore client and cache ownership on Windows (vet + test)
         working-directory: connectcore
         shell: bash
         run: |
           go vet ./client/
           go test -v ./client/
+          go vet .
+          go test -v -run 'Test(EngineFakeIP|FakeIPLock)' .
 
   relay-deploy-script:
     runs-on: ubuntu-latest

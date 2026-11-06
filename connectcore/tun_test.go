@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -112,6 +113,7 @@ func TestTUNConnectSkipsProxyPortAndOSProxy(t *testing.T) {
 	s.OSProxy = proxy
 	store := &fakePersistence{}
 	s.Persistence = store
+	s.FakeIPCachePath = filepath.Join(t.TempDir(), "fakeip.db")
 	if err := s.SetMode(ModeTUN); err != nil {
 		t.Fatal(err)
 	}
@@ -157,6 +159,10 @@ func TestTUNConnectSkipsProxyPortAndOSProxy(t *testing.T) {
 	excluded := inbound["route_exclude_address"].([]any)
 	if len(excluded) != 1 || excluded[0] != "127.0.0.10/32" {
 		t.Fatalf("relay IP not excluded from the TUN routes: %v", excluded)
+	}
+	cache := decoded["experimental"].(map[string]any)["cache_file"].(map[string]any)
+	if cache["path"] != s.FakeIPCachePath || cache["store_fakeip"] != true {
+		t.Fatalf("TUN run did not use the host's persistent DNS cache: %v", cache)
 	}
 
 	if err := s.Disconnect(); err != nil {

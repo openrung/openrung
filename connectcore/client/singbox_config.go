@@ -159,6 +159,79 @@ type SingBoxConfigInput struct {
 	// sing-box's traffic accounting, which feeds the cumulative
 	// bytes_sent/bytes_received counters mobile reports with session telemetry.
 	ClashAPI bool
+	// FakeIPCachePath opts TUN address queries into sing-box's fake-IP DNS.
+	// Use the same absolute path for every relay and every host sharing this
+	// installation. sing-box persists hostname/address mappings there; the
+	// directory must be private. Empty keeps real DNS. LAN/country bypass
+	// suppresses fake answers because its routing needs real destination IPs.
+	// Proxy mode ignores this field.
+	FakeIPCachePath string
+	// FakeIPBlock selects which of the FakeIPBlockCount disjoint blocks of
+	// the synthetic ranges the cache answers from, in [0, FakeIPBlockCount).
+	// Keep it while runs end cleanly, so the cached mappings stay valid; move
+	// to another block after a run that may not have closed the cache.
+	// sing-box saves its allocation position only on a clean close (and on a
+	// timer), so after a crash it would hand out again, for other hostnames,
+	// addresses apps may still hold. A changed block makes sing-box start a
+	// fresh table, and the previous block's addresses are then refused like
+	// any unmapped synthetic address. connectcore's engine manages this.
+	FakeIPBlock int
+}
+
+const (
+	fakeIPv4Range   = "198.18.0.0/15"
+	fakeIPv6Range   = "fc00::/18"
+	fakeIPBlockBits = 4
+	// FakeIPBlockCount is the number of disjoint blocks SingBoxConfigInput.
+	// FakeIPBlock selects from.
+	FakeIPBlockCount = 1 << fakeIPBlockBits
+)
+
+// UsesFakeIP reports whether the built config answers address queries with
+// fake IPs from the cache at FakeIPCachePath.
+func (input SingBoxConfigInput) UsesFakeIP() bool {
+	return fakeIPEnabled(input)
+}
+
+func fakeIPEnabled(input SingBoxConfigInput) bool {
+	return input.Mode == ModeTUN && input.FakeIPCachePath != "" &&
+		(input.SplitTunnel == nil || (!input.SplitTunnel.BypassLAN && len(input.SplitTunnel.BypassCountries) == 0))
+}
+
+// fakeIPBlockRange returns block n of a synthetic range: n written into the
+// fakeIPBlockBits bits that follow the parent prefix.
+func fakeIPBlockRange(parent string, n int) string {
+	prefix := netip.MustParsePrefix(parent)
+	raw := prefix.Addr().As16()
+	first := prefix.Bits()
+	if prefix.Addr().Is4() {
+		first += 96 // As16 holds an IPv4 address in its last four bytes.
+	}
+	for i := range fakeIPBlockBits {
+		if n&(1<<(fakeIPBlockBits-1-i)) != 0 {
+			bit := first + i
+			raw[bit/8] |= 1 << (7 - bit%8)
+		}
+	}
+	addr := netip.AddrFrom16(raw)
+	if prefix.Addr().Is4() {
+		addr = addr.Unmap()
+	}
+	return netip.PrefixFrom(addr, prefix.Bits()+fakeIPBlockBits).String()
+}
+
+func fakeIPServerObject(block int) map[string]any {
+	return map[string]any{
+		"tag": "fakeip", "type": "fakeip",
+		"inet4_range": fakeIPBlockRange(fakeIPv4Range, block),
+		"inet6_range": fakeIPBlockRange(fakeIPv6Range, block),
+	}
+}
+
+func fakeIPDNSRule() map[string]any {
+	return map[string]any{
+		"query_type": []string{"A", "AAAA"}, "server": "fakeip", "rewrite_ttl": 1,
+	}
 }
 
 func BuildSingBoxConfig(input SingBoxConfigInput) ([]byte, error) {
@@ -167,6 +240,9 @@ func BuildSingBoxConfig(input SingBoxConfigInput) ([]byte, error) {
 	}
 	if err := validateSplitTunnel(input); err != nil {
 		return nil, err
+	}
+	if fakeIPEnabled(input) && (input.FakeIPBlock < 0 || input.FakeIPBlock >= FakeIPBlockCount) {
+		return nil, fmt.Errorf("fake-IP block %d is outside [0, %d)", input.FakeIPBlock, FakeIPBlockCount)
 	}
 
 	tunnelIPv4Address := input.TunnelIPv4Address
@@ -259,13 +335,20 @@ func BuildSingBoxConfig(input SingBoxConfigInput) ([]byte, error) {
 		},
 		"route": buildRouteConfig(input, probeSuffixes),
 	}
+	experimental := map[string]any{}
+	if fakeIPEnabled(input) {
+		experimental["cache_file"] = map[string]any{
+			"enabled": true, "path": input.FakeIPCachePath, "store_fakeip": true,
+		}
+	}
 	if input.ClashAPI {
 		// No external_controller is set, so nothing listens; an empty
 		// clash_api block just turns on sing-box's traffic accounting (see
 		// SingBoxConfigInput.ClashAPI).
-		cfg["experimental"] = map[string]any{
-			"clash_api": map[string]any{},
-		}
+		experimental["clash_api"] = map[string]any{}
+	}
+	if len(experimental) > 0 {
+		cfg["experimental"] = experimental
 	}
 
 	return json.MarshalIndent(cfg, "", "  ")
@@ -362,14 +445,19 @@ func dnsServerObjects(servers []string) []any {
 }
 
 // buildDNSConfig emits the DNS block for the selected shape. The TCP shape is
-// the original desktop/CLI emission, byte-identical; the DoH failover shape is
-// mobile's (see DNSShapeDoHFailover).
+// desktop/CLI emission; the DoH failover shape is mobile's. Both optionally
+// answer A/AAAA locally while keeping other lookups on their real resolvers.
 func buildDNSConfig(input SingBoxConfigInput, dnsServers, probeSuffixes []string) map[string]any {
 	if input.DNSShape != DNSShapeDoHFailover {
-		return map[string]any{
+		dns := map[string]any{
 			"servers": dnsServerObjects(dnsServers),
 			"final":   "dns-0",
 		}
+		if fakeIPEnabled(input) {
+			dns["servers"] = append(dns["servers"].([]any), fakeIPServerObject(input.FakeIPBlock))
+			dns["rules"] = []any{fakeIPDNSRule()}
+		}
+		return dns
 	}
 
 	var bypassCountries []string
@@ -397,6 +485,9 @@ func buildDNSConfig(input SingBoxConfigInput, dnsServers, probeSuffixes []string
 				"server_name": dohTLSServerNames[server],
 			},
 		})
+	}
+	if fakeIPEnabled(input) {
+		servers = append(servers, fakeIPServerObject(input.FakeIPBlock))
 	}
 	for _, country := range bypassCountries {
 		resolver := splitTunnelDirectResolvers[country]
@@ -426,6 +517,10 @@ func buildDNSConfig(input SingBoxConfigInput, dnsServers, probeSuffixes []string
 	// terminal for probe domains (its trailing route rule always fires), so a
 	// future geosite refresh can never capture a probe lookup.
 	rules := dnsFailoverRules(dnsServers, probeSuffixes, true)
+	if fakeIPEnabled(input) {
+		// Fresh-DNS probes keep their uncached, proxied resolution.
+		rules = append(rules, fakeIPDNSRule())
+	}
 	for _, country := range bypassCountries {
 		rules = append(rules, countryDNSRules(country)...)
 	}
@@ -529,7 +624,8 @@ func countryDNSRules(country string) []any {
 }
 
 // buildRouteConfig emits the route block. Without split tunneling it is the
-// two DNS hijack rules, the udp-443 reject and final proxy.
+// two DNS hijack rules, the reserved-address reject, the udp-443 reject and
+// final proxy.
 func buildRouteConfig(input SingBoxConfigInput, probeSuffixes []string) map[string]any {
 	var bypassCountries []string
 	bypassLAN := false
@@ -558,6 +654,16 @@ func buildRouteConfig(input SingBoxConfigInput, probeSuffixes []string) map[stri
 			"port":   53,
 			"action": "hijack-dns",
 		},
+	}
+	if input.Mode == ModeTUN {
+		// These ranges are reserved for synthetic destinations in every TUN
+		// run, including after fake-IP is disabled. Known mappings have already
+		// become hostnames before route matching; unmatched IPs are refused
+		// before any LAN/country bypass. No allocation history is needed.
+		rules = append(rules, map[string]any{
+			"ip_cidr": []string{fakeIPv4Range, fakeIPv6Range},
+			"action":  "reject", "no_drop": true,
+		})
 	}
 	if len(bypassCountries) > 0 {
 		// Route rules need a sniffed domain before geosite matching can work.

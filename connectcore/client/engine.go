@@ -183,6 +183,8 @@ type SingBoxProcess struct {
 
 	mu            sync.Mutex
 	stopRequested bool
+	killed        bool // Stop escalated past the graceful phase
+	cleanExit     bool // set before exited closes; see ExitedCleanly
 
 	stopSignal  sync.Once
 	releaseOnce sync.Once
@@ -198,6 +200,7 @@ func (p *SingBoxProcess) supervise() {
 	waitErr := p.cmd.Wait()
 	p.mu.Lock()
 	stopRequested := p.stopRequested
+	p.cleanExit = stopRequested && !p.killed && waitErr == nil
 	p.mu.Unlock()
 	close(p.exited)
 	p.releaseOnce.Do(p.release)
@@ -251,6 +254,9 @@ func (p *SingBoxProcess) Stop(grace time.Duration) error {
 		return nil
 	case <-time.After(grace):
 	}
+	p.mu.Lock()
+	p.killed = true
+	p.mu.Unlock()
 	killErr := killSingBoxProcess(p.cmd)
 	select {
 	case <-p.exited:
@@ -266,6 +272,21 @@ func (p *SingBoxProcess) Stop(grace time.Duration) error {
 		}
 		return errors.New("sing-box did not exit after hard kill")
 	}
+}
+
+// ExitedCleanly reports whether the process has exited because Stop asked it
+// to, within the graceful phase and with a zero exit status — that is, after
+// sing-box closed its services (and flushed its cache file) itself. False
+// while it runs, after a kill, a crash, or an exit nobody requested.
+func (p *SingBoxProcess) ExitedCleanly() bool {
+	select {
+	case <-p.exited:
+	default:
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.cleanExit
 }
 
 // crashError separates the child's quoted output from the telemetry-safe

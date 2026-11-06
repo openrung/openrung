@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -508,7 +509,7 @@ func TestMobileIdentityTelemetryOwnershipAndRestart(t *testing.T) {
 			}
 			continue
 		}
-		if e.Attributes["engine"] != "connectcore" || e.Attributes["engine_version"] != "0.9.1" || e.Attributes["platform"] != "android" || e.Attributes["app_version"] != "0.3.9" || e.Attributes["device_model"] != "test" {
+		if e.Attributes["engine"] != "connectcore" || e.Attributes["engine_version"] != "0.10.0" || e.Attributes["platform"] != "android" || e.Attributes["app_version"] != "0.3.9" || e.Attributes["device_model"] != "test" {
 			t.Fatalf("release metadata %+v", e.Attributes)
 		}
 		if e.Event == "connection_ended" {
@@ -1136,6 +1137,50 @@ func TestMobileReadinessTimeoutMatchesDesktopAndPreservesCancellation(t *testing
 			_, desktopErr := s.awaitTunnelReady(t.Context(), &candidateResult{}, 0)
 			if err == nil || err.Error() != desktopErr.Error() || clienttelemetry.ClassifyError(err) != clienttelemetry.ClassifyError(desktopErr) {
 				t.Fatalf("mobile timeout %v differs from desktop %v", err, desktopErr)
+			}
+		})
+	}
+}
+
+func TestMobileFakeIPCacheOwnedByHostSettings(t *testing.T) {
+	for _, path := range []string{"", filepath.Join(t.TempDir(), "fakeip.db")} {
+		t.Run(path, func(t *testing.T) {
+			s, rt, relay := mobileTestEngine(t)
+			s.FakeIPCachePath = "/private/desktop/fakeip.db"
+			s.Mobile.Settings = func(context.Context) (MobileTunnelSettings, error) {
+				return MobileTunnelSettings{MTU: 1400, LogLevel: "warn", FakeIPCachePath: path}, nil
+			}
+			runs := 0
+			rt.launch = func(_ context.Context, raw []byte, _ *RunTelemetry) (MobileTunnelRun, error) {
+				runs++
+				var cfg struct {
+					Experimental struct {
+						CacheFile *struct {
+							Path string `json:"path"`
+						} `json:"cache_file"`
+					} `json:"experimental"`
+				}
+				if err := json.Unmarshal(raw, &cfg); err != nil {
+					t.Fatal(err)
+				}
+				cache := cfg.Experimental.CacheFile
+				if path == "" && cache != nil {
+					t.Fatal("mobile inherited desktop opt-in")
+				}
+				if path != "" && (cache == nil || cache.Path != path) {
+					t.Fatalf("wrong mobile cache: %+v", cache)
+				}
+				return newMobileTestRun(PathAndroidVPN), nil
+			}
+			for range 2 {
+				res, err := s.attemptCandidate(t.Context(), mobileTestConnection(), relay, 0, 1)
+				if err != nil {
+					t.Fatal(err)
+				}
+				res.teardown()
+			}
+			if runs != 2 {
+				t.Fatalf("runs=%d", runs)
 			}
 		})
 	}
