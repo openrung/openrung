@@ -371,6 +371,10 @@ type Engine struct {
 	// behaves like an unsupported platform.
 	OSProxy OSProxy
 
+	// OSDNS points the OS resolver at the tunnel's DNS address while a TUN
+	// session is connected. Nil leaves the resolver configuration alone.
+	OSDNS OSDNS
+
 	// Elevation acquires TUN privileges; unused in proxy mode (see Prepare).
 	Elevation Elevation
 
@@ -664,11 +668,21 @@ func (s *Engine) Start() {
 	if s.Persistence != nil {
 		// Crash recovery: a leftover proxy snapshot means a prior session died
 		// without restoring the OS proxy. Undo it before doing anything else.
+		// The slot holds whichever setting that session pointed at the tunnel
+		// (the OS proxy, or OS DNS in TUN mode); each hook restores its own
+		// part of the snapshot and leaves the rest alone.
 		if snap, ok := s.Persistence.LoadProxySnapshot(); ok {
-			if s.OSProxy != nil && s.OSProxy.Restore(snap) == nil {
+			restored := s.OSProxy != nil || s.OSDNS != nil
+			if s.OSProxy != nil && s.OSProxy.Restore(snap) != nil {
+				restored = false
+			}
+			if s.OSDNS != nil && s.OSDNS.Restore(snap) != nil {
+				restored = false
+			}
+			if restored {
 				_ = s.Persistence.ClearProxySnapshot()
 			} else {
-				s.appendLog("could not restore the saved system proxy; will retry on next launch")
+				s.appendLog("could not restore the saved system proxy or DNS settings; will retry on next launch")
 			}
 		}
 		recents := s.Persistence.LoadRecents()
@@ -1594,6 +1608,7 @@ func (s *Engine) applyProxy(conn *connection, port int) {
 		// blackhole exactly the traffic the tunnel is meant to carry, and would
 		// leave a snapshot to restore for a change never made.
 		s.appendLog("routing all device traffic through the tunnel interface")
+		s.applyTunnelDNS(conn)
 		return
 	}
 	if s.OSProxy == nil || !s.OSProxy.Supported() {
@@ -1642,18 +1657,75 @@ func (s *Engine) applyProxy(conn *connection, port int) {
 	s.appendLog(fmt.Sprintf("proxy listening on %s:%d", proxyconfig.Host, port))
 }
 
-// releaseProxy points the OS proxy back at the user's captured setting while
+// applyTunnelDNS points the OS resolver at the tunnel's DNS address on hosts
+// whose TUN inbound does not do so itself (see OSDNS). sing-tun answers that
+// address inside the tunnel, so the system resolver's queries ride the tunnel
+// whichever interface it would otherwise have used. The snapshot policy is
+// applyProxy's: captured once per connection, persisted before Set for crash
+// recovery, restored on exit and during a recovery gap. Failure is non-fatal
+// and leaves the resolver configuration as it was.
+func (s *Engine) applyTunnelDNS(conn *connection) {
+	if s.OSDNS == nil || !s.OSDNS.Supported() {
+		return
+	}
+	if !conn.snapshotTaken {
+		snap, err := s.OSDNS.Snapshot()
+		if err != nil {
+			s.appendLog(fmt.Sprintf("could not read the system DNS settings (%v); leaving them unchanged", err))
+			return
+		}
+		conn.snapshot = snap
+		conn.snapshotTaken = true
+	}
+	if s.Persistence != nil {
+		_ = s.Persistence.SaveProxySnapshot(conn.snapshot) // persist for crash recovery
+	}
+	// Pending before Set, as in applyProxy: a failing Set may have changed
+	// some services already.
+	conn.proxySet = true
+	if err := s.OSDNS.Set(client.DefaultTunnelDNSAddress); err != nil {
+		s.appendLog(fmt.Sprintf("could not point system DNS at the tunnel (%v); keeping the current settings", err))
+		if restoreErr := s.OSDNS.Restore(conn.snapshot); restoreErr != nil {
+			s.appendLog("system DNS restore after failed set failed; will retry on next launch")
+			return
+		}
+		conn.proxySet = false
+		if s.Persistence != nil {
+			_ = s.Persistence.ClearProxySnapshot()
+		}
+		return
+	}
+	s.appendLog("system DNS points at the tunnel")
+}
+
+// releaseProxy points the OS setting this session's mode changed (the OS
+// proxy, or OS DNS in TUN mode) back at the user's captured setting while
 // keeping the snapshot, so a mid-session recovery lets traffic fall back to the
 // normal network during the reconnect gap and a re-promote can re-point.
 func (s *Engine) releaseProxy(conn *connection) bool {
 	if conn.proxySet {
-		if s.OSProxy == nil || s.OSProxy.Restore(conn.snapshot) != nil {
-			s.appendLog("system proxy restore failed; keeping the recovery snapshot for the next retry")
+		if err := s.restoreOSSetting(conn.snapshot); err != nil {
+			s.appendLog("system proxy or DNS restore failed; keeping the recovery snapshot for the next retry")
 			return false
 		}
 		conn.proxySet = false
 	}
 	return true
+}
+
+// restoreOSSetting restores snap through the hook this session's mode uses.
+// The mode cannot change while a connection is live (see SetMode).
+func (s *Engine) restoreOSSetting(snap OSProxySnapshot) error {
+	if s.tunMode() {
+		if s.OSDNS == nil {
+			return errors.New("no OS DNS hook")
+		}
+		return s.OSDNS.Restore(snap)
+	}
+	if s.OSProxy == nil {
+		return errors.New("no OS proxy hook")
+	}
+	return s.OSProxy.Restore(snap)
 }
 
 // cleanupConn tears down the live candidate (sing-box, punched path, temp

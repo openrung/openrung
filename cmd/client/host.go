@@ -43,6 +43,7 @@ func newEngineHost(sink connectcore.EventSink, singBoxPath string, externalSingB
 	// the root module and is wired in here.
 	engine.PunchEstablisher = enginepunch.Establish
 	engine.OSProxy = osProxyAdapter{ctrl: proxymode.New()}
+	engine.OSDNS = osDNSAdapter{ctrl: proxymode.NewDNS()}
 	// TUN mode is gated on this hook; proxy mode never invokes it.
 	engine.Elevation = elevation{externalSingBox: externalSingBox}
 	if store, err := clientstate.New(); err == nil {
@@ -169,6 +170,26 @@ func (a osProxyAdapter) Restore(snap connectcore.OSProxySnapshot) error {
 	typed, ok := snap.(proxymode.Snapshot)
 	if !ok {
 		return errors.New("proxy snapshot is not a proxymode snapshot")
+	}
+	return a.ctrl.Restore(typed)
+}
+
+// osDNSAdapter implements connectcore.OSDNS over proxymode's resolver
+// controller (macOS only; unsupported elsewhere).
+type osDNSAdapter struct{ ctrl proxymode.DNSController }
+
+func (a osDNSAdapter) Supported() bool { return a.ctrl.Supported() }
+
+func (a osDNSAdapter) Snapshot() (connectcore.OSProxySnapshot, error) {
+	return a.ctrl.Snapshot()
+}
+
+func (a osDNSAdapter) Set(server string) error { return a.ctrl.Set(server) }
+
+func (a osDNSAdapter) Restore(snap connectcore.OSProxySnapshot) error {
+	typed, ok := snap.(proxymode.Snapshot)
+	if !ok {
+		return errors.New("DNS snapshot is not a proxymode snapshot")
 	}
 	return a.ctrl.Restore(typed)
 }

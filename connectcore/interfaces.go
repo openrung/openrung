@@ -101,7 +101,8 @@ type Notice struct {
 
 // Persistence stores the small pieces of client state the engine reads and
 // writes across sessions: the "recents" row, the stable local proxy port, and,
-// while connected, the OS proxy snapshot used to recover after a crash. A nil
+// while connected, the OS proxy (or, in TUN mode, OS DNS) snapshot used to
+// recover after a crash. A nil
 // Persistence disables persistence; the engine still runs (recents are
 // session-local, crash recovery is skipped, and the local endpoint is picked
 // fresh each launch with a warning).
@@ -117,8 +118,9 @@ type Persistence interface {
 	// another process's choice when two first launches race, so every process
 	// agrees on the endpoint.
 	LoadOrSaveProxyPort(candidate int) (int, error)
-	// SaveProxySnapshot persists the OS proxy snapshot captured before a
-	// connect, so a crash mid-session can be cleaned up on the next launch.
+	// SaveProxySnapshot persists the OS proxy or OS DNS snapshot captured
+	// before a connect, so a crash mid-session can be cleaned up on the next
+	// launch.
 	SaveProxySnapshot(snap OSProxySnapshot) error
 	// LoadProxySnapshot returns the persisted snapshot and whether one existed.
 	// A present snapshot on startup means a prior session did not restore
@@ -175,6 +177,29 @@ type OSProxy interface {
 	Snapshot() (OSProxySnapshot, error)
 	// Set points the OS proxy at host:port (the local mixed inbound).
 	Set(host string, port int) error
+	// Restore reverts to a previously captured snapshot.
+	Restore(snap OSProxySnapshot) error
+}
+
+// OSDNS points the OS resolver at the tunnel's DNS address while a TUN session
+// is connected, on platforms where the TUN inbound leaves the system resolver
+// configuration alone (sing-tun repoints it on Windows and on Linux with
+// systemd-resolved, never on macOS). It is TUN mode's counterpart of OSProxy
+// and follows the same engine policy: snapshot once per connection, set on
+// promote, release during a recovery gap and restore on exit. A nil OSDNS, or
+// one that is not Supported, leaves the resolver configuration untouched.
+//
+// Its snapshot shares Persistence's proxy-snapshot slot, which holds whichever
+// snapshot the last session took. Crash recovery hands a leftover snapshot to
+// both OSProxy.Restore and OSDNS.Restore, so a host that wires both must make
+// each Restore leave the other's state alone.
+type OSDNS interface {
+	// Supported reports whether resolver control works here.
+	Supported() bool
+	// Snapshot captures the current resolver settings for a later Restore.
+	Snapshot() (OSProxySnapshot, error)
+	// Set points the OS resolver at server (an IP address inside the tunnel).
+	Set(server string) error
 	// Restore reverts to a previously captured snapshot.
 	Restore(snap OSProxySnapshot) error
 }

@@ -234,12 +234,18 @@ The generated config uses:
 - `tun` inbound with `auto_route: true` and `strict_route: true`.
 - `dns_mode: hijack`, so DNS queries addressed to the tunnel's own DNS
   address (172.19.0.2) are answered by sing-box's resolver. sing-box points
-  the system at that address only on Windows and on Linux hosts running
-  systemd-resolved (it shells out to `resolvectl`); other Linux setups and
-  macOS keep their existing resolver.
+  the system at that address on Windows and on Linux hosts running
+  systemd-resolved (it shells out to `resolvectl`). On macOS the client does
+  it instead: once a TUN session connects, it sets the DNS servers of every
+  enabled network service to 172.19.0.2 (`networksetup -setdnsservers`),
+  which the system resolver then reaches through the tunnel. The previous
+  per-service servers are saved first, restored on disconnect and while a
+  failover reconnects, and kept in the client state directory until then, so
+  the next launch restores them after a crash. Other Linux setups keep their
+  existing resolver.
 - A route rule that hijacks *any* port 53 traffic into the same resolver, so
-  DNS still works, and stays inside the tunnel, when the system resolver was
-  not repointed. Without it those queries reach the TCP-only relay outbound
+  DNS still works when the system resolver was not repointed and the query
+  reaches the tunnel. Without it those queries reach the TCP-only relay outbound
   as UDP, sing-box drops them (`UDP is not supported by outbound: proxy`),
   and every name lookup on the machine fails. This rule runs ahead of the
   split-tunnel LAN bypass, so a LAN resolver (the router, a Pi-hole, a
@@ -247,8 +253,8 @@ The generated config uses:
   bypass on: names only that resolver knows, such as router-served `.lan`
   hosts, do not resolve, and its blocklists do not apply. That is the
   behaviour Windows, Android and iOS already had, because they point the
-  system at the tunnel resolver; the rule makes macOS and other Linux
-  setups match, and keeps a bypassed LAN from becoming a plaintext DNS leak.
+  system at the tunnel resolver; the rule makes other Linux setups match,
+  and keeps DNS off a bypassed LAN.
 - Fake-IP answers for A and AAAA queries when private cache storage is available:
   sing-box replies locally from one block of `198.18.0.0/15` and `fc00::/18`
   with TTL 1.
