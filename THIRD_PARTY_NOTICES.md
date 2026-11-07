@@ -57,6 +57,10 @@ commit each release is built against.
 - **License:** GNU General Public License v3.0 or later (**GPL-3.0-or-later**),
   with an additional permitted term.
 - **Upstream:** https://github.com/SagerNet/sing-box
+- **Modified source:** the root and desktop `go.mod` files replace the
+  upstream module with https://github.com/openrung/sing-box (tag
+  `v1.14.0-beta.17.openrung.1`): the upstream release plus one change to the
+  Reality client, which sends the uTLS fingerprint's key shares unchanged.
 - **License text:** https://github.com/SagerNet/sing-box/blob/main/LICENSE
   (the full GPL-3.0 text is also bundled in this repository as `LICENSE`).
 - **Additional term (GPL-3.0 §7, must be preserved):**
