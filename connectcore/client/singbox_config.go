@@ -646,10 +646,10 @@ func buildRouteConfig(input SingBoxConfigInput, probeSuffixes []string) map[stri
 		// proxy"): every name lookup on the machine dies and the internet
 		// probe blames the relay (issue #175). sing-tun repoints system DNS
 		// at the hijack address only on Windows and on Linux hosts running
-		// systemd-resolved, and never on macOS, so this rule is what makes
-		// DNS work — and stay inside the tunnel — everywhere else. It
-		// precedes the LAN bypass on purpose: a bypassed LAN must not become
-		// a plaintext DNS leak.
+		// systemd-resolved, and never on macOS (where the desktop hosts do it
+		// through connectcore.OSDNS), so this rule is what answers every
+		// port-53 query that reaches the tunnel elsewhere. It precedes the
+		// LAN bypass on purpose: a bypassed LAN must not carry plaintext DNS.
 		map[string]any{
 			"port":   53,
 			"action": "hijack-dns",

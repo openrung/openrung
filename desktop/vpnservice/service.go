@@ -129,6 +129,7 @@ func New() *Service {
 	engine.PunchEstablisher = enginepunch.Establish
 	engine.Sink = &engineSink{s: s}
 	engine.OSProxy = osProxyAdapter{ctrl: proxymode.New()}
+	engine.OSDNS = osDNSAdapter{ctrl: proxymode.NewDNS()}
 	s.engine = engine
 	s.state = engine.State()
 	return s

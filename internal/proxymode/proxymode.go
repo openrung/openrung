@@ -39,6 +39,35 @@ type Snapshot struct {
 	// Windows carries the global WinInet capture; set only on Windows
 	// snapshots, nil elsewhere.
 	Windows *WindowsProxyState `json:"windows,omitempty"`
+	// DNS carries a DNSController capture; set only on DNS snapshots, which
+	// share the persisted snapshot slot with proxy snapshots. A proxy
+	// Restore ignores it and a DNS Restore ignores everything else.
+	DNS []ServiceDNSState `json:"dns,omitempty"`
+}
+
+// ServiceDNSState is one macOS network service's manually configured DNS
+// servers. An empty list means none were configured, so the service used the
+// servers its network supplied.
+type ServiceDNSState struct {
+	Name    string   `json:"name"`
+	Servers []string `json:"servers,omitempty"`
+}
+
+// DNSController points the OS resolver at a tunnel's DNS address and restores
+// it, for TUN mode on platforms where the tunnel itself does not.
+type DNSController interface {
+	// Supported reports whether resolver control works here.
+	Supported() bool
+	// Snapshot returns prev extended with the current settings of every
+	// service prev does not hold yet. Services prev already holds keep their
+	// captured settings, so a re-snapshot after Set never records the
+	// tunnel's own server as the user's. Pass a zero Snapshot first.
+	Snapshot(prev Snapshot) (Snapshot, error)
+	// Set points the resolver of every service snap holds at server and
+	// changes nothing else, so every change is covered by snap.
+	Set(server string, snap Snapshot) error
+	// Restore reverts to a previously captured snapshot.
+	Restore(snap Snapshot) error
 }
 
 // Controller sets and restores the OS system proxy on one platform.

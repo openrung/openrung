@@ -104,7 +104,11 @@ func (c *darwinController) restoreOne(setCmd, stateCmd, name string, enabled boo
 // listServices returns the enabled network services, skipping the informational
 // header line and disabled services (which networksetup prefixes with "*").
 func (c *darwinController) listServices() ([]string, error) {
-	out, err := c.run("-listallnetworkservices")
+	return listServices(c.run)
+}
+
+func listServices(run func(args ...string) ([]byte, error)) ([]string, error) {
+	out, err := run("-listallnetworkservices")
 	if err != nil {
 		return nil, fmt.Errorf("list network services: %w", err)
 	}
