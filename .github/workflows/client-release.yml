@@ -226,7 +226,18 @@ jobs:
             # an app"), notarized or not; install validates the same
             # signature+ticket chain and is the one that reports
             # "Notarized Developer ID" for a standalone executable.
-            spctl -a -vv -t install "$dir/openrung-client"
+            # The ticket Gatekeeper looks up online can lag "Accepted" by a
+            # few minutes, so retry for up to five minutes before failing.
+            assessed=0
+            for attempt in $(seq 1 10); do
+              if spctl -a -vv -t install "$dir/openrung-client"; then
+                assessed=1
+                break
+              fi
+              echo "Gatekeeper has no notarization ticket yet (attempt $attempt/10); retrying in 30s"
+              sleep 30
+            done
+            [ "$assessed" = 1 ] || { echo "Gatekeeper never accepted $dir/openrung-client" >&2; exit 1; }
 
             rm "$dir.tar.gz" "notarize-$arch.zip" "notary-$arch.json"
             tar -czf "$dir.tar.gz" "$dir"
