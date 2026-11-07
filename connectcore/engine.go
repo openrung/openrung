@@ -1629,6 +1629,14 @@ func (s *Engine) applyProxy(conn *connection, port int) {
 		return
 	}
 	if !conn.snapshotTaken {
+		// The persisted slot may hold an earlier session's unrestored proxy or
+		// DNS snapshot; this session's snapshot would overwrite it, so retry
+		// its restore first and change nothing until it succeeds (as
+		// applyTunnelDNS does).
+		if !s.restoreLeftoverSnapshot() {
+			s.appendLog(fmt.Sprintf("system settings from an earlier session are not restored yet; leaving the system proxy unchanged, set manual proxy %s:%d", proxyconfig.Host, port))
+			return
+		}
 		snap, err := s.OSProxy.Snapshot()
 		if err != nil {
 			s.appendLog("could not read current system proxy; leaving it unchanged")

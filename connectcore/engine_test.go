@@ -401,6 +401,7 @@ type fakeProxyController struct {
 	restoreErr error
 	sets       int
 	restores   []OSProxySnapshot
+	onSet      func()
 }
 
 func (f *fakeProxyController) Supported() bool { return f.supported }
@@ -410,6 +411,9 @@ func (f *fakeProxyController) Snapshot() (OSProxySnapshot, error) {
 }
 
 func (f *fakeProxyController) Set(host string, port int) error {
+	if f.onSet != nil {
+		f.onSet()
+	}
 	f.sets++
 	return f.setErr
 }

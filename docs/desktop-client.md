@@ -242,8 +242,9 @@ The generated config uses:
   previous servers are saved before it is first changed (including a service
   added during the session), restored on disconnect and while a failover
   reconnects, and kept in the client state directory until then, so the next
-  launch restores them after a crash. A session does not change DNS while
-  settings saved by an earlier session are still unrestored. Other Linux setups keep their
+  launch restores them after a crash. While settings saved by an earlier
+  session are still unrestored, a session in either mode leaves the system
+  proxy and DNS unchanged. Other Linux setups keep their
   existing resolver.
 - A route rule that hijacks *any* port 53 traffic into the same resolver, so
   DNS still works when the system resolver was not repointed and the query
