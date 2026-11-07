@@ -71,9 +71,9 @@ export function embedsDriver(binaryContents, driverContents) {
   return binaryContents.includes(driverContents.subarray(0, driverProbeBytes));
 }
 
-function assertNoWinDivertDriver(binary, moduleVersion) {
-  const asset = join(goOutput(['env', 'GOMODCACHE']), `${singBoxModule}@${moduleVersion}`, winDivertAsset);
-  if (!existsSync(asset)) {
+function assertNoWinDivertDriver(binary, moduleDir) {
+  const asset = join(moduleDir, winDivertAsset);
+  if (!moduleDir || !existsSync(asset)) {
     // Fail closed: without the reference bytes this check proves nothing, and
     // the module was just compiled, so it is in the cache.
     throw new Error(`cannot read the reference driver at ${asset}; refusing to certify the package without it`);
@@ -102,11 +102,15 @@ function main() {
     throw new Error(`${binary} version exited ${result.status}: ${result.stderr.trim()}`);
   }
 
-  const moduleVersion = goOutput(['list', '-m', '-f', '{{.Version}}', singBoxModule]);
+  // A replaced module is built from, and reports, its replacement: take the
+  // replacement's version, and .Dir, which already points at its source.
+  const moduleVersion = goOutput([
+    'list', '-m', '-f', '{{if .Replace}}{{.Replace.Version}}{{else}}{{.Version}}{{end}}', singBoxModule,
+  ]);
   const engineVersion = moduleVersion.replace(/^v/, '');
   verifyVersionOutput(result.stdout, readAppVersion(), engineVersion);
   if (binary.toLowerCase().endsWith('.exe')) {
-    assertNoWinDivertDriver(binary, moduleVersion);
+    assertNoWinDivertDriver(binary, goOutput(['list', '-m', '-f', '{{.Dir}}', singBoxModule]));
   }
   // stdout carries nothing but the engine's name and version, so a packaging
   // script can capture it as the string its GPL notices embed. Failures go to

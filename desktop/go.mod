@@ -219,3 +219,5 @@ replace github.com/openrung/openrung/connectcore => ../connectcore
 replace github.com/openrung/openrung/punchcore => ../punchcore
 
 replace github.com/openrung/openrung/wsscore => ../wsscore
+
+replace github.com/sagernet/sing-box => github.com/openrung/sing-box v1.14.0-beta.17.openrung.1

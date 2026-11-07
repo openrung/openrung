@@ -120,8 +120,9 @@ jobs:
           fi
           # The second line proves the bundled sing-box is the go.mod pin AND
           # that the with_utls tag made it into the build; a binary without it
-          # cannot dial any relay's Reality endpoint.
-          singbox_version="$(go list -m -f '{{.Version}}' github.com/sagernet/sing-box)"
+          # cannot dial any relay's Reality endpoint. A replaced module reports
+          # its replacement's version.
+          singbox_version="$(go list -m -f '{{if .Replace}}{{.Replace.Version}}{{else}}{{.Version}}{{end}}' github.com/sagernet/sing-box)"
           want_singbox="sing-box/${singbox_version#v} (bundled, with_utls)"
           if [ "$(printf '%s\n' "$got" | sed -n 2p)" != "$want_singbox" ]; then
             echo "bundled sing-box line mismatch: got \"$got\", want second line \"$want_singbox\"" >&2
@@ -138,8 +139,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ver="$(go list -m -f '{{.Version}}' github.com/sagernet/sing-box)"
-          asset="$(go env GOMODCACHE)/github.com/sagernet/sing-box@${ver}/common/windivert/assets/WinDivert64.sys"
+          # .Dir is the module's source as built: the replacement's when go.mod
+          # replaces it. Empty means not downloaded; fail rather than skip.
+          dir="$(go list -m -f '{{.Dir}}' github.com/sagernet/sing-box)"
+          [ -n "$dir" ] || { echo "sing-box module source not in the module cache" >&2; exit 1; }
+          asset="$dir/common/windivert/assets/WinDivert64.sys"
           exe="dist/openrung-client-windows-amd64/openrung-client.exe"
           python3 -c 'import sys; a=open(sys.argv[1],"rb").read(4096); e=open(sys.argv[2],"rb").read(); sys.exit("windows binary embeds WinDivert64.sys: the with_external_windivert build tag was lost (see THIRD_PARTY_NOTICES.md section 8)" if a in e else 0)' "$asset" "$exe"
           echo "no WinDivert driver bytes in the windows binary"

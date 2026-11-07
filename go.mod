@@ -221,3 +221,5 @@ require (
 	lukechampine.com/blake3 v1.3.0 // indirect
 	zombiezen.com/go/capnproto2 v2.18.2+incompatible // indirect
 )
+
+replace github.com/sagernet/sing-box => github.com/openrung/sing-box v1.14.0-beta.17.openrung.1
