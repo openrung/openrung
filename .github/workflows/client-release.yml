@@ -163,7 +163,7 @@ jobs:
   # release binaries must never carry a personal identity.
   sign-macos:
     needs: build
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - name: Download build artifacts
         uses: actions/download-artifact@v4
