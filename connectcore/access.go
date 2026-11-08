@@ -120,7 +120,7 @@ func (s *Engine) leaseAfter(d time.Duration) <-chan time.Time {
 }
 
 func (s *Engine) accessClient() *brokerapi.Client {
-	return brokerapi.NewClient(s.brokerHTTPClient(), brokerapi.Options{
+	return brokerapi.NewClient(s.tracedBrokerClient(), brokerapi.Options{
 		AppVersion:      s.appVersion(),
 		PlatformVersion: s.platformVersion(),
 		Platform:        s.telemetryPlatform(),
@@ -325,6 +325,7 @@ func (s *Engine) requestAccess(ctx context.Context, front string, azureSNI bool,
 		request.AccessToken = token
 		resp, err := client.RequestAccess(ctx, front, request)
 		if err == nil {
+			s.diagnostics.learnRelays(resp.Relays)
 			return resp, s.leaseNow(), nil
 		}
 		var status *brokerapi.AccessStatusError
@@ -412,6 +413,7 @@ func (s *Engine) userAccessToken(ctx context.Context, client *brokerapi.Client, 
 	if err != nil {
 		return "", userAuthError(err)
 	}
+	s.diagnostics.learnSecret(resp.AccessToken, resp.UserID)
 	s.accessMu.Lock()
 	s.accessToken, s.accessTokenExpiry, s.accessTokenScope = resp.AccessToken, resp.TokenExpiresAt, scope
 	s.accessMu.Unlock()
