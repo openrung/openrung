@@ -1420,6 +1420,7 @@ func (s *Engine) launchTunnel(res *candidateResult, configInput client.SingBoxCo
 	}
 	if err != nil {
 		res.mobileRun = nil
+		s.diagnostics.learnTunnelError(err)
 		// A launch failure defaults to the tunnel_start stage; a runtime that
 		// already staged its error (the subprocess default marks a temp-file
 		// failure config_file) keeps its own.
@@ -1429,7 +1430,7 @@ func (s *Engine) launchTunnel(res *candidateResult, configInput client.SingBoxCo
 		return 0, markLocalCandidateError("tunnel_start", err)
 	}
 	res.run = run
-	res.runDone = run.Done()
+	res.runDone = s.diagnostics.watchTunnelExit(run.Done())
 	if err := res.ctx.Err(); err != nil {
 		return 0, err
 	}

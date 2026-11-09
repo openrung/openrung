@@ -5,6 +5,7 @@ package connectcore
 import (
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -36,6 +37,7 @@ const (
 	diagnosticAllowCapacity  = 1024
 	diagnosticLineLimit      = 512
 	diagnosticDNSAddrLimit   = 4
+	diagnosticSubstCapacity  = 32
 	// diagnosticMinSecretLen keeps exact-match redaction away from values too
 	// short to be distinguished from ordinary words.
 	diagnosticMinSecretLen = 6
@@ -113,7 +115,17 @@ type diagnosticLog struct {
 	secretQ []string
 	allowed map[string]struct{}
 	allowQ  []string
+	// substs replaces the user-facing rendering of a tunnel-core error, which
+	// quotes the core's own output, with its telemetry-safe rendering.
+	substs []diagnosticSubst
 }
+
+type diagnosticSubst struct{ unsafe, safe string }
+
+// telemetrySafer is implemented by errors that quote tunnel-core output
+// (client.crashError, and in-process runtimes following the TunnelRuntime
+// contract); TelemetrySafe is the rendering without the quote.
+type telemetrySafer interface{ TelemetrySafe() string }
 
 type brokerTrace struct {
 	started time.Time
@@ -125,15 +137,67 @@ func (d *diagnosticLog) note(line string) {
 }
 
 func (d *diagnosticLog) noteAt(at time.Time, line string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	// Substitute before truncating, so a quote cut by the limit cannot escape.
+	line = d.substituteLocked(line)
 	if len(line) > diagnosticLineLimit {
 		line = line[:diagnosticLineLimit] + "…"
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
 	d.events = append(d.events, DiagnosticEvent{Time: at, Message: line})
 	if len(d.events) > diagnosticEventCapacity {
 		d.events = append(d.events[:0:0], d.events[len(d.events)-diagnosticEventCapacity:]...)
 	}
+}
+
+// learnTunnelError records the telemetry-safe rendering of a tunnel-core
+// error before the error reaches any log line or status, so tunnel output it
+// quotes (which can name the destinations the user's traffic reached) is
+// replaced wherever the engine formats it.
+func (d *diagnosticLog) learnTunnelError(err error) {
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		safe, ok := e.(telemetrySafer)
+		if !ok {
+			continue
+		}
+		subst := diagnosticSubst{unsafe: e.Error(), safe: safe.TelemetrySafe()}
+		if subst.unsafe == subst.safe || subst.unsafe == "" {
+			return
+		}
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		for _, have := range d.substs {
+			if have == subst {
+				return
+			}
+		}
+		d.substs = append(d.substs, subst)
+		if len(d.substs) > diagnosticSubstCapacity {
+			d.substs = append(d.substs[:0:0], d.substs[len(d.substs)-diagnosticSubstCapacity:]...)
+		}
+		return
+	}
+}
+
+func (d *diagnosticLog) substituteLocked(s string) string {
+	for _, subst := range d.substs {
+		s = strings.ReplaceAll(s, subst.unsafe, subst.safe)
+	}
+	return s
+}
+
+// watchTunnelExit forwards a run's exit report after learning its rendering,
+// keeping the TunnelRun.Done contract: at most one value, then closed.
+func (d *diagnosticLog) watchTunnelExit(done <-chan error) <-chan error {
+	out := make(chan error, 1)
+	go func() {
+		defer close(out)
+		for err := range done {
+			d.learnTunnelError(err)
+			out <- err
+		}
+	}()
+	return out
 }
 
 // learnSecret records a credential value to be removed from every export.
@@ -335,8 +399,17 @@ func (t *diagnosticTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	}
 	resp, err := t.base.RoundTrip(req.WithContext(httptrace.WithClientTrace(req.Context(), trace)))
 	if err != nil {
+		https := req.URL.Scheme == "https"
 		d.update(tr, func(a *DiagnosticBrokerAttempt, ms *int64) {
 			a.DoneMS, a.Error = msPtr(ms), err.Error()
+			// A transport with a custom TLS dialer (brokerapi's) handshakes
+			// inside the dial, and net/http reports no handshake failure from
+			// it. The only step between a completed TCP connect and a usable
+			// connection there is the handshake, so the failure is its.
+			if https && a.ConnectDoneMS != nil && a.ConnectError == "" &&
+				a.ConnReadyMS == nil && a.TLSDoneMS == nil && a.TLSError == "" {
+				a.TLSError = err.Error()
+			}
 		})
 		return resp, err
 	}
@@ -440,6 +513,7 @@ func (s *Engine) Diagnostics() DiagnosticReport {
 		a.DNSAddrs = append([]string(nil), a.DNSAddrs...)
 		report.BrokerAttempts = append(report.BrokerAttempts, a)
 	}
+	report.LastError = d.substituteLocked(report.LastError)
 	r := newRedactor(d.secrets, d.allowed)
 	d.mu.Unlock()
 
@@ -603,23 +677,32 @@ func (r redactor) redact(s string) string {
 }
 
 func (r redactor) redactIP(m string) string {
-	core := strings.TrimRight(m, ".:")
-	suffix := m[len(core):]
-	ip := net.ParseIP(core)
-	port := ""
-	if ip == nil && strings.Contains(core, ".") {
-		// IPv4 with a port.
-		if i := strings.LastIndexByte(core, ':'); i > 0 {
-			ip, port = net.ParseIP(core[:i]), core[i:]
+	// Trailing '.' and ':' may be sentence punctuation or IPv6 compression
+	// ("2001:db8::"): try the longest prefix first, then drop them one by one.
+	for end := len(m); end > 0; end-- {
+		if end < len(m) && m[end] != '.' && m[end] != ':' {
+			break
 		}
+		core, suffix := m[:end], m[end:]
+		ip, port := net.ParseIP(core), ""
+		if ip == nil && strings.Contains(core, ".") {
+			// IPv4 with a port.
+			if i := strings.LastIndexByte(core, ':'); i > 0 {
+				ip, port = net.ParseIP(core[:i]), core[i:]
+			}
+		}
+		if ip == nil {
+			continue
+		}
+		if ip.IsLoopback() || ip.IsUnspecified() {
+			return m
+		}
+		if _, ok := r.allowed[ip.String()]; ok {
+			return m
+		}
+		return "[ip]" + port + suffix
 	}
-	if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
-		return m
-	}
-	if _, ok := r.allowed[ip.String()]; ok {
-		return m
-	}
-	return "[ip]" + port + suffix
+	return m
 }
 
 // replaceHex replaces standalone hex runs that mix digits and letters, the

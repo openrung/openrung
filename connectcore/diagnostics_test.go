@@ -60,6 +60,8 @@ func TestDiagnosticRedaction(t *testing.T) {
 		{"client v4 with port", "read tcp " + diagTestClientV4 + ":50412->" + diagTestRelayIP + ":443: reset",
 			"read tcp [ip]:50412->" + diagTestRelayIP + ":443: reset"},
 		{"client v6", "your address " + diagTestClientV6 + ".", "your address [ip]."},
+		{"v6 ending in compression with port", "read udp [2001:db8:ffff::]:50000: refused", "read udp [[ip]]:50000: refused"},
+		{"v6 ending in compression before a period", "from 2001:db8:ffff::.", "from [ip]."},
 		{"private lan", "local 192.168.1.23", "local [ip]"},
 		{"loopback kept", "bridge 127.0.0.1:1080", "bridge 127.0.0.1:1080"},
 		{"uuid", "client " + diagTestUUID + " refused", "client [redacted] refused"},
@@ -218,6 +220,26 @@ func TestDiagnosticTransportRecordsConnectFailure(t *testing.T) {
 	}
 }
 
+// brokerapi handshakes inside its custom TLS dial, where net/http reports no
+// handshake failure; the transport still attributes the failure to TLS.
+func TestDiagnosticTransportRecordsCustomDialTLSFailure(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+
+	var d diagnosticLog
+	client := &http.Client{Transport: &diagnosticTransport{base: brokerapi.NewHTTPClient(0).Transport, log: &d}}
+	if _, err := client.Get(srv.URL + "/api/v1/relays"); err == nil {
+		t.Fatal("request to an untrusted certificate succeeded")
+	}
+	a := lastAttempt(t, &d)
+	if a.ConnectDoneMS == nil || a.ConnectError != "" {
+		t.Fatalf("TCP connect not recorded: %+v", a)
+	}
+	if a.TLSError == "" || !strings.Contains(a.TLSError, "certificate") || a.TLSDoneMS != nil || a.ConnReadyMS != nil {
+		t.Fatalf("TLS failure not recorded: %+v", a)
+	}
+}
+
 func TestTracedBrokerClientKeepsTheSharedTransport(t *testing.T) {
 	s := New()
 	traced := s.tracedBrokerClient()
@@ -311,5 +333,69 @@ func TestDiagnosticsAfterFailedConnectAreRedacted(t *testing.T) {
 	}
 	if !strings.Contains(report.LastError, "All relay connection attempts failed") || strings.Contains(report.LastError, diagTestUUID) {
 		t.Fatalf("last error = %q", report.LastError)
+	}
+}
+
+type diagTestCrashError struct{ quote string }
+
+func (e *diagTestCrashError) Error() string {
+	return "sing-box exited: " + e.quote + " (exit status 1)"
+}
+
+func (e *diagTestCrashError) TelemetrySafe() string { return "sing-box exited: exit status 1" }
+
+// A tunnel crash quotes the core's own output, which can name a destination
+// the user reached; the report carries the telemetry-safe rendering instead.
+func TestDiagnosticsReplaceQuotedTunnelCrashOutput(t *testing.T) {
+	const quote = "FATAL outbound/vless[proxy]: connection to secret-destination.example:443 failed"
+	sink := newTelemetrySink(t)
+	fixtures := []brokerapi.RelayDescriptor{diagTestRelay("a", diagTestRelayIP)}
+	s, _ := newLadderService(t, func() []brokerapi.RelayDescriptor { return fixtures })
+	s.TunnelRuntime = runFuncRuntime(func(context.Context, []byte) error {
+		return &diagTestCrashError{quote: quote}
+	})
+	// Hold readiness so the crash, not the readiness probe, decides the rung.
+	s.tunnelReady = func(ctx context.Context, _ int) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	if err := s.Connect(sink.srv.URL, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForStatus(t, s, StatusFailed)
+	waitIdle(t, s)
+
+	for _, out := range []string{s.DiagnosticsText(), s.DiagnosticsJSON()} {
+		if strings.Contains(out, "secret-destination") {
+			t.Fatalf("tunnel crash output leaked into diagnostics:\n%s", out)
+		}
+		if !strings.Contains(out, "sing-box exited: exit status 1") {
+			t.Fatalf("diagnostics lost the crash itself:\n%s", out)
+		}
+	}
+}
+
+func TestDiagnosticLogSubstitutesTunnelErrorsBeforeTruncating(t *testing.T) {
+	var d diagnosticLog
+	crash := fmt.Errorf("relay a failed: %w", &diagTestCrashError{quote: strings.Repeat("x", diagnosticLineLimit) + " host.example"})
+	d.learnTunnelError(crash)
+	d.note(crash.Error())
+	if got := d.events[0].Message; got != "relay a failed: sing-box exited: exit status 1" {
+		t.Fatalf("event = %q", got)
+	}
+	// The forwarded exit report keeps the Done contract: one value, then closed.
+	done := make(chan error, 1)
+	done <- &diagTestCrashError{quote: "other.example"}
+	close(done)
+	out := d.watchTunnelExit(done)
+	if err := <-out; err == nil {
+		t.Fatal("exit report lost")
+	}
+	if _, open := <-out; open {
+		t.Fatal("forwarded channel not closed")
+	}
+	d.note("x sing-box exited: other.example (exit status 1)")
+	if got := d.events[1].Message; strings.Contains(got, "other.example") {
+		t.Fatalf("event = %q", got)
 	}
 }

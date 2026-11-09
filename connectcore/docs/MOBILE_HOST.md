@@ -274,6 +274,12 @@ the install ID and session ID are not included. A host that wants support to
 correlate a report with server-side records should add them itself, with the
 user's consent.
 
+Tunnel-core log output never enters the report. An error returned by the
+host's `MobileRuntime.Run` or delivered through its run's `Done` that
+quotes core output must implement `TelemetrySafe() string` (as the desktop
+subprocess runtime's crash error does); the report carries that rendering in
+place of the quote.
+
 ## Outbox migration ordering
 
 1. Initialize native install identity and paths without changing process
