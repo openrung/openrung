@@ -5,10 +5,13 @@ package connectcore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -237,6 +240,76 @@ func TestDiagnosticTransportRecordsCustomDialTLSFailure(t *testing.T) {
 	}
 	if a.TLSError == "" || !strings.Contains(a.TLSError, "certificate") || a.TLSDoneMS != nil || a.ConnReadyMS != nil {
 		t.Fatalf("TLS failure not recorded: %+v", a)
+	}
+}
+
+// Through an HTTP proxy the CONNECT exchange precedes TLS, so a proxy's
+// refusal after a completed TCP connect is not a TLS failure.
+func TestDiagnosticTransportDoesNotBlameTLSForAProxyRefusal(t *testing.T) {
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusProxyAuthRequired)
+	}))
+	defer proxy.Close()
+	proxyURL, err := url.Parse(proxy.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := http.DefaultTransport.(*http.Transport).Clone()
+	base.Proxy = http.ProxyURL(proxyURL)
+	base.DialTLSContext = func(context.Context, string, string) (net.Conn, error) {
+		return nil, errors.New("custom TLS dialer used for a proxied request")
+	}
+
+	var d diagnosticLog
+	client := &http.Client{Transport: &diagnosticTransport{base: base, log: &d}}
+	if _, err := client.Get("https://127.0.0.1:1/api/v1/relays"); err == nil {
+		t.Fatal("request through a refusing proxy succeeded")
+	}
+	a := lastAttempt(t, &d)
+	if a.ConnectDoneMS == nil || a.ConnectError != "" {
+		t.Fatalf("TCP connect to the proxy not recorded: %+v", a)
+	}
+	if a.TLSError != "" || !strings.Contains(a.Error, "Proxy Authentication Required") {
+		t.Fatalf("proxy refusal recorded as TLS: tls_error=%q error=%q", a.TLSError, a.Error)
+	}
+}
+
+func TestConnectedToTarget(t *testing.T) {
+	for _, tc := range []struct {
+		target, dnsHost, addr string
+		want                  bool
+	}{
+		{"https://broker.example/", "broker.example", "198.51.100.10:443", true},
+		{"https://broker.example./", "broker.example", "198.51.100.10:443", true},
+		{"https://broker.example/", "proxy.example", "198.51.100.10:443", false},
+		{"https://broker.example/", "", "198.51.100.10:443", false},
+		{"https://broker.example/", "broker.example", "198.51.100.10:3128", false},
+		{"https://198.51.100.10:8443/", "", "198.51.100.10:8443", true},
+		{"https://[2001:db8::1]/", "", "[2001:db8::1]:443", true},
+		{"https://198.51.100.10/", "", "198.51.100.11:443", false},
+	} {
+		u, err := url.Parse(tc.target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := connectedToTarget(u, tc.dnsHost, tc.addr); got != tc.want {
+			t.Fatalf("connectedToTarget(%s, %q, %s) = %v, want %v", tc.target, tc.dnsHost, tc.addr, got, tc.want)
+		}
+	}
+}
+
+// A custom broker URL may carry a path prefix; the request path is redacted
+// like every other field.
+func TestDiagnosticsRedactTheRequestPath(t *testing.T) {
+	s := New()
+	s.diagnostics.beginBroker(httptest.NewRequest(http.MethodGet, "https://broker.example/"+diagTestUUID+"/api/v1/relays?limit=5", nil))
+	for _, out := range []string{s.DiagnosticsText(), s.DiagnosticsJSON()} {
+		if strings.Contains(out, diagTestUUID) {
+			t.Fatalf("request path leaked a UUID:\n%s", out)
+		}
+		if !strings.Contains(out, "GET /[uuid]/api/v1/relays") {
+			t.Fatalf("request path missing:\n%s", out)
+		}
 	}
 }
 

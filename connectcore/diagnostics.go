@@ -130,6 +130,9 @@ type telemetrySafer interface{ TelemetrySafe() string }
 type brokerTrace struct {
 	started time.Time
 	a       DiagnosticBrokerAttempt
+	// dnsHost is the last name resolved for the request, which tells a
+	// connection to the broker itself from one to a proxy.
+	dnsHost string
 }
 
 func (d *diagnosticLog) note(line string) {
@@ -347,6 +350,11 @@ func (t *diagnosticTransport) RoundTrip(req *http.Request) (*http.Response, erro
 				}
 			})
 		},
+		DNSStart: func(info httptrace.DNSStartInfo) {
+			d.mu.Lock()
+			tr.dnsHost = info.Host
+			d.mu.Unlock()
+		},
 		ConnectStart: func(_, addr string) {
 			d.allowAddress(addr)
 			d.update(tr, func(a *DiagnosticBrokerAttempt, _ *int64) {
@@ -399,15 +407,17 @@ func (t *diagnosticTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	}
 	resp, err := t.base.RoundTrip(req.WithContext(httptrace.WithClientTrace(req.Context(), trace)))
 	if err != nil {
-		https := req.URL.Scheme == "https"
 		d.update(tr, func(a *DiagnosticBrokerAttempt, ms *int64) {
 			a.DoneMS, a.Error = msPtr(ms), err.Error()
 			// A transport with a custom TLS dialer (brokerapi's) handshakes
 			// inside the dial, and net/http reports no handshake failure from
-			// it. The only step between a completed TCP connect and a usable
-			// connection there is the handshake, so the failure is its.
-			if https && a.ConnectDoneMS != nil && a.ConnectError == "" &&
-				a.ConnReadyMS == nil && a.TLSDoneMS == nil && a.TLSError == "" {
+			// it. On a direct connection to the broker, the only step between
+			// a completed TCP connect and a usable connection is that
+			// handshake, so the failure is its. Through a proxy, the CONNECT
+			// exchange comes first, so nothing is inferred there.
+			if req.URL.Scheme == "https" && a.ConnectDoneMS != nil && a.ConnectError == "" &&
+				a.ConnReadyMS == nil && a.TLSDoneMS == nil && a.TLSError == "" &&
+				connectedToTarget(req.URL, tr.dnsHost, a.RemoteAddr) {
 				a.TLSError = err.Error()
 			}
 		})
@@ -416,6 +426,28 @@ func (t *diagnosticTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	d.update(tr, func(a *DiagnosticBrokerAttempt, _ *int64) { a.StatusCode = resp.StatusCode })
 	resp.Body = &diagnosticBody{ReadCloser: resp.Body, log: d, trace: tr}
 	return resp, nil
+}
+
+// connectedToTarget reports whether the TCP connection to addr went to the
+// request's own host and port rather than to a proxy: the port matches and
+// the address is the host itself (an IP literal) or was resolved from it.
+func connectedToTarget(u *url.URL, dnsHost, addr string) bool {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	wantPort := u.Port()
+	if wantPort == "" {
+		wantPort = "443"
+	}
+	if port != wantPort {
+		return false
+	}
+	if target := net.ParseIP(u.Hostname()); target != nil {
+		ip := net.ParseIP(host)
+		return ip != nil && ip.Equal(target)
+	}
+	return strings.EqualFold(strings.TrimSuffix(dnsHost, "."), strings.TrimSuffix(u.Hostname(), "."))
 }
 
 // CloseIdleConnections forwards to base so brokerapi.Client.CloseIdleConnections
@@ -523,6 +555,7 @@ func (s *Engine) Diagnostics() DiagnosticReport {
 	}
 	for i := range report.BrokerAttempts {
 		a := &report.BrokerAttempts[i]
+		a.Request = r.redact(a.Request)
 		a.Front = r.redact(a.Front)
 		a.RemoteAddr = r.redact(a.RemoteAddr)
 		a.DNSError = r.redact(a.DNSError)
