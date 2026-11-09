@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -255,14 +256,24 @@ func TestWSSDialProtectionRefusalStopsLadderWithoutFrontDamage(t *testing.T) {
 func TestDirectoryDiscoveryUsesTheProtectedBrokerClient(t *testing.T) {
 	fixtures := []brokerapi.RelayDescriptor{relayAt("a", "JP", "Tokyo", "Japan", "127.0.0.10")}
 	s, _ := newLadderService(t, func() []brokerapi.RelayDescriptor { return fixtures })
-	if got := s.identityForDirectory().HTTPClient; got != nil {
-		t.Fatalf("without a protector the directory must keep brokerapi's default client, got %v", got)
+	// Directory requests go through the diagnostic trace wrapper; what must
+	// hold is the transport (and so the connection pool) underneath it.
+	underlying := func() http.RoundTripper {
+		t.Helper()
+		traced, ok := s.identityForDirectory().HTTPClient.Transport.(*diagnosticTransport)
+		if !ok {
+			t.Fatalf("directory client transport = %T", s.identityForDirectory().HTTPClient.Transport)
+		}
+		return traced.base
+	}
+	if underlying() != brokerapi.NewHTTPClient(0).Transport {
+		t.Fatal("without a protector the directory must keep brokerapi's default transport")
 	}
 	s.SocketProtector = &recordingProtector{}
-	if got := s.identityForDirectory().HTTPClient; got == nil {
+	if underlying() == brokerapi.NewHTTPClient(0).Transport {
 		t.Fatal("directory discovery bypasses the protected broker client")
 	}
-	if s.identityForDirectory().HTTPClient != s.brokerHTTPClient() {
+	if underlying() != s.brokerHTTPClient().Transport {
 		t.Fatal("directory discovery does not share the connect path's pooled protected client")
 	}
 }

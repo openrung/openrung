@@ -75,6 +75,14 @@ func TestGetIdentityWithoutSession(t *testing.T) {
 	}
 }
 
+func TestGetDiagnosticsReturnsTheEngineReport(t *testing.T) {
+	s := New()
+	text := s.GetDiagnostics()
+	if !strings.HasPrefix(text, "OpenRung diagnostics\n") || !strings.Contains(text, "status: disconnected") {
+		t.Fatalf("diagnostics = %q", text)
+	}
+}
+
 func TestGetProxyInfoUsesStableConfiguredEndpoint(t *testing.T) {
 	t.Setenv(proxyconfig.PortEnv, "46685")
 	s := New()

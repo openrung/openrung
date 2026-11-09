@@ -69,7 +69,20 @@ func (d *directoryCache) clock() time.Time {
 // failover/429 logic, attaches identity headers, and avoids a webview
 // cross-origin request to the broker.
 func (s *Engine) ListRelaysForDirectory() (brokerapi.RelayListResponse, error) {
-	return s.directory.fetch(context.Background(), "", s.identityForDirectory())
+	return s.fetchDirectory(context.Background(), "")
+}
+
+// fetchDirectory is the directory cache fetch with its outcome recorded in
+// the diagnostic log.
+func (s *Engine) fetchDirectory(ctx context.Context, brokerURL string) (brokerapi.RelayListResponse, error) {
+	started := time.Now()
+	resp, err := s.directory.fetch(ctx, brokerURL, s.identityForDirectory())
+	if err != nil {
+		s.noteDiagnostic("directory fetch failed after %s: %v", time.Since(started).Round(time.Millisecond), err)
+		return resp, err
+	}
+	s.diagnostics.learnRelays(resp.Relays)
+	return resp, nil
 }
 
 // DirectoryRelay is one usable directory entry plus what the ranker measured
@@ -87,7 +100,7 @@ type DirectoryRelay struct {
 // RelayRankMaxProbes relays, so hosts should call it on a user-visible refresh,
 // not on a timer; the list fetch itself stays rate-limited by the cache.
 func (s *Engine) RankedDirectory(ctx context.Context, brokerURL string) ([]DirectoryRelay, error) {
-	resp, err := s.directory.fetch(ctx, brokerURL, s.identityForDirectory())
+	resp, err := s.fetchDirectory(ctx, brokerURL)
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +137,7 @@ func (s *Engine) identityForDirectory() discovery.Options {
 		Platform:        s.telemetryPlatform(),
 		AppVersion:      s.appVersion(),
 		PlatformVersion: s.platformVersion(),
-		HTTPClient:      s.brokerHTTPClient(),
+		HTTPClient:      s.tracedBrokerClient(),
 	}
 }
 

@@ -254,6 +254,32 @@ resolver handling of A/AAAA answers with TTL 1, clean restarts with cached
 answers, a killed extension followed by a reconnect, and switches between
 fake-IP and split-tunnel configurations.
 
+### Diagnostic export (connectcore 0.12.0)
+
+`Engine.DiagnosticsText()` (plain text) and `Engine.DiagnosticsJSON()` return
+the engine's redacted diagnostic log as strings, ready for a gomobile
+boundary. A host's "send diagnostics" action calls one of them on the IO
+queue when the user asks and hands the result to the platform share sheet or
+mail composer; the engine never sends it anywhere. The log is in memory only,
+so it covers the current process: an iOS host should export from the process
+that ran the connect or directory fetch (or relay the string from it).
+
+Broker requests are recorded when they go through the engine:
+`ListRelaysForDirectory`, `RankedDirectory`, connect discovery, per-user
+access and WSS tickets. A directory fetched through a separate native broker
+binding does not appear; route the exit-node list through the engine to
+have its per-front timeline in the report. Relay credentials, tokens, UUIDs
+and IP addresses other than relay and broker-front endpoints are redacted;
+the install ID and session ID are not included. A host that wants support to
+correlate a report with server-side records should add them itself, with the
+user's consent.
+
+Tunnel-core log output never enters the report. An error returned by the
+host's `MobileRuntime.Run` or delivered through its run's `Done` that
+quotes core output must implement `TelemetrySafe() string` (as the desktop
+subprocess runtime's crash error does); the report carries that rendering in
+place of the quote.
+
 ## Outbox migration ordering
 
 1. Initialize native install identity and paths without changing process

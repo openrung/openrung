@@ -161,7 +161,7 @@ func (s *Engine) wssTicketRequester() func(context.Context, string, brokerapi.WS
 	return func(ctx context.Context, brokerURL string, request brokerapi.WSSTicketRequest, clientID, sessionID string) (brokerapi.WSSTicketResponse, error) {
 		brokerClient := client.BrokerClient{
 			BaseURL:         brokerURL,
-			HTTPClient:      s.brokerHTTPClient(),
+			HTTPClient:      s.tracedBrokerClient(),
 			Platform:        s.telemetryPlatform(),
 			AppVersion:      s.appVersion(),
 			PlatformVersion: s.platformVersion(),
@@ -253,6 +253,7 @@ func (s *Engine) requestWSSSessionTicket(
 			ticket, err := requester(attemptCtx, brokerURL, request, managerClientID(conn.mgr), s.SessionID())
 			cancel()
 			if err == nil {
+				s.diagnostics.learnSecret(ticket.Ticket)
 				return ticket, nil
 			}
 			if isSocketProtectionFailure(err) {

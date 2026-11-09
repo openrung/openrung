@@ -261,6 +261,14 @@ func (s *Service) ListRelaysForDirectory() (brokerapi.RelayListResponse, error) 
 	return s.engine.ListRelaysForDirectory()
 }
 
+// GetDiagnostics is Wails-bound. It returns the engine's redacted diagnostic
+// report (recent broker requests per front and connection events) as plain
+// text, for the user to copy or send to support. The engine records it in
+// memory only; nothing leaves the device unless the user shares it.
+func (s *Service) GetDiagnostics() string {
+	return s.engine.DiagnosticsText()
+}
+
 // ---- engine event sink + emission ----
 
 // engineSink adapts engine events onto the Wails surface: a state change is

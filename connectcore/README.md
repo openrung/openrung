@@ -37,7 +37,18 @@ deliberately stays out of this module). Hosts report their application version
 either at link time (`-X …/connectcore/client.appVersion=…`, used by the
 in-repo builds) or in code via `client.SetAppVersion` — the route for fetched
 consumers such as mobile bindings, which cannot inject a dependency's private
-symbol and would otherwise report the `dev` default in telemetry. Relay wire types come from `brokerapi`'s exported relay schema, and
+symbol and would otherwise report the `dev` default in telemetry.
+
+The engine also keeps a bounded in-memory diagnostic log (`diagnostics.go`)
+for a host's "send diagnostics" action: a per-front timeline of each broker
+request it makes for discovery, per-user access and WSS tickets (DNS, TCP
+connect, TLS, request written, first response byte, body read, error), and
+the engine's own log lines covering relay attempts, transport fallback and
+failover. Tunnel-core output is not recorded. `Engine.Diagnostics` returns
+it structured; `DiagnosticsJSON` and `DiagnosticsText` return strings for
+bindings. Every export redacts relay credentials, access/lease/ticket tokens,
+UUIDs, and IP addresses other than relay, relay-hub and broker-front
+endpoints. Nothing is persisted or uploaded by the engine. Relay wire types come from `brokerapi`'s exported relay schema, and
 the WSS transport mechanics from `wsscore`; both are sibling nested modules
 this module pins by version for external consumers, while in-repo builds use
 local `replace` directives.

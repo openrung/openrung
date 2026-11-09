@@ -491,6 +491,10 @@ type Engine struct {
 
 	directory *directoryCache
 
+	// diagnostics is the bounded, redacted-on-export record of recent broker
+	// requests and engine events behind Diagnostics (see diagnostics.go).
+	diagnostics diagnosticLog
+
 	// netMu guards the platform network-signal tracker (see network.go):
 	// the baseline-absorbed last observation and the epoch counter.
 	netMu        sync.Mutex
@@ -630,7 +634,7 @@ func (s *Engine) relayFetcher() func(context.Context, string, int, string, strin
 			Platform:        s.telemetryPlatform(),
 			AppVersion:      s.appVersion(),
 			PlatformVersion: s.platformVersion(),
-			HTTPClient:      s.brokerHTTPClient(),
+			HTTPClient:      s.tracedBrokerClient(),
 		})
 	}
 }
@@ -1068,8 +1072,11 @@ func (s *Engine) fetchCandidates(ctx context.Context, conn *connection, brokerUR
 	}
 	fetch, err := s.relayFetcher()(ctx, brokerURL, limit, managerClientID(conn.mgr), s.SessionID())
 	if err != nil {
+		s.noteDiagnostic("relay list fetch failed after %s: %v", time.Since(started).Round(time.Millisecond), err)
 		return discovery.Fetch{}, 0, err
 	}
+	s.diagnostics.learnRelays(fetch.Response.Relays)
+	s.noteDiagnostic("relay list (%d relays) from %s after %s", len(fetch.Response.Relays), fetch.BrokerURL, time.Since(started).Round(time.Millisecond))
 	conn.rememberPublicEndpoints(fetch.Response)
 	// All hosts follow the verified winner, including queued events and
 	// recovery fetches. In-flight uploads retain their captured endpoint.
@@ -1278,6 +1285,7 @@ func (s *Engine) attemptDirectCandidate(ctx context.Context, conn *connection, c
 		configInput.BridgeHost = est.BridgeHost
 		configInput.BridgePort = est.BridgePort
 		configInput.PunchPeerExcludeAddress = est.PeerIP
+		s.diagnostics.allowAddress(est.PeerIP)
 		go func() { _ = est.Bridge.Serve(candCtx) }()
 		s.appendLog(fmt.Sprintf("punched direct path to %s (peer %s, nat %s)", cand.ID, est.PeerIP, est.NATClass))
 	}
@@ -1412,6 +1420,7 @@ func (s *Engine) launchTunnel(res *candidateResult, configInput client.SingBoxCo
 	}
 	if err != nil {
 		res.mobileRun = nil
+		s.diagnostics.learnTunnelError(err)
 		// A launch failure defaults to the tunnel_start stage; a runtime that
 		// already staged its error (the subprocess default marks a temp-file
 		// failure config_file) keeps its own.
@@ -1421,7 +1430,7 @@ func (s *Engine) launchTunnel(res *candidateResult, configInput client.SingBoxCo
 		return 0, markLocalCandidateError("tunnel_start", err)
 	}
 	res.run = run
-	res.runDone = run.Done()
+	res.runDone = s.diagnostics.watchTunnelExit(run.Done())
 	if err := res.ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -1949,8 +1958,17 @@ func (s *Engine) markConnectedLocked(label string, recent *RecentNode) {
 }
 
 func (s *Engine) appendLog(line string) {
+	now := time.Now()
+	s.diagnostics.noteAt(now, line)
+	s.sinkLog(LogEntry{Time: now, Line: line})
+}
+
+// sinkLog sends a line to the host's sink only. Tunnel-core output takes this
+// path so it stays out of the diagnostic log: it can name the destinations
+// the user's traffic reached.
+func (s *Engine) sinkLog(entry LogEntry) {
 	if s.Sink != nil {
-		s.Sink.Log(LogEntry{Time: time.Now(), Line: line})
+		s.Sink.Log(entry)
 	}
 }
 
@@ -1979,7 +1997,7 @@ func (s *Engine) logWriter() *logWriter { return &logWriter{s: s} }
 func (w *logWriter) Write(p []byte) (int, error) {
 	for _, line := range strings.Split(strings.TrimRight(string(p), "\n"), "\n") {
 		if strings.TrimSpace(line) != "" {
-			w.s.appendLog(line)
+			w.s.sinkLog(LogEntry{Time: time.Now(), Line: line})
 		}
 	}
 	return len(p), nil
