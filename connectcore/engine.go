@@ -352,6 +352,13 @@ type Engine struct {
 	// Mobile selects the supported mobile host contract; nil keeps desktop defaults.
 	Mobile *MobileHost
 
+	// RelayDetails gives a non-mobile host the relay-level state mobile hosts
+	// always receive: State.Details is populated, and recents pin the exact
+	// relay (RelayID, RelayName) and deduplicate per relay rather than per
+	// country. The desktop GUI sets it to drive the app UI it shares with
+	// mobile; the terminal client leaves it off.
+	RelayDetails bool
+
 	// Sink receives the engine's typed state and log events. A nil Sink drops
 	// them (headless drivers that only poll State).
 	Sink EventSink
@@ -1546,6 +1553,9 @@ func (s *Engine) promote(ctx context.Context, conn *connection, res *candidateRe
 		label = mobileLocationLabel(res.relay)
 	}
 	recent := recentFrom(res.relay, s.Mobile != nil)
+	if recent != nil && s.RelayDetails {
+		recent.RelayID, recent.RelayName = res.relay.ID, relayName(res.relay)
+	}
 	s.logConnected(label)
 
 	s.mu.Lock()

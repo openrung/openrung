@@ -33,10 +33,14 @@ const (
 // RecentNode mirrors the contract's RecentNode (openrung-mobile-app
 // src/native/types.ts): a recently used exit location.
 type RecentNode struct {
-	CountryCode string  `json:"countryCode"`
-	Label       string  `json:"label"`
-	Latitude    float64 `json:"latitude"`
-	Longitude   float64 `json:"longitude"`
+	CountryCode string `json:"countryCode"`
+	// RelayID and RelayName pin the exact relay. Only a host that tracks
+	// relay-level recents (the desktop app) writes them.
+	RelayID   string  `json:"relayId,omitempty"`
+	RelayName string  `json:"relayName,omitempty"`
+	Label     string  `json:"label"`
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
 }
 
 type proxyEndpoint struct {

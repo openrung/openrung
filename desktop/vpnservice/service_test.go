@@ -224,11 +224,125 @@ func TestStoreAdapterRoundTripsSnapshotAndRecents(t *testing.T) {
 		t.Fatal("snapshot survived clear")
 	}
 
-	recents := []connectcore.RecentNode{{CountryCode: "JP", Label: "Tokyo, Japan", Latitude: 1, Longitude: 2}}
+	recents := []connectcore.RecentNode{
+		{RelayID: "relay_a", RelayName: "Alpha", CountryCode: "JP", Label: "Tokyo, Japan", Latitude: 1, Longitude: 2},
+		{CountryCode: "KR", Label: "Seoul, South Korea", Latitude: 3, Longitude: 4},
+	}
 	if err := adapter.SaveRecents(recents); err != nil {
 		t.Fatalf("save recents: %v", err)
 	}
-	if got := adapter.LoadRecents(); len(got) != 1 || got[0] != recents[0] {
+	if got := adapter.LoadRecents(); len(got) != 2 || got[0] != recents[0] || got[1] != recents[1] {
 		t.Fatalf("recents round trip = %+v", got)
 	}
+}
+
+func TestConnectedStateCarriesTheRelayForTheSharedUI(t *testing.T) {
+	cap := &capturingEmitter{}
+	s := New()
+	s.Emitter = cap.emit
+	sink := &engineSink{s: s}
+
+	legacy := "‮operator"
+	sink.StateChanged(connectcore.State{
+		Status:     connectcore.StatusConnected,
+		RelayLabel: &legacy,
+		Details: &connectcore.StateDetails{
+			RelayID:       "relay_03a7324205e2b4d9",
+			RelayName:     "  proud​ falcon ",
+			RelayClass:    "foundation",
+			LocationLabel: "Tokyo,‮ Japan",
+		},
+		Recents: []connectcore.RecentNode{
+			{RelayID: "relay_03a7324205e2b4d9", RelayName: "relay_03a7324205e2b4d9", CountryCode: "JP", Label: "Tokyo, Japan"},
+			{CountryCode: "KR", Label: "Seoul, South Korea"},
+		},
+	})
+	last := cap.last()
+	if last.RelayName == nil || *last.RelayName != "proud falcon" {
+		t.Fatalf("relayName = %v, want the sanitized label", last.RelayName)
+	}
+	if last.RelayClass == nil || *last.RelayClass != "foundation" {
+		t.Fatalf("relayClass = %v", last.RelayClass)
+	}
+	if last.RelayLabel == nil || *last.RelayLabel != "Tokyo, Japan" {
+		t.Fatalf("relayLabel = %v, want the sanitized location", last.RelayLabel)
+	}
+	// A recent whose name is only the engine's id fallback gets the compact id.
+	if got := last.Recents[0]; got.RelayID != "relay_03a7324205e2b4d9" || got.RelayName != "03a7324205e2" {
+		t.Fatalf("pinned recent = %+v", got)
+	}
+	if got := last.Recents[1]; got.RelayID != "" || got.RelayName != "" {
+		t.Fatalf("legacy recent gained a pin: %+v", got)
+	}
+
+	// An unlocated relay keeps the engine's own label, and the relay fields
+	// disappear with the connection.
+	sink.StateChanged(connectcore.State{
+		Status:     connectcore.StatusConnected,
+		RelayLabel: &legacy,
+		Details:    &connectcore.StateDetails{RelayID: "relay_a", RelayName: "Alpha", RelayClass: "volunteer"},
+	})
+	if last = cap.last(); last.RelayLabel == nil || *last.RelayLabel != legacy {
+		t.Fatalf("relayLabel = %v, want the engine label as fallback", last.RelayLabel)
+	}
+	sink.StateChanged(connectcore.State{Status: connectcore.StatusDisconnected, Details: &connectcore.StateDetails{}})
+	if last = cap.last(); last.RelayName != nil || last.RelayClass != nil {
+		t.Fatalf("relay fields outlived the connection: %+v", last)
+	}
+}
+
+func TestFailedStateCarriesTheNoticeErrorCode(t *testing.T) {
+	cap := &capturingEmitter{}
+	s := New()
+	s.Emitter = cap.emit
+	sink := &engineSink{s: s}
+	code := func() string {
+		if c := cap.last().LastErrorCode; c != nil {
+			return *c
+		}
+		return ""
+	}
+	state := func(status connectcore.Status) { sink.StateChanged(connectcore.State{Status: status}) }
+
+	// An operator disable: the refusal is followed directly by FAILED.
+	state(connectcore.StatusConnecting)
+	sink.Notice(connectcore.Notice{Kind: connectcore.NoticeAccessDenied})
+	state(connectcore.StatusFailed)
+	if code() != errorCodeAccessDenied {
+		t.Fatalf("code = %q, want %q", code(), errorCodeAccessDenied)
+	}
+	// The polled state agrees with the emitted one until the next change.
+	if got := s.nativeStateForTest(connectcore.State{Status: connectcore.StatusFailed}); got.LastErrorCode == nil || *got.LastErrorCode != errorCodeAccessDenied {
+		t.Fatalf("polled code = %v", got.LastErrorCode)
+	}
+	// A later, unrelated failure is not labeled.
+	state(connectcore.StatusConnecting)
+	state(connectcore.StatusFailed)
+	if code() != "" {
+		t.Fatalf("stale code %q on an unrelated failure", code())
+	}
+
+	// An enrollment refusal survives the rest of its connect attempt…
+	state(connectcore.StatusConnecting)
+	sink.Notice(connectcore.Notice{Kind: connectcore.NoticeEnrollmentRefused})
+	state(connectcore.StatusConnecting)
+	state(connectcore.StatusFailed)
+	if code() != errorCodeEnrollmentRefused {
+		t.Fatalf("code = %q, want %q", code(), errorCodeEnrollmentRefused)
+	}
+	// …but not a successful connect followed by a different failure.
+	state(connectcore.StatusConnecting)
+	sink.Notice(connectcore.Notice{Kind: connectcore.NoticeEnrollmentRefused})
+	state(connectcore.StatusConnected)
+	state(connectcore.StatusFailed)
+	if code() != "" {
+		t.Fatalf("enrollment refusal leaked past a successful connect: %q", code())
+	}
+}
+
+// nativeStateForTest is GetState's projection without a live engine.
+func (s *Service) nativeStateForTest(state connectcore.State) NativeVpnState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.nativeStateLocked(state)
 }

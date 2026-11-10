@@ -19,7 +19,7 @@ func (a storeAdapter) LoadRecents() []connectcore.RecentNode {
 	stored := a.store.LoadRecents()
 	out := make([]connectcore.RecentNode, 0, len(stored))
 	for _, r := range stored {
-		out = append(out, connectcore.RecentNode{CountryCode: r.CountryCode, Label: r.Label, Latitude: r.Latitude, Longitude: r.Longitude})
+		out = append(out, connectcore.RecentNode{RelayID: r.RelayID, RelayName: r.RelayName, CountryCode: r.CountryCode, Label: r.Label, Latitude: r.Latitude, Longitude: r.Longitude})
 	}
 	return out
 }
@@ -27,7 +27,7 @@ func (a storeAdapter) LoadRecents() []connectcore.RecentNode {
 func (a storeAdapter) SaveRecents(recents []connectcore.RecentNode) error {
 	stored := make([]clientstate.RecentNode, 0, len(recents))
 	for _, r := range recents {
-		stored = append(stored, clientstate.RecentNode{CountryCode: r.CountryCode, Label: r.Label, Latitude: r.Latitude, Longitude: r.Longitude})
+		stored = append(stored, clientstate.RecentNode{RelayID: r.RelayID, RelayName: r.RelayName, CountryCode: r.CountryCode, Label: r.Label, Latitude: r.Latitude, Longitude: r.Longitude})
 	}
 	return a.store.SaveRecents(stored)
 }

@@ -1043,6 +1043,51 @@ func TestConnectTargetLabelPinsLabelledRelays(t *testing.T) {
 	}
 }
 
+func TestRelayDetailsGivesANonMobileHostRelayLevelState(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		sink := newTelemetrySink(t)
+		relay := relayAt("a", "JP", "Tokyo", "Japan", "127.0.0.10")
+		relay.Label = "Alpha"
+		relay.NodeClass = brokerapi.NodeClassFoundation
+		fixtures := []brokerapi.RelayDescriptor{relay}
+		s, _ := newLadderService(t, func() []brokerapi.RelayDescriptor { return fixtures })
+		s.RelayDetails = enabled
+
+		if err := s.Connect(sink.srv.URL, "", ""); err != nil {
+			t.Fatalf("connect: %v", err)
+		}
+		waitForStatus(t, s, StatusConnected)
+		state := s.State()
+		if len(state.Recents) != 1 {
+			t.Fatalf("enabled=%v recents = %+v", enabled, state.Recents)
+		}
+		recent := state.Recents[0]
+
+		if !enabled {
+			if state.Details != nil || recent.RelayID != "" || recent.RelayName != "" {
+				t.Fatalf("default host state changed: details=%+v recent=%+v", state.Details, recent)
+			}
+		} else {
+			d := state.Details
+			if d == nil || d.RelayID != "a" || d.RelayName != "Alpha" || d.RelayClass != brokerapi.NodeClassFoundation || d.LocationLabel != "Tokyo, Japan" {
+				t.Fatalf("details = %+v", d)
+			}
+			if recent.RelayID != "a" || recent.RelayName != "Alpha" || recent.Label != "Tokyo, Japan" {
+				t.Fatalf("recent = %+v, want it pinned to relay a", recent)
+			}
+		}
+
+		if err := s.Disconnect(); err != nil {
+			t.Fatalf("disconnect: %v", err)
+		}
+		waitForStatus(t, s, StatusDisconnected)
+		waitIdle(t, s)
+		if d := s.State().Details; enabled && (d == nil || d.RelayID != "" || d.RelayName != "") {
+			t.Fatalf("details after disconnect = %+v, want relay fields cleared", d)
+		}
+	}
+}
+
 func TestActiveConnectionInfoTracksPromotedCandidate(t *testing.T) {
 	sink := newTelemetrySink(t)
 	fixtures := []brokerapi.RelayDescriptor{relayAt("a", "JP", "Tokyo", "Japan", "127.0.0.10")}

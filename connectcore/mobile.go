@@ -373,8 +373,9 @@ type StateDetails struct {
 }
 
 func (s *Engine) detailsLocked() *StateDetails {
-	// Leave desktop JSON untouched. Existing ActiveConnectionInfo remains supported.
-	if s.Mobile == nil {
+	// Hosts that did not ask for it keep their State JSON untouched. Existing
+	// ActiveConnectionInfo remains supported.
+	if s.Mobile == nil && !s.RelayDetails {
 		return nil
 	}
 	d := &StateDetails{}
@@ -446,7 +447,7 @@ var engineVersion string
 // Polling gets the same complete metadata as the last status event, even while
 // teardown is releasing resources before its terminal status write.
 func (s *Engine) snapshotDetailsLocked() *StateDetails {
-	if s.Mobile == nil {
+	if s.Mobile == nil && !s.RelayDetails {
 		return nil
 	}
 	if s.core.details == nil {
