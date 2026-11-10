@@ -8,21 +8,31 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import react from '@vitejs/plugin-react';
-import { transform } from 'esbuild';
-import { loadEnv, type Plugin } from 'vite';
+import { loadEnv } from 'vite';
 import { defineConfig } from 'vitest/config';
 
 // Shared with the packaging scripts, so the frontend and the Go binary cannot
 // disagree about the version: reads canonical desktop/VERSION.
 import { readAppVersion } from '../scripts/versioned-wails-build.mjs';
-import { rewriteAssetRequires } from './build/assetRequires';
+import {
+  desktopLicenseNotices,
+  mobileAssetRequires,
+  mobileTypeScript,
+  moduleId,
+} from './build/mobilePlugins';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+
+/** A file of this package, as a module id (forward slashes on every platform). */
+function local(file: string): string {
+  return moduleId(path.join(here, file));
+}
 
 /**
  * The mobile app source: the pinned submodule, unless OPENRUNG_MOBILE_APP (in
  * the environment or an untracked `.env.local`) points at another checkout to
- * develop against. Release builds must not set it.
+ * develop against. Release builds must not set it. Returned as a module id:
+ * everything below compares it with, or builds, the ids Vite works in.
  */
 function findMobileRoot(mode: string): string {
   const override =
@@ -35,7 +45,7 @@ function findMobileRoot(mode: string): string {
         : `${root} is empty; run \`git submodule update --init desktop/mobile-app\``,
     );
   }
-  return root;
+  return moduleId(root);
 }
 
 // Platform files: `Foo.web.tsx` wins over `Foo.tsx`, as Metro does for native.
@@ -67,77 +77,12 @@ const sharedDependencies = [
   '@noble/hashes',
 ];
 
-/** Applies the asset-require rewrite to the mobile source (see build/assetRequires.ts). */
-function mobileAssetRequires(root: string): Plugin {
-  return {
-    name: 'openrung-mobile-asset-requires',
-    enforce: 'pre',
-    transform(code, id) {
-      if (!id.startsWith(root) || !code.includes('require(')) {
-        return null;
-      }
-      const rewritten = rewriteAssetRequires(code);
-      return rewritten == null ? null : { code: rewritten, map: null };
-    },
-  };
-}
-
-/**
- * Compiles the mobile TypeScript. Vite's own TypeScript transform insists on
- * loading the nearest tsconfig.json, and the mobile app's extends a React
- * Native preset that is installed only in that repository. So the mobile tree
- * is excluded from Vite's transform (`esbuild.exclude` below) and compiled
- * here, with the two settings its code needs.
- */
-function mobileTypeScript(root: string): Plugin {
-  return {
-    name: 'openrung-mobile-typescript',
-    enforce: 'pre',
-    async transform(code, id) {
-      const file = id.split('?')[0];
-      if (!file.startsWith(root) || !/\.tsx?$/.test(file)) {
-        return null;
-      }
-      const result = await transform(code, {
-        loader: file.endsWith('x') ? 'tsx' : 'ts',
-        jsx: 'automatic',
-        target: 'es2022',
-        sourcemap: true,
-        sourcefile: id,
-        tsconfigRaw: { compilerOptions: { useDefineForClassFields: true } },
-      });
-      return { code: result.code, map: result.map };
-    },
-  };
-}
-
-/**
- * The one mobile module the desktop build replaces rather than shims: the
- * license inventory. It describes what a build ships, and this build ships
- * the desktop binary and this bundle, not the mobile app's native stack.
- */
-function desktopLicenseNotices(root: string): Plugin {
-  const mobileNotices = path.join(root, 'src/licenses/notices.ts');
-  const desktopNotices = path.join(here, 'src/licenses/notices.ts');
-  return {
-    name: 'openrung-desktop-license-notices',
-    enforce: 'pre',
-    async resolveId(source, importer, options) {
-      if (importer == null || !source.endsWith('/notices')) {
-        return null;
-      }
-      const resolved = await this.resolve(source, importer, { ...options, skipSelf: true });
-      return resolved?.id === mobileNotices ? desktopNotices : null;
-    },
-  };
-}
-
 export default defineConfig(({ mode }) => {
   const mobileRoot = findMobileRoot(mode);
   return {
     plugins: [
       mobileAssetRequires(mobileRoot),
-      desktopLicenseNotices(mobileRoot),
+      desktopLicenseNotices(mobileRoot, local('src/licenses/notices.ts')),
       mobileTypeScript(mobileRoot),
       react(),
     ],
@@ -145,19 +90,19 @@ export default defineConfig(({ mode }) => {
       extensions,
       dedupe: sharedDependencies,
       alias: [
-        { find: /^react-native$/, replacement: path.join(here, 'src/shims/reactNative.ts') },
+        { find: /^react-native$/, replacement: local('src/shims/reactNative.ts') },
         // Native-only modules, replaced by web implementations of the same API.
         {
           find: /^@maplibre\/maplibre-react-native$/,
-          replacement: path.join(here, 'src/shims/maplibre.tsx'),
+          replacement: local('src/shims/maplibre.tsx'),
         },
         {
           find: /^react-native-bottom-tabs$/,
-          replacement: path.join(here, 'src/shims/bottomTabs.tsx'),
+          replacement: local('src/shims/bottomTabs.tsx'),
         },
         {
           find: /^@react-native\/assets-registry\/registry$/,
-          replacement: path.join(here, 'src/shims/assetsRegistry.ts'),
+          replacement: local('src/shims/assetsRegistry.ts'),
         },
         { find: /^@mobile\//, replacement: `${mobileRoot}/` },
       ],

@@ -74,3 +74,32 @@ jobs:
 
       - name: Typecheck and build
         run: npm run build
+
+  # The build resolves and compiles the mobile source by path, and Windows
+  # names paths differently from the module ids the bundler works in. The
+  # Windows release package is built from this same frontend, so check that it
+  # tests and builds there too.
+  test-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop/frontend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Typecheck and build
+        run: npm run build

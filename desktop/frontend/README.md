@@ -20,9 +20,9 @@ of its own.
 - **License notices** (`src/licenses/notices.ts`) replace the mobile app's
   inventory at build time: the screen must list what this build ships.
 
-`vite.config.ts` wires these up and compiles the mobile TypeScript itself,
-because that tree's `tsconfig.json` depends on packages installed only in the
-mobile repository.
+`vite.config.ts` wires these up. Its plugins (`build/mobilePlugins.ts`) compile
+the mobile TypeScript themselves, because that tree's `tsconfig.json` depends on
+packages installed only in the mobile repository.
 
 ## Commands
 
