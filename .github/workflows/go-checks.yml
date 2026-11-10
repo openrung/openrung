@@ -223,6 +223,9 @@ jobs:
           go vet ./vpnservice/...
           go test -race ./vpnservice/...
           go build ./vpnservice/...
+          # Package main needs the embedded frontend and a native webview, so
+          # its one pure helper is tested by file (as desktop-volunteer does).
+          go test window_size.go window_size_test.go
 
       # The desktop app statically links the sing-box engine and re-invokes
       # itself as the tunnel child process, so its package main now carries

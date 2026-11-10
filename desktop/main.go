@@ -78,13 +78,13 @@ func main() {
 
 	err := wails.Run(&options.App{
 		Title:            "OpenRung",
-		Width:            1120,
-		Height:           720,
-		MinWidth:         900,
-		MinHeight:        600,
+		Width:            phoneWindowWidth,
+		Height:           phoneWindowHeight,
+		DisableResize:    true,
 		BackgroundColour: &options.RGBA{R: 4, G: 12, B: 9, A: 1},
 		AssetServer:      &assetserver.Options{Assets: assets},
 		OnStartup: func(ctx context.Context) {
+			fitWindowToScreen(ctx)
 			// vpnservice stays free of wails imports (Emitter isolation, see
 			// plan §Wails v2→v3); the runtime coupling is confined to here.
 			svc.Emitter = func(state vpnservice.NativeVpnState) {

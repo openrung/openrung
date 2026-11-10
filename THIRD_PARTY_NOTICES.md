@@ -411,7 +411,8 @@ adds on top. Union of
 
 ### 7.3 Embedded web frontend (Vite bundle)
 
-Runtime `dependencies` of `desktop/frontend/package.json`:
+Every npm package Vite places in the production bundle of `desktop/frontend`
+(read from the build's module graph):
 
 - `react`, `react-dom` (+ `scheduler`) — MIT — Copyright (c) Meta Platforms,
   Inc. and affiliates
@@ -419,9 +420,27 @@ Runtime `dependencies` of `desktop/frontend/package.json`:
   Copyright (c) 2020, Mapbox. Its `LICENSE.txt` additionally covers bundled
   portions: glfx.js (MIT, Copyright (C) 2011 by Evan Wallace) and d3-color
   (BSD-3-Clause, Copyright 2010-2016 Mike Bostock)
-- `topojson-client` — ISC — Copyright 2012-2019 Michael Bostock
-- `world-atlas` — ISC — Copyright 2013-2019 Michael Bostock; data derived from
-  Natural Earth (public domain)
+- `react-native-web` — MIT — Copyright (c) Nicolas Gallagher; Copyright (c)
+  Meta Platforms, Inc. and affiliates. Bundled with it, all MIT: `styleq`
+  (Copyright (c) Nicolas Gallagher), `inline-style-prefixer` (Copyright (c)
+  2015 Robin Frischmann), `css-in-js-utils` (Copyright (c) 2017 Robin
+  Frischmann), `fbjs` (Copyright (c) 2013-present, Facebook, Inc.),
+  `memoize-one` (Copyright (c) 2019 Alexander Reardon), `nullthrows`
+  (Copyright (c) 2016 Andres Suarez), `postcss-value-parser` (Copyright (c)
+  Bogdan Chadkin), `@react-native/normalize-colors` (Copyright (c) Meta
+  Platforms, Inc. and affiliates), `@babel/runtime` (Copyright (c)
+  2014-present Sebastian McKenzie and other contributors)
+- `hyphenate-style-name` — BSD-3-Clause — Copyright (c) 2015, Espen Hovlandsdal
+- `react-native-svg` — MIT — Copyright (c) [2015-2016] [Horcrux]
+- `react-native-safe-area-context` — MIT — Copyright (c) 2019 Th3rd Wave
+- `@react-native-async-storage/async-storage` — MIT — Copyright (c)
+  2015-present, Facebook, Inc.
+- `idb` — ISC — Copyright (c) 2016, Jake Archibald
+- `@noble/ed25519`, `@noble/hashes` — MIT — Copyright (c) 2019, 2022 Paul
+  Miller (https://paulmillr.com)
+
+The app's user interface is the OpenRung mobile app's own source
+(`desktop/mobile-app`, GPL-3.0-or-later), compiled into the same bundle.
 
 ---
 

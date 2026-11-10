@@ -1,0 +1,3 @@
+[submodule "desktop/mobile-app"]
+	path = desktop/mobile-app
+	url = https://github.com/openrung/openrung-mobile-app.git

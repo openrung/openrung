@@ -16,7 +16,9 @@ describe('bundled license notices', () => {
     // frontend/src/licenses → repo root is four levels up (desktop/ is a
     // nested module inside the openrung repo).
     const licensePath = fileURLToPath(new URL('../../../../LICENSE', import.meta.url));
-    const license = readFileSync(licensePath, 'utf8').replace(/\n$/, '');
+    // A Windows checkout may hold LICENSE with CRLF line endings; the text in
+    // notices.ts is a template literal, which always reads as LF.
+    const license = readFileSync(licensePath, 'utf8').replace(/\r\n/g, '\n').replace(/\n$/, '');
     expect(GPL_TEXT).toBe(license);
   });
 

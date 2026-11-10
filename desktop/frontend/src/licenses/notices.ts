@@ -7,9 +7,10 @@
 //
 // Inventory provenance (2026-07-11): Go modules from the union of
 //   `GOOS={darwin,windows,linux} go list -deps -tags desktop,production .`
-// run inside desktop/ (it is its own Go module), npm runtime dependencies
-// from desktop/frontend/package.json, and the sing-box transitive set from
-// the mobile app's audited notices.
+// run inside desktop/ (it is its own Go module), and the sing-box transitive
+// set from the mobile app's audited notices. npm packages (2026-11-10): every
+// package Vite places in the production bundle, read from the build's module
+// graph. The app UI itself is OpenRung's own GPL source (desktop/mobile-app).
 
 /** One bundled/linked third-party component shown on the licenses screen. */
 export interface LicenseComponent {
@@ -40,8 +41,13 @@ export const components: LicenseComponent[] = [
   { name: 'golang.org/x/* + Go stdlib', license: 'BSD-3-Clause', url: 'https://github.com/golang/go' },
   { name: 'React + React DOM', license: 'MIT', url: 'https://github.com/facebook/react' },
   { name: 'MapLibre GL JS', license: 'BSD-3-Clause', url: 'https://github.com/maplibre/maplibre-gl-js' },
-  { name: 'topojson-client', license: 'ISC', url: 'https://github.com/topojson/topojson-client' },
-  { name: 'world-atlas (Natural Earth data)', license: 'ISC', url: 'https://github.com/topojson/world-atlas' },
+  { name: 'React Native for Web (+ MIT style/runtime libraries)', license: 'MIT', url: 'https://github.com/necolas/react-native-web' },
+  { name: 'react-native-svg', license: 'MIT', url: 'https://github.com/software-mansion/react-native-svg' },
+  { name: 'react-native-safe-area-context', license: 'MIT', url: 'https://github.com/appandflow/react-native-safe-area-context' },
+  { name: 'React Native Async Storage', license: 'MIT', url: 'https://github.com/react-native-async-storage/async-storage' },
+  { name: 'idb', license: 'ISC', url: 'https://github.com/jakearchibald/idb' },
+  { name: 'noble-ed25519 + noble-hashes', license: 'MIT', url: 'https://github.com/paulmillr/noble-ed25519' },
+  { name: 'hyphenate-style-name', license: 'BSD-3-Clause', url: 'https://github.com/rexxars/hyphenate-style-name' },
 ];
 
 /**
@@ -175,11 +181,35 @@ Bundled by Vite into the application binary:
   portions: glfx.js — MIT — Copyright (C) 2011 by Evan Wallace; d3-color —
   BSD-3-Clause — Copyright 2010-2016 Mike Bostock —
   https://github.com/maplibre/maplibre-gl-js
-- topojson-client — ISC — Copyright 2012-2019 Michael Bostock —
-  https://github.com/topojson/topojson-client
-- world-atlas — ISC — Copyright 2013-2019 Michael Bostock; contains data
-  derived from Natural Earth (public domain, naturalearthdata.com) —
-  https://github.com/topojson/world-atlas
+- React Native for Web — MIT — Copyright (c) Nicolas Gallagher; Copyright (c)
+  Meta Platforms, Inc. and affiliates —
+  https://github.com/necolas/react-native-web
+  with the MIT libraries it bundles: styleq — Copyright (c) Nicolas Gallagher;
+  inline-style-prefixer — Copyright (c) 2015 Robin Frischmann;
+  css-in-js-utils — Copyright (c) 2017 Robin Frischmann; fbjs — Copyright (c)
+  2013-present, Facebook, Inc.; memoize-one — Copyright (c) 2019 Alexander
+  Reardon; nullthrows — Copyright (c) 2016 Andres Suarez;
+  postcss-value-parser — Copyright (c) Bogdan Chadkin;
+  @react-native/normalize-colors — Copyright (c) Meta Platforms, Inc. and
+  affiliates; @babel/runtime — Copyright (c) 2014-present Sebastian McKenzie
+  and other contributors
+- hyphenate-style-name — BSD-3-Clause — Copyright (c) 2015, Espen Hovlandsdal
+  — https://github.com/rexxars/hyphenate-style-name
+- react-native-svg — MIT — Copyright (c) [2015-2016] [Horcrux] —
+  https://github.com/software-mansion/react-native-svg
+- react-native-safe-area-context — MIT — Copyright (c) 2019 Th3rd Wave —
+  https://github.com/appandflow/react-native-safe-area-context
+- React Native Async Storage — MIT — Copyright (c) 2015-present, Facebook,
+  Inc. — https://github.com/react-native-async-storage/async-storage
+- idb — ISC — Copyright (c) 2016, Jake Archibald —
+  https://github.com/jakearchibald/idb
+- noble-ed25519, noble-hashes — MIT — Copyright (c) 2019, 2022 Paul Miller
+  (https://paulmillr.com) — https://github.com/paulmillr/noble-ed25519,
+  https://github.com/paulmillr/noble-hashes
+
+The app's user interface is the OpenRung mobile app's own source
+(GPL-3.0-or-later, https://github.com/openrung/openrung-mobile-app), compiled
+into this bundle.
 
 ---
 

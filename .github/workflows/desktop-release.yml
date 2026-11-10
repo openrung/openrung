@@ -70,7 +70,11 @@ jobs:
             target: windows-amd64
     runs-on: ${{ matrix.os }}
     steps:
+      # The frontend is built from the mobile app source pinned as the
+      # desktop/mobile-app submodule.
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - uses: actions/setup-go@v5
         with:

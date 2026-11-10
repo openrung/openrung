@@ -7,6 +7,23 @@ This repository also contains a terminal client (`cmd/client`) that drives the
 same connection engine from a TUI and can additionally route the whole device
 through a TUN interface. Both are described below.
 
+## User interface
+
+The desktop app's interface is the mobile app's: `desktop/frontend` compiles
+the React Native source of `openrung-mobile-app`, pinned as the
+`desktop/mobile-app` submodule, for the Wails webview with react-native-web.
+The two apps therefore share screens, strings and translations, and a change
+to the pinned commit is how the desktop picks up UI work. `desktop/frontend`
+itself holds only the web stand-ins for native-only libraries and the adapter
+that backs the app's native bridge contract with the Go service
+(`desktop/vpnservice`).
+
+The window is a fixed, non-resizable phone-sized slab; on a screen too short
+for it, it is shortened at startup. Features the desktop service does not
+implement (split tunneling, the relay speed test, the in-app update check)
+are hidden by the app when it runs on the desktop, and Settings gains the
+local proxy endpoint and shell commands in their place.
+
 ## Direct-first WSS fallback
 
 The Wails desktop app tries the selected relay's public Reality endpoint first.

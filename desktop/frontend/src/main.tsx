@@ -1,13 +1,16 @@
-import React from 'react';
-import { createRoot } from 'react-dom/client';
-import App from './App';
-import { installThemeVariables } from './theme';
-import './style.css';
+// Entry point: mounts the mobile app's root component, unmodified, through
+// react-native-web.
+import 'maplibre-gl/dist/maplibre-gl.css';
 
-installThemeVariables();
+import { AppRegistry } from 'react-native-web';
 
-createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-);
+import { installNativeModules } from './native/installNativeModules';
+
+// Must run before the mobile modules evaluate: their native wrappers read
+// NativeModules at import time and fall back to mocks when a module is absent.
+installNativeModules();
+
+const { default: App } = await import('@mobile/App');
+
+AppRegistry.registerComponent('OpenRung', () => App);
+AppRegistry.runApplication('OpenRung', { rootTag: document.getElementById('root') });
