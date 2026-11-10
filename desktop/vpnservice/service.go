@@ -41,19 +41,37 @@ const (
 
 const logRingCapacity = 80
 
+// RecentNode is one recently used exit. RelayID and RelayName pin the exact
+// relay; they are absent on entries recorded before the app tracked relays.
 type RecentNode struct {
 	CountryCode string  `json:"countryCode"`
+	RelayID     string  `json:"relayId,omitempty"`
 	Label       string  `json:"label"`
+	RelayName   string  `json:"relayName,omitempty"`
 	Latitude    float64 `json:"latitude"`
 	Longitude   float64 `json:"longitude"`
 }
 
+// Stable codes for errors the UI presents in its own words (the bridge
+// contract's NativeErrorCode).
+const (
+	errorCodeAccessDenied      = "access_denied"
+	errorCodeEnrollmentRefused = "enrollment_refused"
+)
+
 type NativeVpnState struct {
-	Status     ConnectionStatus `json:"status"`
-	RelayLabel *string          `json:"relayLabel"`
-	LastError  *string          `json:"lastError"`
-	LogLines   []string         `json:"logLines"`
-	Recents    []RecentNode     `json:"recents"`
+	Status ConnectionStatus `json:"status"`
+	// RelayLabel is the exit location while connected. RelayName and
+	// RelayClass describe the connected relay and are null otherwise; the name
+	// is sanitized for display (see relayDisplayName).
+	RelayLabel *string `json:"relayLabel"`
+	RelayName  *string `json:"relayName"`
+	RelayClass *string `json:"relayClass"`
+	LastError  *string `json:"lastError"`
+	// LastErrorCode is set on a failed state whose cause the UI words itself.
+	LastErrorCode *string      `json:"lastErrorCode"`
+	LogLines      []string     `json:"logLines"`
+	Recents       []RecentNode `json:"recents"`
 }
 
 type NativeIdentity struct {
@@ -112,6 +130,13 @@ type Service struct {
 	ring     *ringBuffer
 	dirty    bool
 	stopEmit chan struct{}
+
+	// Engine notices that explain a failure, held until the state they
+	// describe arrives (see engineSink), and the code derived for the
+	// mirrored state. All guarded by mu.
+	accessDenied      bool
+	enrollmentRefused bool
+	errorCode         string
 }
 
 func New() *Service {
@@ -127,6 +152,9 @@ func New() *Service {
 	// The engine module owns punch policy; the QUIC punch transport lives in
 	// the root module and is wired in here.
 	engine.PunchEstablisher = enginepunch.Establish
+	// The app UI is shared with mobile and shows the connected relay's name
+	// and class and relay-pinned recents.
+	engine.RelayDetails = true
 	engine.Sink = &engineSink{s: s}
 	engine.OSProxy = osProxyAdapter{ctrl: proxymode.New()}
 	engine.OSDNS = osDNSAdapter{ctrl: proxymode.NewDNS()}
@@ -284,7 +312,39 @@ func (k *engineSink) StateChanged(state connectcore.State) {
 	s := k.s
 	s.mu.Lock()
 	s.state = state
+	// An access-denied notice describes only the state that immediately
+	// follows it (the engine goes straight from the refusal to FAILED), so
+	// any state consumes it. An enrollment refusal is not terminal: it
+	// belongs to the attempt in flight and survives that attempt's
+	// CONNECTING steps. Same rules as the mobile engine binding.
+	s.errorCode = ""
+	if state.Status == connectcore.StatusFailed {
+		switch {
+		case s.accessDenied:
+			s.errorCode = errorCodeAccessDenied
+		case s.enrollmentRefused:
+			s.errorCode = errorCodeEnrollmentRefused
+		}
+	}
+	s.accessDenied = false
+	if state.Status != connectcore.StatusConnecting {
+		s.enrollmentRefused = false
+	}
 	s.emit(s.snapshotLocked())
+	s.mu.Unlock()
+}
+
+// Notice makes the sink a connectcore.NoticeSink. Only the notices that
+// explain a later failure are kept; the log already carries all of them.
+func (k *engineSink) Notice(notice connectcore.Notice) {
+	s := k.s
+	s.mu.Lock()
+	switch notice.Kind {
+	case connectcore.NoticeAccessDenied:
+		s.accessDenied = true
+	case connectcore.NoticeEnrollmentRefused:
+		s.enrollmentRefused = true
+	}
 	s.mu.Unlock()
 }
 
@@ -313,15 +373,35 @@ func (s *Service) snapshotLocked() NativeVpnState {
 func (s *Service) nativeStateLocked(state connectcore.State) NativeVpnState {
 	recents := make([]RecentNode, 0, len(state.Recents))
 	for _, r := range state.Recents {
-		recents = append(recents, RecentNode{CountryCode: r.CountryCode, Label: r.Label, Latitude: r.Latitude, Longitude: r.Longitude})
+		node := RecentNode{CountryCode: r.CountryCode, Label: r.Label, Latitude: r.Latitude, Longitude: r.Longitude}
+		if r.RelayID != "" {
+			node.RelayID = r.RelayID
+			node.RelayName = relayDisplayName(r.RelayName, r.RelayID)
+		}
+		recents = append(recents, node)
 	}
-	return NativeVpnState{
+	native := NativeVpnState{
 		Status:     ConnectionStatus(state.Status),
 		RelayLabel: state.RelayLabel,
 		LastError:  state.LastError,
 		LogLines:   s.ring.snapshot(),
 		Recents:    recents,
 	}
+	// The engine fills the relay fields only while a relay carries the session.
+	if d := state.Details; d != nil && state.Status == connectcore.StatusConnected && d.RelayID != "" {
+		name, class := relayDisplayName(d.RelayName, d.RelayID), d.RelayClass
+		native.RelayName, native.RelayClass = &name, &class
+		// Prefer the pure city/country label; the engine's own label falls
+		// back to the operator's name or the relay id for an unlocated relay.
+		if location := sanitizeDisplayText(d.LocationLabel, maxLocationLabelRunes); location != "" {
+			native.RelayLabel = &location
+		}
+	}
+	if state.Status == connectcore.StatusFailed && s.errorCode != "" {
+		code := s.errorCode
+		native.LastErrorCode = &code
+	}
+	return native
 }
 
 func (s *Service) emit(snap NativeVpnState) {

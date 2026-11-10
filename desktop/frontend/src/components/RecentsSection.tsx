@@ -14,11 +14,16 @@ export function RecentsSection({
   if (!recents || recents.length === 0) {
     return null;
   }
+  // The service records one entry per relay; these pills connect by country,
+  // so keep only the newest entry of each (the list is newest first).
+  const byCountry = recents.filter(
+    (item, index) => recents.findIndex(other => other.countryCode === item.countryCode) === index,
+  );
   return (
     <div className="or-recents">
       <span className="or-recents-label">RECENTS</span>
       <div className="or-recents-row">
-        {recents.map(item => (
+        {byCountry.map(item => (
           <button
             key={item.countryCode}
             type="button"
