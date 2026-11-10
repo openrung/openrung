@@ -4,6 +4,33 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>OpenRung</title>
+    <style>
+      html,
+      body,
+      #root {
+        height: 100%;
+        margin: 0;
+        background: #030604;
+      }
+      body {
+        overflow: hidden;
+        cursor: default;
+      }
+      #root {
+        display: flex;
+      }
+      /* This is app chrome, not a document: nothing is selectable unless a
+         component opts in (React Native's `selectable`) or it is a text field. */
+      * {
+        -webkit-user-select: none;
+        user-select: none;
+      }
+      input,
+      textarea {
+        -webkit-user-select: text;
+        user-select: text;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>

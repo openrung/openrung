@@ -2,6 +2,10 @@
 # the license-notices guard (notices.test.ts pins the in-app GPL text
 # byte-for-byte to LICENSE) actually fires in CI, not just on developer
 # machines — the desktop-release workflow only packages, it never tests.
+#
+# The frontend compiles the mobile app's source from the desktop/mobile-app
+# submodule, so a change of that pin runs this workflow too: it is the only
+# check that the pinned source still builds for the desktop.
 name: desktop-frontend
 
 on:
@@ -9,6 +13,8 @@ on:
     branches: [main]
     paths:
       - "desktop/frontend/**"
+      - "desktop/mobile-app"
+      - ".gitmodules"
       - "desktop/scripts/**"
       - "desktop/VERSION"
       - "desktop/wails.json"
@@ -17,6 +23,8 @@ on:
   pull_request:
     paths:
       - "desktop/frontend/**"
+      - "desktop/mobile-app"
+      - ".gitmodules"
       - "desktop/scripts/**"
       - "desktop/VERSION"
       - "desktop/wails.json"
@@ -31,6 +39,8 @@ jobs:
         working-directory: desktop/frontend
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - uses: actions/setup-node@v4
         with:

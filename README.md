@@ -404,8 +404,10 @@ apps' service packages; run `make fmt` to format Go code across those modules.
 The test target also checks the volunteer app's version metadata. Relay
 integration tests use the Xray version pinned in `deploy/relay/Dockerfile`.
 Run `npm ci`, `npm test`, and `npm run build` separately in each app's
-`frontend/` directory. Full Wails builds additionally require the platform's
-native dependencies.
+`frontend/` directory. The desktop client's frontend builds the mobile app's
+source from the `desktop/mobile-app` submodule, so fetch it first with
+`git submodule update --init`. Full Wails builds additionally require the
+platform's native dependencies.
 
 `make broker` starts a loopback development broker with a temporary signing
 seed unless `OPENRUNG_RELAY_SIGNING_KEY` is already set. Set that variable to
