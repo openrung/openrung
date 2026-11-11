@@ -165,7 +165,8 @@ jobs:
       # kwriteconfig/kreadconfig, which exit 0 even when a write is lost, and
       # its unit tests use a fake desktop. Run it against the real tools in a
       # private D-Bus session with a throwaway config directory per desktop,
-      # reading every value back.
+      # reading every value back. The directory is set before the session
+      # starts so the bus-activated dconf service writes where the tools read.
       - name: Linux desktop proxy tools (gsettings + kioslaverc)
         run: |
           set -eu
@@ -176,7 +177,7 @@ jobs:
           go test -c -o "$RUNNER_TEMP/proxymode.test" ./internal/proxymode/
           for desktop in gnome kde; do
             config="$(mktemp -d)"
-            dbus-run-session -- env XDG_CONFIG_HOME="$config" OPENRUNG_PROXYMODE_SMOKE="$desktop" \
+            XDG_CONFIG_HOME="$config" OPENRUNG_PROXYMODE_SMOKE="$desktop" dbus-run-session -- \
               "$RUNNER_TEMP/proxymode.test" -test.v -test.run '^TestLinuxRealDesktopTools$'
           done
 
