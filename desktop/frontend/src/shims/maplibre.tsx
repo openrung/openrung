@@ -1,5 +1,5 @@
 // Web implementation of the slice of @maplibre/maplibre-react-native that the
-// mobile app uses (Map, Camera, GeoJSONSource, Layer, Marker), on maplibre-gl.
+// mobile app uses (Map, Camera, GeoJSONSource, Layer), on maplibre-gl.
 // Both libraries take the same MapLibre style spec, so the mobile map style,
 // layer paint and layout objects pass through untouched.
 //
@@ -9,12 +9,10 @@ import type { GeoJSON } from 'geojson';
 import {
   GeoJSONSource as GlGeoJSONSource,
   Map as GlMap,
-  Marker as GlMarker,
   setWorkerUrl,
   type LayerSpecification,
   type MapGeoJSONFeature,
   type MapMouseEvent,
-  type PositionAnchor,
   type StyleSpecification,
 } from 'maplibre-gl';
 // maplibre-gl locates its worker relative to its own module URL at runtime,
@@ -30,8 +28,7 @@ import {
   type MutableRefObject,
   type ReactNode,
 } from 'react';
-import { createPortal } from 'react-dom';
-import { StyleSheet, View } from 'react-native-web';
+import { View } from 'react-native-web';
 
 setWorkerUrl(workerUrl);
 
@@ -289,39 +286,3 @@ export function Layer({ id, type, paint, layout }: LayerProps): null {
 
   return null;
 }
-
-interface MarkerProps {
-  lngLat: [number, number];
-  anchor?: PositionAnchor;
-  pointerEvents?: 'none' | 'auto' | 'box-none' | 'box-only';
-  children?: ReactNode;
-}
-
-/** A map-anchored React subtree: the children render into a maplibre-gl marker element. */
-export function Marker({ lngLat, anchor = 'center', pointerEvents, children }: MarkerProps) {
-  const { map } = useMapContext();
-  const [element] = useState(() => document.createElement('div'));
-  const [longitude, latitude] = lngLat;
-
-  useEffect(() => {
-    if (map == null) {
-      return;
-    }
-    element.style.pointerEvents = pointerEvents === 'none' ? 'none' : '';
-    const marker = new GlMarker({ element, anchor })
-      .setLngLat([longitude, latitude])
-      .addTo(map);
-    return () => {
-      quietly(() => marker.remove());
-    };
-  }, [map, element, anchor, pointerEvents, longitude, latitude]);
-
-  return createPortal(<View style={styles.marker}>{children}</View>, element);
-}
-
-const styles = StyleSheet.create({
-  // The marker element is a bare <div>; give the React Native subtree a flex root.
-  marker: {
-    alignItems: 'flex-start',
-  },
-});
