@@ -43,8 +43,16 @@ application asked for rather than an address. A destination is therefore
 bypassed when its hostname is in the country's domain list, or when it is a
 literal address in the country's address list; a hostname outside the domain
 list goes through the relay even if it resolves to an in-country address.
-Bypassed hostnames are looked up through the same in-country resolver rules
-the mobile apps use.
+Bypassed hostnames are looked up through the same DNS rules the mobile apps
+use, for every country preset: the in-country resolver where the preset has
+one, with the proxied resolvers and their failover behind it.
+
+On Windows the local-network choice does not change what the system proxy
+hands to the client. The system proxy setting the client installs always
+lists loopback and private addresses as exceptions (`internal/proxymode`), so
+applications reach those directly whether or not local-network bypass, or
+split tunneling itself, is on. macOS installs no such exception list, so there
+the choice decides.
 
 ## Direct-first WSS fallback
 

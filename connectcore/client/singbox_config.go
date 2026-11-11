@@ -690,21 +690,24 @@ func buildRouteConfig(input SingBoxConfigInput, probeSuffixes []string) map[stri
 			"outbound":      "direct",
 		})
 	}
-	if input.Mode == ModeProxy {
+	if input.Mode == ModeProxy && len(bypassCountries) > 0 {
 		// A proxy-mode inbound hands the router hostnames, not addresses, and
 		// the direct outbound would resolve a bypassed one through
-		// default_domain_resolver — the proxied dns-0, so the relay exit's
-		// view of an in-country site. resolve sends the lookup through the DNS
-		// rules instead, where countryDNSRules asks the in-country resolver
-		// and falls back to the proxied chain. TUN mode needs none: its
+		// default_domain_resolver: dns-0 alone, with neither the in-country
+		// resolver nor the failover to the next server. resolve sends the
+		// lookup through the DNS rules instead, where countryDNSRules asks the
+		// in-country resolver of a country that has one and every lookup can
+		// fall back along the proxied chain. TUN mode needs none: its
 		// destinations are addresses the OS already resolved through those
 		// same rules.
-		if ruleSets := directResolverRuleSets(bypassCountries); len(ruleSets) > 0 {
-			rules = append(rules, map[string]any{
-				"rule_set": ruleSets,
-				"action":   "resolve",
-			})
+		ruleSets := make([]string, 0, len(bypassCountries))
+		for _, country := range bypassCountries {
+			ruleSets = append(ruleSets, "geosite-"+country)
 		}
+		rules = append(rules, map[string]any{
+			"rule_set": ruleSets,
+			"action":   "resolve",
+		})
 	}
 	for _, country := range bypassCountries {
 		rules = append(rules, map[string]any{
@@ -745,18 +748,6 @@ func buildRouteConfig(input SingBoxConfigInput, probeSuffixes []string) map[stri
 		route["rule_set"] = ruleSets
 	}
 	return route
-}
-
-// directResolverRuleSets lists the domain rule sets of the bypass countries
-// that have an in-country resolver (see splitTunnelDirectResolvers).
-func directResolverRuleSets(bypassCountries []string) []string {
-	var ruleSets []string
-	for _, country := range bypassCountries {
-		if splitTunnelDirectResolvers[country] != nil {
-			ruleSets = append(ruleSets, "geosite-"+country)
-		}
-	}
-	return ruleSets
 }
 
 func localRuleSetObject(directory, tag string) map[string]any {

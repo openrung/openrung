@@ -397,8 +397,10 @@ func TestProxyModeResolvesBypassedDomainsThroughDNSRules(t *testing.T) {
 	if len(found) != 1 {
 		t.Fatalf("want exactly one resolve rule, got %+v", found)
 	}
-	if got := found[0]["rule_set"].([]any); len(got) != 1 || got[0] != "geosite-cn" {
-		t.Fatalf("resolve must cover only countries with a direct resolver, got %+v", got)
+	// Every bypass country, with or without an in-country resolver: without
+	// the rule a bypassed hostname is resolved by dns-0 alone.
+	if got := found[0]["rule_set"].([]any); !reflect.DeepEqual(got, []any{"geosite-ir", "geosite-cn"}) {
+		t.Fatalf("resolve must cover the domains of every bypass country, got %+v", got)
 	}
 	if _, pinned := found[0]["server"]; pinned {
 		t.Fatalf("resolve must not name a server, or the lookup skips the DNS rules: %+v", found[0])
@@ -416,8 +418,14 @@ func TestProxyModeResolvesBypassedDomainsThroughDNSRules(t *testing.T) {
 		t.Fatalf("resolve must follow the probe pin and directly precede the country bypass: %+v", rules)
 	}
 
-	if found, _, _ := resolveRules(proxy(SplitTunnelCountryIR)); len(found) != 0 {
-		t.Fatalf("a country without a direct resolver needs no resolve rule, got %+v", found)
+	found, _, _ = resolveRules(proxy(SplitTunnelCountryIR))
+	if len(found) != 1 || !reflect.DeepEqual(found[0]["rule_set"], []any{"geosite-ir"}) {
+		t.Fatalf("a country without a direct resolver still needs the resolve rule, got %+v", found)
+	}
+	lanOnly := proxy()
+	lanOnly.SplitTunnel.RuleSetDirectory = ""
+	if found, _, _ := resolveRules(lanOnly); len(found) != 0 {
+		t.Fatalf("no bypass country, no resolve rule: got %+v", found)
 	}
 	tun := mobileInput(mobileRelay(t))
 	tun.SplitTunnel = &SplitTunnelRules{BypassCountries: []string{SplitTunnelCountryCN}, RuleSetDirectory: "/rules"}
