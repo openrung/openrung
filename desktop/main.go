@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"runtime"
@@ -21,6 +22,12 @@ import (
 
 //go:embed all:frontend/dist
 var assets embed.FS
+
+// The split-tunnel country presets' rule sets, which this app shares with the
+// mobile apps through the submodule that also carries the UI source.
+//
+//go:embed mobile-app/rulesets/dist/*.srs
+var ruleSetAssets embed.FS
 
 func main() {
 	// If this process was launched from a shell using OpenRung's helper, remove
@@ -48,6 +55,9 @@ func main() {
 	}
 
 	svc := vpnservice.New()
+	if ruleSets, err := fs.Sub(ruleSetAssets, "mobile-app/rulesets/dist"); err == nil {
+		svc.RuleSets = ruleSets
+	}
 	// The engine's sing-box child process is this executable (singbox.go), so
 	// there is no external binary to hunt for on a PATH a Finder-launched .app
 	// never had. OPENRUNG_SING_BOX overrides that with an external binary —

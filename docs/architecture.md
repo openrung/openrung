@@ -466,8 +466,8 @@ machine mirroring the mobile native bridge contract, so every client that
 drives it behaves like the mobile reference implementation.
 
 Its subpackages carry the rest of the client policy layer: `client` (the
-sing-box config builder for both capture modes and mobile's DNS/split-tunnel
-shapes, the sing-box process runner, relay usability and selection, and thin
+sing-box config builder for both capture modes, mobile's DNS shape and the
+split-tunnel rules, the sing-box process runner, relay usability and selection, and thin
 broker-client adapters), `clienttelemetry` (the closed failure-reason
 classifier and the telemetry event model, outbox, and session manager),
 `discovery` (staggered multi-front directory fetching over `brokerapi`,

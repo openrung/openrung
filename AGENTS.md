@@ -30,7 +30,7 @@ Mobile apps live elsewhere and pin shared-module releases.
 | `connectcore/` | Shared client policy: discovery, connection lifecycle, failover and telemetry. |
 | `brokerapi/` | Broker HTTP client, response verification and relay schema. |
 | `punchcore/`, `wsscore/` | NAT punch and Reality-over-WebSocket mechanics. |
-| `desktop/` | Client app: `vpnservice/`, `frontend/` (web shims and Go bridge) and `mobile-app/` (submodule: the UI source, owned by `openrung-mobile-app`). |
+| `desktop/` | Client app: `vpnservice/`, `frontend/` (web shims and Go bridge) and `mobile-app/` (submodule: the UI source and split-tunnel rule sets, owned by `openrung-mobile-app`). |
 | `desktop-volunteer/` | Volunteer app: `directsetup/`, `volunteerservice/`, `frontend/`. |
 | `deploy/`, `scripts/` | Container images, compose files, the volunteer bring-up script and release helpers. Foundation provisioning and front tooling live in the private `openrung/ops` repository. |
 | `.github/workflows/` | Authoritative checks and release workflows. |
@@ -70,7 +70,7 @@ Format changed Go files with `gofmt`; check affected modules and consumers.
 - Client builds need `-tags with_utls,with_external_windivert` for Reality support
   and exclusion of the embedded WinDivert driver.
 - Full Wails builds need frontend assets and native dependencies; service tests alone
-  do not validate the GUI. The `desktop/` frontend needs `git submodule update --init`;
+  do not validate the GUI. The `desktop/` frontend and app binary need `git submodule update --init`;
   change the app's screens in `openrung-mobile-app`, then move the pin. Relay integration tests need Xray pinned by `deploy/relay/Dockerfile`.
 - Consult the relevant CI workflow for additional checks. Report what ran and any skips.
 

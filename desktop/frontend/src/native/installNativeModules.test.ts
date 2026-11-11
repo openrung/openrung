@@ -5,7 +5,7 @@ import { installNativeModules } from './installNativeModules';
 
 interface BrokerModule {
   firstReachable(requestId: string, primary: string): Promise<Record<string, unknown>>;
-  runSpeedTest(): Promise<unknown>;
+  fetchManifestCandidate(): Promise<unknown>;
 }
 interface VpnModule {
   connect(brokerUrl: string, country: string | null, relayId: string | null): Promise<void>;
@@ -33,6 +33,7 @@ function fakeWails() {
     Disconnect: vi.fn(async () => undefined),
     GetState: vi.fn(async () => ({ status: 'disconnected' })),
     GetIdentity: vi.fn(async () => ({ clientId: 'client-1', sessionId: null })),
+    SetSplitTunnelConfig: vi.fn(async () => undefined),
     GetProxyInfo: vi.fn(async () => ({
       endpoint: '127.0.0.1:4000',
       persistenceWarning: null,
@@ -97,7 +98,9 @@ describe('installNativeModules under Wails', () => {
     expect(service.Connect).toHaveBeenLastCalledWith('https://broker.example/', 'JP', 'relay_a');
 
     expect(await modules.OpenRungVpn!.getState()).toEqual({ status: 'disconnected' });
-    await expect(modules.OpenRungVpn!.setSplitTunnelConfig('{}')).resolves.toBeUndefined();
+    const splitConfig = '{"version":1,"enabled":true,"bypass_lan":true,"bypass_countries":["cn"]}';
+    await modules.OpenRungVpn!.setSplitTunnelConfig(splitConfig);
+    expect(service.SetSplitTunnelConfig).toHaveBeenLastCalledWith(splitConfig);
   });
 
   it('forwards Go state events to the app as the device event it listens for', () => {
@@ -130,7 +133,7 @@ describe('installNativeModules under Wails', () => {
   it('rejects broker features the desktop host does not implement with a coded error', async () => {
     fakeWails();
     installNativeModules();
-    await expect(modules.OpenRungBroker!.runSpeedTest()).rejects.toMatchObject({ code: 'unavailable' });
+    await expect(modules.OpenRungBroker!.fetchManifestCandidate()).rejects.toMatchObject({ code: 'unavailable' });
   });
 
   it('exposes the desktop host: version, proxy details, clipboard and external links', async () => {

@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sagernet/sing-box/common/srs"
+	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/include"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing/common/json"
@@ -54,7 +56,7 @@ func TestLoadAcceptsEveryGoldenConfig(t *testing.T) {
 				}
 				return
 			}
-			instance, _, err := Load(context.Background(), withValidRealityKey(t, path))
+			instance, _, err := Load(context.Background(), withRuleSetFiles(t, withValidRealityKey(t, path)))
 			if !UTLSEnabled {
 				// Every golden carries a Reality or uTLS outbound; without
 				// the with_utls build tag creation must fail with upstream's
@@ -103,6 +105,46 @@ func withValidRealityKey(t *testing.T, path string) string {
 		t.Fatalf("write patched golden: %v", err)
 	}
 	return out
+}
+
+// goldenRuleSetDir is the rule-set directory the desktop split-tunnel goldens
+// name. sing-box opens a local rule set when the instance is created, so
+// loading such a golden needs real files there.
+const goldenRuleSetDir = "/rules"
+
+// withRuleSetFiles repoints a golden that references goldenRuleSetDir at a
+// temporary directory holding a small rule set under every name it mentions.
+// Other goldens are returned unchanged.
+func withRuleSetFiles(t *testing.T, path string) string {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+	prefix := []byte(`"path": "` + goldenRuleSetDir + `/`)
+	if !bytes.Contains(content, prefix) {
+		return path
+	}
+	var ruleSet bytes.Buffer
+	err = srs.Write(&ruleSet, option.PlainRuleSet{Rules: []option.HeadlessRule{{
+		Type:           C.RuleTypeDefault,
+		DefaultOptions: option.DefaultHeadlessRule{DomainSuffix: []string{"example.invalid"}},
+	}}}, C.RuleSetVersionCurrent)
+	if err != nil {
+		t.Fatalf("write rule set: %v", err)
+	}
+	dir := t.TempDir()
+	for _, part := range bytes.Split(content, prefix)[1:] {
+		name := string(part[:bytes.IndexByte(part, '"')])
+		if err := os.WriteFile(filepath.Join(dir, name), ruleSet.Bytes(), 0o600); err != nil {
+			t.Fatalf("write rule set: %v", err)
+		}
+	}
+	replaced := bytes.ReplaceAll(content, prefix, []byte(`"path": "`+filepath.ToSlash(dir)+`/`))
+	if err := os.WriteFile(path, replaced, 0o600); err != nil {
+		t.Fatalf("write patched golden: %v", err)
+	}
+	return path
 }
 
 // TestRunServesAndStopsOnCancel exercises the full child-process body the
