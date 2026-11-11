@@ -198,7 +198,7 @@ func (c *linuxController) Set(host string, port int) error {
 	if c.desktop == linuxDesktopKDE {
 		// KIO stores a manual proxy as "scheme://host port".
 		endpoint := "http://" + bracketIPv6(host) + " " + portStr
-		if err := c.writeKDE(c.kwrite, map[string]string{
+		if err := c.writeKDE(c.kwrite, c.kread, map[string]string{
 			"httpProxy":         endpoint,
 			"httpsProxy":        endpoint,
 			"socksProxy":        "",
@@ -246,10 +246,10 @@ func (c *linuxController) Restore(snap Snapshot) error {
 		// strands the other pointing at the tunnel. A capture without
 		// GSettings keys makes writeGNOME a no-op.
 		var kdeErr error
-		if write, _, ok := c.kdeTools(); ok {
-			kdeErr = c.writeKDE(write, snap.Linux.Settings)
+		if write, read, ok := c.kdeTools(); ok {
+			kdeErr = c.writeKDE(write, read, snap.Linux.Settings)
 		} else {
-			kdeErr = errors.New("kwriteconfig is not available to restore the KDE proxy setting")
+			kdeErr = errors.New("the KConfig tools are not available to restore the KDE proxy setting")
 		}
 		return errors.Join(kdeErr, c.writeGNOME(snap.Linux.Settings))
 	default:
@@ -291,10 +291,15 @@ func (c *linuxController) writeGNOME(values map[string]string) error {
 	return nil
 }
 
-// writeKDE sets every key in values, in kdeProxyKeys order, then asks running
-// KIO workers to reread their configuration. Keys absent from values are left
-// alone; an empty value writes an empty entry, which KIO reads as unset.
-func (c *linuxController) writeKDE(kwrite string, values map[string]string) error {
+// writeKDE sets every key in values, in kdeProxyKeys order, asks running KIO
+// workers to reread their configuration, then confirms each key took effect.
+// Keys absent from values are left alone; an empty value writes an empty
+// entry, which KIO reads as unset.
+//
+// As with GSettings, the exit status does not prove the write: kwriteconfig
+// does not check that the file was saved. kread therefore reads every key back
+// in a separate process, and a value that did not stick is an error.
+func (c *linuxController) writeKDE(kwrite, kread string, values map[string]string) error {
 	for _, key := range kdeProxyKeys {
 		value, ok := values[key]
 		if !ok {
@@ -309,6 +314,19 @@ func (c *linuxController) writeKDE(kwrite string, values map[string]string) erro
 	if _, err := c.sys.lookPath("dbus-send"); err == nil {
 		_, _ = c.sys.run("dbus-send", "--type=signal", "/KIO/Scheduler",
 			"org.kde.KIO.Scheduler.reparseSlaveConfiguration", "string:")
+	}
+	for _, key := range kdeProxyKeys {
+		want, ok := values[key]
+		if !ok {
+			continue
+		}
+		out, err := c.sys.run(kread, "--file", "kioslaverc", "--group", kdeProxyGroup, "--key", key)
+		if err != nil {
+			return fmt.Errorf("confirm kioslaverc %s: %w", key, err)
+		}
+		if got := strings.TrimRight(string(out), "\r\n"); got != want {
+			return fmt.Errorf("write kioslaverc %s: wrote %q but it reads back as %q", key, want, got)
+		}
 	}
 	return nil
 }

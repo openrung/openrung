@@ -20,7 +20,7 @@ type fakeLinux struct {
 	kio      map[string]string // kioslaverc [Proxy Settings]
 	noSchema bool
 	failSet  string // a "<schema> <key>" or kio key whose write fails
-	loseSet  string // a "<schema> <key>" whose write exits 0 but never lands
+	loseSet  string // a "<schema> <key>" or kio key whose write exits 0 but never lands
 	calls    []string
 }
 
@@ -98,7 +98,9 @@ func (f *fakeLinux) run(name string, args ...string) ([]byte, error) {
 		if args[5] == f.failSet {
 			return nil, errors.New("write failed")
 		}
-		f.kio[args[5]] = args[6]
+		if args[5] != f.loseSet {
+			f.kio[args[5]] = args[6]
+		}
 		return nil, nil
 	case name == "dbus-send":
 		return nil, nil
@@ -307,9 +309,50 @@ func TestKDESetPointsAtLoopbackAndNotifiesKIO(t *testing.T) {
 	if f.kio["NoProxyFor"] != kdeProxyBypass || f.kio["ReversedException"] != "false" {
 		t.Fatalf("bypass = %q reversed = %q", f.kio["NoProxyFor"], f.kio["ReversedException"])
 	}
-	n := len(f.calls)
-	if !strings.HasPrefix(f.calls[n-1], "dbus-send ") || !strings.Contains(f.calls[n-2], "--key ProxyType 1") {
-		t.Fatalf("calls end with %q, %q; want ProxyType then the KIO notification", f.calls[n-2], f.calls[n-1])
+	// The notification follows the last write; the read-backs come after it.
+	notify := -1
+	for i, call := range f.calls {
+		if strings.HasPrefix(call, "dbus-send ") {
+			notify = i
+		}
+	}
+	if notify < 1 || !strings.Contains(f.calls[notify-1], "--key ProxyType 1") {
+		t.Fatalf("calls = %q; want the KIO notification right after the ProxyType write", f.calls)
+	}
+}
+
+func TestKDELostWriteIsReported(t *testing.T) {
+	// kwriteconfig exits 0 without checking that kioslaverc was saved, so a
+	// restore that trusted the exit status would drop the snapshot while KDE
+	// apps still point at the stopped proxy.
+	f := newFakeKDE("6")
+	c := f.controller()
+	snap, err := c.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if err := c.Set("127.0.0.1", 46685); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	f.loseSet = "ProxyType"
+	if err := c.Restore(snap); err == nil {
+		t.Fatal("Restore reported success although the ProxyType write was lost")
+	}
+	if f.kio["ProxyType"] != "1" {
+		t.Fatalf("ProxyType = %q, want the lost write to leave 1", f.kio["ProxyType"])
+	}
+	// Once writes land again, the same snapshot restores.
+	f.loseSet = ""
+	if err := c.Restore(snap); err != nil {
+		t.Fatalf("Restore retry: %v", err)
+	}
+	if f.kio["ProxyType"] != "0" {
+		t.Fatalf("ProxyType = %q, want 0", f.kio["ProxyType"])
+	}
+
+	f.loseSet = "httpProxy"
+	if err := c.Set("127.0.0.1", 46685); err == nil {
+		t.Fatal("Set reported success although the httpProxy write was lost")
 	}
 }
 
