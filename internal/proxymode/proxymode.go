@@ -5,6 +5,9 @@
 // launch. This is deliberately NOT sing-box's own set_system_proxy, which does
 // not restore a pre-existing proxy (censorship users often chain proxies) and
 // is silently ignored outside Windows/macOS/GNOME.
+//
+// Linux support covers GNOME-family desktops (GSettings) and KDE Plasma
+// (kioslaverc); other desktops fall back to a manual proxy address.
 package proxymode
 
 // ServiceProxyState is one OS network service's HTTP/HTTPS proxy settings,
@@ -30,6 +33,17 @@ type WindowsProxyState struct {
 	AutoConfigURL string `json:"auto_config_url"`
 }
 
+// LinuxProxyState is the session desktop's proxy configuration, captured
+// verbatim so a Restore reproduces it exactly, including a prior manual or
+// auto-config (PAC) proxy. Desktop names the setting it came from ("gnome" for
+// org.gnome.system.proxy, "kde" for kioslaverc); Settings maps each captured
+// key to its raw value ("<schema> <key>" to GVariant text for GNOME, the
+// kioslaverc [Proxy Settings] key to its string for KDE).
+type LinuxProxyState struct {
+	Desktop  string            `json:"desktop"`
+	Settings map[string]string `json:"settings,omitempty"`
+}
+
 // Snapshot is a restorable capture of the OS proxy state. It is persisted to
 // disk while connected so a crash can be cleaned up on the next launch. Platform
 // tags the snapshot so a restore refuses to apply cross-platform data.
@@ -39,6 +53,8 @@ type Snapshot struct {
 	// Windows carries the global WinInet capture; set only on Windows
 	// snapshots, nil elsewhere.
 	Windows *WindowsProxyState `json:"windows,omitempty"`
+	// Linux carries the desktop proxy capture; set only on Linux snapshots.
+	Linux *LinuxProxyState `json:"linux,omitempty"`
 	// DNS carries a DNSController capture; set only on DNS snapshots, which
 	// share the persisted snapshot slot with proxy snapshots. A proxy
 	// Restore ignores it and a DNS Restore ignores everything else.
