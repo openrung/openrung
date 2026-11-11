@@ -425,8 +425,7 @@ type telemetryOverview struct {
 	// endpoint): it exists only so the in-memory querier can paginate its
 	// TelemetrySessions pages out of a single buildTelemetryOverview pass. The
 	// Postgres querier leaves it nil and pages sessions with its own query.
-	Recent     []sessionSummary   `json:"-"`
-	SpeedTests []speedTestSummary `json:"speed_tests"`
+	Recent []sessionSummary `json:"-"`
 }
 
 type overviewTotals struct {
@@ -498,15 +497,6 @@ type sessionSummary struct {
 	LastHeartbeatAt *time.Time `json:"last_heartbeat_at,omitempty"`
 }
 
-type speedTestSummary struct {
-	RelayID       string  `json:"relay_id"`
-	Label         string  `json:"label,omitempty"`
-	NodeClass     string  `json:"node_class,omitempty"`
-	Tests         int     `json:"tests"`
-	AverageMbps   float64 `json:"average_mbps"`
-	AverageTTFBMS float64 `json:"average_ttfb_ms"`
-}
-
 type sessionAccumulator struct {
 	summary            sessionSummary
 	deviceManufacturer string
@@ -572,11 +562,6 @@ func buildTelemetryOverview(records []TelemetryRecord, appCounts map[string]int,
 	relays := make(map[string]*relaySummary)
 	relayClasses := make(map[string]string)
 	relayFailureReasons := make(map[string]map[string]int)
-	type speedAccumulator struct {
-		tests      int
-		mbps, ttfb int64
-	}
-	speeds := make(map[string]*speedAccumulator)
 	buckets := make(map[time.Time]*trendPoint)
 	bucketWidth := telemetryTrendBucket(window)
 
@@ -737,17 +722,6 @@ func buildTelemetryOverview(records []TelemetryRecord, appCounts map[string]int,
 			if elapsed := event.Measurements["session_duration_ms"]; elapsed > session.runningDurationMS {
 				session.runningDurationMS = elapsed
 			}
-		case "speed_test_completed":
-			if event.RelayID != "" {
-				speed := speeds[event.RelayID]
-				if speed == nil {
-					speed = &speedAccumulator{}
-					speeds[event.RelayID] = speed
-				}
-				speed.tests++
-				speed.mbps += event.Measurements["download_mbps_milli"]
-				speed.ttfb += event.Measurements["time_to_first_byte_ms"]
-			}
 		}
 	}
 
@@ -828,17 +802,13 @@ func buildTelemetryOverview(records []TelemetryRecord, appCounts map[string]int,
 	overview.FailureReasons = sortedCounts(failureReasons, 10)
 	overview.AccessOutcomes = sortedCounts(accessOutcomes, accessPanelLimit)
 	overview.RelaySources = sortedCounts(relaySources, accessPanelLimit)
-	for relayID, speed := range speeds {
-		overview.SpeedTests = append(overview.SpeedTests, speedTestSummary{RelayID: relayID, Tests: speed.tests, AverageMbps: float64(speed.mbps) / float64(speed.tests) / 1000, AverageTTFBMS: float64(speed.ttfb) / float64(speed.tests)})
-	}
-	overview.SpeedTests = rankSpeedTests(overview.SpeedTests)
 	applyTelemetryRelayClasses(&overview, relayClasses)
 	return overview
 }
 
-// sortTopRelays and rankSpeedTests are shared by the in-memory aggregator and
-// the Postgres querier so both rank identically; the relay-ID tiebreaks make
-// truncation deterministic across backends when counts tie.
+// sortTopRelays is shared by the in-memory aggregator and the Postgres querier
+// so both rank identically; the relay-ID tiebreak makes truncation
+// deterministic across backends when counts tie.
 func sortTopRelays(relays []relaySummary) {
 	sort.Slice(relays, func(i, j int) bool {
 		if volumeI, volumeJ := relays[i].Successes+relays[i].Failures, relays[j].Successes+relays[j].Failures; volumeI != volumeJ {
@@ -846,22 +816,6 @@ func sortTopRelays(relays []relaySummary) {
 		}
 		return relays[i].RelayID < relays[j].RelayID
 	})
-}
-
-// rankSpeedTests returns the ten fastest relays. Like every other relay-keyed
-// overview panel, the cap keeps the response bounded even though anonymous
-// telemetry may name one fabricated relay ID per speed_test_completed event.
-func rankSpeedTests(speedTests []speedTestSummary) []speedTestSummary {
-	sort.Slice(speedTests, func(i, j int) bool {
-		if speedTests[i].AverageMbps != speedTests[j].AverageMbps {
-			return speedTests[i].AverageMbps > speedTests[j].AverageMbps
-		}
-		return speedTests[i].RelayID < speedTests[j].RelayID
-	})
-	if len(speedTests) > 10 {
-		speedTests = speedTests[:10]
-	}
-	return speedTests
 }
 
 // applyTelemetryRelayClasses decorates relay-keyed overview summaries from the
@@ -874,9 +828,6 @@ func applyTelemetryRelayClasses(ov *telemetryOverview, classes map[string]string
 	}
 	for i := range ov.ActiveRelays {
 		ov.ActiveRelays[i].NodeClass = classes[ov.ActiveRelays[i].Name]
-	}
-	for i := range ov.SpeedTests {
-		ov.SpeedTests[i].NodeClass = classes[ov.SpeedTests[i].RelayID]
 	}
 }
 
@@ -906,15 +857,6 @@ func applyRelayDisplays(ov *telemetryOverview, displays map[string]relayDisplay)
 		}
 		if ov.ActiveRelays[i].NodeClass == "" {
 			ov.ActiveRelays[i].NodeClass = display.NodeClass
-		}
-	}
-	for i := range ov.SpeedTests {
-		display := displays[ov.SpeedTests[i].RelayID]
-		if display.Label != "" {
-			ov.SpeedTests[i].Label = display.Label
-		}
-		if ov.SpeedTests[i].NodeClass == "" {
-			ov.SpeedTests[i].NodeClass = display.NodeClass
 		}
 	}
 }

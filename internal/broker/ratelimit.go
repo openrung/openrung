@@ -46,12 +46,6 @@ const (
 	defaultRelayRegistrationRatePerSecond = 20.0
 	defaultRelayRegistrationBurst         = 256
 
-	// A full speed test streams up to 25 MB, so sustained refills are slow and
-	// the real egress bound is the concurrency cap below.
-	defaultSpeedTestRatePerSecond = 1.0 / 30
-	defaultSpeedTestBurst         = 3
-	speedTestMaxConcurrent        = 4
-
 	// rateLimiterMaxTrackedIPs bounds limiter memory (~100 B per tracked IP).
 	rateLimiterMaxTrackedIPs = 100_000
 )
@@ -72,7 +66,6 @@ type RateLimits struct {
 	UserAuth          RateLimit
 	Access            RateLimit
 	RelayRegistration RateLimit
-	SpeedTest         RateLimit
 }
 
 func (l RateLimits) withDefaults() RateLimits {
@@ -83,7 +76,6 @@ func (l RateLimits) withDefaults() RateLimits {
 		UserAuth:          l.UserAuth.or(defaultUserAuthRatePerSecond, defaultUserAuthBurst),
 		Access:            l.Access.or(defaultAccessRatePerSecond, defaultAccessBurst),
 		RelayRegistration: l.RelayRegistration.or(defaultRelayRegistrationRatePerSecond, defaultRelayRegistrationBurst),
-		SpeedTest:         l.SpeedTest.or(defaultSpeedTestRatePerSecond, defaultSpeedTestBurst),
 	}
 }
 

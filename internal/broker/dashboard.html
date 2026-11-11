@@ -53,7 +53,6 @@
           <article class="panel"><h2>Per-user access</h2><div id="access"></div></article>
           <article class="panel"><h2>Top applications</h2><div id="apps"></div></article>
           <article class="panel"><h2>Top relays</h2><div class="scroll"><table><thead><tr><th>Relay</th><th>Success</th><th>Failed attempts</th><th>Top failure</th></tr></thead><tbody id="relays"></tbody></table></div></article>
-          <article class="panel"><h2>Speed tests by relay</h2><div class="scroll"><table><thead><tr><th>Relay</th><th>Tests</th><th>Avg Mbps</th><th>Avg TTFB</th></tr></thead><tbody id="speeds"></tbody></table></div></article>
         </section>
         <section class="panel" style="margin-top:14px"><h2>Recent sessions</h2><div class="scroll"><table><thead><tr><th>Status</th><th>Failure</th><th>Session</th><th>Client</th><th>Device info</th><th>App version</th><th>Source IP</th><th>Location</th><th>Relay</th><th>Last heartbeat</th><th>Started</th><th>Duration</th><th>Data</th></tr></thead><tbody id="sessions"></tbody></table></div><div class="pager"><span id="pageInfo"></span><button id="prevPage" type="button">&lsaquo; Prev</button><button id="nextPage" type="button">Next &rsaquo;</button></div></section>
       </main>
@@ -127,7 +126,6 @@
       $('access').innerHTML=data.access_outcomes?.length||data.relay_sources?.length?`<div class="pair"><div><div class="pie-title">Outcome</div>${donut(data.access_outcomes,{empty:'No access-capable connects',unit:'connects'})}</div><div><div class="pie-title">Relay source</div>${donut(data.relay_sources,{empty:'No access-capable successes',unit:'successes'})}</div></div>`:'<div class="empty">No access-capable connects in this window</div>';
       $('apps').innerHTML=donut(data.top_applications,{limit:RANK_LIMIT});
       $('relays').innerHTML=data.top_relays?.length?data.top_relays.map(x=>`<tr><td class="truncate" title="${esc(x.relay_id)}${nodeTitle(x.node_class)}">${relayName(esc(x.label||x.relay_id),x.node_class)}</td><td>${number(x.successes)}</td><td>${number(x.failures)}</td><td>${esc(x.top_failure_reason||'—')}</td></tr>`).join(''):empty(4);
-      $('speeds').innerHTML=data.speed_tests?.length?data.speed_tests.map(x=>`<tr><td class="truncate" title="${esc(x.relay_id)}${nodeTitle(x.node_class)}">${relayName(esc(x.label||x.relay_id),x.node_class)}</td><td>${number(x.tests)}</td><td>${x.average_mbps.toFixed(2)}</td><td>${x.average_ttfb_ms.toFixed(0)} ms</td></tr>`).join(''):empty(4);
       markUpdated(data.generated_at);
     }
     function renderSessions(data){

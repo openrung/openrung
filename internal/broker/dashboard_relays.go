@@ -70,9 +70,6 @@ type relayStatRow struct {
 	Clients          int       `json:"clients"`
 	ActiveSessions   int       `json:"active_sessions"`
 	ActiveClients    int       `json:"active_clients"`
-	SpeedTests       int       `json:"speed_tests"`
-	AverageMbps      float64   `json:"average_mbps"`
-	AverageTTFBMS    float64   `json:"average_ttfb_ms"`
 	LastSeenAt       time.Time `json:"last_seen_at"`
 }
 
@@ -104,8 +101,6 @@ func buildRelayTelemetryStats(records []TelemetryRecord, now time.Time, window t
 	sessions := make(map[string]*sessionState)
 	rows := make(map[string]*relayStatRow)
 	reasons := make(map[string]map[string]int)
-	type speedSums struct{ mbpsMilli, ttfbMS int64 }
-	speeds := make(map[string]*speedSums)
 
 	rowFor := func(id string) *relayStatRow {
 		row := rows[id]
@@ -167,17 +162,6 @@ func buildRelayTelemetryStats(records []TelemetryRecord, now time.Time, window t
 				}
 				reasons[event.RelayID][reason]++
 			}
-		case "speed_test_completed":
-			if event.RelayID != "" {
-				rowFor(event.RelayID).SpeedTests++
-				sums := speeds[event.RelayID]
-				if sums == nil {
-					sums = &speedSums{}
-					speeds[event.RelayID] = sums
-				}
-				sums.mbpsMilli += event.Measurements["download_mbps_milli"]
-				sums.ttfbMS += event.Measurements["time_to_first_byte_ms"]
-			}
 		}
 	}
 
@@ -214,24 +198,11 @@ func buildRelayTelemetryStats(records []TelemetryRecord, now time.Time, window t
 		row.Clients = len(relayClients[id])
 		row.ActiveClients = len(relayActiveClients[id])
 		row.TopFailureReason = topFailureReason(reasons[id])
-		if sums := speeds[id]; sums != nil {
-			applyRelaySpeedAverages(row, sums.mbpsMilli, sums.ttfbMS)
-		}
 		stats.Relays = append(stats.Relays, *row)
 	}
 	stats.ActiveClients = len(activeClients)
 	sortRelayStatRows(stats.Relays)
 	return stats
-}
-
-// applyRelaySpeedAverages derives the row's speed averages from the window's
-// sums. Shared by both queriers so float rounding is identical.
-func applyRelaySpeedAverages(row *relayStatRow, mbpsMilliSum, ttfbMSSum int64) {
-	if row.SpeedTests <= 0 {
-		return
-	}
-	row.AverageMbps = float64(mbpsMilliSum) / float64(row.SpeedTests) / 1000
-	row.AverageTTFBMS = float64(ttfbMSSum) / float64(row.SpeedTests)
 }
 
 // sortRelayStatRows orders busiest-first — active sessions, then window
@@ -345,9 +316,6 @@ type relayPanelRow struct {
 	Successes        int        `json:"successes"`
 	Failures         int        `json:"failures"`
 	TopFailureReason string     `json:"top_failure_reason,omitempty"`
-	SpeedTests       int        `json:"speed_tests,omitempty"`
-	AverageMbps      float64    `json:"average_mbps,omitempty"`
-	AverageTTFBMS    float64    `json:"average_ttfb_ms,omitempty"`
 	LastSeenAt       *time.Time `json:"last_seen_at,omitempty"`
 }
 
@@ -456,9 +424,6 @@ func applyRelayStatRow(row *relayPanelRow, stats relayStatRow) {
 	row.Successes = stats.Successes
 	row.Failures = stats.Failures
 	row.TopFailureReason = stats.TopFailureReason
-	row.SpeedTests = stats.SpeedTests
-	row.AverageMbps = stats.AverageMbps
-	row.AverageTTFBMS = stats.AverageTTFBMS
 	row.LastSeenAt = timePointer(stats.LastSeenAt)
 	if row.NodeClass == "" {
 		row.NodeClass = stats.NodeClass

@@ -665,32 +665,12 @@ func TestParseRetryAfter(t *testing.T) {
 	}
 }
 
-func TestProbeHealthAndStreamingSpeedTest(t *testing.T) {
+func TestProbeHealthTreatsNotFoundAsReachable(t *testing.T) {
 	api := NewClient(&http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		switch request.URL.Path {
-		case "/healthz":
-			return response(request, http.StatusNotFound, ""), nil
-		case "/api/v1/speed-test":
-			if request.Header.Get("Accept-Encoding") != "identity" {
-				t.Error("speed test did not disable content encoding")
-			}
-			if request.URL.Query().Get("bytes") != "8" || request.URL.Query().Get("cacheBust") == "" {
-				t.Errorf("speed-test query = %q", request.URL.RawQuery)
-			}
-			return response(request, http.StatusOK, "12345678"), nil
-		default:
-			return response(request, http.StatusNotFound, ""), nil
-		}
+		return response(request, http.StatusNotFound, ""), nil
 	})}, Options{Platform: PlatformIOS, PlatformVersion: "18.5"})
 	if err := api.ProbeHealth(context.Background(), "http://127.0.0.1:8080"); err != nil {
 		t.Fatalf("404 should prove reachability: %v", err)
-	}
-	result, err := api.DownloadSpeedTest(context.Background(), "http://127.0.0.1:8080", 8)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Bytes != 8 || result.TotalDuration <= 0 || result.MegabitsPerSecond <= 0 {
-		t.Fatalf("speed result = %+v", result)
 	}
 }
 
