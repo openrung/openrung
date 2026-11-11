@@ -105,9 +105,32 @@ jobs:
       # smoke-test step.
       - name: Package (macOS)
         if: runner.os == 'macOS'
-        run: |
-          ./desktop/scripts/package-macos.sh
-          ditto -c -k --keepParent desktop/build/bin/OpenRung.app desktop/build/bin/OpenRung-macos-arm64.zip
+        run: ./desktop/scripts/package-macos.sh
+
+      # Replaces the packaging script's ad-hoc signature with the
+      # foundation's Developer ID one, notarizes the bundle and staples the
+      # ticket, so a downloaded copy opens without the user having to allow
+      # it in System Settings. The identity names only the organization:
+      # release binaries must never carry a personal identity. A tag build
+      # fails here unless the app ends up signed, notarized and accepted by
+      # Gatekeeper; a manual run where the secrets are absent (a fork) keeps
+      # the ad-hoc signed bundle instead.
+      - name: Sign and notarize (macOS)
+        if: runner.os == 'macOS'
+        env:
+          MACOS_SIGNING_P12: ${{ secrets.MACOS_SIGNING_P12 }}
+          MACOS_SIGNING_P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          MACOS_SIGNING_IDENTITY: "Developer ID Application: OpenRung Foundation (9VLV9A7KS9)"
+          MACOS_SIGNING_REQUIRED: ${{ github.ref_type == 'tag' }}
+        run: ./scripts/sign-macos-app.sh desktop/build/bin/OpenRung.app
+
+      # Only now: the zip has to carry the stapled bundle.
+      - name: Archive (macOS)
+        if: runner.os == 'macOS'
+        run: ditto -c -k --keepParent desktop/build/bin/OpenRung.app desktop/build/bin/OpenRung-macos-arm64.zip
 
       - name: Package (Linux)
         if: runner.os == 'Linux'

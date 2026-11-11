@@ -5,7 +5,9 @@
 # nothing has to be bundled next to it and nothing is looked up on PATH — the
 # .app runs on a Mac that has never installed sing-box. The GPL-3.0 notices
 # for that linked engine still travel with the package, and the bundle is
-# ad-hoc re-signed because adding them changes it after the build.
+# ad-hoc re-signed because adding them changes it after the build. The release
+# workflow then replaces that signature with a Developer ID one and notarizes
+# the bundle (../scripts/sign-macos-app.sh).
 #
 # Usage:
 #   scripts/package-macos.sh                 # native arch
