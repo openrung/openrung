@@ -19,12 +19,12 @@ const (
 	rankingReliabilityWeight = 0.50
 	rankingHeadroomWeight    = 0.20
 	rankingLatencyWeight     = 0.20
-	rankingSpeedWeight       = 0.10
+	rankingHandshakeWeight   = 0.10
 
 	// A full relay has already forfeited the entire 0.20 headroom contribution.
 	// Continue applying back-pressure above capacity, but cap it below the 0.05
 	// margin by which a 75%-reliable full relay outscores a 25%-reliable idle
-	// one when their latency and speed signals are equal.
+	// one when their latency and handshake signals are equal.
 	rankingMaxOverCapacityPenalty = 0.04
 
 	// defaultRankingWeight is the operator multiplier every relay carries until
@@ -43,15 +43,39 @@ const (
 	// TCP connect is one handshake with the relay.
 	rankingTCPFastMS = 100
 	rankingTCPSlowMS = 1000
-	// The internet probe and time to first byte each make a full round trip
-	// through the tunnel, so they share a ramp ten times as long.
+	// The internet probe makes a full round trip through the tunnel, so its
+	// ramp is ten times as long.
 	rankingTunnelRoundTripFastMS = 1000
 	rankingTunnelRoundTripSlowMS = 10000
 
 	// rankingDefaultLatencyScore is the latency score of a relay without
 	// latency measurements when no relay in the ranking pass has any either.
-	// Otherwise such a relay gets the pass's median (see neutralLatencyScore).
+	// Otherwise such a relay gets the pass's median (see neutralScores).
 	rankingDefaultLatencyScore = 0.5
+
+	// A TCP handshake that needs no retransmission takes one round trip. RFC
+	// 6298 section 2.1 starts the retransmission timer at one second, before
+	// any round-trip time has been measured, so a handshake that took a second
+	// or longer had its SYN or SYN-ACK resent, or a round trip that long.
+	rankingHandshakeResentMS = 1000
+
+	// The handshake score is 1 when no handshake in rankingWindow was resent,
+	// falling linearly to 0 at this share of them. A handshake is resent when
+	// either of its first two segments is lost, so while loss is low the share
+	// is about twice the path's packet loss rate. One handshake in five is
+	// therefore about one packet in ten, where the retransmission-timeout term
+	// of the TCP throughput equation (RFC 5348 section 3.1) is the larger one.
+	rankingHandshakeResentWorstShare = 0.20
+
+	// rankingHandshakeMinSamples is the fewest handshakes in rankingWindow the
+	// share is scored from: one resent handshake among this many moves the
+	// share by a quarter of the ramp. A relay with fewer is unmeasured.
+	rankingHandshakeMinSamples = 20
+
+	// rankingDefaultHandshakeScore is the handshake score of an unmeasured
+	// relay when no relay in the ranking pass is measured either. Otherwise
+	// such a relay gets the pass's median (see neutralScores).
+	rankingDefaultHandshakeScore = 0.5
 )
 
 // rankingUniform is the [0, 1) source the stores draw ranking keys from. It is
@@ -65,11 +89,12 @@ type RelayMetricsSnapshot struct {
 	Failures       int
 	// Median latencies over rankingWindow in milliseconds; 0 means the relay
 	// has no positive measurement of that kind in the window.
-	TCPMS             float64
-	InternetProbeMS   float64
-	TTFBMS            float64
-	SpeedTests        int
-	DownloadMbpsTotal float64
+	TCPMS           float64
+	InternetProbeMS float64
+	// TCP handshakes measured in rankingWindow, and how many of them took
+	// rankingHandshakeResentMS or longer.
+	TCPHandshakes       int
+	TCPHandshakesResent int
 }
 
 type relaySessionState struct {
@@ -81,15 +106,12 @@ type relaySessionState struct {
 }
 
 type relayMetricObservation struct {
-	ObservedAt        time.Time
-	RelayID           string
-	Success           bool
-	Failure           bool
-	TCPMs             int64
-	InternetProbeMs   int64
-	TTFBMs            int64
-	DownloadMbpsMilli int64
-	IncludesSpeedTest bool
+	ObservedAt      time.Time
+	RelayID         string
+	Success         bool
+	Failure         bool
+	TCPMs           int64
+	InternetProbeMs int64
 }
 
 // sortRelayCandidates orders relays best-first by weighted random sampling
@@ -108,17 +130,17 @@ type relayMetricObservation struct {
 // (operator weight 0, or a telemetry score of 0) always sort after every
 // positive-weight relay.
 //
-// relays must be the whole ranking pass: it sets the latency score of relays
-// without measurements (see neutralLatencyScore), and rankRelays derives the
-// same value from the same set.
+// relays must be the whole ranking pass: it sets the latency and handshake
+// scores of unmeasured relays (see neutralScores), and rankRelays derives the
+// same values from the same set.
 func sortRelayCandidates(relays []relay.Descriptor, snapshots map[string]RelayMetricsSnapshot, weights map[string]float64, uniform func() float64) {
-	neutralLatency := neutralLatencyScore(relays, snapshots)
+	neutral := neutralScores(relays, snapshots)
 	// Efraimidis–Spirakis keys: sorting by U^(1/w) descending is weighted
 	// sampling without replacement. The log form, ln(U)/w, orders identically
 	// and stays finite for tiny weights.
 	keys := make(map[string]float64, len(relays))
 	for _, desc := range relays {
-		weight := relaySelectionWeight(relayScore(desc, snapshots[desc.ID], neutralLatency), rankingWeightFor(weights, desc.ID))
+		weight := relaySelectionWeight(relayScore(desc, snapshots[desc.ID], neutral), rankingWeightFor(weights, desc.ID))
 		if weight <= 0 {
 			keys[desc.ID] = math.Inf(-1)
 			continue
@@ -171,10 +193,10 @@ func rankingWeightFor(weights map[string]float64, relayID string) float64 {
 }
 
 // relayScore is the telemetry-driven candidate score in [0, 1]. The operator's
-// ranking weight is applied separately, in relaySelectionWeight.
-// neutralLatency is the ranking pass's neutralLatencyScore.
-func relayScore(desc relay.Descriptor, snapshot RelayMetricsSnapshot, neutralLatency float64) float64 {
-	return relayScoreBreakdown(desc, snapshot, neutralLatency).score()
+// ranking weight is applied separately, in relaySelectionWeight. neutral is
+// the ranking pass's neutralScores.
+func relayScore(desc relay.Descriptor, snapshot RelayMetricsSnapshot, neutral rankingNeutralScores) float64 {
+	return relayScoreBreakdown(desc, snapshot, neutral).score()
 }
 
 // relayScoreParts are relayScore's inputs, each in [0, 1] before its ranking
@@ -183,11 +205,11 @@ type relayScoreParts struct {
 	Reliability         float64
 	Headroom            float64
 	Latency             float64
-	Speed               float64
+	Handshake           float64
 	OverCapacityPenalty float64
 }
 
-func relayScoreBreakdown(desc relay.Descriptor, snapshot RelayMetricsSnapshot, neutralLatency float64) relayScoreParts {
+func relayScoreBreakdown(desc relay.Descriptor, snapshot RelayMetricsSnapshot, neutral rankingNeutralScores) relayScoreParts {
 	headroom := 0.5
 	if desc.MaxSessions > 0 {
 		headroom = clamp01(float64(desc.MaxSessions-snapshot.ActiveSessions) / float64(desc.MaxSessions))
@@ -195,8 +217,8 @@ func relayScoreBreakdown(desc relay.Descriptor, snapshot RelayMetricsSnapshot, n
 	return relayScoreParts{
 		Reliability:         float64(snapshot.Successes+1) / float64(snapshot.Successes+snapshot.Failures+2),
 		Headroom:            headroom,
-		Latency:             observedLatencyScore(snapshot, neutralLatency),
-		Speed:               observedSpeedScore(desc, snapshot),
+		Latency:             observedScore(measuredLatencyScore, snapshot, neutral.Latency),
+		Handshake:           observedScore(measuredHandshakeScore, snapshot, neutral.Handshake),
 		OverCapacityPenalty: overCapacityPenalty(desc, snapshot),
 	}
 }
@@ -208,7 +230,7 @@ func (p relayScoreParts) score() float64 {
 	score := rankingReliabilityWeight*p.Reliability +
 		rankingHeadroomWeight*p.Headroom +
 		rankingLatencyWeight*p.Latency +
-		rankingSpeedWeight*p.Speed
+		rankingHandshakeWeight*p.Handshake
 	return clamp01(score - p.OverCapacityPenalty)
 }
 
@@ -229,7 +251,7 @@ type relayRanking struct {
 	Reliability         float64 `json:"reliability"`
 	Headroom            float64 `json:"headroom"`
 	Latency             float64 `json:"latency"`
-	Speed               float64 `json:"speed"`
+	Handshake           float64 `json:"handshake"`
 	OverCapacityPenalty float64 `json:"over_capacity_penalty"`
 	SelectionWeight     float64 `json:"selection_weight"`
 	HeadShare           float64 `json:"head_share"`
@@ -244,21 +266,21 @@ type relayRanking struct {
 // the WSS reservation and the access answer's per-country candidate sets, so
 // it describes the public list, not every page.
 //
-// relays must be the same set ListRanked sorted, so the latency score of
-// relays without measurements matches the one the sort used.
+// relays must be the same set ListRanked sorted, so the latency and handshake
+// scores of unmeasured relays match the ones the sort used.
 func rankRelays(relays []relay.Descriptor, inputs RankingInputs, withholdUnreachable bool) map[string]relayRanking {
 	rankings := make(map[string]relayRanking, len(relays))
-	neutralLatency := neutralLatencyScore(relays, inputs.Snapshots)
+	neutral := neutralScores(relays, inputs.Snapshots)
 	var total float64
 	for _, desc := range relays {
-		parts := relayScoreBreakdown(desc, inputs.Snapshots[desc.ID], neutralLatency)
+		parts := relayScoreBreakdown(desc, inputs.Snapshots[desc.ID], neutral)
 		score := parts.score()
 		ranking := relayRanking{
 			Score:               score,
 			Reliability:         parts.Reliability,
 			Headroom:            parts.Headroom,
 			Latency:             parts.Latency,
-			Speed:               parts.Speed,
+			Handshake:           parts.Handshake,
 			OverCapacityPenalty: parts.OverCapacityPenalty,
 			SelectionWeight:     relaySelectionWeight(score, rankingWeightFor(inputs.Weights, desc.ID)),
 		}
@@ -288,14 +310,18 @@ func overCapacityPenalty(desc relay.Descriptor, snapshot RelayMetricsSnapshot) f
 	return rankingMaxOverCapacityPenalty * clamp01(overCapacityRatio)
 }
 
-// observedLatencyScore is the relay's measuredLatencyScore, or neutralLatency
-// when the relay has no latency measurements in the window.
-func observedLatencyScore(snapshot RelayMetricsSnapshot, neutralLatency float64) float64 {
-	if score, ok := measuredLatencyScore(snapshot); ok {
+// observedScore is the relay's measured score, or neutral when it is
+// unmeasured.
+func observedScore(measured measuredScoreFunc, snapshot RelayMetricsSnapshot, neutral float64) float64 {
+	if score, ok := measured(snapshot); ok {
 		return score
 	}
-	return neutralLatency
+	return neutral
 }
+
+// measuredScoreFunc scores one telemetry signal of a relay; ok is false when
+// the relay's snapshot does not measure it.
+type measuredScoreFunc func(RelayMetricsSnapshot) (score float64, ok bool)
 
 // measuredLatencyScore averages the scores of the latency measurements the
 // relay has, each scored from its median on its own ramp. ok is false when it
@@ -304,7 +330,6 @@ func measuredLatencyScore(snapshot RelayMetricsSnapshot) (score float64, ok bool
 	measurements := []struct{ medianMS, fastMS, slowMS float64 }{
 		{snapshot.TCPMS, rankingTCPFastMS, rankingTCPSlowMS},
 		{snapshot.InternetProbeMS, rankingTunnelRoundTripFastMS, rankingTunnelRoundTripSlowMS},
-		{snapshot.TTFBMS, rankingTunnelRoundTripFastMS, rankingTunnelRoundTripSlowMS},
 	}
 	var total float64
 	var count int
@@ -321,30 +346,48 @@ func measuredLatencyScore(snapshot RelayMetricsSnapshot) (score float64, ok bool
 	return total / float64(count), true
 }
 
-// neutralLatencyScore is the latency score given to relays without latency
-// measurements: the median measuredLatencyScore of the relays in the pass that
-// have one, or rankingDefaultLatencyScore when none does. A fixed middle value
-// would sit below a typical measured relay and keep a new relay off page heads
-// before it could collect any measurements.
-func neutralLatencyScore(relays []relay.Descriptor, snapshots map[string]RelayMetricsSnapshot) float64 {
+// measuredHandshakeScore scores the share of the relay's TCP handshakes that
+// were resent: 1 for none, falling linearly to 0 at
+// rankingHandshakeResentWorstShare. ok is false below
+// rankingHandshakeMinSamples handshakes.
+func measuredHandshakeScore(snapshot RelayMetricsSnapshot) (score float64, ok bool) {
+	if snapshot.TCPHandshakes < rankingHandshakeMinSamples {
+		return 0, false
+	}
+	resentShare := float64(snapshot.TCPHandshakesResent) / float64(snapshot.TCPHandshakes)
+	return 1 - clamp01(resentShare/rankingHandshakeResentWorstShare), true
+}
+
+// rankingNeutralScores are the scores a ranking pass gives its unmeasured
+// relays, one per signal that can be missing.
+type rankingNeutralScores struct {
+	Latency   float64
+	Handshake float64
+}
+
+// neutralScores is the pass's rankingNeutralScores: per signal, the median
+// score of the relays in the pass that measure it, or the signal's default
+// when none does. A fixed middle value would sit below a typical measured
+// relay and keep a new relay off page heads before it could collect any
+// measurements.
+func neutralScores(relays []relay.Descriptor, snapshots map[string]RelayMetricsSnapshot) rankingNeutralScores {
+	return rankingNeutralScores{
+		Latency:   medianMeasuredScore(measuredLatencyScore, relays, snapshots, rankingDefaultLatencyScore),
+		Handshake: medianMeasuredScore(measuredHandshakeScore, relays, snapshots, rankingDefaultHandshakeScore),
+	}
+}
+
+func medianMeasuredScore(measured measuredScoreFunc, relays []relay.Descriptor, snapshots map[string]RelayMetricsSnapshot, fallback float64) float64 {
 	var scores []float64
 	for _, desc := range relays {
-		if score, ok := measuredLatencyScore(snapshots[desc.ID]); ok {
+		if score, ok := measured(snapshots[desc.ID]); ok {
 			scores = append(scores, score)
 		}
 	}
 	if len(scores) == 0 {
-		return rankingDefaultLatencyScore
+		return fallback
 	}
 	return median(scores)
-}
-
-func observedSpeedScore(desc relay.Descriptor, snapshot RelayMetricsSnapshot) float64 {
-	if snapshot.SpeedTests == 0 || desc.MaxMbps <= 0 {
-		return 0.5
-	}
-	averageMbps := snapshot.DownloadMbpsTotal / float64(snapshot.SpeedTests)
-	return clamp01(averageMbps / float64(desc.MaxMbps))
 }
 
 // median returns the middle of values, averaging the two middle values of an

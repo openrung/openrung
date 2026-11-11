@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -285,20 +286,75 @@ func TestStoreRankingPrefersLowerLatency(t *testing.T) {
 	}
 }
 
-func TestStoreRankingUsesSpeedTests(t *testing.T) {
+// TestStoreRankingCountsResentHandshakes: both relays have the same median TCP
+// connect time, so only the share of handshakes at or above the resend
+// threshold separates them.
+func TestStoreRankingCountsResentHandshakes(t *testing.T) {
 	pinRankingOrder(t)
 	store := NewStore()
 	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
-	fast := registerRelayForRanking(t, store, now, "fast-download.example.com", 8, 20)
-	slow := registerRelayForRanking(t, store, now.Add(time.Second), "slow-download.example.com", 8, 20)
+	clean := registerRelayForRanking(t, store, now, "clean.example.com", 8, 20)
+	lossy := registerRelayForRanking(t, store, now.Add(time.Second), "lossy.example.com", 8, 20)
 
+	const handshakes = 2 * rankingHandshakeMinSamples
+	for i := range handshakes {
+		lossyTCPMS := int64(80)
+		if i%10 == 0 {
+			lossyTCPMS = rankingHandshakeResentMS
+		}
+		for _, sample := range []struct {
+			relayID string
+			tcpMS   int64
+		}{{clean.ID, 80}, {lossy.ID, lossyTCPMS}} {
+			recordRelayMetric(t, store, now.Add(10*time.Second), TelemetryEvent{
+				EventID:      fmt.Sprintf("handshake-%s-%d", sample.relayID, i),
+				Event:        "connection_succeeded",
+				OccurredAt:   now.Add(10 * time.Second),
+				RelayID:      sample.relayID,
+				Measurements: map[string]int64{"relay_tcp_ms": sample.tcpMS},
+			})
+		}
+	}
+
+	relays, inputs, err := store.ListRanked(now.Add(20*time.Second), 10)
+	if err != nil {
+		t.Fatalf("list ranked: %v", err)
+	}
+	if got := inputs.Snapshots[lossy.ID]; got.TCPHandshakes != handshakes || got.TCPHandshakesResent != handshakes/10 || got.TCPMS != 80 {
+		t.Fatalf("lossy snapshot = %+v, want %d handshakes, %d resent, TCP median 80", got, handshakes, handshakes/10)
+	}
+	if got := inputs.Snapshots[clean.ID]; got.TCPHandshakes != handshakes || got.TCPHandshakesResent != 0 {
+		t.Fatalf("clean snapshot = %+v, want %d handshakes, none resent", got, handshakes)
+	}
+	if relays[0].ID != clean.ID {
+		t.Fatalf("expected the relay without resent handshakes first, got %s", relays[0].ID)
+	}
+}
+
+// TestStoreRankingIgnoresSpeedTests: speed-test telemetry is still accepted
+// but leaves the ranking inputs, the scores and the order untouched.
+func TestStoreRankingIgnoresSpeedTests(t *testing.T) {
+	pinRankingOrder(t)
+	store := NewStore()
+	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+	older := registerRelayForRanking(t, store, now, "fast-download.example.com", 8, 20)
+	newer := registerRelayForRanking(t, store, now.Add(time.Second), "slow-download.example.com", 8, 20)
+
+	relays, before, err := store.ListRanked(now.Add(20*time.Second), 10)
+	if err != nil {
+		t.Fatalf("list ranked: %v", err)
+	}
+	scoresBefore := rankRelays(relays, before, false)
+
+	// The speed tests favour the older relay on throughput and first byte;
+	// were they scored, it would sort first.
 	recordRelayMetric(t, store, now.Add(10*time.Second), TelemetryEvent{
 		EventID:      "fast-speed",
 		Event:        "speed_test_completed",
 		OccurredAt:   now.Add(10 * time.Second),
 		ClientID:     "client-1",
 		SessionID:    "session-1",
-		RelayID:      fast.ID,
+		RelayID:      older.ID,
 		Measurements: map[string]int64{"download_mbps_milli": 20_000, "time_to_first_byte_ms": 120},
 	})
 	recordRelayMetric(t, store, now.Add(11*time.Second), TelemetryEvent{
@@ -307,13 +363,26 @@ func TestStoreRankingUsesSpeedTests(t *testing.T) {
 		OccurredAt:   now.Add(11 * time.Second),
 		ClientID:     "client-2",
 		SessionID:    "session-2",
-		RelayID:      slow.ID,
-		Measurements: map[string]int64{"download_mbps_milli": 2_000, "time_to_first_byte_ms": 120},
+		RelayID:      newer.ID,
+		Measurements: map[string]int64{"download_mbps_milli": 200, "time_to_first_byte_ms": 9_000},
 	})
 
-	got := listRelayIDs(t, store, now.Add(20*time.Second))
-	if got[0] != fast.ID {
-		t.Fatalf("expected faster download relay first, got %v", got)
+	relays, after, err := store.ListRanked(now.Add(20*time.Second), 10)
+	if err != nil {
+		t.Fatalf("list ranked: %v", err)
+	}
+	if len(after.Snapshots) != 0 {
+		t.Fatalf("speed tests produced ranking inputs: %+v", after.Snapshots)
+	}
+	scoresAfter := rankRelays(relays, after, false)
+	for _, id := range []string{older.ID, newer.ID} {
+		if scoresAfter[id] != scoresBefore[id] {
+			t.Errorf("relay %s ranking changed with speed tests: before %+v, after %+v", id, scoresBefore[id], scoresAfter[id])
+		}
+	}
+	// Equal scores fall back to heartbeat recency.
+	if relays[0].ID != newer.ID {
+		t.Fatalf("expected the newest heartbeat first, got %s", relays[0].ID)
 	}
 }
 

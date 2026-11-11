@@ -505,6 +505,27 @@ func TestPostgresStoreExpiredFoundationEndpointIsReclaimable(t *testing.T) {
 	}
 }
 
+func TestPostgresStoreRankingIgnoresSpeedTests(t *testing.T) {
+	now := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	store := newTestPostgresStore(t)
+	if err := store.RecordRelayTelemetry(context.Background(), []TelemetryRecord{{ReceivedAt: now, Event: TelemetryEvent{
+		EventID:      "speed-ignored",
+		Event:        "speed_test_completed",
+		OccurredAt:   now,
+		RelayID:      "relay_speed",
+		Measurements: map[string]int64{"download_mbps_milli": 20_000, "time_to_first_byte_ms": 120},
+	}}}, now); err != nil {
+		t.Fatalf("record telemetry: %v", err)
+	}
+	snapshots, _, err := store.metricSnapshots(context.Background(), now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("metric snapshots: %v", err)
+	}
+	if len(snapshots) != 0 {
+		t.Fatalf("speed test produced ranking inputs: %+v", snapshots)
+	}
+}
+
 func TestPostgresStoreMetricSnapshotsUseLatencyMedians(t *testing.T) {
 	now := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
 	store := newTestPostgresStore(t)
