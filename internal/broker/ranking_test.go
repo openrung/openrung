@@ -11,6 +11,13 @@ import (
 	"openrung/internal/relay"
 )
 
+// defaultNeutralScores are the neutral scores of a ranking pass in which no
+// relay is measured.
+var defaultNeutralScores = rankingNeutralScores{
+	Latency:   rankingDefaultLatencyScore,
+	Handshake: rankingDefaultHandshakeScore,
+}
+
 func TestRelayScoreReliabilityDominatesHeadroom(t *testing.T) {
 	desc := relay.Descriptor{MaxSessions: 8, MaxMbps: 20}
 
@@ -25,8 +32,8 @@ func TestRelayScoreReliabilityDominatesHeadroom(t *testing.T) {
 	}
 	failing := RelayMetricsSnapshot{Successes: 2, Failures: 8}
 
-	reliableScore := relayScore(desc, reliable, rankingDefaultLatencyScore)
-	failingScore := relayScore(desc, failing, rankingDefaultLatencyScore)
+	reliableScore := relayScore(desc, reliable, defaultNeutralScores)
+	failingScore := relayScore(desc, failing, defaultNeutralScores)
 	if reliableScore <= failingScore {
 		t.Fatalf("reliable overloaded relay score %f must exceed idle failing relay score %f", reliableScore, failingScore)
 	}
@@ -46,7 +53,7 @@ func TestRelayScoreOverCapacityPenaltyIsContinuousAndBounded(t *testing.T) {
 		{active: 24, want: 0.485},
 	} {
 		snapshot := RelayMetricsSnapshot{ActiveSessions: tc.active, Successes: 8, Failures: 2}
-		if got := relayScore(desc, snapshot, rankingDefaultLatencyScore); math.Abs(got-tc.want) > 1e-9 {
+		if got := relayScore(desc, snapshot, defaultNeutralScores); math.Abs(got-tc.want) > 1e-9 {
 			t.Errorf("active sessions %d: score = %.9f, want %.9f", tc.active, got, tc.want)
 		}
 	}
@@ -55,13 +62,13 @@ func TestRelayScoreOverCapacityPenaltyIsContinuousAndBounded(t *testing.T) {
 func TestRelayScoreOverCapacityPenaltyNeverMakesScoreNegative(t *testing.T) {
 	desc := relay.Descriptor{MaxSessions: 8, MaxMbps: 20}
 	snapshot := RelayMetricsSnapshot{
-		ActiveSessions:    16,
-		Failures:          1000,
-		TCPMS:             2000,
-		SpeedTests:        1,
-		DownloadMbpsTotal: 0,
+		ActiveSessions:      16,
+		Failures:            1000,
+		TCPMS:               2000,
+		TCPHandshakes:       rankingHandshakeMinSamples,
+		TCPHandshakesResent: rankingHandshakeMinSamples,
 	}
-	if got := relayScore(desc, snapshot, rankingDefaultLatencyScore); got != 0 {
+	if got := relayScore(desc, snapshot, defaultNeutralScores); got != 0 {
 		t.Fatalf("score = %f, want zero floor", got)
 	}
 }
@@ -69,9 +76,9 @@ func TestRelayScoreOverCapacityPenaltyNeverMakesScoreNegative(t *testing.T) {
 func TestRelayScoreUnlimitedCapacityHasNoOverloadPenalty(t *testing.T) {
 	desc := relay.Descriptor{MaxMbps: 20}
 	metrics := RelayMetricsSnapshot{Successes: 8, Failures: 2}
-	idleScore := relayScore(desc, metrics, rankingDefaultLatencyScore)
+	idleScore := relayScore(desc, metrics, defaultNeutralScores)
 	metrics.ActiveSessions = 1000
-	if busyScore := relayScore(desc, metrics, rankingDefaultLatencyScore); busyScore != idleScore {
+	if busyScore := relayScore(desc, metrics, defaultNeutralScores); busyScore != idleScore {
 		t.Fatalf("unlimited relay score changed with active sessions: idle %f, busy %f", idleScore, busyScore)
 	}
 }
@@ -83,7 +90,7 @@ func TestRelayScoreUnlimitedCapacityHasNoOverloadPenalty(t *testing.T) {
 func TestRelaySelectionWeightOperatorWeightIsLinear(t *testing.T) {
 	desc := relay.Descriptor{MaxSessions: 10, MaxMbps: 100}
 	overloaded := RelayMetricsSnapshot{ActiveSessions: 15, Successes: 8, Failures: 2}
-	score := relayScore(desc, overloaded, rankingDefaultLatencyScore)
+	score := relayScore(desc, overloaded, defaultNeutralScores)
 	base := relaySelectionWeight(score, defaultRankingWeight)
 	if base <= 0 {
 		t.Fatalf("base selection weight must be positive, got %v", base)
@@ -272,9 +279,9 @@ func TestRankRelaysBreaksDownScoreAndHeadShare(t *testing.T) {
 	rankings := rankRelays(relays, inputs, true)
 
 	a := rankings["relay-a"]
-	parts := relayScoreBreakdown(relays[0], inputs.Snapshots["relay-a"], neutralLatencyScore(relays, inputs.Snapshots))
+	parts := relayScoreBreakdown(relays[0], inputs.Snapshots["relay-a"], neutralScores(relays, inputs.Snapshots))
 	if a.Score != parts.score() || a.Reliability != parts.Reliability ||
-		a.Headroom != parts.Headroom || a.Latency != parts.Latency || a.Speed != parts.Speed {
+		a.Headroom != parts.Headroom || a.Latency != parts.Latency || a.Handshake != parts.Handshake {
 		t.Fatalf("relay-a ranking %+v does not match its score parts %+v", a, parts)
 	}
 	b := rankings["relay-b"]
@@ -332,9 +339,8 @@ func TestMeasuredLatencyScoreRampsEachMeasurement(t *testing.T) {
 		{name: "probe fast", snapshot: RelayMetricsSnapshot{InternetProbeMS: 900}, want: 1},
 		{name: "probe midway", snapshot: RelayMetricsSnapshot{InternetProbeMS: 5500}, want: 0.5},
 		{name: "probe slow", snapshot: RelayMetricsSnapshot{InternetProbeMS: 12000}, want: 0},
-		{name: "ttfb midway", snapshot: RelayMetricsSnapshot{TTFBMS: 5500}, want: 0.5},
 		{name: "average of measured", snapshot: RelayMetricsSnapshot{TCPMS: 100, InternetProbeMS: 5500}, want: 0.75},
-		{name: "all three", snapshot: RelayMetricsSnapshot{TCPMS: 1000, InternetProbeMS: 1000, TTFBMS: 5500}, want: 0.5},
+		{name: "both", snapshot: RelayMetricsSnapshot{TCPMS: 1000, InternetProbeMS: 1000}, want: 0.5},
 	} {
 		got, ok := measuredLatencyScore(tc.snapshot)
 		if !ok || math.Abs(got-tc.want) > 1e-9 {
@@ -374,7 +380,7 @@ func TestNeutralLatencyScoreIsMedianOfMeasuredRelays(t *testing.T) {
 			relays = append(relays, relay.Descriptor{ID: id})
 			snapshots[id] = RelayMetricsSnapshot{TCPMS: tcpLatencyFor(score)}
 		}
-		if got := neutralLatencyScore(relays, snapshots); math.Abs(got-tc.want) > 1e-9 {
+		if got := neutralScores(relays, snapshots).Latency; math.Abs(got-tc.want) > 1e-9 {
 			t.Errorf("%s: neutral latency = %v, want %v", tc.name, got, tc.want)
 		}
 		if got := rankRelays(relays, RankingInputs{Snapshots: snapshots}, false)[unmeasured.ID].Latency; math.Abs(got-tc.want) > 1e-9 {
@@ -443,9 +449,74 @@ func TestRankRelaysAndSortShareNeutralLatency(t *testing.T) {
 	}
 }
 
+func TestMeasuredHandshakeScoreRampsResentShare(t *testing.T) {
+	const minSamples = rankingHandshakeMinSamples
+	for _, tc := range []struct {
+		name           string
+		total, resent  int
+		want           float64
+		wantUnmeasured bool
+	}{
+		{name: "no samples", wantUnmeasured: true},
+		{name: "below the minimum", total: minSamples - 1, resent: minSamples - 1, wantUnmeasured: true},
+		{name: "all fast", total: minSamples, want: 1},
+		{name: "mixed", total: 2 * minSamples, resent: 4, want: 0.5},
+		{name: "worst share", total: 100, resent: 20, want: 0},
+		{name: "all slow", total: minSamples, resent: minSamples, want: 0},
+	} {
+		snapshot := RelayMetricsSnapshot{TCPHandshakes: tc.total, TCPHandshakesResent: tc.resent}
+		got, ok := measuredHandshakeScore(snapshot)
+		if ok == tc.wantUnmeasured || math.Abs(got-tc.want) > 1e-9 {
+			t.Errorf("%s: score = %v (measured %v), want %v (measured %v)", tc.name, got, ok, tc.want, !tc.wantUnmeasured)
+		}
+		if !tc.wantUnmeasured {
+			continue
+		}
+		// An unmeasured relay takes the pass's neutral value: the default when
+		// no relay is measured, otherwise the measured relays' median.
+		if got := relayScoreBreakdown(relay.Descriptor{}, snapshot, defaultNeutralScores).Handshake; got != rankingDefaultHandshakeScore {
+			t.Errorf("%s: handshake score = %v, want the default %v", tc.name, got, rankingDefaultHandshakeScore)
+		}
+		relays := []relay.Descriptor{{ID: "relay_new"}, {ID: "relay_a"}, {ID: "relay_b"}, {ID: "relay_c"}}
+		snapshots := map[string]RelayMetricsSnapshot{
+			"relay_new": snapshot,
+			"relay_a":   {TCPHandshakes: 100},
+			"relay_b":   {TCPHandshakes: 100, TCPHandshakesResent: 5},
+			"relay_c":   {TCPHandshakes: 100, TCPHandshakesResent: 20},
+		}
+		if got := rankRelays(relays, RankingInputs{Snapshots: snapshots}, false)["relay_new"].Handshake; math.Abs(got-0.75) > 1e-9 {
+			t.Errorf("%s: handshake score among measured relays = %v, want their median 0.75", tc.name, got)
+		}
+	}
+}
+
+// TestRelayScoreHandshakeCarriesItsWeight: between otherwise identical relays
+// the handshake score moves the total by exactly its ranking weight, and the
+// relay with resent handshakes sorts last.
+func TestRelayScoreHandshakeCarriesItsWeight(t *testing.T) {
+	now := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	relays := []relay.Descriptor{
+		{ID: "relay_lossy", PublicHost: "203.0.113.1", MaxSessions: 100, LastHeartbeatAt: now.Add(time.Second)},
+		{ID: "relay_clean", PublicHost: "203.0.113.2", MaxSessions: 100, LastHeartbeatAt: now},
+	}
+	snapshots := map[string]RelayMetricsSnapshot{
+		"relay_lossy": {Successes: 40, TCPMS: 180, TCPHandshakes: 40, TCPHandshakesResent: 40},
+		"relay_clean": {Successes: 40, TCPMS: 180, TCPHandshakes: 40},
+	}
+	rankings := rankRelays(relays, RankingInputs{Snapshots: snapshots}, false)
+	if got := rankings["relay_clean"].Score - rankings["relay_lossy"].Score; math.Abs(got-rankingHandshakeWeight) > 1e-9 {
+		t.Fatalf("score gap = %v, want the handshake weight %v", got, rankingHandshakeWeight)
+	}
+	sortRelayCandidates(relays, snapshots, nil, constantUniform)
+	if relays[0].ID != "relay_clean" {
+		t.Fatalf("order = %s, %s; want the relay without resent handshakes first", relays[0].ID, relays[1].ID)
+	}
+}
+
 // latencyMedianEvents feed a relay TCP samples 100, 200, 5000 and one success
 // without a measurement (median 200), internet probe samples 3000 and 4000
-// (median 3500, interpolated like percentile_cont) and no TTFB.
+// (median 3500, interpolated like percentile_cont). Three handshakes were
+// measured, one of them resent.
 func latencyMedianEvents(relayID string, at time.Time) []TelemetryRecord {
 	samples := []map[string]int64{
 		{"relay_tcp_ms": 100, "internet_probe_ms": 3000},
@@ -468,8 +539,11 @@ func latencyMedianEvents(relayID string, at time.Time) []TelemetryRecord {
 
 func assertLatencyMedians(t *testing.T, snapshot RelayMetricsSnapshot) {
 	t.Helper()
-	if snapshot.Successes != 4 || snapshot.TCPMS != 200 || snapshot.InternetProbeMS != 3500 || snapshot.TTFBMS != 0 {
-		t.Fatalf("snapshot = %+v, want 4 successes, TCP median 200, probe median 3500, no TTFB", snapshot)
+	if snapshot.Successes != 4 || snapshot.TCPMS != 200 || snapshot.InternetProbeMS != 3500 {
+		t.Fatalf("snapshot = %+v, want 4 successes, TCP median 200, probe median 3500", snapshot)
+	}
+	if snapshot.TCPHandshakes != 3 || snapshot.TCPHandshakesResent != 1 {
+		t.Fatalf("snapshot = %+v, want 3 handshakes, 1 resent", snapshot)
 	}
 }
 

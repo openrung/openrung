@@ -31,7 +31,7 @@ The broker does:
 - Accept relay registration.
 - Track relay heartbeats.
 - Expire stale relays.
-- Return a small ranked candidate set to clients using recent relay load, success, latency, and speed-test signals.
+- Return a small ranked candidate set to clients using recent relay load, success, latency, and handshake-retransmission signals.
 - Optionally persist relay state in PostgreSQL so multiple broker instances can share one relay view behind a load balancer.
 - Keep experimental relay/session/metric fields in JSONB columns until they are stable enough to promote into indexed columns.
 

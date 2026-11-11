@@ -516,12 +516,11 @@ func (s *Store) recordRelayTelemetryLocked(record TelemetryRecord, now time.Time
 			return
 		}
 		s.observations = append(s.observations, relayMetricObservation{
-			ObservedAt:        observedAt,
-			RelayID:           event.RelayID,
-			Success:           true,
-			TCPMs:             event.Measurements["relay_tcp_ms"],
-			InternetProbeMs:   event.Measurements["internet_probe_ms"],
-			DownloadMbpsMilli: 0,
+			ObservedAt:      observedAt,
+			RelayID:         event.RelayID,
+			Success:         true,
+			TCPMs:           event.Measurements["relay_tcp_ms"],
+			InternetProbeMs: event.Measurements["internet_probe_ms"],
 		})
 	case "relay_attempt_failed":
 		if event.RelayID == "" {
@@ -531,17 +530,6 @@ func (s *Store) recordRelayTelemetryLocked(record TelemetryRecord, now time.Time
 			ObservedAt: observedAt,
 			RelayID:    event.RelayID,
 			Failure:    true,
-		})
-	case "speed_test_completed":
-		if event.RelayID == "" {
-			return
-		}
-		s.observations = append(s.observations, relayMetricObservation{
-			ObservedAt:        observedAt,
-			RelayID:           event.RelayID,
-			TTFBMs:            event.Measurements["time_to_first_byte_ms"],
-			DownloadMbpsMilli: event.Measurements["download_mbps_milli"],
-			IncludesSpeedTest: true,
 		})
 	case "connection_ended", "tunnel_stopped", "connection_failed":
 		if event.SessionID == "" {
@@ -576,7 +564,7 @@ func (s *Store) metricSnapshotsLocked(now time.Time) (map[string]RelayMetricsSna
 	}
 
 	// Positive latency samples per relay, reduced to medians below.
-	type latencySamples struct{ tcp, internetProbe, ttfb []float64 }
+	type latencySamples struct{ tcp, internetProbe []float64 }
 	samples := make(map[string]*latencySamples)
 	addSample := func(values *[]float64, measured int64) {
 		if measured > 0 {
@@ -603,10 +591,11 @@ func (s *Store) metricSnapshotsLocked(now time.Time) (map[string]RelayMetricsSna
 		}
 		addSample(&relaySamples.tcp, observation.TCPMs)
 		addSample(&relaySamples.internetProbe, observation.InternetProbeMs)
-		addSample(&relaySamples.ttfb, observation.TTFBMs)
-		if observation.IncludesSpeedTest && observation.DownloadMbpsMilli > 0 {
-			snapshot.SpeedTests++
-			snapshot.DownloadMbpsTotal += float64(observation.DownloadMbpsMilli) / 1000
+		if observation.TCPMs > 0 {
+			snapshot.TCPHandshakes++
+			if observation.TCPMs >= rankingHandshakeResentMS {
+				snapshot.TCPHandshakesResent++
+			}
 		}
 		snapshots[observation.RelayID] = snapshot
 	}
@@ -614,7 +603,6 @@ func (s *Store) metricSnapshotsLocked(now time.Time) (map[string]RelayMetricsSna
 		snapshot := snapshots[relayID]
 		snapshot.TCPMS = median(relaySamples.tcp)
 		snapshot.InternetProbeMS = median(relaySamples.internetProbe)
-		snapshot.TTFBMS = median(relaySamples.ttfb)
 		snapshots[relayID] = snapshot
 	}
 	return snapshots, s.rankingWeightsLocked()

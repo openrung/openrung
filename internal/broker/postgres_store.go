@@ -159,6 +159,9 @@ CREATE INDEX IF NOT EXISTS relay_sessions_active_by_relay_idx
 	ON relay_sessions (relay_id, last_heartbeat_at DESC)
 	WHERE terminal_at IS NULL;
 
+-- ttfb_ms, download_mbps_milli and speed_test_count are no longer written or
+-- read: speed tests stopped feeding the ranking. They stay so that a broker
+-- from before that change can still run against this schema.
 CREATE TABLE IF NOT EXISTS relay_metrics (
 	event_id text PRIMARY KEY,
 	relay_id text NOT NULL,
@@ -913,7 +916,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 // relay without telemetry has no snapshot entry, so the weight cannot ride
 // inside it without its zero value reading as weight 0). Each latency is the
 // median of the window's positive values; nulls and values <= 0 are not
-// measurements.
+// measurements. A positive tcp_ms is one measured TCP handshake.
 func (s *PostgresStore) metricSnapshots(ctx context.Context, now time.Time) (map[string]RelayMetricsSnapshot, map[string]float64, error) {
 	weights, err := s.rankingWeights(ctx)
 	if err != nil {
@@ -953,13 +956,12 @@ func (s *PostgresStore) metricSnapshots(ctx context.Context, now time.Time) (map
 			COALESCE(SUM(failure_count), 0)::bigint,
 			COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY tcp_ms::double precision) FILTER (WHERE tcp_ms > 0), 0),
 			COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY internet_probe_ms::double precision) FILTER (WHERE internet_probe_ms > 0), 0),
-			COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY ttfb_ms::double precision) FILTER (WHERE ttfb_ms > 0), 0),
-			COALESCE(SUM(speed_test_count), 0)::bigint,
-			COALESCE(SUM(download_mbps_milli), 0)::bigint
+			COUNT(*) FILTER (WHERE tcp_ms > 0)::bigint,
+			COUNT(*) FILTER (WHERE tcp_ms >= $3)::bigint
 		FROM relay_metrics
 		WHERE observed_at >= $1 AND observed_at <= $2
 		GROUP BY relay_id
-	`, now.Add(-rankingWindow), now)
+	`, now.Add(-rankingWindow), now, int64(rankingHandshakeResentMS))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -967,17 +969,16 @@ func (s *PostgresStore) metricSnapshots(ctx context.Context, now time.Time) (map
 	for metricRows.Next() {
 		var relayID string
 		var successes, failures int64
-		var tcpMedian, internetMedian, ttfbMedian float64
-		var speedTests, speedTotal int64
+		var tcpMedian, internetMedian float64
+		var handshakes, handshakesResent int64
 		if err := metricRows.Scan(
 			&relayID,
 			&successes,
 			&failures,
 			&tcpMedian,
 			&internetMedian,
-			&ttfbMedian,
-			&speedTests,
-			&speedTotal,
+			&handshakes,
+			&handshakesResent,
 		); err != nil {
 			return nil, nil, err
 		}
@@ -986,9 +987,8 @@ func (s *PostgresStore) metricSnapshots(ctx context.Context, now time.Time) (map
 		snapshot.Failures = int(failures)
 		snapshot.TCPMS = tcpMedian
 		snapshot.InternetProbeMS = internetMedian
-		snapshot.TTFBMS = ttfbMedian
-		snapshot.SpeedTests = int(speedTests)
-		snapshot.DownloadMbpsTotal = float64(speedTotal) / 1000
+		snapshot.TCPHandshakes = int(handshakes)
+		snapshot.TCPHandshakesResent = int(handshakesResent)
 		snapshots[relayID] = snapshot
 	}
 	return snapshots, weights, metricRows.Err()
@@ -1035,11 +1035,6 @@ func (s *PostgresStore) recordRelayTelemetry(ctx context.Context, tx pgx.Tx, rec
 			return nil
 		}
 		return s.insertMetric(ctx, tx, event.EventID, event.RelayID, observedAt, false, true, event.Measurements)
-	case "speed_test_completed":
-		if event.RelayID == "" {
-			return nil
-		}
-		return s.insertMetric(ctx, tx, event.EventID, event.RelayID, observedAt, false, false, event.Measurements)
 	case "connection_ended", "tunnel_stopped", "connection_failed":
 		return s.markSessionTerminal(ctx, tx, event, observedAt, now)
 	default:
@@ -1055,10 +1050,6 @@ func (s *PostgresStore) insertMetric(ctx context.Context, tx pgx.Tx, eventID, re
 	if failure {
 		failureCount = 1
 	}
-	speedTestCount := 0
-	if measurements["download_mbps_milli"] > 0 {
-		speedTestCount = 1
-	}
 
 	_, err := tx.Exec(ctx, `
 		INSERT INTO relay_metrics (
@@ -1069,11 +1060,8 @@ func (s *PostgresStore) insertMetric(ctx context.Context, tx pgx.Tx, eventID, re
 			failure_count,
 			tcp_ms,
 			tunnel_start_ms,
-			internet_probe_ms,
-			ttfb_ms,
-			download_mbps_milli,
-			speed_test_count
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			internet_probe_ms
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (event_id) DO NOTHING
 	`,
 		eventID,
@@ -1084,9 +1072,6 @@ func (s *PostgresStore) insertMetric(ctx context.Context, tx pgx.Tx, eventID, re
 		positiveInt64(measurements["relay_tcp_ms"]),
 		positiveInt64(measurements["tunnel_start_ms"]),
 		positiveInt64(measurements["internet_probe_ms"]),
-		positiveInt64(measurements["time_to_first_byte_ms"]),
-		positiveInt64(measurements["download_mbps_milli"]),
-		speedTestCount,
 	)
 	return err
 }

@@ -169,7 +169,8 @@ and these measurements:
 ```
 
 `download_mbps_milli` stores Mbps multiplied by 1,000, so `37383` represents
-37.383 Mbps.
+37.383 Mbps. Speed-test results are shown to the user and on the operator
+dashboard; they are not a [relay ranking](#ranking-breakdown) input.
 
 ```http
 GET /api/v1/speed-test?bytes=10000000
@@ -527,7 +528,7 @@ Response:
   "key_id": "3097e2dee2cb4a34",
   "channel": "inventory",
   "relays": [
-    { "id": "relay_0a1b...", "public_host": "203.0.113.7", "public_port": 443, "node_class": "foundation", "...": "...", "ranking_weight": 1, "ranking": { "score": 0.81, "reliability": 0.9, "headroom": 0.75, "latency": 0.8, "speed": 0.5, "over_capacity_penalty": 0, "selection_weight": 0.0798, "head_share": 0.31 }, "reachable": true, "reachability_checked_at": "2026-06-09T06:58:00Z", "operator_contact": "ops@example.org", "access_host": "2001:db8:1::10", "access_reachable": true }
+    { "id": "relay_0a1b...", "public_host": "203.0.113.7", "public_port": 443, "node_class": "foundation", "...": "...", "ranking_weight": 1, "ranking": { "score": 0.81, "reliability": 0.9, "headroom": 0.75, "latency": 0.8, "handshake": 0.5, "over_capacity_penalty": 0, "selection_weight": 0.0798, "head_share": 0.31 }, "reachable": true, "reachability_checked_at": "2026-06-09T06:58:00Z", "operator_contact": "ops@example.org", "access_host": "2001:db8:1::10", "access_reachable": true }
   ]
 }
 ```
@@ -618,11 +619,11 @@ ranking each relay with, computed on read from the same snapshot the
 
 | Key | Meaning |
 | --- | --- |
-| `score` | Telemetry score in `[0, 1]`: 0.5 × `reliability` + 0.2 × `headroom` + 0.2 × `latency` + 0.1 × `speed` − `over_capacity_penalty`. |
+| `score` | Telemetry score in `[0, 1]`: 0.5 × `reliability` + 0.2 × `headroom` + 0.2 × `latency` + 0.1 × `handshake` − `over_capacity_penalty`. |
 | `reliability` | (successes + 1) / (successes + failures + 2) over the last 30 minutes. |
 | `headroom` | Free share of `max_sessions` (0.5 when the relay advertises none). |
-| `latency` | Mean of the scores of the relay's measured latencies, each from its median over the last 30 minutes: TCP connect scores 1 at 100 ms, falling to 0 at 1000 ms; the internet probe and time to first byte score 1 at 1000 ms, falling to 0 at 10000 ms. A relay with no latency measurements gets the median `latency` of the relays that have them, or 0.5 when none has. |
-| `speed` | Average speed-test throughput over `max_mbps`; 0.5 without data. |
+| `latency` | Mean of the scores of the relay's measured latencies, each from its median over the last 30 minutes: TCP connect scores 1 at 100 ms, falling to 0 at 1000 ms; the internet probe scores 1 at 1000 ms, falling to 0 at 10000 ms. A relay with no latency measurements gets the median `latency` of the relays that have them, or 0.5 when none has. |
+| `handshake` | Scored from the share of the relay's TCP handshakes over the last 30 minutes that took 1000 ms or longer — TCP's initial retransmission timeout (RFC 6298), so the SYN or SYN-ACK was resent: 1 with none, falling to 0 at a share of 0.20. A relay with fewer than 20 measured handshakes gets the median `handshake` of the relays that have them, or 0.5 when none has. |
 | `over_capacity_penalty` | Up to 0.04 once active sessions exceed `max_sessions`. |
 | `selection_weight` | `score`¹² × `ranking_weight`: the weight the sampler draws with. |
 | `head_share` | The relay's share of the total `selection_weight` — its chance of heading a public relay-list response. With reachability probing enabled, relays withheld by a failed probe have `0` and are left out of the total, matching the public list. |
@@ -1242,11 +1243,13 @@ The order of `relays` is the broker's candidate ranking. A direct relay whose
 latest [inbound reachability probe](#inbound-reachability-probe) failed is
 left out before ranking and page shaping. The broker uses recent
 connection successes/failures, active sessions, observed client latency, and
-speed-test telemetry. The latency it scores is the median per measurement
-(TCP connect, internet probe, time to first byte) across all clients, so it
-cannot describe any one client's path; each measurement is scored on its own
-scale, and a relay without latency measurements is scored at the median of the
-relays that have them (see [Ranking breakdown](#ranking-breakdown)). The order is drawn per response by
+the share of TCP handshakes with the relay that needed a retransmission.
+Speed-test telemetry is accepted but does not feed the ranking. The latency it
+scores is the median per measurement (TCP connect, internet probe) and the
+handshake share is one figure per relay, both across all clients, so neither
+can describe any one client's path; each measurement is scored on its own
+scale, and a relay without enough measurements of a kind is scored at the
+median of the relays that have them (see [Ranking breakdown](#ranking-breakdown)). The order is drawn per response by
 weighted random sampling without replacement, with each relay's weight rising
 steeply with its score: a clearly better relay leads almost every response,
 while relays with similar scores take turns at the head, so concurrent clients
