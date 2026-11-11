@@ -67,10 +67,7 @@ export function installNativeModules(): void {
     disconnect: () => service.Disconnect(),
     getState: () => service.GetState(),
     getIdentity: () => service.GetIdentity(),
-    // The Go service applies no split-tunnel config, and the app does not
-    // offer the setting in the desktop client; its routine pre-connect push
-    // is accepted and dropped.
-    setSplitTunnelConfig: () => Promise.resolve(),
+    setSplitTunnelConfig: (configJson: string) => service.SetSplitTunnelConfig(configJson),
   };
   runtime.EventsOn(STATE_EVENT, state => {
     DeviceEventEmitter.emit(STATE_EVENT, state);

@@ -213,6 +213,25 @@ into this bundle.
 
 ---
 
+## 4. Bundled split-tunneling rule-set data
+
+The split-tunneling country presets embed four compiled sing-box rule-set
+files in the application binary. They are routing data, not linked code.
+
+- geosite-ir.srs, geoip-ir.srs — Iran-sing-box-rules (Chocolate4U) — GPL-3.0
+  — https://github.com/Chocolate4U/Iran-sing-box-rules
+- geosite-cn.srs — built by SagerNet/sing-geosite from the
+  v2fly/domain-list-community dataset — MIT — Copyright (c) 2018-2019 V2Ray —
+  https://github.com/SagerNet/sing-geosite,
+  https://github.com/v2fly/domain-list-community
+- geoip-cn.srs — built by SagerNet/sing-geoip from MaxMind GeoLite2 country
+  data — https://github.com/SagerNet/sing-geoip
+
+This product includes GeoLite2 data created by MaxMind, available from
+https://www.maxmind.com
+
+---
+
 ## Corresponding source (GPL-3.0 §6)
 
 The complete corresponding source for this build — the OpenRung source, the

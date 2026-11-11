@@ -20,9 +20,31 @@ that backs the app's native bridge contract with the Go service
 
 The window is a fixed, non-resizable phone-sized slab; on a screen too short
 for it, it is shortened at startup. Features the desktop service does not
-implement (split tunneling, the in-app update check) are hidden by the app
-when it runs on the desktop, and Settings gains the local proxy endpoint and
-shell commands in their place.
+implement (the in-app update check, per-app split tunneling) are hidden by the
+app when it runs on the desktop, and Settings gains the local proxy endpoint
+and shell commands in their place.
+
+## Split tunneling
+
+Settings offers the same split-tunneling presets as the mobile apps: local
+network, and the Iran or mainland-China country preset. The app pushes its
+choice to `vpnservice.SetSplitTunnelConfig`, which hands the engine the rules
+for later connects (`connectcore.Engine.SetSplitTunnel`) and, when a tunnel is
+up and the rules changed, reconnects to the same target.
+
+The country presets use the rule-set files the mobile apps ship
+(`desktop/mobile-app/rulesets/dist`). They are embedded in the app binary and
+copied at startup to `rulesets/` in the client state directory, because
+sing-box reads rule sets by path. A country whose files are not there is left
+out with a log line; the connect goes ahead without it.
+
+The desktop app runs in proxy mode, so sing-box sees the hostname an
+application asked for rather than an address. A destination is therefore
+bypassed when its hostname is in the country's domain list, or when it is a
+literal address in the country's address list; a hostname outside the domain
+list goes through the relay even if it resolves to an in-country address.
+Bypassed hostnames are looked up through the same in-country resolver rules
+the mobile apps use.
 
 ## Direct-first WSS fallback
 

@@ -171,6 +171,24 @@ func goldenCases() []goldenCase {
 				},
 			},
 		},
+		{
+			// The desktop app's split tunneling: proxy mode, the engine's own
+			// probe hosts pinned, and a resolve rule so a bypassed hostname is
+			// looked up through the DNS rules rather than the proxied default.
+			name: "proxy-split-cn",
+			input: SingBoxConfigInput{
+				Relay:               ipRelay,
+				Mode:                ModeProxy,
+				ProxyListenPort:     7890,
+				DNSShape:            DNSShapeDoHFailover,
+				ProbeDomainSuffixes: []string{"www.gstatic.com", "cp.cloudflare.com"},
+				SplitTunnel: &SplitTunnelRules{
+					BypassLAN:        true,
+					BypassCountries:  []string{SplitTunnelCountryCN},
+					RuleSetDirectory: "/rules",
+				},
+			},
+		},
 		{name: "tun-fakeip", input: SingBoxConfigInput{Relay: hostRelay, FakeIPCachePath: "/private/openrung/fakeip.db"}},
 		{name: "mobile-tun-ios-fakeip", input: SingBoxConfigInput{
 			Relay: ipRelay, MTU: 1400, LogLevel: "warn", DNSShape: DNSShapeDoHFailover,

@@ -146,10 +146,13 @@ type SingBoxConfigInput struct {
 	// ProbeDomainSuffixes overrides DefaultProbeDomainSuffixes for the DoH
 	// failover shape's probe-priority pins. Ignored by DNSShapeTCPProxied.
 	ProbeDomainSuffixes []string
-	// SplitTunnel enables mobile's split tunneling when non-nil: LAN bypass,
+	// SplitTunnel enables split tunneling when non-nil: LAN bypass,
 	// per-country .srs rule-set bypass with in-country direct resolvers, and
 	// Android per-app exclusion. Bypass countries require DNSShapeDoHFailover
 	// (see validateSplitTunnel). Nil emits a byte-identical no-split config.
+	// In ModeProxy a destination is bypassed by its hostname or literal
+	// address; the address rule sets cannot match a hostname that is not in
+	// the country's domain list.
 	SplitTunnel *SplitTunnelRules
 	// RouteFindProcess emits route.find_process, the Android emission's
 	// process-matching switch; iOS and desktop leave it off.
@@ -687,6 +690,22 @@ func buildRouteConfig(input SingBoxConfigInput, probeSuffixes []string) map[stri
 			"outbound":      "direct",
 		})
 	}
+	if input.Mode == ModeProxy {
+		// A proxy-mode inbound hands the router hostnames, not addresses, and
+		// the direct outbound would resolve a bypassed one through
+		// default_domain_resolver — the proxied dns-0, so the relay exit's
+		// view of an in-country site. resolve sends the lookup through the DNS
+		// rules instead, where countryDNSRules asks the in-country resolver
+		// and falls back to the proxied chain. TUN mode needs none: its
+		// destinations are addresses the OS already resolved through those
+		// same rules.
+		if ruleSets := directResolverRuleSets(bypassCountries); len(ruleSets) > 0 {
+			rules = append(rules, map[string]any{
+				"rule_set": ruleSets,
+				"action":   "resolve",
+			})
+		}
+	}
 	for _, country := range bypassCountries {
 		rules = append(rules, map[string]any{
 			"rule_set": []string{"geosite-" + country, "geoip-" + country},
@@ -726,6 +745,18 @@ func buildRouteConfig(input SingBoxConfigInput, probeSuffixes []string) map[stri
 		route["rule_set"] = ruleSets
 	}
 	return route
+}
+
+// directResolverRuleSets lists the domain rule sets of the bypass countries
+// that have an in-country resolver (see splitTunnelDirectResolvers).
+func directResolverRuleSets(bypassCountries []string) []string {
+	var ruleSets []string
+	for _, country := range bypassCountries {
+		if splitTunnelDirectResolvers[country] != nil {
+			ruleSets = append(ruleSets, "geosite-"+country)
+		}
+	}
+	return ruleSets
 }
 
 func localRuleSetObject(directory, tag string) map[string]any {

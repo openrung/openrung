@@ -84,7 +84,11 @@ jobs:
   go:
     runs-on: ubuntu-latest
     steps:
+      # The desktop app embeds the split-tunnel rule sets from the
+      # desktop/mobile-app submodule, so its cross-build below needs them.
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - uses: actions/setup-go@v5
         with:

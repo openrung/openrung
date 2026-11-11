@@ -369,6 +369,63 @@ func TestMobileIranContributesNoDNSServerOrRules(t *testing.T) {
 	}
 }
 
+// In proxy mode the router sees hostnames, so a bypassed one must be resolved
+// through the DNS rules (the in-country resolver) before it is dialed direct.
+// The rule sits after the probe pin and immediately before the country bypass,
+// covers only countries that have a direct resolver, and never appears in TUN
+// mode, whose emission must not change.
+func TestProxyModeResolvesBypassedDomainsThroughDNSRules(t *testing.T) {
+	resolveRules := func(input SingBoxConfigInput) (found []map[string]any, index int, rules []map[string]any) {
+		rules = routeRulesOf(buildDecoded(t, input))
+		index = -1
+		for i, rule := range rules {
+			if rule["action"] == "resolve" {
+				found = append(found, rule)
+				index = i
+			}
+		}
+		return found, index, rules
+	}
+	proxy := func(countries ...string) SingBoxConfigInput {
+		return SingBoxConfigInput{
+			Relay: mobileRelay(t), Mode: ModeProxy, ProxyListenPort: 7890, DNSShape: DNSShapeDoHFailover,
+			SplitTunnel: &SplitTunnelRules{BypassLAN: true, BypassCountries: countries, RuleSetDirectory: "/rules"},
+		}
+	}
+
+	found, index, rules := resolveRules(proxy(SplitTunnelCountryIR, SplitTunnelCountryCN))
+	if len(found) != 1 {
+		t.Fatalf("want exactly one resolve rule, got %+v", found)
+	}
+	if got := found[0]["rule_set"].([]any); len(got) != 1 || got[0] != "geosite-cn" {
+		t.Fatalf("resolve must cover only countries with a direct resolver, got %+v", got)
+	}
+	if _, pinned := found[0]["server"]; pinned {
+		t.Fatalf("resolve must not name a server, or the lookup skips the DNS rules: %+v", found[0])
+	}
+	var probePin, firstBypass int = -1, -1
+	for i, rule := range rules {
+		if rule["outbound"] == "proxy" && probePin < 0 {
+			probePin = i
+		}
+		if _, country := rule["rule_set"]; country && rule["outbound"] == "direct" && firstBypass < 0 {
+			firstBypass = i
+		}
+	}
+	if probePin < 0 || probePin > index || firstBypass != index+1 {
+		t.Fatalf("resolve must follow the probe pin and directly precede the country bypass: %+v", rules)
+	}
+
+	if found, _, _ := resolveRules(proxy(SplitTunnelCountryIR)); len(found) != 0 {
+		t.Fatalf("a country without a direct resolver needs no resolve rule, got %+v", found)
+	}
+	tun := mobileInput(mobileRelay(t))
+	tun.SplitTunnel = &SplitTunnelRules{BypassCountries: []string{SplitTunnelCountryCN}, RuleSetDirectory: "/rules"}
+	if found, _, _ := resolveRules(tun); len(found) != 0 {
+		t.Fatalf("TUN mode must not emit a resolve rule, got %+v", found)
+	}
+}
+
 func TestSplitTunnelValidation(t *testing.T) {
 	base := mobileInput(mobileRelay(t))
 	for name, mutate := range map[string]func(*SingBoxConfigInput){
