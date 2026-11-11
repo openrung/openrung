@@ -161,6 +161,25 @@ jobs:
           go vet -tags with_utls,with_external_windivert ./...
           go test -race -tags with_utls,with_external_windivert ./...
 
+      # The Linux proxy controller shells out to gsettings and
+      # kwriteconfig/kreadconfig, which exit 0 even when a write is lost, and
+      # its unit tests use a fake desktop. Run it against the real tools in a
+      # private D-Bus session with a throwaway config directory per desktop,
+      # reading every value back.
+      - name: Linux desktop proxy tools (gsettings + kioslaverc)
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            dbus dconf-service dconf-gsettings-backend gsettings-desktop-schemas \
+            libglib2.0-bin libkf5config-bin
+          go test -c -o "$RUNNER_TEMP/proxymode.test" ./internal/proxymode/
+          for desktop in gnome kde; do
+            config="$(mktemp -d)"
+            dbus-run-session -- env XDG_CONFIG_HOME="$config" OPENRUNG_PROXYMODE_SMOKE="$desktop" \
+              "$RUNNER_TEMP/proxymode.test" -test.v -test.run '^TestLinuxRealDesktopTools$'
+          done
+
       # with_external_windivert only alters GOOS=windows compilation, which
       # nothing else in this workflow exercises; without this the tag's
       # windows path would first compile at release time.

@@ -114,6 +114,8 @@ func TestLinuxDetection(t *testing.T) {
 		{"gnome", map[string]string{"XDG_CURRENT_DESKTOP": "GNOME"}, []string{"gsettings"}, false, linuxDesktopGNOME},
 		{"cinnamon", map[string]string{"XDG_CURRENT_DESKTOP": "X-Cinnamon"}, []string{"gsettings"}, false, linuxDesktopGNOME},
 		{"desktop session fallback", map[string]string{"DESKTOP_SESSION": "mate"}, []string{"gsettings"}, false, linuxDesktopGNOME},
+		{"gnome as a fallback entry", map[string]string{"XDG_CURRENT_DESKTOP": "Budgie:GNOME"}, []string{"gsettings"}, false, linuxDesktopGNOME},
+		{"xfce", map[string]string{"XDG_CURRENT_DESKTOP": "XFCE"}, []string{"gsettings"}, false, ""},
 		{"gnome without gsettings", map[string]string{"XDG_CURRENT_DESKTOP": "GNOME"}, nil, false, ""},
 		{"gnome without schema", map[string]string{"XDG_CURRENT_DESKTOP": "GNOME"}, []string{"gsettings"}, true, ""},
 		{"kde6", map[string]string{"XDG_CURRENT_DESKTOP": "KDE"}, []string{"kwriteconfig6", "kreadconfig6", "gsettings"}, false, linuxDesktopKDE},
@@ -301,6 +303,91 @@ func TestKDERoundTripRestoresPriorProxies(t *testing.T) {
 				t.Errorf("PAC URL changed to %q", f.kio["Proxy Config Script"])
 			}
 		})
+	}
+}
+
+// newFakeKDEWithGSettings is a Plasma session that also has the GNOME proxy
+// schema installed, as most do (GTK apps and Firefox depend on it).
+func newFakeKDEWithGSettings() *fakeLinux {
+	f := newFakeKDE("6")
+	f.tools["gsettings"] = true
+	f.gsetting = newFakeGNOME().gsetting
+	return f
+}
+
+func TestKDEAlsoDrivesGSettingsWhenInstalled(t *testing.T) {
+	f := newFakeKDEWithGSettings()
+	f.gsetting["org.gnome.system.proxy.socks host"] = "'10.0.0.2'"
+	before, beforeKIO := cloneMap(f.gsetting), cloneMap(f.kio)
+	c := f.controller()
+
+	snap, err := c.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if snap.Linux == nil || snap.Linux.Desktop != linuxDesktopKDE {
+		t.Fatalf("snapshot = %+v", snap)
+	}
+	if err := c.Set("127.0.0.1", 46685); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if f.kio["ProxyType"] != "1" || f.kio["httpProxy"] != "http://127.0.0.1 46685" {
+		t.Fatalf("kioslaverc = %v", f.kio)
+	}
+	if f.gsetting["org.gnome.system.proxy mode"] != "'manual'" ||
+		f.gsetting["org.gnome.system.proxy.http host"] != "'127.0.0.1'" ||
+		f.gsetting["org.gnome.system.proxy.http port"] != "46685" {
+		t.Fatalf("gsettings = %v", f.gsetting)
+	}
+	if err := c.Restore(roundTripJSON(t, snap)); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if !reflect.DeepEqual(f.gsetting, before) {
+		t.Fatalf("gsettings after restore = %v\nwant %v", f.gsetting, before)
+	}
+	if f.kio["ProxyType"] != beforeKIO["ProxyType"] || f.kio["httpProxy"] != "" {
+		t.Fatalf("kioslaverc after restore = %v", f.kio)
+	}
+}
+
+func TestKDEWithoutGSettingsLeavesItAlone(t *testing.T) {
+	f := newFakeKDE("6")
+	c := f.controller()
+	snap, err := c.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if err := c.Set("127.0.0.1", 46685); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := c.Restore(snap); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	for _, call := range f.calls {
+		if strings.HasPrefix(call, "gsettings ") {
+			t.Fatalf("ran %q without gsettings installed", call)
+		}
+	}
+}
+
+func TestKDERestoreAttemptsBothSettings(t *testing.T) {
+	// A failed kioslaverc write must not leave GSettings pointing at the
+	// tunnel: the restore reports the failure but still restores the rest.
+	f := newFakeKDEWithGSettings()
+	c := f.controller()
+	snap, err := c.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if err := c.Set("127.0.0.1", 46685); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	f.failSet = "ProxyType"
+	if err := c.Restore(snap); err == nil {
+		t.Fatal("Restore succeeded despite a failed kioslaverc write")
+	}
+	if f.gsetting["org.gnome.system.proxy mode"] != "'none'" {
+		t.Fatalf("mode = %s, want 'none'", f.gsetting["org.gnome.system.proxy mode"])
 	}
 }
 

@@ -33,12 +33,12 @@ type WindowsProxyState struct {
 	AutoConfigURL string `json:"auto_config_url"`
 }
 
-// LinuxProxyState is the session desktop's proxy configuration, captured
-// verbatim so a Restore reproduces it exactly, including a prior manual or
-// auto-config (PAC) proxy. Desktop names the setting it came from ("gnome" for
-// org.gnome.system.proxy, "kde" for kioslaverc); Settings maps each captured
-// key to its raw value ("<schema> <key>" to GVariant text for GNOME, the
-// kioslaverc [Proxy Settings] key to its string for KDE).
+// LinuxProxyState is the session desktop's proxy configuration, captured as
+// raw values so a Restore brings back a prior manual or auto-config (PAC)
+// proxy. Desktop names the session it came from ("gnome" or "kde"); Settings
+// maps each captured key to its raw value: "<schema> <key>" to GVariant text
+// for org.gnome.system.proxy, and the [Proxy Settings] key to its string for
+// kioslaverc. A "kde" capture holds both when GSettings was also driven.
 type LinuxProxyState struct {
 	Desktop  string            `json:"desktop"`
 	Settings map[string]string `json:"settings,omitempty"`

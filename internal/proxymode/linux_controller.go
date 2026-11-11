@@ -16,6 +16,9 @@ import (
 // GTK desktops that share its schema, and KIO's kioslaverc on KDE Plasma. The
 // controller drives whichever the session's desktop uses through the desktop's
 // own command-line tools, so it needs no D-Bus or dconf bindings.
+//
+// On Plasma it also writes GSettings when that schema is installed: Firefox
+// and GTK apps read it on every desktop and never read kioslaverc.
 
 const (
 	linuxDesktopGNOME = "gnome"
@@ -58,11 +61,13 @@ var kdeProxyKeys = []string{
 // kdeProxyBypass mirrors defaultProxyBypass in KIO's NoProxyFor syntax.
 const kdeProxyBypass = "localhost,127.0.0.0/8,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,fe80::/10,.local"
 
-// gnomeDesktops are XDG_CURRENT_DESKTOP entries whose apps read
-// org.gnome.system.proxy (the same set Chromium treats as GSettings desktops).
+// gnomeDesktops are the desktops on which both Chromium and Firefox read
+// org.gnome.system.proxy. Desktops that list GNOME as a fallback entry
+// ("ubuntu:GNOME", "Budgie:GNOME") match through it. XFCE is deliberately
+// absent: Chromium reads only the proxy environment variables there, so
+// writing GSettings would report a system proxy that Chromium ignores.
 var gnomeDesktops = map[string]bool{
-	"gnome": true, "unity": true, "ubuntu": true, "cinnamon": true, "x-cinnamon": true,
-	"pantheon": true, "budgie": true, "budgie-desktop": true, "mate": true, "xfce": true,
+	"gnome": true, "unity": true, "x-cinnamon": true, "pantheon": true, "mate": true,
 }
 
 // linuxSystem is the OS-facing surface of the Linux controller, injectable so
@@ -79,10 +84,11 @@ type linuxSystem struct {
 type linuxController struct {
 	sys linuxSystem
 
-	once    sync.Once
-	desktop string // linuxDesktopGNOME, linuxDesktopKDE, or "" if unsupported
-	kwrite  string // kwriteconfig6 or kwriteconfig5
-	kread   string // the matching kreadconfig
+	once      sync.Once
+	desktop   string // linuxDesktopGNOME, linuxDesktopKDE, or "" if unsupported
+	gsettings bool   // org.gnome.system.proxy is driven: always on GNOME, on KDE when installed
+	kwrite    string // kwriteconfig6 or kwriteconfig5
+	kread     string // the matching kreadconfig
 }
 
 func (c *linuxController) detect() {
@@ -111,6 +117,7 @@ func (c *linuxController) detectKDE() bool {
 	write, read, ok := c.kdeTools()
 	if ok {
 		c.desktop, c.kwrite, c.kread = linuxDesktopKDE, write, read
+		c.gsettings = c.gsettingsUsable()
 	}
 	return ok
 }
@@ -128,16 +135,22 @@ func (c *linuxController) kdeTools() (write, read string, ok bool) {
 }
 
 func (c *linuxController) detectGNOME() bool {
+	if !c.gsettingsUsable() {
+		return false
+	}
+	c.desktop, c.gsettings = linuxDesktopGNOME, true
+	return true
+}
+
+// gsettingsUsable reports whether gsettings and the proxy schema are
+// installed. The schema ships with gsettings-desktop-schemas; without it
+// every get and set fails.
+func (c *linuxController) gsettingsUsable() bool {
 	if _, err := c.sys.lookPath("gsettings"); err != nil {
 		return false
 	}
-	// The schema ships with gsettings-desktop-schemas; without it every get
-	// and set fails, so treat its absence as unsupported.
-	if _, err := c.sys.run("gsettings", "list-keys", "org.gnome.system.proxy"); err != nil {
-		return false
-	}
-	c.desktop = linuxDesktopGNOME
-	return true
+	_, err := c.sys.run("gsettings", "list-keys", "org.gnome.system.proxy")
+	return err == nil
 }
 
 func (c *linuxController) Supported() bool {
@@ -147,9 +160,22 @@ func (c *linuxController) Supported() bool {
 
 func (c *linuxController) Snapshot() (Snapshot, error) {
 	c.detect()
+	if c.desktop == "" {
+		return Snapshot{}, errors.New("no supported desktop proxy setting in this session")
+	}
+	// The two settings' keys cannot collide (GSettings ones carry their
+	// schema), so a KDE capture holds both in one map.
 	state := LinuxProxyState{Desktop: c.desktop, Settings: map[string]string{}}
-	switch c.desktop {
-	case linuxDesktopGNOME:
+	if c.desktop == linuxDesktopKDE {
+		for _, key := range kdeProxyKeys {
+			out, err := c.sys.run(c.kread, "--file", "kioslaverc", "--group", kdeProxyGroup, "--key", key)
+			if err != nil {
+				return Snapshot{}, fmt.Errorf("read kioslaverc %s: %w", key, err)
+			}
+			state.Settings[key] = strings.TrimRight(string(out), "\r\n")
+		}
+	}
+	if c.gsettings {
 		for _, k := range gnomeProxyKeys {
 			out, err := c.sys.run("gsettings", "get", k.schema, k.key)
 			if err != nil {
@@ -159,52 +185,46 @@ func (c *linuxController) Snapshot() (Snapshot, error) {
 			// "gsettings set" parses back, so it restores verbatim.
 			state.Settings[k.id()] = strings.TrimSpace(string(out))
 		}
-	case linuxDesktopKDE:
-		for _, key := range kdeProxyKeys {
-			out, err := c.sys.run(c.kread, "--file", "kioslaverc", "--group", kdeProxyGroup, "--key", key)
-			if err != nil {
-				return Snapshot{}, fmt.Errorf("read kioslaverc %s: %w", key, err)
-			}
-			state.Settings[key] = strings.TrimRight(string(out), "\r\n")
-		}
-	default:
-		return Snapshot{}, errors.New("no supported desktop proxy setting in this session")
 	}
 	return Snapshot{Platform: "linux", Linux: &state}, nil
 }
 
 func (c *linuxController) Set(host string, port int) error {
 	c.detect()
-	switch c.desktop {
-	case linuxDesktopGNOME:
-		portStr := strconv.Itoa(port)
-		return c.writeGNOME(map[string]string{
-			"org.gnome.system.proxy.http host":  gvariantString(host),
-			"org.gnome.system.proxy.http port":  portStr,
-			"org.gnome.system.proxy.https host": gvariantString(host),
-			"org.gnome.system.proxy.https port": portStr,
-			// Clear SOCKS so a prior upstream SOCKS proxy is not used
-			// alongside ours; it is captured and restored on disconnect.
-			"org.gnome.system.proxy.socks host":     gvariantString(""),
-			"org.gnome.system.proxy.socks port":     "0",
-			"org.gnome.system.proxy use-same-proxy": "false",
-			"org.gnome.system.proxy ignore-hosts":   gvariantStringArray(gnomeProxyBypass),
-			"org.gnome.system.proxy mode":           gvariantString("manual"),
-		})
-	case linuxDesktopKDE:
+	if c.desktop == "" {
+		return errors.New("no supported desktop proxy setting in this session")
+	}
+	portStr := strconv.Itoa(port)
+	if c.desktop == linuxDesktopKDE {
 		// KIO stores a manual proxy as "scheme://host port".
-		endpoint := "http://" + bracketIPv6(host) + " " + strconv.Itoa(port)
-		return c.writeKDE(c.kwrite, map[string]string{
+		endpoint := "http://" + bracketIPv6(host) + " " + portStr
+		if err := c.writeKDE(c.kwrite, map[string]string{
 			"httpProxy":         endpoint,
 			"httpsProxy":        endpoint,
 			"socksProxy":        "",
 			"NoProxyFor":        kdeProxyBypass,
 			"ReversedException": "false",
 			"ProxyType":         "1", // manual
-		})
-	default:
-		return errors.New("no supported desktop proxy setting in this session")
+		}); err != nil {
+			return err
+		}
 	}
+	if !c.gsettings {
+		return nil
+	}
+	return c.writeGNOME(map[string]string{
+		"org.gnome.system.proxy.http host":  gvariantString(host),
+		"org.gnome.system.proxy.http port":  portStr,
+		"org.gnome.system.proxy.https host": gvariantString(host),
+		"org.gnome.system.proxy.https port": portStr,
+		// Clear SOCKS so a prior upstream SOCKS proxy is not used
+		// alongside ours; it is captured and restored on disconnect.
+		"org.gnome.system.proxy.socks host":     gvariantString(""),
+		"org.gnome.system.proxy.socks port":     "0",
+		"org.gnome.system.proxy use-same-proxy": "false",
+		"org.gnome.system.proxy ignore-hosts":   gvariantStringArray(gnomeProxyBypass),
+		"org.gnome.system.proxy mode":           gvariantString("manual"),
+	})
 }
 
 func (c *linuxController) Restore(snap Snapshot) error {
@@ -222,11 +242,16 @@ func (c *linuxController) Restore(snap Snapshot) error {
 	case linuxDesktopGNOME:
 		return c.writeGNOME(snap.Linux.Settings)
 	case linuxDesktopKDE:
-		write, _, ok := c.kdeTools()
-		if !ok {
-			return errors.New("kwriteconfig is not available to restore the KDE proxy setting")
+		// Attempt both settings even if one fails, so a missing tool never
+		// strands the other pointing at the tunnel. A capture without
+		// GSettings keys makes writeGNOME a no-op.
+		var kdeErr error
+		if write, _, ok := c.kdeTools(); ok {
+			kdeErr = c.writeKDE(write, snap.Linux.Settings)
+		} else {
+			kdeErr = errors.New("kwriteconfig is not available to restore the KDE proxy setting")
 		}
-		return c.writeKDE(write, snap.Linux.Settings)
+		return errors.Join(kdeErr, c.writeGNOME(snap.Linux.Settings))
 	default:
 		return fmt.Errorf("cannot restore linux proxy snapshot for desktop %q", snap.Linux.Desktop)
 	}
