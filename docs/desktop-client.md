@@ -79,6 +79,37 @@ child instantly, which would race and defeat the pipe's graceful teardown. See
 [Windows](#windows) below for what all this means for the terminal client's
 TUN mode.)
 
+## Desktop App: macOS signing
+
+Release builds of the macOS app are signed with the OpenRung Foundation's
+Developer ID certificate under the hardened runtime, notarized by Apple, and
+carry the stapled notarization ticket. A downloaded `OpenRung.app` therefore
+opens directly: macOS shows only its usual confirmation for an app downloaded
+from the internet, and nothing has to be allowed in System Settings. To check
+a download:
+
+```sh
+spctl -a -t execute -vv OpenRung.app   # accepted, source=Notarized Developer ID
+xcrun stapler validate OpenRung.app
+```
+
+The release workflow (`.github/workflows/desktop-release.yml`) does this with
+`scripts/sign-macos-app.sh` after packaging and before it zips the bundle. A
+`desktop-vX.Y.Z` tag build fails unless the app ends up signed, notarized and
+accepted by Gatekeeper, so a release never carries an unsigned macOS app.
+
+The app is signed without entitlements. It is not sandboxed, and it needs none
+of the hardened runtime's exceptions: it is a Go executable that loads no
+third-party dynamic libraries, its interface runs in the system WebKit view
+(whose JavaScript engine lives in Apple's own processes), and the tunnel
+engine is the same signed executable re-invoked.
+
+`desktop/scripts/package-macos.sh` on its own still produces an ad-hoc signed
+bundle, which is what a local build, or a workflow run without the signing
+secrets (a fork), ends up with. Such a build runs on the Mac that built it; a
+copy moved to another Mac is blocked by Gatekeeper until it is allowed under
+System Settings → Privacy & Security.
+
 ## Desktop App: Local Proxy
 
 The desktop app chooses one local port on first launch and persists it under
