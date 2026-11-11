@@ -495,6 +495,9 @@ type Engine struct {
 	// mode is the capture mode (see mode.go). Its zero value is ModeProxy, so
 	// a host that never calls SetMode keeps the pre-B3 behavior.
 	mode Mode
+	// splitTunnel is the desktop hosts' split-tunnel input (see
+	// splittunnel.go); nil means off.
+	splitTunnel *client.SplitTunnelRules
 
 	directory *directoryCache
 
@@ -1309,6 +1312,7 @@ func (s *Engine) attemptDirectCandidate(ctx context.Context, conn *connection, c
 func (s *Engine) candidateConfigInput(cand brokerapi.RelayDescriptor, port int) client.SingBoxConfigInput {
 	mode := s.Mode()
 	input := client.SingBoxConfigInput{Relay: cand, Mode: mode.inboundMode()}
+	s.applySplitTunnel(&input)
 	if mode == ModeTUN {
 		input.MTU = s.TunnelMTU
 		input.FakeIPCachePath = s.FakeIPCachePath

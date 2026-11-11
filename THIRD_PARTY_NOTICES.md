@@ -442,6 +442,28 @@ Every npm package Vite places in the production bundle of `desktop/frontend`
 The app's user interface is the OpenRung mobile app's own source
 (`desktop/mobile-app`, GPL-3.0-or-later), compiled into the same bundle.
 
+### 7.4 Bundled split-tunneling rule-set data
+
+The split-tunneling country presets embed four compiled sing-box rule-set
+binaries in the app binary, taken unmodified from
+`desktop/mobile-app/rulesets/dist` (the files the mobile apps ship). They are
+routing data, not linked code. Exact source commits, fetch dates and SHA-256
+hashes are pinned in that directory's `README.md`.
+
+- `geosite-ir.srs`, `geoip-ir.srs` — Iran-sing-box-rules (Chocolate4U) —
+  **GPL-3.0** — https://github.com/Chocolate4U/Iran-sing-box-rules
+- `geosite-cn.srs` — built by SagerNet/sing-geosite from the
+  `v2fly/domain-list-community` dataset — **MIT**, Copyright (c) 2018-2019
+  V2Ray (the MIT notice in Appendix A must be retained) —
+  https://github.com/SagerNet/sing-geosite,
+  https://github.com/v2fly/domain-list-community
+- `geoip-cn.srs` — built by SagerNet/sing-geoip from MaxMind GeoLite2 country
+  data — https://github.com/SagerNet/sing-geoip
+- **Required MaxMind GeoLite2 notice (verbatim):**
+
+  > This product includes GeoLite2 data created by MaxMind, available from
+  > https://www.maxmind.com
+
 ---
 
 ## 8. Embedded Windows driver binaries (sing-box engine)
