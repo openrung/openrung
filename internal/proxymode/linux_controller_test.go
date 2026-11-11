@@ -20,6 +20,7 @@ type fakeLinux struct {
 	kio      map[string]string // kioslaverc [Proxy Settings]
 	noSchema bool
 	failSet  string // a "<schema> <key>" or kio key whose write fails
+	loseSet  string // a "<schema> <key>" whose write exits 0 but never lands
 	calls    []string
 }
 
@@ -84,7 +85,9 @@ func (f *fakeLinux) run(name string, args ...string) ([]byte, error) {
 		if id == f.failSet {
 			return nil, errors.New("write failed")
 		}
-		f.gsetting[id] = args[3]
+		if id != f.loseSet {
+			f.gsetting[id] = args[3]
+		}
 		return nil, nil
 	case strings.HasPrefix(name, "kreadconfig"):
 		return []byte(f.kio[args[5]] + "\n"), nil
@@ -177,8 +180,14 @@ func TestGNOMESetPointsAtLoopbackModeLast(t *testing.T) {
 	if !strings.Contains(f.gsetting["org.gnome.system.proxy ignore-hosts"], "'192.168.0.0/16'") {
 		t.Errorf("ignore-hosts = %s, want the private ranges", f.gsetting["org.gnome.system.proxy ignore-hosts"])
 	}
-	if last := f.calls[len(f.calls)-1]; last != "gsettings set org.gnome.system.proxy mode 'manual'" {
-		t.Fatalf("last call = %q, want the mode switch", last)
+	var sets []string
+	for _, call := range f.calls {
+		if strings.HasPrefix(call, "gsettings set ") {
+			sets = append(sets, call)
+		}
+	}
+	if last := sets[len(sets)-1]; last != "gsettings set org.gnome.system.proxy mode 'manual'" {
+		t.Fatalf("last write = %q, want the mode switch", last)
 	}
 }
 
@@ -232,6 +241,57 @@ func TestGNOMESetFailureIsReported(t *testing.T) {
 	f.failSet = "org.gnome.system.proxy mode"
 	if err := f.controller().Set("127.0.0.1", 46685); err == nil {
 		t.Fatal("Set succeeded despite a failed write")
+	}
+}
+
+func TestGNOMELostWriteIsReported(t *testing.T) {
+	// gsettings exits 0 when a change cannot be committed. A restore that
+	// trusted the exit status would report success, and the engine would drop
+	// the snapshot while apps still point at the stopped proxy.
+	f := newFakeGNOME()
+	c := f.controller()
+	snap, err := c.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if err := c.Set("127.0.0.1", 46685); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	f.loseSet = "org.gnome.system.proxy mode"
+	if err := c.Restore(snap); err == nil {
+		t.Fatal("Restore reported success although the mode write was lost")
+	}
+	if f.gsetting["org.gnome.system.proxy mode"] != "'manual'" {
+		t.Fatalf("mode = %s, want the lost write to leave 'manual'", f.gsetting["org.gnome.system.proxy mode"])
+	}
+	// Once writes land again, the same snapshot restores.
+	f.loseSet = ""
+	if err := c.Restore(snap); err != nil {
+		t.Fatalf("Restore retry: %v", err)
+	}
+	if f.gsetting["org.gnome.system.proxy mode"] != "'none'" {
+		t.Fatalf("mode = %s, want 'none'", f.gsetting["org.gnome.system.proxy mode"])
+	}
+
+	f.loseSet = "org.gnome.system.proxy.http host"
+	if err := c.Set("127.0.0.1", 46685); err == nil {
+		t.Fatal("Set reported success although the host write was lost")
+	}
+}
+
+func TestKDELostGSettingsWriteIsReported(t *testing.T) {
+	f := newFakeKDEWithGSettings()
+	c := f.controller()
+	snap, err := c.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if err := c.Set("127.0.0.1", 46685); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	f.loseSet = "org.gnome.system.proxy mode"
+	if err := c.Restore(snap); err == nil {
+		t.Fatal("Restore reported success although the GSettings mode write was lost")
 	}
 }
 

@@ -257,8 +257,14 @@ func (c *linuxController) Restore(snap Snapshot) error {
 	}
 }
 
-// writeGNOME sets every key in values, in gnomeProxyKeys order. Keys absent
-// from values are left alone.
+// writeGNOME sets every key in values, in gnomeProxyKeys order, then confirms
+// each one took effect. Keys absent from values are left alone.
+//
+// The exit status of "gsettings set" does not prove the write: when the change
+// cannot be committed gsettings only logs a warning and still exits 0. A
+// separate process therefore reads every key back, and a value that did not
+// stick is an error, so the caller never drops a snapshot whose restore was
+// lost. Values must be in the text form gsettings prints.
 func (c *linuxController) writeGNOME(values map[string]string) error {
 	for _, k := range gnomeProxyKeys {
 		value, ok := values[k.id()]
@@ -267,6 +273,19 @@ func (c *linuxController) writeGNOME(values map[string]string) error {
 		}
 		if _, err := c.sys.run("gsettings", "set", k.schema, k.key, value); err != nil {
 			return fmt.Errorf("set %s: %w", k.id(), err)
+		}
+	}
+	for _, k := range gnomeProxyKeys {
+		want, ok := values[k.id()]
+		if !ok {
+			continue
+		}
+		out, err := c.sys.run("gsettings", "get", k.schema, k.key)
+		if err != nil {
+			return fmt.Errorf("confirm %s: %w", k.id(), err)
+		}
+		if got := strings.TrimSpace(string(out)); got != want {
+			return fmt.Errorf("set %s: wrote %s but it reads back as %s", k.id(), want, got)
 		}
 	}
 	return nil
