@@ -134,14 +134,29 @@ interface CameraProps {
   initialViewState?: { center?: [number, number]; zoom?: number };
   minZoom?: number;
   maxZoom?: number;
+  /** A camera stop: move to this center (zoom unchanged) whenever it changes. */
+  center?: [number, number];
+  /** Milliseconds the move to `center` takes. */
+  duration?: number;
+  // The native easing name is accepted and ignored: maplibre-gl eases by default.
+  easing?: string;
 }
 
-export function Camera({ initialViewState, minZoom, maxZoom }: CameraProps): null {
-  const { camera } = useMapContext();
+export function Camera({ initialViewState, minZoom, maxZoom, center, duration }: CameraProps): null {
+  const { map, camera } = useMapContext();
   // Layout effect: guaranteed to run before <Map>'s passive effect creates the map.
   useLayoutEffect(() => {
     camera.current = { ...initialViewState, minZoom, maxZoom };
   }, [camera, initialViewState, minZoom, maxZoom]);
+
+  const [longitude, latitude] = center ?? [];
+  useEffect(() => {
+    if (map == null || longitude == null || latitude == null) {
+      return;
+    }
+    map.easeTo({ center: [longitude, latitude], duration });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- a stop is its center; duration rides along
+  }, [map, longitude, latitude]);
   return null;
 }
 
