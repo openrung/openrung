@@ -20,9 +20,9 @@ that backs the app's native bridge contract with the Go service
 
 The window is a fixed, non-resizable phone-sized slab; on a screen too short
 for it, it is shortened at startup. Features the desktop service does not
-implement (split tunneling, the relay speed test, the in-app update check)
-are hidden by the app when it runs on the desktop, and Settings gains the
-local proxy endpoint and shell commands in their place.
+implement (split tunneling, the in-app update check) are hidden by the app
+when it runs on the desktop, and Settings gains the local proxy endpoint and
+shell commands in their place.
 
 ## Direct-first WSS fallback
 

@@ -5,7 +5,7 @@ import { installNativeModules } from './installNativeModules';
 
 interface BrokerModule {
   firstReachable(requestId: string, primary: string): Promise<Record<string, unknown>>;
-  runSpeedTest(): Promise<unknown>;
+  fetchManifestCandidate(): Promise<unknown>;
 }
 interface VpnModule {
   connect(brokerUrl: string, country: string | null, relayId: string | null): Promise<void>;
@@ -130,7 +130,7 @@ describe('installNativeModules under Wails', () => {
   it('rejects broker features the desktop host does not implement with a coded error', async () => {
     fakeWails();
     installNativeModules();
-    await expect(modules.OpenRungBroker!.runSpeedTest()).rejects.toMatchObject({ code: 'unavailable' });
+    await expect(modules.OpenRungBroker!.fetchManifestCandidate()).rejects.toMatchObject({ code: 'unavailable' });
   });
 
   it('exposes the desktop host: version, proxy details, clipboard and external links', async () => {

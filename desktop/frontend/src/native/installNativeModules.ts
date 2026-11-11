@@ -35,7 +35,6 @@ function brokerModule(listRelays: () => Promise<{ key_id?: string }>) {
     },
     // The app hides these features in the desktop client (see isDesktop in the
     // mobile source); the rejections only guard against a stray call.
-    runSpeedTest: () => Promise.reject(unavailable('The speed test')),
     sendTelemetryBatchJSON: () => Promise.reject(unavailable('Telemetry upload')),
     fetchManifestCandidate: () => Promise.reject(unavailable('The update manifest')),
     cancel: () => Promise.resolve(false),
