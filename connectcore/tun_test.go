@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -229,6 +231,89 @@ func TestSetModeRefusedWhileConnected(t *testing.T) {
 	}
 	if s.Mode() != ModeTUN {
 		t.Fatalf("mode = %v; want TUN", s.Mode())
+	}
+}
+
+// The terminal status is published before the terminal telemetry flush, which
+// holds the connection for up to its budget. A host enables its mode control
+// on that status, so the mode must be settable through the whole flush — after
+// a disconnect and after a failure alike — and not only once the connection is
+// cleared.
+func TestSetModeAllowedWhileTheTerminalFlushRuns(t *testing.T) {
+	cases := []struct {
+		name     string
+		fixtures []brokerapi.RelayDescriptor
+		// end drives a session on s to its terminal status and returns it.
+		end func(t *testing.T, s *Engine, brokerURL string, requests <-chan struct{}) Status
+	}{
+		{
+			name:     "after a disconnect",
+			fixtures: []brokerapi.RelayDescriptor{relayAt("a", "JP", "Tokyo", "Japan", "127.0.0.10")},
+			end: func(t *testing.T, s *Engine, brokerURL string, requests <-chan struct{}) Status {
+				if err := s.Connect(brokerURL, "", ""); err != nil {
+					t.Fatal(err)
+				}
+				waitForStatus(t, s, StatusConnected)
+				<-requests // promote's success flush is parked at the broker
+				if err := s.Disconnect(); err != nil {
+					t.Fatal(err)
+				}
+				return StatusDisconnected
+			},
+		},
+		{
+			// No relay to try: the flow fails before the ladder.
+			name: "after a failure",
+			end: func(t *testing.T, s *Engine, brokerURL string, _ <-chan struct{}) Status {
+				if err := s.Connect(brokerURL, "", ""); err != nil {
+					t.Fatal(err)
+				}
+				return StatusFailed
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			requests := make(chan struct{}, 8)
+			release := make(chan struct{})
+			hanging := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests <- struct{}{}
+				select {
+				case <-r.Context().Done():
+				case <-release:
+				}
+			}))
+			defer hanging.Close()
+			defer close(release)
+
+			s, _ := newLadderService(t, func() []brokerapi.RelayDescriptor { return tc.fixtures })
+
+			terminal := tc.end(t, s, hanging.URL, requests)
+			waitForStatus(t, s, terminal)
+			// The terminal flush's upload arriving proves the session is past
+			// its terminal status and parked in the flush.
+			select {
+			case <-requests:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the terminal flush never reached the broker")
+			}
+			s.mu.Lock()
+			held := s.conn != nil
+			s.mu.Unlock()
+			if !held {
+				t.Fatal("the connection was already cleared; the flush interval was not exercised")
+			}
+
+			if err := s.SetMode(ModeTUN); err != nil {
+				t.Fatalf("SetMode during the terminal flush: %v", err)
+			}
+			if s.Mode() != ModeTUN {
+				t.Fatalf("mode = %v; want TUN", s.Mode())
+			}
+
+			_ = s.Shutdown(100 * time.Millisecond)
+			waitIdle(t, s)
+		})
 	}
 }
 

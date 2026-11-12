@@ -1,11 +1,14 @@
 # Desktop Clients
 
-OpenRung ships a Wails desktop app for Linux, macOS, and Windows. It runs a
-mixed HTTP/SOCKS proxy on loopback, requiring no administrator privileges, and
-installs as a single executable with the tunnel engine linked in.
+OpenRung ships a Wails desktop app for Linux, macOS, and Windows. It installs
+as a single executable with the tunnel engine linked in. On macOS and Linux it
+runs a mixed HTTP/SOCKS proxy on loopback, requiring no administrator
+privileges. On Windows it starts by routing the whole device through a TUN
+interface, which takes administrator rights, and can be switched to the same
+loopback proxy (see [TUN mode](#tun-mode)).
 This repository also contains a terminal client (`cmd/client`) that drives the
-same connection engine from a TUI and can additionally route the whole device
-through a TUN interface. Both are described below.
+same connection engine from a TUI and offers TUN capture on all three systems.
+Both are described below.
 
 ## User interface
 
@@ -38,11 +41,13 @@ copied at startup to `rulesets/` in the client state directory, because
 sing-box reads rule sets by path. A country whose files are not there is left
 out with a log line; the connect goes ahead without it.
 
-The desktop app runs in proxy mode, so sing-box sees the hostname an
-application asked for rather than an address. A destination is therefore
-bypassed when its hostname is in the country's domain list, or when it is a
-literal address in the country's address list; a hostname outside the domain
-list goes through the relay even if it resolves to an in-country address.
+In proxy mode sing-box sees the hostname an application asked for rather than
+an address. A destination is therefore bypassed when its hostname is in the
+country's domain list, or when it is a literal address in the country's
+address list; a hostname outside the domain list goes through the relay even
+if it resolves to an in-country address. In [TUN mode](#tun-mode) sing-box
+sees addresses, as it does in the mobile apps, and the address list applies to
+every destination.
 Bypassed hostnames are looked up through the same DNS rules the mobile apps
 use, for every country preset: the in-country resolver where the preset has
 one, with the proxied resolvers and their failover behind it.
@@ -53,6 +58,40 @@ lists loopback and private addresses as exceptions (`internal/proxymode`), so
 applications reach those directly whether or not local-network bypass, or
 split tunneling itself, is on. macOS installs no such exception list, so there
 the choice decides.
+
+## TUN mode
+
+On Windows, Settings has a TUN mode switch. With it on, the engine captures
+the whole device through a TUN interface (`connectcore.ModeTUN`, the mode the
+terminal client offers with `--tun`) instead of serving the loopback proxy:
+applications that ignore the system proxy are carried too, no system proxy is
+set, and Settings leaves the local proxy rows out.
+
+TUN is the mode the app starts in on Windows until a choice is stored: a first
+launch opens in it. After that the app starts in the mode the switch last
+stored, kept in the client state directory. The switch is locked while a
+tunnel is up, because a session keeps the mode it started with.
+
+Creating the interface takes administrator rights, which the app obtains by
+restarting itself. A launch that is to run in TUN mode, or turning the switch
+on, starts a new instance of the app through the shell's `runas` verb (one UAC
+prompt) and ends the current one; the elevated instance puts the engine in TUN
+mode. Declining the prompt stores proxy mode and the app carries on in it, so
+later launches do not ask again until the switch is turned on.
+
+The whole app runs elevated in TUN mode, not only the tunnel process: that
+process is stopped by closing its standard input (see
+[Bundled Engine](#desktop-app-bundled-engine)), and the verb that elevates a
+process cannot hand it a pipe. For the same reason TUN mode needs the bundled
+engine and is not offered with an external `OPENRUNG_SING_BOX` binary.
+
+The elevated instance uses the state directory of the account it runs as. When
+the UAC prompt is answered with a different account's credentials, that is the
+other account's directory: its stored mode, recents and identity are separate
+from those of the account that started the app.
+
+macOS and Linux have no switch. The app has no way to obtain the rights there;
+the terminal client run as root covers TUN mode on those systems.
 
 ## Direct-first WSS fallback
 
@@ -102,8 +141,8 @@ crash, `Stop-Process`, Task Manager — so an orphaned tunnel child stops itself
 instead of running unsupervised. An external `OPENRUNG_SING_BOX` binary does
 not speak the stdin protocol: on Windows its teardown is a hard kill after the
 grace period and a kill-on-close job object reaps it if the app dies first —
-both cost nothing in proxy mode, the only mode the desktop app offers, because
-no device or routes are held. (The job object is deliberately NOT applied to
+both cost nothing in proxy mode, the only mode the desktop app offers with an
+external binary, because no device or routes are held. (The job object is deliberately NOT applied to
 the bundled child: closing a kill-on-close job's last handle terminates the
 child instantly, which would race and defeat the pipe's graceful teardown. See
 [Windows](#windows) below for what all this means for the terminal client's

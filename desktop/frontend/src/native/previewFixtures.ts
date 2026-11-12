@@ -1,7 +1,7 @@
 // Fixtures for the browser preview only (no Wails runtime, so no Go service).
 // The relay list uses the same placeholder locations and documentation-range
 // hosts as the existing desktop frontend's mock; none of this is real data.
-import type { WailsProxyInfo, WailsRelayListResponse } from './wails';
+import type { WailsProxyInfo, WailsRelayListResponse, WailsTunnelMode } from './wails';
 
 export function previewProxyInfo(): WailsProxyInfo {
   return {
@@ -11,6 +11,21 @@ export function previewProxyInfo(): WailsProxyInfo {
     shellIntegrationError: null,
     enableCommand: '. "$HOME/.config/openrung/proxy.sh" && openrung_proxy_on',
     disableCommand: 'openrung_proxy_off',
+  };
+}
+
+/**
+ * A stand-in for the host's capture mode, so the preview shows the TUN mode
+ * switch and what Settings does around it. Nothing restarts and nothing is
+ * captured: the switch only flips a value held here.
+ */
+export function previewTunnelMode() {
+  const state: WailsTunnelMode = { mode: 'proxy', available: true, requiresRestart: true };
+  return {
+    getTunnelMode: async (): Promise<WailsTunnelMode> => ({ ...state }),
+    setTunnelMode: async (mode: string): Promise<void> => {
+      state.mode = mode === 'tun' ? 'tun' : 'proxy';
+    },
   };
 }
 
