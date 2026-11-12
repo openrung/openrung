@@ -20,16 +20,19 @@ type ServiceProxyState struct {
 	SecureEnabled bool   `json:"secure_enabled"`
 	SecureHost    string `json:"secure_host"`
 	SecurePort    int    `json:"secure_port"`
-	// AutoProxy is the service's automatic proxy configuration (PAC URL).
-	// Nil in a snapshot taken before it was captured: that version's Set left
-	// the PAC setting alone, so its Restore must too.
+	// AutoProxy is the service's automatic proxy configuration: its PAC URL
+	// and automatic proxy discovery (WPAD). Nil in a snapshot taken before it
+	// was captured: that version's Set left both alone, so its Restore must too.
 	AutoProxy *AutoProxyState `json:"auto_proxy,omitempty"`
 }
 
 // AutoProxyState is a macOS network service's automatic proxy configuration.
+// Enabled and URL are the PAC setting; Discovery is automatic proxy discovery,
+// which finds a PAC file through the network (WPAD).
 type AutoProxyState struct {
-	Enabled bool   `json:"enabled"`
-	URL     string `json:"url,omitempty"`
+	Enabled   bool   `json:"enabled"`
+	URL       string `json:"url,omitempty"`
+	Discovery bool   `json:"discovery"`
 }
 
 // WindowsProxyState is the user's global WinInet proxy configuration (a single

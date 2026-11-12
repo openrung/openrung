@@ -212,7 +212,7 @@ what Firefox reads) are configured the same way, with the prior setting
 snapshotted and restored; other desktops need a manual proxy. On macOS and
 Windows an automatic proxy configuration (PAC URL) would take precedence over
 the manual proxy, so it is switched off while connected and restored on
-disconnect. Command-line
+disconnect; on macOS, so is automatic proxy discovery (WPAD). Command-line
 applications do not necessarily honor those settings. On Linux and macOS, the Settings
 screen of both the desktop app and the terminal client therefore also provides
 two copyable POSIX-shell commands:
