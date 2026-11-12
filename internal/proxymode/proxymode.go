@@ -44,6 +44,10 @@ type WindowsProxyState struct {
 	ProxyServer   string `json:"proxy_server"`
 	ProxyOverride string `json:"proxy_override"`
 	AutoConfigURL string `json:"auto_config_url"`
+	// AutoDetect is "Automatically detect settings" (WPAD). Nil in a snapshot
+	// taken before it was captured: that version's Set left it alone, so its
+	// Restore must too.
+	AutoDetect *bool `json:"auto_detect,omitempty"`
 }
 
 // LinuxProxyState is the session desktop's proxy configuration, captured as
