@@ -209,7 +209,10 @@ macOS and Windows are configured through their system proxy settings. On
 Linux, GNOME-family desktops (GSettings `org.gnome.system.proxy`) and KDE
 Plasma (`kioslaverc`, plus GSettings when its schema is installed, which is
 what Firefox reads) are configured the same way, with the prior setting
-snapshotted and restored; other desktops need a manual proxy. Command-line
+snapshotted and restored; other desktops need a manual proxy. On macOS and
+Windows an automatic proxy configuration (PAC URL) would take precedence over
+the manual proxy, so it is switched off while connected and restored on
+disconnect. Command-line
 applications do not necessarily honor those settings. On Linux and macOS, the Settings
 screen of both the desktop app and the terminal client therefore also provides
 two copyable POSIX-shell commands:
