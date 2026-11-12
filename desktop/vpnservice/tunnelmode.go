@@ -17,12 +17,12 @@ import (
 //
 // The engine already captures the whole device through a TUN interface (see
 // connectcore.ModeTUN); what a GUI has to add is the privilege to create that
-// interface. On Windows the app obtains it by restarting itself elevated: the
-// user turns TUN mode on in Settings, the choice is stored, and the app starts
-// a new instance of itself through the "runas" verb (one UAC prompt) and
-// quits. The elevated instance finds the stored choice and switches the engine
-// to TUN mode. Every later launch repeats the restart while the choice stands,
-// so the mode the user picked is the mode the app runs in.
+// interface. On Windows the app obtains it by restarting itself elevated:
+// when a launch is to run in TUN mode, the app starts a new instance of
+// itself through the "runas" verb (one UAC prompt) and quits, and the elevated
+// instance switches the engine to TUN mode. TUN is the mode a first launch
+// starts in there; after that the app starts in the mode Settings last
+// stored, so every launch repeats the restart while that is TUN mode.
 //
 // The whole app is elevated rather than only the tunnel process because the
 // tunnel process is stopped by closing its standard input, and the shell verb
@@ -119,11 +119,11 @@ func (s *Service) SetTunnelMode(mode string) error {
 }
 
 // RelaunchForTUN is for package main, before it opens a window (the context
-// parameter keeps Wails from binding it). When the stored mode is TUN and
-// this instance lacks the rights for it, it starts an elevated instance and
-// reports true: the caller exits. A refused restart clears the stored choice
-// and the app carries on in proxy mode, so a declined prompt is not asked
-// again at every launch.
+// parameter keeps Wails from binding it). When the launch is to start in TUN
+// mode (see startsInTUN) and this instance lacks the rights for it, it starts
+// an elevated instance and reports true: the caller exits. A refused restart
+// stores proxy mode and the app carries on in it, so a declined prompt is not
+// asked again at every launch.
 func (s *Service) RelaunchForTUN(_ context.Context, args []string) bool {
 	if s.tunUnavailable() != nil || processElevated() || relaunchedFrom(args) != 0 {
 		return false
@@ -137,7 +137,7 @@ func (s *Service) RelaunchForTUN(_ context.Context, args []string) bool {
 		}
 		store = opened
 	}
-	if !store.LoadDesktopTUNMode() {
+	if !s.startsInTUN(store) {
 		return false
 	}
 	if err := relaunchElevated(); err != nil {
@@ -150,9 +150,20 @@ func (s *Service) RelaunchForTUN(_ context.Context, args []string) bool {
 	return true
 }
 
-// restoreTunnelMode applies the stored mode at startup.
+// startsInTUN reports the mode a launch starts in: the stored choice, or,
+// before any choice is stored, TUN mode wherever the app can offer it. The
+// app therefore opens in TUN mode on a first launch on Windows, and a
+// declined prompt for the rights stores proxy mode (see RelaunchForTUN).
+func (s *Service) startsInTUN(store *clientstate.Store) bool {
+	if tun, stored := store.LoadDesktopTUNMode(); stored {
+		return tun
+	}
+	return s.tunUnavailable() == nil
+}
+
+// restoreTunnelMode applies the starting mode at startup.
 func (s *Service) restoreTunnelMode() {
-	if s.store == nil || !s.store.LoadDesktopTUNMode() {
+	if s.store == nil || !s.startsInTUN(s.store) {
 		return
 	}
 	if err := s.tunUnavailable(); err != nil {

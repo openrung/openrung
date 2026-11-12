@@ -1,10 +1,11 @@
 # Desktop Clients
 
-OpenRung ships a Wails desktop app for Linux, macOS, and Windows. It runs a
-mixed HTTP/SOCKS proxy on loopback, requiring no administrator privileges, and
-installs as a single executable with the tunnel engine linked in. On Windows
-it can instead route the whole device through a TUN interface (see
-[TUN mode](#tun-mode)).
+OpenRung ships a Wails desktop app for Linux, macOS, and Windows. It installs
+as a single executable with the tunnel engine linked in. On macOS and Linux it
+runs a mixed HTTP/SOCKS proxy on loopback, requiring no administrator
+privileges. On Windows it starts by routing the whole device through a TUN
+interface, which takes administrator rights, and can be switched to the same
+loopback proxy (see [TUN mode](#tun-mode)).
 This repository also contains a terminal client (`cmd/client`) that drives the
 same connection engine from a TUI and offers TUN capture on all three systems.
 Both are described below.
@@ -66,14 +67,17 @@ terminal client offers with `--tun`) instead of serving the loopback proxy:
 applications that ignore the system proxy are carried too, no system proxy is
 set, and Settings leaves the local proxy rows out.
 
-Creating the interface takes administrator rights, which the app obtains by
-restarting itself. Turning the switch on stores the choice in the client state
-directory, starts a new instance of the app through the shell's `runas` verb
-(one UAC prompt) and quits; the elevated instance finds the stored choice and
-puts the engine in TUN mode. While the choice stands, every later launch
-restarts elevated the same way. Declining the prompt keeps or returns the app
-to proxy mode and clears the stored choice. The switch is locked while a
+TUN is the mode the app starts in on Windows until a choice is stored: a first
+launch opens in it. After that the app starts in the mode the switch last
+stored, kept in the client state directory. The switch is locked while a
 tunnel is up, because a session keeps the mode it started with.
+
+Creating the interface takes administrator rights, which the app obtains by
+restarting itself. A launch that is to run in TUN mode, or turning the switch
+on, starts a new instance of the app through the shell's `runas` verb (one UAC
+prompt) and ends the current one; the elevated instance puts the engine in TUN
+mode. Declining the prompt stores proxy mode and the app carries on in it, so
+later launches do not ask again until the switch is turned on.
 
 The whole app runs elevated in TUN mode, not only the tunnel process: that
 process is stopped by closing its standard input (see

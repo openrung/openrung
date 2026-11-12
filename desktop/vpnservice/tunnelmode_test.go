@@ -47,6 +47,19 @@ func tunService(t *testing.T, platform *tunPlatform) *Service {
 	return s
 }
 
+// storedMode reads the service's stored capture mode: "tun", "proxy", or ""
+// when no choice is stored.
+func storedMode(s *Service) string {
+	switch tun, stored := s.store.LoadDesktopTUNMode(); {
+	case !stored:
+		return ""
+	case tun:
+		return "tun"
+	default:
+		return "proxy"
+	}
+}
+
 func logged(s *Service, fragment string) bool {
 	for _, line := range s.GetState().LogLines {
 		if strings.Contains(line, fragment) {
@@ -91,7 +104,7 @@ func TestSetTunnelModeRestartsElevatedWhenItLacksTheRights(t *testing.T) {
 		t.Fatalf("relaunches = %d, quits = %d", platform.relaunches, platform.quits)
 	}
 	// The elevated instance reads the choice; this one never ran in TUN mode.
-	if !s.store.LoadDesktopTUNMode() {
+	if storedMode(s) != "tun" {
 		t.Fatal("the choice was not stored for the elevated instance")
 	}
 	if s.engine.Mode() != connectcore.ModeProxy {
@@ -110,8 +123,10 @@ func TestSetTunnelModeKeepsProxyModeWhenTheRestartIsRefused(t *testing.T) {
 	if platform.quits != 0 {
 		t.Fatal("the app quit although no elevated instance was started")
 	}
-	if s.store.LoadDesktopTUNMode() {
-		t.Fatal("a refused restart left TUN mode stored")
+	// Proxy mode is stored, not merely left unset: unset would start the next
+	// launch in TUN mode and ask again.
+	if storedMode(s) != "proxy" {
+		t.Fatalf("stored mode = %q after a refused restart", storedMode(s))
 	}
 }
 
@@ -125,7 +140,7 @@ func TestSetTunnelModeSwitchesInPlaceWhenElevated(t *testing.T) {
 	if platform.relaunches != 0 || platform.quits != 0 {
 		t.Fatal("an elevated instance restarted itself")
 	}
-	if s.engine.Mode() != connectcore.ModeTUN || !s.store.LoadDesktopTUNMode() {
+	if s.engine.Mode() != connectcore.ModeTUN || storedMode(s) != "tun" {
 		t.Fatal("TUN mode was not applied and stored")
 	}
 	if got := s.GetTunnelMode(); got != (NativeTunnelMode{Mode: "tun", Available: true}) {
@@ -135,7 +150,7 @@ func TestSetTunnelModeSwitchesInPlaceWhenElevated(t *testing.T) {
 	if err := s.SetTunnelMode("proxy"); err != nil {
 		t.Fatalf("SetTunnelMode: %v", err)
 	}
-	if s.engine.Mode() != connectcore.ModeProxy || s.store.LoadDesktopTUNMode() {
+	if s.engine.Mode() != connectcore.ModeProxy || storedMode(s) != "proxy" {
 		t.Fatal("proxy mode was not applied and stored")
 	}
 }
@@ -149,7 +164,7 @@ func TestSetTunnelModeRefusesWhatItCannotDo(t *testing.T) {
 	if err := s.SetTunnelMode("vpn"); err == nil {
 		t.Fatal("an unknown mode was accepted")
 	}
-	if platform.relaunches != 0 || s.store.LoadDesktopTUNMode() {
+	if platform.relaunches != 0 || storedMode(s) != "" {
 		t.Fatal("a refused request had side effects")
 	}
 
@@ -162,12 +177,33 @@ func TestSetTunnelModeRefusesWhatItCannotDo(t *testing.T) {
 	}
 }
 
-func TestRelaunchForTUNFollowsTheStoredMode(t *testing.T) {
+func TestRelaunchForTUNFollowsTheStartingMode(t *testing.T) {
 	ctx := context.Background()
 
+	t.Run("first launch", func(t *testing.T) {
+		// Nothing stored: the app opens in TUN mode where it can offer it.
+		platform := stubTUNPlatform(t, true, false, nil)
+		s := tunService(t, platform)
+		if !s.RelaunchForTUN(ctx, nil) || platform.relaunches != 1 {
+			t.Fatal("a first launch did not restart elevated for TUN mode")
+		}
+	})
+	t.Run("first launch where TUN is not offered", func(t *testing.T) {
+		platform := stubTUNPlatform(t, false, false, nil)
+		s := tunService(t, platform)
+		if s.RelaunchForTUN(ctx, nil) || platform.relaunches != 0 {
+			t.Fatal("restarted on a system without TUN mode")
+		}
+		platform = stubTUNPlatform(t, true, false, nil)
+		s.SingBoxStopsOnStdinClose = false
+		if s.RelaunchForTUN(ctx, nil) || platform.relaunches != 0 {
+			t.Fatal("restarted on an external engine")
+		}
+	})
 	t.Run("proxy stored", func(t *testing.T) {
 		platform := stubTUNPlatform(t, true, false, nil)
 		s := tunService(t, platform)
+		_ = s.store.SaveDesktopTUNMode(false)
 		if s.RelaunchForTUN(ctx, nil) || platform.relaunches != 0 {
 			t.Fatal("restarted although proxy mode is stored")
 		}
@@ -175,9 +211,7 @@ func TestRelaunchForTUNFollowsTheStoredMode(t *testing.T) {
 	t.Run("tun stored", func(t *testing.T) {
 		platform := stubTUNPlatform(t, true, false, nil)
 		s := tunService(t, platform)
-		if err := s.store.SaveDesktopTUNMode(true); err != nil {
-			t.Fatal(err)
-		}
+		_ = s.store.SaveDesktopTUNMode(true)
 		if !s.RelaunchForTUN(ctx, nil) || platform.relaunches != 1 {
 			t.Fatal("did not restart elevated for the stored TUN mode")
 		}
@@ -185,7 +219,6 @@ func TestRelaunchForTUNFollowsTheStoredMode(t *testing.T) {
 	t.Run("already elevated", func(t *testing.T) {
 		platform := stubTUNPlatform(t, true, true, nil)
 		s := tunService(t, platform)
-		_ = s.store.SaveDesktopTUNMode(true)
 		if s.RelaunchForTUN(ctx, nil) || platform.relaunches != 0 {
 			t.Fatal("an elevated instance restarted itself")
 		}
@@ -195,7 +228,6 @@ func TestRelaunchForTUNFollowsTheStoredMode(t *testing.T) {
 		// rights it ended up with.
 		platform := stubTUNPlatform(t, true, false, nil)
 		s := tunService(t, platform)
-		_ = s.store.SaveDesktopTUNMode(true)
 		if s.RelaunchForTUN(ctx, []string{relaunchFlag + "4242"}) || platform.relaunches != 0 {
 			t.Fatal("a restarted instance restarted again")
 		}
@@ -203,27 +235,37 @@ func TestRelaunchForTUNFollowsTheStoredMode(t *testing.T) {
 	t.Run("refused", func(t *testing.T) {
 		platform := stubTUNPlatform(t, true, false, errors.New("the prompt was declined"))
 		s := tunService(t, platform)
-		_ = s.store.SaveDesktopTUNMode(true)
 		if s.RelaunchForTUN(ctx, nil) {
 			t.Fatal("reported a restart that was refused")
 		}
 		// Proxy mode from here on, so the next launch does not ask again.
-		if s.store.LoadDesktopTUNMode() {
-			t.Fatal("a refused restart left TUN mode stored")
+		if storedMode(s) != "proxy" {
+			t.Fatalf("stored mode = %q after a refused restart", storedMode(s))
 		}
 		if !logged(s, "the prompt was declined") {
 			t.Fatal("the refusal was not logged")
 		}
+		if s.RelaunchForTUN(ctx, nil) || platform.relaunches != 1 {
+			t.Fatal("the next launch asked again")
+		}
 	})
 }
 
-func TestStoredTUNModeIsRestoredOnlyWithTheRights(t *testing.T) {
+func TestStartingModeIsAppliedOnlyWithTheRights(t *testing.T) {
+	// A first launch that holds the rights opens in TUN mode.
 	platform := stubTUNPlatform(t, true, true, nil)
 	s := tunService(t, platform)
-	_ = s.store.SaveDesktopTUNMode(true)
 	s.restoreTunnelMode()
 	if s.engine.Mode() != connectcore.ModeTUN {
-		t.Fatal("an elevated instance did not restore the stored TUN mode")
+		t.Fatal("an elevated first launch did not start in TUN mode")
+	}
+
+	// A stored proxy choice wins over that default.
+	s = tunService(t, platform)
+	_ = s.store.SaveDesktopTUNMode(false)
+	s.restoreTunnelMode()
+	if s.engine.Mode() != connectcore.ModeProxy {
+		t.Fatal("a stored proxy choice was overridden")
 	}
 
 	stubTUNPlatform(t, true, false, nil)
@@ -232,6 +274,15 @@ func TestStoredTUNModeIsRestoredOnlyWithTheRights(t *testing.T) {
 	s.restoreTunnelMode()
 	if s.engine.Mode() != connectcore.ModeProxy || !logged(s, "TUN mode is off") {
 		t.Fatal("an instance without the rights must stay in proxy mode and say so")
+	}
+
+	// Where TUN mode is not offered, a first launch is plain proxy mode and
+	// says nothing about TUN.
+	stubTUNPlatform(t, false, false, nil)
+	s = tunService(t, platform)
+	s.restoreTunnelMode()
+	if s.engine.Mode() != connectcore.ModeProxy || logged(s, "TUN mode") {
+		t.Fatal("a system without TUN mode must start silently in proxy mode")
 	}
 }
 

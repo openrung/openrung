@@ -11,26 +11,28 @@ import (
 func TestDesktopTUNModeRoundTrips(t *testing.T) {
 	dir := t.TempDir()
 	store := NewInDir(dir)
-	if store.LoadDesktopTUNMode() {
-		t.Fatal("a fresh install must start in proxy mode")
+	// No choice on disk leaves the starting mode to the app.
+	if tun, stored := store.LoadDesktopTUNMode(); tun || stored {
+		t.Fatalf("fresh install: tun = %v, stored = %v", tun, stored)
 	}
 	if err := store.SaveDesktopTUNMode(true); err != nil {
 		t.Fatal(err)
 	}
-	if !NewInDir(dir).LoadDesktopTUNMode() {
-		t.Fatal("TUN mode did not survive a restart")
+	if tun, stored := NewInDir(dir).LoadDesktopTUNMode(); !tun || !stored {
+		t.Fatalf("TUN mode did not survive a restart: tun = %v, stored = %v", tun, stored)
 	}
 	if err := store.SaveDesktopTUNMode(false); err != nil {
 		t.Fatal(err)
 	}
-	if store.LoadDesktopTUNMode() {
-		t.Fatal("proxy mode did not replace the stored TUN mode")
+	// Proxy mode is a stored choice, distinct from no choice.
+	if tun, stored := store.LoadDesktopTUNMode(); tun || !stored {
+		t.Fatalf("proxy mode: tun = %v, stored = %v", tun, stored)
 	}
-	// Anything unrecognized is the mode that needs no privileges.
+	// Anything unrecognized is no choice at all.
 	if err := os.WriteFile(filepath.Join(dir, desktopCaptureModeFile), []byte("TUN!"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if store.LoadDesktopTUNMode() {
-		t.Fatal("an unrecognized value was read as TUN mode")
+	if tun, stored := store.LoadDesktopTUNMode(); tun || stored {
+		t.Fatalf("unrecognized value: tun = %v, stored = %v", tun, stored)
 	}
 }
