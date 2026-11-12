@@ -86,6 +86,14 @@ func main() {
 		}
 	}
 
+	// An instance started elevated for TUN mode lets the one that started it
+	// finish quitting; an instance whose stored mode is TUN but which lacks
+	// the rights starts that elevated instance and ends here.
+	vpnservice.WaitForRelaunchParent(os.Args[1:])
+	if svc.RelaunchForTUN(context.Background(), os.Args[1:]) {
+		return
+	}
+
 	err := wails.Run(&options.App{
 		Title:            "OpenRung",
 		Width:            phoneWindowWidth,
@@ -100,6 +108,7 @@ func main() {
 			svc.Emitter = func(state vpnservice.NativeVpnState) {
 				wailsruntime.EventsEmit(ctx, "openrungStateChanged", state)
 			}
+			svc.Quit = func() { wailsruntime.Quit(ctx) }
 			svc.Startup(ctx)
 		},
 		OnShutdown: func(ctx context.Context) {
