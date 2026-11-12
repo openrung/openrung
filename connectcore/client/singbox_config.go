@@ -146,10 +146,13 @@ type SingBoxConfigInput struct {
 	// ProbeDomainSuffixes overrides DefaultProbeDomainSuffixes for the DoH
 	// failover shape's probe-priority pins. Ignored by DNSShapeTCPProxied.
 	ProbeDomainSuffixes []string
-	// SplitTunnel enables mobile's split tunneling when non-nil: LAN bypass,
+	// SplitTunnel enables split tunneling when non-nil: LAN bypass,
 	// per-country .srs rule-set bypass with in-country direct resolvers, and
 	// Android per-app exclusion. Bypass countries require DNSShapeDoHFailover
 	// (see validateSplitTunnel). Nil emits a byte-identical no-split config.
+	// In ModeProxy a destination is bypassed by its hostname or literal
+	// address; the address rule sets cannot match a hostname that is not in
+	// the country's domain list.
 	SplitTunnel *SplitTunnelRules
 	// RouteFindProcess emits route.find_process, the Android emission's
 	// process-matching switch; iOS and desktop leave it off.
@@ -685,6 +688,25 @@ func buildRouteConfig(input SingBoxConfigInput, probeSuffixes []string) map[stri
 		rules = append(rules, map[string]any{
 			"ip_is_private": true,
 			"outbound":      "direct",
+		})
+	}
+	if input.Mode == ModeProxy && len(bypassCountries) > 0 {
+		// A proxy-mode inbound hands the router hostnames, not addresses, and
+		// the direct outbound would resolve a bypassed one through
+		// default_domain_resolver: dns-0 alone, with neither the in-country
+		// resolver nor the failover to the next server. resolve sends the
+		// lookup through the DNS rules instead, where countryDNSRules asks the
+		// in-country resolver of a country that has one and every lookup can
+		// fall back along the proxied chain. TUN mode needs none: its
+		// destinations are addresses the OS already resolved through those
+		// same rules.
+		ruleSets := make([]string, 0, len(bypassCountries))
+		for _, country := range bypassCountries {
+			ruleSets = append(ruleSets, "geosite-"+country)
+		}
+		rules = append(rules, map[string]any{
+			"rule_set": ruleSets,
+			"action":   "resolve",
 		})
 	}
 	for _, country := range bypassCountries {

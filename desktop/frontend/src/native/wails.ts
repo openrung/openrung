@@ -26,6 +26,7 @@ interface WailsServiceBindings {
   Disconnect(): Promise<void>;
   GetState(): Promise<unknown>;
   GetIdentity(): Promise<{ clientId: string; sessionId: string | null }>;
+  SetSplitTunnelConfig(configJson: string): Promise<void>;
   GetProxyInfo(): Promise<WailsProxyInfo>;
   ListRelaysForDirectory(): Promise<WailsRelayListResponse>;
 }
