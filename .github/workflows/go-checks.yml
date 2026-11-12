@@ -47,6 +47,16 @@ jobs:
           go vet .
           go test -v -run 'Test(EngineFakeIP|FakeIPLock)' .
 
+      # The smoke test rewrites the runner user's proxy setting, which is
+      # disposable here.
+      - name: proxymode on Windows (vet + test, real WinInet settings)
+        shell: bash
+        env:
+          OPENRUNG_PROXYMODE_SMOKE: windows
+        run: |
+          go vet ./internal/proxymode/
+          go test -v ./internal/proxymode/
+
   relay-deploy-script:
     runs-on: ubuntu-latest
     steps:
