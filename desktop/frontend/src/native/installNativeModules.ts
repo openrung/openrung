@@ -9,7 +9,7 @@
 // directory and proxy details are served from fixtures so every screen renders.
 import { DeviceEventEmitter, Linking, NativeModules } from 'react-native-web';
 
-import { previewProxyInfo, previewRelayList } from './previewFixtures';
+import { previewProxyInfo, previewRelayList, previewTunnelMode } from './previewFixtures';
 
 const STATE_EVENT = 'openrungStateChanged';
 
@@ -55,6 +55,7 @@ export function installNativeModules(): void {
       appVersion: __APP_VERSION__,
       getProxyInfo: async () => previewProxyInfo(),
       copyText: browserCopyText,
+      ...previewTunnelMode(),
     };
     return;
   }
@@ -81,6 +82,8 @@ export function installNativeModules(): void {
     copyText: async (text: string) => {
       await runtime.ClipboardSetText(text);
     },
+    getTunnelMode: () => service.GetTunnelMode(),
+    setTunnelMode: (mode: string) => service.SetTunnelMode(mode),
   };
 
   // The webview would navigate itself; hand links to the user's real browser.
