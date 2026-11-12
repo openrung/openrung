@@ -205,9 +205,12 @@ multi-user computer may still be able to reach the listener.
 
 ### POSIX shell applications
 
-macOS and Windows are configured through their system proxy settings. Linux
-desktop integration is not implemented yet, and command-line applications do
-not necessarily honor those OS settings. On Linux and macOS, the Settings
+macOS and Windows are configured through their system proxy settings. On
+Linux, GNOME-family desktops (GSettings `org.gnome.system.proxy`) and KDE
+Plasma (`kioslaverc`, plus GSettings when its schema is installed, which is
+what Firefox reads) are configured the same way, with the prior setting
+snapshotted and restored; other desktops need a manual proxy. Command-line
+applications do not necessarily honor those settings. On Linux and macOS, the Settings
 screen of both the desktop app and the terminal client therefore also provides
 two copyable POSIX-shell commands:
 
