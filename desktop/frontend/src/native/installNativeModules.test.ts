@@ -5,7 +5,8 @@ import { installNativeModules } from './installNativeModules';
 
 interface BrokerModule {
   firstReachable(requestId: string, primary: string): Promise<Record<string, unknown>>;
-  fetchManifestCandidate(): Promise<unknown>;
+  fetchManifestCandidate(requestId: string, candidateUrl: string): Promise<unknown>;
+  sendTelemetryBatchJSON(): Promise<unknown>;
 }
 interface VpnModule {
   connect(brokerUrl: string, country: string | null, relayId: string | null): Promise<void>;
@@ -50,6 +51,10 @@ function fakeWails() {
       requiresRestart: true,
     })),
     SetTunnelMode: vi.fn(async () => undefined),
+    FetchManifestCandidate: vi.fn(async (candidateUrl: string) => ({
+      sourceUrl: candidateUrl,
+      bodyJson: '{"schema":1}',
+    })),
     ListRelaysForDirectory: vi.fn(async () => ({
       count: 0,
       server_time: '2026-01-01T00:00:00Z',
@@ -138,10 +143,27 @@ describe('installNativeModules under Wails', () => {
     expect(JSON.parse(fetched.relayJson as string)).toMatchObject({ server_time: '2026-01-01T00:00:00Z' });
   });
 
+  it('fetches an update-manifest candidate through the Go service', async () => {
+    const { service } = fakeWails();
+    installNativeModules();
+
+    const url = 'https://broker.openrung.org/api/v1/app-manifest';
+    const fetched = await modules.OpenRungBroker!.fetchManifestCandidate('req-1', url);
+    expect(service.FetchManifestCandidate).toHaveBeenCalledWith(url);
+    expect(fetched).toEqual({ sourceUrl: url, bodyJson: '{"schema":1}' });
+  });
+
   it('rejects broker features the desktop host does not implement with a coded error', async () => {
     fakeWails();
     installNativeModules();
-    await expect(modules.OpenRungBroker!.fetchManifestCandidate()).rejects.toMatchObject({ code: 'unavailable' });
+    await expect(modules.OpenRungBroker!.sendTelemetryBatchJSON()).rejects.toMatchObject({ code: 'unavailable' });
+  });
+
+  it('has no update manifest to offer in a browser preview without the host', async () => {
+    installNativeModules();
+    await expect(
+      modules.OpenRungBroker!.fetchManifestCandidate('req-1', 'https://broker.openrung.org/api/v1/app-manifest'),
+    ).rejects.toMatchObject({ code: 'unavailable' });
   });
 
   it('exposes the desktop host: version, proxy details, clipboard and external links', async () => {

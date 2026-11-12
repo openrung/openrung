@@ -43,3 +43,14 @@ declare module 'react-native-web' {
     children?: ReactNode;
   }>;
 }
+
+declare module '@mobile/src/state/store' {
+  export function getSnapshot(): {
+    update: { tier: 'none' | 'available' | 'notify' | 'blocked'; latestVersion: string | null };
+  };
+}
+
+declare module '@mobile/src/state/updateCheck' {
+  /** Starts the app's update check; returns its cleanup. */
+  export function startUpdateCheck(): () => void;
+}
