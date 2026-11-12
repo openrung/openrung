@@ -38,6 +38,7 @@ interface WailsServiceBindings {
   GetTunnelMode(): Promise<WailsTunnelMode>;
   SetTunnelMode(mode: string): Promise<void>;
   ListRelaysForDirectory(): Promise<WailsRelayListResponse>;
+  FetchManifestCandidate(candidateUrl: string): Promise<{ sourceUrl: string; bodyJson: string }>;
 }
 
 interface WailsRuntime {

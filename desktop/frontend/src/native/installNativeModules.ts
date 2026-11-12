@@ -19,8 +19,14 @@ function unavailable(what: string): Error {
   });
 }
 
-/** NativeModules.OpenRungBroker, reduced to the relay directory fetch. */
-function brokerModule(listRelays: () => Promise<{ key_id?: string }>) {
+/**
+ * NativeModules.OpenRungBroker, reduced to the relay directory fetch and the
+ * update-manifest candidates.
+ */
+function brokerModule(
+  listRelays: () => Promise<{ key_id?: string }>,
+  fetchManifestCandidate: (candidateUrl: string) => Promise<unknown>,
+) {
   return {
     async firstReachable(_requestId: string, primary: string) {
       const response = await listRelays();
@@ -33,10 +39,12 @@ function brokerModule(listRelays: () => Promise<{ key_id?: string }>) {
         signatureVerified: true,
       };
     },
-    // The app hides these features in the desktop client (see isDesktop in the
-    // mobile source); the rejections only guard against a stray call.
+    // The Go service fetches the candidate's bytes; the app verifies them.
+    fetchManifestCandidate: (_requestId: string, candidateUrl: string) =>
+      fetchManifestCandidate(candidateUrl),
+    // The app does not use this in the desktop client (see isDesktop in the
+    // mobile source); the rejection only guards against a stray call.
     sendTelemetryBatchJSON: () => Promise.reject(unavailable('Telemetry upload')),
-    fetchManifestCandidate: () => Promise.reject(unavailable('The update manifest')),
     cancel: () => Promise.resolve(false),
   };
 }
@@ -50,7 +58,11 @@ export function installNativeModules(): void {
   const runtime = window.runtime;
 
   if (service == null || runtime == null) {
-    NativeModules.OpenRungBroker = brokerModule(async () => previewRelayList());
+    // No host to fetch the manifest: the app's update check fails open.
+    NativeModules.OpenRungBroker = brokerModule(
+      async () => previewRelayList(),
+      () => Promise.reject(unavailable('The update manifest')),
+    );
     NativeModules.OpenRungDesktop = {
       appVersion: __APP_VERSION__,
       getProxyInfo: async () => previewProxyInfo(),
@@ -74,7 +86,10 @@ export function installNativeModules(): void {
     DeviceEventEmitter.emit(STATE_EVENT, state);
   });
 
-  NativeModules.OpenRungBroker = brokerModule(() => service.ListRelaysForDirectory());
+  NativeModules.OpenRungBroker = brokerModule(
+    () => service.ListRelaysForDirectory(),
+    candidateUrl => service.FetchManifestCandidate(candidateUrl),
+  );
 
   NativeModules.OpenRungDesktop = {
     appVersion: __APP_VERSION__,

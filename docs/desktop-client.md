@@ -23,9 +23,32 @@ that backs the app's native bridge contract with the Go service
 
 The window is a fixed, non-resizable phone-sized slab; on a screen too short
 for it, it is shortened at startup. Features the desktop service does not
-implement (the in-app update check, per-app split tunneling) are hidden by the
-app when it runs on the desktop, and Settings gains the local proxy endpoint
-and shell commands in their place.
+implement (per-app split tunneling) are hidden by the app when it runs on the
+desktop, and Settings gains the local proxy endpoint and shell commands in
+their place.
+
+## Update check
+
+The app checks for a newer desktop release the way the mobile apps do: it
+reads the signed update manifest published by `openrung-mobile-app`
+(`docs/UPDATE_MANIFEST.md` there) at startup and every six hours while it
+stays open, and compares the manifest's `desktop` section with
+`desktop/VERSION`. A newer release shows an "Update available" row in
+Settings, and the manifest can also ask for a home-screen banner or, for a
+version below the supported floor, a full-screen prompt. The check never
+blocks startup or a connect, and a failed check shows nothing.
+
+The webview cannot fetch the manifest itself, so
+`vpnservice.FetchManifestCandidate` fetches the bytes of one of the app's
+three fixed candidate URLs and nothing else. Signature verification and the
+freshness and rollback rules stay in the app. The update button opens the
+download page in the system browser; the app does not download or install
+anything.
+
+The manifest advertises the highest `desktop-vX.Y.Z` release of this
+repository. Its publisher in `openrung-mobile-app` looks that release up every
+hour, so a published desktop release reaches installed clients without a
+further step.
 
 ## Split tunneling
 
