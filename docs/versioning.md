@@ -18,6 +18,15 @@ release models.
 | Desktop client | `desktop/VERSION` | `desktop-vX.Y.Z` | GUI installers |
 | Volunteer desktop | `desktop-volunteer/VERSION` | `desktop-volunteer-vX.Y.Z` | GUI installers |
 
+The desktop client is the one exception to independent numbering. It runs the
+mobile apps' interface (the `desktop/mobile-app` submodule), so from 1.0.0 it
+shares their version number: a desktop release takes the version of the
+`openrung-mobile-app` release its submodule pins, and the two are released
+together. This is a convention for the people cutting a release; no check
+enforces it, and the desktop client still has its own `VERSION` file, tag and
+workflow. The terminal client, the volunteer desktop app and the servers keep
+their own numbers.
+
 Shared Go modules are versioned separately from deployable applications:
 
 | Module | Version source | Module tag | Consumers |
