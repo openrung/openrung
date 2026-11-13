@@ -130,14 +130,13 @@ CREATE TABLE IF NOT EXISTS telemetry_app_counts (
 -- keyed by (hour, kind, k1, k2). Both are maintained in the same statement
 -- that inserts a batch's events, and backfilled from stored partitions on the
 -- first start after their introduction (telemetry_rollup_state tracks it).
--- telemetry_sessions deliberately carries no B-tree secondary index: every
--- heartbeat updates its row, and the lower fillfactor keeps those updates HOT
--- so the table does not bloat. The one exception is a BRIN index on
--- last_seen_at: the rollup keeps 31 days, so the short windows would otherwise
--- scan the whole table, and since Postgres 16 an update that changes only
--- BRIN-indexed columns stays HOT. Rows land roughly in last_seen_at order, so
--- the 24h window reads a small slice of the table; the long windows still
--- (cheaply) scan it all.
+-- telemetry_sessions deliberately carries no secondary index: every heartbeat
+-- updates its row, and the lower fillfactor keeps those updates HOT so the
+-- table does not bloat. Every window therefore scans the whole table. Rows do
+-- not stay in last_seen_at order (space freed in old pages is reused by new
+-- sessions), so the BRIN index earlier versions kept on last_seen_at matched
+-- most of the table and read it block by block, slower than the sequential
+-- scan it replaced; it is dropped below.
 CREATE TABLE IF NOT EXISTS telemetry_sessions (
 	session_id text PRIMARY KEY,
 	client_id text NOT NULL,
@@ -212,8 +211,7 @@ CREATE TABLE IF NOT EXISTS telemetry_sessions (
 	fallback_source_ip_occurred_at timestamptz
 ) WITH (fillfactor = 80);
 
-CREATE INDEX IF NOT EXISTS telemetry_sessions_last_seen_brin
-	ON telemetry_sessions USING brin (last_seen_at) WITH (autosummarize = on);
+DROP INDEX IF EXISTS telemetry_sessions_last_seen_brin;
 
 CREATE TABLE IF NOT EXISTS telemetry_event_counts (
 	hour timestamptz NOT NULL,

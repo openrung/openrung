@@ -331,8 +331,10 @@ grows. Event partitions are dropped after 7 days. The dashboard rollup the
 31-day windows have history; the hourly prune blanks the client IP fields, city,
 ISP, organization, and ASN on rollup sessions older than 7 days, so IP-level
 data is never kept longer than the raw events. A broker older than 0.9.3 prunes
-the rollup back to 7 days on its next maintenance pass, and the extra rows and
-the BRIN index are harmless to it. High-volume `application_connection` events
+the rollup back to 7 days on its next maintenance pass, and the extra rows are
+harmless to it. Brokers 0.9.3 through 0.15.0 create a BRIN index on
+`telemetry_sessions.last_seen_at` at startup; later versions drop it, so
+rolling back to one of them only brings the index back. High-volume `application_connection` events
 are not stored as rows in either store: ingestion folds them into an hourly
 per-application count (`telemetry_app_counts` in postgres mode), summing the
 bounded optional `measurements.connection_count` used by aggregating clients

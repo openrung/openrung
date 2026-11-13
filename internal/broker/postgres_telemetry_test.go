@@ -307,6 +307,41 @@ func TestPostgresTelemetrySinkPruneDropsAgedPartitions(t *testing.T) {
 	}
 }
 
+// TestPostgresTelemetrySchemaDropsSessionsLastSeenIndex pins the upgrade from
+// a database an earlier broker created: the schema bootstrap removes the BRIN
+// index on telemetry_sessions.last_seen_at and never recreates it.
+func TestPostgresTelemetrySchemaDropsSessionsLastSeenIndex(t *testing.T) {
+	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+	sink := newTestPostgresTelemetrySink(t, now)
+	ctx := context.Background()
+	if _, err := sink.pool.Exec(ctx, `CREATE INDEX telemetry_sessions_last_seen_brin
+		ON telemetry_sessions USING brin (last_seen_at) WITH (autosummarize = on)`); err != nil {
+		t.Fatalf("create legacy index: %v", err)
+	}
+	if _, err := sink.pool.Exec(ctx, postgresTelemetrySchema); err != nil {
+		t.Fatalf("apply telemetry schema: %v", err)
+	}
+	var indexes []string
+	rows, err := sink.pool.Query(ctx, `SELECT indexname FROM pg_indexes WHERE tablename = 'telemetry_sessions' ORDER BY indexname`)
+	if err != nil {
+		t.Fatalf("list telemetry_sessions indexes: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan index name: %v", err)
+		}
+		indexes = append(indexes, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("list telemetry_sessions indexes: %v", err)
+	}
+	if want := []string{"telemetry_sessions_pkey"}; !slices.Equal(indexes, want) {
+		t.Fatalf("telemetry_sessions indexes = %v, want %v", indexes, want)
+	}
+}
+
 // TestPostgresTelemetrySinkPruneContextEndsOnClose pins that a prune step in
 // flight is cancelled when the sink closes: its deadline is minutes long, and
 // Close waits for every pooled connection to come back.
