@@ -595,11 +595,12 @@ const telemetryPruneInterval = time.Hour
 func pruneTelemetryLoop(ctx context.Context, pruner broker.TelemetryPruner, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	for {
+	// Checked before every pass: with the context done and a tick pending the
+	// select below may take either.
+	for ctx.Err() == nil {
 		pruneTelemetry(pruner, time.Now().UTC())
 		select {
 		case <-ctx.Done():
-			return
 		case <-ticker.C:
 		}
 	}
