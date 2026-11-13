@@ -307,6 +307,26 @@ func TestPostgresTelemetrySinkPruneDropsAgedPartitions(t *testing.T) {
 	}
 }
 
+// TestPostgresTelemetrySinkPruneContextEndsOnClose pins that a prune step in
+// flight is cancelled when the sink closes: its deadline is minutes long, and
+// Close waits for every pooled connection to come back.
+func TestPostgresTelemetrySinkPruneContextEndsOnClose(t *testing.T) {
+	sink := &PostgresTelemetrySink{stop: make(chan struct{})}
+	ctx, cancel := sink.pruneContext(time.Hour)
+	defer cancel()
+	select {
+	case <-ctx.Done():
+		t.Fatal("prune context ended before the sink closed")
+	default:
+	}
+	close(sink.stop)
+	select {
+	case <-ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("prune context outlived the sink")
+	}
+}
+
 func TestPostgresTelemetrySinkPruneBoundaryIsInclusive(t *testing.T) {
 	// Midnight now lands the retention cutoff exactly on a partition boundary.
 	now := time.Date(2026, 6, 24, 0, 0, 0, 0, time.UTC)

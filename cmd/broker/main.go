@@ -257,6 +257,9 @@ func run() error {
 	if sourceClassifier != nil {
 		go sourceClassifier.Run(shutdownContext, 0)
 	}
+	if pruner, ok := telemetrySink.(broker.TelemetryPruner); ok {
+		go pruneTelemetryLoop(shutdownContext, pruner, telemetryPruneInterval)
+	}
 	shutdownDone := make(chan struct{})
 	go func() {
 		<-shutdownContext.Done()
@@ -581,14 +584,30 @@ func parseOptionalInt(name string) (int, error) {
 	return parsed, nil
 }
 
-// pruneTelemetryPartitions drops aged-out telemetry partitions when the sink
-// supports it (the Postgres store); the JSONL sink prunes on write, so this is
-// a no-op for it. Partial progress is logged even when a later drop fails.
-func pruneTelemetryPartitions(telemetry broker.TelemetryReader, now time.Time) {
-	pruner, ok := telemetry.(broker.TelemetryPruner)
-	if !ok {
-		return
+// telemetryPruneInterval is how often telemetry retention runs. Everything it
+// ages out is hour- or day-granular and a pass may scan whole tables, so it
+// runs on its own slow loop rather than on the maintenance tick.
+const telemetryPruneInterval = time.Hour
+
+// pruneTelemetryLoop prunes once at startup and then every interval until ctx
+// ends. Passes run one at a time, so a slow pass delays the next instead of
+// overlapping it.
+func pruneTelemetryLoop(ctx context.Context, pruner broker.TelemetryPruner, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		pruneTelemetry(pruner, time.Now().UTC())
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 	}
+}
+
+// pruneTelemetry runs one retention pass. Partial progress is logged even
+// when a later step fails.
+func pruneTelemetry(pruner broker.TelemetryPruner, now time.Time) {
 	dropped, err := pruner.PruneTelemetry(now)
 	for _, name := range dropped {
 		slog.Info("telemetry partition dropped", "partition", name)
@@ -613,7 +632,6 @@ func maintainBroker(store broker.RelayStore, telemetry broker.TelemetryReader, i
 		for _, desc := range expired {
 			slog.Info("relay expired", "relay_id", desc.ID, "last_heartbeat_at", desc.LastHeartbeatAt)
 		}
-		pruneTelemetryPartitions(telemetry, now)
 		if !logStatus {
 			continue
 		}

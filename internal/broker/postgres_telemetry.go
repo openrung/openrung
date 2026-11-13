@@ -33,6 +33,12 @@ const (
 	postgresTelemetryFlushTimeout = 15 * time.Second
 	postgresTelemetryQueryTimeout = 30 * time.Second
 
+	// postgresTelemetrySessionPruneTimeout bounds each prune statement over
+	// telemetry_sessions. Those read the whole table, which outgrows the
+	// request-sized query timeout; they run off the request path, on the
+	// prune's own cadence, so a long deadline costs nothing.
+	postgresTelemetrySessionPruneTimeout = 10 * time.Minute
+
 	// telemetryDashboardWorkMem is the per-connection work_mem for the telemetry
 	// pool, raised from the 4MB default so the dashboard's aggregation sorts stay
 	// in memory instead of spilling to disk (see newPostgresTelemetrySink).
@@ -72,7 +78,7 @@ const (
 var telemetryRollupBackfillPause = 250 * time.Millisecond
 
 // PostgresTelemetrySink drops whole aged-out daily partitions rather than
-// pruning on write, so it satisfies TelemetryPruner for the maintenance loop.
+// pruning on write, so it satisfies TelemetryPruner for the broker's prune loop.
 var _ TelemetryPruner = (*PostgresTelemetrySink)(nil)
 
 // The envelope every query filters or sorts on lives in real columns; the
@@ -788,14 +794,64 @@ func (s *PostgresTelemetrySink) ensurePartition(ctx context.Context, at time.Tim
 // never lose data they would query. The dashboard rollup is kept for the
 // longer telemetryRollupRetention, minus the IP-level fields of every session
 // older than telemetryRetention.
+//
+// Every step runs under its own deadline and a failed step does not stop the
+// ones after it, so one slow statement cannot starve the rest of the pass.
 func (s *PostgresTelemetrySink) PruneTelemetry(now time.Time) ([]string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), postgresTelemetryQueryTimeout)
+	cutoff := now.UTC().Add(-telemetryRetention)
+	dropped, err := s.dropExpiredPartitions(cutoff)
+	errs := []error{err}
+	step := func(what string, timeout time.Duration, statement string, arg time.Time) {
+		ctx, cancel := s.pruneContext(timeout)
+		defer cancel()
+		if _, err := s.pool.Exec(ctx, statement, arg); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", what, err))
+		}
+	}
+	// The app-count rollup ages out with the same cutoff as the partitions its
+	// events would have landed in; hour-truncating mirrors the in-memory
+	// rollup's prune so an hour bucket straddling the cutoff survives.
+	step("prune telemetry app counts", postgresTelemetryQueryTimeout,
+		`DELETE FROM telemetry_app_counts WHERE hour < $1`, cutoff.Truncate(time.Hour))
+	// The dashboard rollup ages out the same way at its own, longer cutoff:
+	// event-grain hours like the app counts, and a session once its latest
+	// event is older than the cutoff (no window can still include it).
+	rollupCutoff := now.UTC().Add(-telemetryRollupRetention)
+	step("prune telemetry event counts", postgresTelemetryQueryTimeout,
+		`DELETE FROM telemetry_event_counts WHERE hour < $1`, rollupCutoff.Truncate(time.Hour))
+	step("prune telemetry sessions", postgresTelemetrySessionPruneTimeout,
+		`DELETE FROM telemetry_sessions WHERE last_seen_at < $1`, rollupCutoff)
+	// Sessions past the raw-event retention keep their counts but not their
+	// IP-level fields, so per-client network detail is held no longer than the
+	// events it came from.
+	step("blank aged telemetry session IPs", postgresTelemetrySessionPruneTimeout,
+		telemetrySessionBlankIPStatement, cutoff)
+	return dropped, errors.Join(errs...)
+}
+
+// pruneContext bounds one prune step and ends it early when the sink closes,
+// so a table scan in flight never holds Close open.
+func (s *PostgresTelemetrySink) pruneContext(timeout time.Duration) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	go func() {
+		select {
+		case <-s.stop:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
+}
+
+// dropExpiredPartitions drops every daily partition that lies wholly before
+// cutoff and returns the names it dropped, including on a partial failure.
+func (s *PostgresTelemetrySink) dropExpiredPartitions(cutoff time.Time) ([]string, error) {
+	ctx, cancel := s.pruneContext(postgresTelemetryQueryTimeout)
 	defer cancel()
 
 	// A partition covers [day, day+24h). It is safe to drop once its upper
 	// bound has reached the retention cutoff: every row it can hold is then
 	// strictly older than the window anything ever reads.
-	cutoff := now.UTC().Add(-telemetryRetention)
 	expired, err := s.expiredPartitions(ctx, cutoff)
 	if err != nil {
 		return nil, err
@@ -812,28 +868,6 @@ func (s *PostgresTelemetrySink) PruneTelemetry(now time.Time) ([]string, error) 
 		s.mu.Lock()
 		delete(s.partitions, name)
 		s.mu.Unlock()
-	}
-	// The app-count rollup ages out with the same cutoff as the partitions its
-	// events would have landed in; hour-truncating mirrors the in-memory
-	// rollup's prune so an hour bucket straddling the cutoff survives.
-	if _, err := s.pool.Exec(ctx, `DELETE FROM telemetry_app_counts WHERE hour < $1`, cutoff.UTC().Truncate(time.Hour)); err != nil {
-		return dropped, fmt.Errorf("prune telemetry app counts: %w", err)
-	}
-	// The dashboard rollup ages out the same way at its own, longer cutoff:
-	// event-grain hours like the app counts, and a session once its latest
-	// event is older than the cutoff (no window can still include it).
-	rollupCutoff := now.UTC().Add(-telemetryRollupRetention)
-	if _, err := s.pool.Exec(ctx, `DELETE FROM telemetry_event_counts WHERE hour < $1`, rollupCutoff.Truncate(time.Hour)); err != nil {
-		return dropped, fmt.Errorf("prune telemetry event counts: %w", err)
-	}
-	if _, err := s.pool.Exec(ctx, `DELETE FROM telemetry_sessions WHERE last_seen_at < $1`, rollupCutoff); err != nil {
-		return dropped, fmt.Errorf("prune telemetry sessions: %w", err)
-	}
-	// Sessions past the raw-event retention keep their counts but not their
-	// IP-level fields, so per-client network detail is held no longer than the
-	// events it came from.
-	if _, err := s.pool.Exec(ctx, telemetrySessionBlankIPStatement, cutoff); err != nil {
-		return dropped, fmt.Errorf("blank aged telemetry session IPs: %w", err)
 	}
 	return dropped, nil
 }

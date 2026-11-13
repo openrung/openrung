@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"strings"
 	"testing"
+	"time"
 
 	"openrung/internal/broker"
 )
@@ -208,5 +210,47 @@ func TestParseWSSTicketBounds(t *testing.T) {
 		if _, _, err := parseWSSTicketBounds(); (err == nil) != test.ok {
 			t.Errorf("ttl=%q streams=%q: err = %v, want ok=%v", test.ttl, test.streams, err, test.ok)
 		}
+	}
+}
+
+// countingTelemetryPruner records each prune pass on a channel.
+type countingTelemetryPruner struct{ passes chan time.Time }
+
+func (p countingTelemetryPruner) PruneTelemetry(now time.Time) ([]string, error) {
+	p.passes <- now
+	return nil, nil
+}
+
+// TestPruneTelemetryLoop pins the loop's cadence: one pass at startup, one per
+// interval after it, and none once the context ends.
+func TestPruneTelemetryLoop(t *testing.T) {
+	pruner := countingTelemetryPruner{passes: make(chan time.Time)}
+	ctx, cancel := context.WithCancel(context.Background())
+	exited := make(chan struct{})
+	go func() {
+		pruneTelemetryLoop(ctx, pruner, 10*time.Millisecond)
+		close(exited)
+	}()
+
+	for pass := 1; pass <= 3; pass++ {
+		select {
+		case <-pruner.passes:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("prune pass %d did not run", pass)
+		}
+	}
+	cancel()
+	select {
+	case <-exited:
+	case <-pruner.passes:
+		// A pass already under way when the context ended; the loop must
+		// still exit after it.
+		select {
+		case <-exited:
+		case <-time.After(5 * time.Second):
+			t.Fatal("prune loop kept running after its context ended")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("prune loop did not exit after its context ended")
 	}
 }
