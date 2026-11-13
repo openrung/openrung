@@ -617,8 +617,14 @@ func (s *Store) pruneMetricsLocked(cutoff time.Time) {
 	}
 	s.observations = kept
 
+	// A session ages out by its terminal event, or by its last heartbeat when
+	// it ended without one (the client went away).
 	for sessionID, session := range s.sessions {
-		if !session.TerminalAt.IsZero() && session.TerminalAt.Before(cutoff) {
+		last := session.TerminalAt
+		if last.IsZero() {
+			last = session.LastHeartbeatAt
+		}
+		if last.Before(cutoff) {
 			delete(s.sessions, sessionID)
 		}
 	}

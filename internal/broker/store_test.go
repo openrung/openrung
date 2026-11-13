@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"testing"
 	"time"
 
@@ -397,6 +399,55 @@ func registerRelayForRanking(t *testing.T, store *Store, now time.Time, host str
 		t.Fatalf("register relay: %v", err)
 	}
 	return desc
+}
+
+// relaySessionPruneRecords is the session-pruning scenario both stores are
+// held to: at `now`, one session heartbeats and then goes quiet and another
+// ends; 29 minutes later one session heartbeats and another ends. A prune 31
+// minutes after `now` must drop the first pair and keep the second.
+func relaySessionPruneRecords(now time.Time, relayID string) []TelemetryRecord {
+	record := func(at time.Time, event, sessionID string) TelemetryRecord {
+		return TelemetryRecord{
+			ReceivedAt: at,
+			SourceIP:   "198.51.100.10",
+			Event: TelemetryEvent{
+				EventID:    event + "-" + sessionID,
+				Event:      event,
+				OccurredAt: at,
+				ClientID:   "client-" + sessionID,
+				SessionID:  sessionID,
+				RelayID:    relayID,
+			},
+		}
+	}
+	recent := now.Add(29 * time.Minute)
+	return []TelemetryRecord{
+		record(now, "session_heartbeat", "abandoned"),
+		record(now, "session_heartbeat", "ended-old"),
+		record(now, "connection_ended", "ended-old"),
+		record(recent, "session_heartbeat", "live"),
+		record(recent, "session_heartbeat", "ended-recent"),
+		record(recent, "connection_ended", "ended-recent"),
+	}
+}
+
+func TestStorePrunesAbandonedAndEndedSessions(t *testing.T) {
+	store := NewStore()
+	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+	relayDesc := registerRelayForRanking(t, store, now, "sessions.example.com", 8, 20)
+	for _, record := range relaySessionPruneRecords(now, relayDesc.ID) {
+		recordRelayMetric(t, store, record.ReceivedAt, record.Event)
+	}
+
+	if _, err := store.Prune(now.Add(31 * time.Minute)); err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	store.mu.RLock()
+	got := slices.Sorted(maps.Keys(store.sessions))
+	store.mu.RUnlock()
+	if want := []string{"ended-recent", "live"}; !slices.Equal(got, want) {
+		t.Fatalf("sessions after prune = %v, want %v", got, want)
+	}
 }
 
 func recordRelayMetric(t *testing.T, store *Store, receivedAt time.Time, event TelemetryEvent) {

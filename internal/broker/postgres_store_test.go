@@ -3,9 +3,13 @@ package broker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"slices"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"openrung/internal/relay"
 )
@@ -165,6 +169,99 @@ func TestPostgresStorePruneIsShared(t *testing.T) {
 	}
 	if len(listed) != 0 {
 		t.Fatalf("expected pruned relay to disappear from first store, got %+v", listed)
+	}
+}
+
+func postgresRelaySessionIDs(t *testing.T, store *PostgresStore) []string {
+	t.Helper()
+	rows, err := store.pool.Query(context.Background(), `SELECT session_id FROM relay_sessions ORDER BY session_id`)
+	if err != nil {
+		t.Fatalf("list relay sessions: %v", err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("scan relay sessions: %v", err)
+	}
+	return ids
+}
+
+func TestPostgresStorePrunesAbandonedAndEndedSessions(t *testing.T) {
+	store := newTestPostgresStore(t)
+	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+	relayDesc := registerPostgresRelayForRanking(t, store, now, "sessions.example.com", 8, 20)
+	for _, record := range relaySessionPruneRecords(now, relayDesc.ID) {
+		if err := store.RecordRelayTelemetry(context.Background(), []TelemetryRecord{record}, record.ReceivedAt); err != nil {
+			t.Fatalf("record relay telemetry: %v", err)
+		}
+	}
+
+	if _, err := store.Prune(now.Add(31 * time.Minute)); err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if got, want := postgresRelaySessionIDs(t, store), []string{"ended-recent", "live"}; !slices.Equal(got, want) {
+		t.Fatalf("sessions after prune = %v, want %v", got, want)
+	}
+}
+
+// TestPostgresStoreSessionPruneIsBatched pins the cap on one pass: a backlog
+// larger than relaySessionPruneBatch drains over successive prunes.
+func TestPostgresStoreSessionPruneIsBatched(t *testing.T) {
+	store := newTestPostgresStore(t)
+	previous := relaySessionPruneBatch
+	relaySessionPruneBatch = 2
+	t.Cleanup(func() { relaySessionPruneBatch = previous })
+
+	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+	relayDesc := registerPostgresRelayForRanking(t, store, now, "backlog.example.com", 8, 20)
+	for i := range 5 {
+		if err := store.RecordRelayTelemetry(context.Background(), []TelemetryRecord{{
+			ReceivedAt: now,
+			Event: TelemetryEvent{
+				EventID:    fmt.Sprintf("backlog-heartbeat-%d", i),
+				Event:      "session_heartbeat",
+				OccurredAt: now,
+				ClientID:   "client",
+				SessionID:  fmt.Sprintf("backlog-%d", i),
+				RelayID:    relayDesc.ID,
+			},
+		}}, now); err != nil {
+			t.Fatalf("record relay telemetry: %v", err)
+		}
+	}
+
+	for _, want := range []int{3, 1, 0} {
+		if _, err := store.Prune(now.Add(31 * time.Minute)); err != nil {
+			t.Fatalf("prune: %v", err)
+		}
+		if got := len(postgresRelaySessionIDs(t, store)); got != want {
+			t.Fatalf("sessions after prune = %d, want %d", got, want)
+		}
+	}
+}
+
+// TestPostgresStoreSchemaDropsRelaySessionsIndex pins the upgrade from a
+// database an earlier broker created: the schema bootstrap removes the index
+// on relay_sessions (relay_id, last_heartbeat_at) and never recreates it.
+func TestPostgresStoreSchemaDropsRelaySessionsIndex(t *testing.T) {
+	store := newTestPostgresStore(t)
+	ctx := context.Background()
+	if _, err := store.pool.Exec(ctx, `CREATE INDEX relay_sessions_active_by_relay_idx
+		ON relay_sessions (relay_id, last_heartbeat_at DESC) WHERE terminal_at IS NULL`); err != nil {
+		t.Fatalf("create legacy index: %v", err)
+	}
+	if err := store.migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	rows, err := store.pool.Query(ctx, `SELECT indexname FROM pg_indexes WHERE tablename = 'relay_sessions' ORDER BY indexname`)
+	if err != nil {
+		t.Fatalf("list relay_sessions indexes: %v", err)
+	}
+	indexes, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("scan relay_sessions indexes: %v", err)
+	}
+	if want := []string{"relay_sessions_pkey"}; !slices.Equal(indexes, want) {
+		t.Fatalf("relay_sessions indexes = %v, want %v", indexes, want)
 	}
 }
 
