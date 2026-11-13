@@ -57,6 +57,11 @@ const descriptorColumns = `
 
 const postgresOperationTimeout = 5 * time.Second
 
+// relaySessionPruneBatch caps the sessions one Prune deletes, so a backlog
+// drains over successive passes instead of outrunning the operation timeout.
+// A variable so tests can exercise the cap with a handful of rows.
+var relaySessionPruneBatch = 20000
+
 const postgresSchema = `
 CREATE TABLE IF NOT EXISTS relay_descriptors (
 	id text PRIMARY KEY,
@@ -155,9 +160,11 @@ CREATE TABLE IF NOT EXISTS relay_sessions (
 ALTER TABLE relay_sessions
 	ADD COLUMN IF NOT EXISTS attributes jsonb NOT NULL DEFAULT '{}'::jsonb;
 
-CREATE INDEX IF NOT EXISTS relay_sessions_active_by_relay_idx
-	ON relay_sessions (relay_id, last_heartbeat_at DESC)
-	WHERE terminal_at IS NULL;
+-- relay_sessions carries no secondary index. Prune keeps it down to the
+-- sessions of the last rankingWindow, which every reader scans whole, and
+-- every heartbeat rewrites last_heartbeat_at: the index earlier versions kept
+-- on (relay_id, last_heartbeat_at) was never chosen and grew with each one.
+DROP INDEX IF EXISTS relay_sessions_active_by_relay_idx;
 
 CREATE TABLE IF NOT EXISTS relay_metrics (
 	event_id text PRIMARY KEY,
@@ -753,7 +760,8 @@ func (s *PostgresStore) Stats(now time.Time) (StoreStats, error) {
 	return StoreStats{ActiveRelays: active, AdvertisedSessionCapacity: int(capacity.Int64)}, nil
 }
 
-// Prune drops expired descriptors and out-of-window metrics. relay_ranking_weights
+// Prune drops expired descriptors, out-of-window metrics and sessions that
+// ended or went quiet before the ranking window. relay_ranking_weights
 // is deliberately untouched: weights are operator intent about a relay
 // identity, not lease state, and must still apply when the relay returns.
 func (s *PostgresStore) Prune(now time.Time) ([]relay.Descriptor, error) {
@@ -782,7 +790,17 @@ func (s *PostgresStore) Prune(now time.Time) ([]relay.Descriptor, error) {
 	if _, err := s.pool.Exec(ctx, `DELETE FROM relay_metrics WHERE observed_at < $1`, cutoff); err != nil {
 		return nil, err
 	}
-	if _, err := s.pool.Exec(ctx, `DELETE FROM relay_sessions WHERE terminal_at IS NOT NULL AND terminal_at < $1`, cutoff); err != nil {
+	// A session ages out by its terminal event, or by its last heartbeat when
+	// it ended without one (the client went away): neither is counted active
+	// past activeSessionTimeout, and a later heartbeat inserts it afresh.
+	if _, err := s.pool.Exec(ctx, `
+		DELETE FROM relay_sessions
+		WHERE session_id IN (
+			SELECT session_id FROM relay_sessions
+			WHERE COALESCE(terminal_at, last_heartbeat_at) < $1
+			LIMIT $2
+		)
+	`, cutoff, relaySessionPruneBatch); err != nil {
 		return nil, err
 	}
 	if err := s.pruneEnrollmentCounters(ctx, now); err != nil {
