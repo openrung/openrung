@@ -328,7 +328,7 @@ time window, so dashboard cost and broker memory stay flat as event history
 grows. Event partitions are dropped after 7 days. The dashboard rollup the
 24-hour and longer windows read (`telemetry_sessions`, one row per session, and
 `telemetry_event_counts`, hourly counts) is kept for 31 days so the 14- and
-31-day windows have history; the daily prune blanks the client IP fields, city,
+31-day windows have history; the hourly prune blanks the client IP fields, city,
 ISP, organization, and ASN on rollup sessions older than 7 days, so IP-level
 data is never kept longer than the raw events. A broker older than 0.9.3 prunes
 the rollup back to 7 days on its next maintenance pass, and the extra rows and

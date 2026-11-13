@@ -137,7 +137,8 @@ type TelemetryReader interface {
 }
 
 // TelemetryPruner is implemented by telemetry stores whose retention is a
-// distinct reclamation step the broker's maintenance loop drives on its tick.
+// distinct reclamation step, which the broker drives on its own slow cadence:
+// a pass may scan whole tables, so it must not run on every maintenance tick.
 // The Postgres store drops daily partitions that have aged out of the window
 // and returns their names; the JSONL sink prunes on write and does not
 // implement this.

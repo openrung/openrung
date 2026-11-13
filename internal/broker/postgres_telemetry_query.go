@@ -187,7 +187,7 @@ var telemetrySessionIPFields = []string{"observed_client_ip", "reported_client_i
 // ordering pair that supplied it, on sessions whose latest event was received
 // before $1. A blank value carries NULL ordering columns exactly as one that
 // was never reported, so a later event for the session still merges in. Rows
-// already blank are skipped, so the daily prune rewrites only the newly aged.
+// already blank are skipped, so each prune rewrites only the newly aged.
 var telemetrySessionBlankIPStatement = func() string {
 	var set, nonEmpty []string
 	for _, column := range telemetrySessionIPFields {
