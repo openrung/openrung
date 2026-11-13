@@ -20,6 +20,13 @@ export interface WailsProxyInfo {
   disableCommand: string;
 }
 
+/** vpnservice.NativeTunnelMode, as the app's OpenRungDesktop contract consumes it. */
+export interface WailsTunnelMode {
+  mode: 'proxy' | 'tun';
+  available: boolean;
+  requiresRestart: boolean;
+}
+
 interface WailsServiceBindings {
   Prepare(): Promise<boolean>;
   Connect(brokerUrl: string, targetCountry: string, targetRelayId: string): Promise<void>;
@@ -28,7 +35,10 @@ interface WailsServiceBindings {
   GetIdentity(): Promise<{ clientId: string; sessionId: string | null }>;
   SetSplitTunnelConfig(configJson: string): Promise<void>;
   GetProxyInfo(): Promise<WailsProxyInfo>;
+  GetTunnelMode(): Promise<WailsTunnelMode>;
+  SetTunnelMode(mode: string): Promise<void>;
   ListRelaysForDirectory(): Promise<WailsRelayListResponse>;
+  FetchManifestCandidate(candidateUrl: string): Promise<{ sourceUrl: string; bodyJson: string }>;
 }
 
 interface WailsRuntime {

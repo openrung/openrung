@@ -1,11 +1,14 @@
 # Desktop Clients
 
-OpenRung ships a Wails desktop app for Linux, macOS, and Windows. It runs a
-mixed HTTP/SOCKS proxy on loopback, requiring no administrator privileges, and
-installs as a single executable with the tunnel engine linked in.
+OpenRung ships a Wails desktop app for Linux, macOS, and Windows. It installs
+as a single executable with the tunnel engine linked in. On macOS and Linux it
+runs a mixed HTTP/SOCKS proxy on loopback, requiring no administrator
+privileges. On Windows it starts by routing the whole device through a TUN
+interface, which takes administrator rights, and can be switched to the same
+loopback proxy (see [TUN mode](#tun-mode)).
 This repository also contains a terminal client (`cmd/client`) that drives the
-same connection engine from a TUI and can additionally route the whole device
-through a TUN interface. Both are described below.
+same connection engine from a TUI and offers TUN capture on all three systems.
+Both are described below.
 
 ## User interface
 
@@ -20,9 +23,32 @@ that backs the app's native bridge contract with the Go service
 
 The window is a fixed, non-resizable phone-sized slab; on a screen too short
 for it, it is shortened at startup. Features the desktop service does not
-implement (the in-app update check, per-app split tunneling) are hidden by the
-app when it runs on the desktop, and Settings gains the local proxy endpoint
-and shell commands in their place.
+implement (per-app split tunneling) are hidden by the app when it runs on the
+desktop, and Settings gains the local proxy endpoint and shell commands in
+their place.
+
+## Update check
+
+The app checks for a newer desktop release the way the mobile apps do: it
+reads the signed update manifest published by `openrung-mobile-app`
+(`docs/UPDATE_MANIFEST.md` there) at startup and every six hours while it
+stays open, and compares the manifest's `desktop` section with
+`desktop/VERSION`. A newer release shows an "Update available" row in
+Settings, and the manifest can also ask for a home-screen banner or, for a
+version below the supported floor, a full-screen prompt. The check never
+blocks startup or a connect, and a failed check shows nothing.
+
+The webview cannot fetch the manifest itself, so
+`vpnservice.FetchManifestCandidate` fetches the bytes of one of the app's
+three fixed candidate URLs and nothing else. Signature verification and the
+freshness and rollback rules stay in the app. The update button opens the
+download page in the system browser; the app does not download or install
+anything.
+
+The manifest advertises the highest `desktop-vX.Y.Z` release of this
+repository. Its publisher in `openrung-mobile-app` looks that release up every
+hour, so a published desktop release reaches installed clients without a
+further step.
 
 ## Split tunneling
 
@@ -38,11 +64,13 @@ copied at startup to `rulesets/` in the client state directory, because
 sing-box reads rule sets by path. A country whose files are not there is left
 out with a log line; the connect goes ahead without it.
 
-The desktop app runs in proxy mode, so sing-box sees the hostname an
-application asked for rather than an address. A destination is therefore
-bypassed when its hostname is in the country's domain list, or when it is a
-literal address in the country's address list; a hostname outside the domain
-list goes through the relay even if it resolves to an in-country address.
+In proxy mode sing-box sees the hostname an application asked for rather than
+an address. A destination is therefore bypassed when its hostname is in the
+country's domain list, or when it is a literal address in the country's
+address list; a hostname outside the domain list goes through the relay even
+if it resolves to an in-country address. In [TUN mode](#tun-mode) sing-box
+sees addresses, as it does in the mobile apps, and the address list applies to
+every destination.
 Bypassed hostnames are looked up through the same DNS rules the mobile apps
 use, for every country preset: the in-country resolver where the preset has
 one, with the proxied resolvers and their failover behind it.
@@ -53,6 +81,40 @@ lists loopback and private addresses as exceptions (`internal/proxymode`), so
 applications reach those directly whether or not local-network bypass, or
 split tunneling itself, is on. macOS installs no such exception list, so there
 the choice decides.
+
+## TUN mode
+
+On Windows, Settings has a TUN mode switch. With it on, the engine captures
+the whole device through a TUN interface (`connectcore.ModeTUN`, the mode the
+terminal client offers with `--tun`) instead of serving the loopback proxy:
+applications that ignore the system proxy are carried too, no system proxy is
+set, and Settings leaves the local proxy rows out.
+
+TUN is the mode the app starts in on Windows until a choice is stored: a first
+launch opens in it. After that the app starts in the mode the switch last
+stored, kept in the client state directory. The switch is locked while a
+tunnel is up, because a session keeps the mode it started with.
+
+Creating the interface takes administrator rights, which the app obtains by
+restarting itself. A launch that is to run in TUN mode, or turning the switch
+on, starts a new instance of the app through the shell's `runas` verb (one UAC
+prompt) and ends the current one; the elevated instance puts the engine in TUN
+mode. Declining the prompt stores proxy mode and the app carries on in it, so
+later launches do not ask again until the switch is turned on.
+
+The whole app runs elevated in TUN mode, not only the tunnel process: that
+process is stopped by closing its standard input (see
+[Bundled Engine](#desktop-app-bundled-engine)), and the verb that elevates a
+process cannot hand it a pipe. For the same reason TUN mode needs the bundled
+engine and is not offered with an external `OPENRUNG_SING_BOX` binary.
+
+The elevated instance uses the state directory of the account it runs as. When
+the UAC prompt is answered with a different account's credentials, that is the
+other account's directory: its stored mode, recents and identity are separate
+from those of the account that started the app.
+
+macOS and Linux have no switch. The app has no way to obtain the rights there;
+the terminal client run as root covers TUN mode on those systems.
 
 ## Direct-first WSS fallback
 
@@ -102,8 +164,8 @@ crash, `Stop-Process`, Task Manager — so an orphaned tunnel child stops itself
 instead of running unsupervised. An external `OPENRUNG_SING_BOX` binary does
 not speak the stdin protocol: on Windows its teardown is a hard kill after the
 grace period and a kill-on-close job object reaps it if the app dies first —
-both cost nothing in proxy mode, the only mode the desktop app offers, because
-no device or routes are held. (The job object is deliberately NOT applied to
+both cost nothing in proxy mode, the only mode the desktop app offers with an
+external binary, because no device or routes are held. (The job object is deliberately NOT applied to
 the bundled child: closing a kill-on-close job's last handle terminates the
 child instantly, which would race and defeat the pipe's graceful teardown. See
 [Windows](#windows) below for what all this means for the terminal client's
@@ -166,9 +228,15 @@ multi-user computer may still be able to reach the listener.
 
 ### POSIX shell applications
 
-macOS and Windows are configured through their system proxy settings. Linux
-desktop integration is not implemented yet, and command-line applications do
-not necessarily honor those OS settings. On Linux and macOS, the Settings
+macOS and Windows are configured through their system proxy settings. On
+Linux, GNOME-family desktops (GSettings `org.gnome.system.proxy`) and KDE
+Plasma (`kioslaverc`, plus GSettings when its schema is installed, which is
+what Firefox reads) are configured the same way, with the prior setting
+snapshotted and restored; other desktops need a manual proxy. On macOS and
+Windows an automatic proxy configuration (PAC URL) would take precedence over
+the manual proxy, so it is switched off while connected and restored on
+disconnect, and so is automatic proxy discovery (WPAD). Command-line
+applications do not necessarily honor those settings. On Linux and macOS, the Settings
 screen of both the desktop app and the terminal client therefore also provides
 two copyable POSIX-shell commands:
 

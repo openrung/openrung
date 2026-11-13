@@ -6,6 +6,7 @@ require (
 	github.com/openrung/openrung/brokerapi v0.11.0
 	github.com/openrung/openrung/connectcore v0.0.0
 	github.com/wailsapp/wails/v2 v2.12.0
+	golang.org/x/sys v0.47.0
 	openrung v0.0.0
 )
 
@@ -196,7 +197,6 @@ require (
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/term v0.45.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 	golang.org/x/time v0.15.0 // indirect

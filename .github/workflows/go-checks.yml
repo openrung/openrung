@@ -47,6 +47,16 @@ jobs:
           go vet .
           go test -v -run 'Test(EngineFakeIP|FakeIPLock)' .
 
+      # The smoke test rewrites the runner user's proxy setting, which is
+      # disposable here.
+      - name: proxymode on Windows (vet + test, real WinInet settings)
+        shell: bash
+        env:
+          OPENRUNG_PROXYMODE_SMOKE: windows
+        run: |
+          go vet ./internal/proxymode/
+          go test -v ./internal/proxymode/
+
   relay-deploy-script:
     runs-on: ubuntu-latest
     steps:
@@ -164,6 +174,26 @@ jobs:
           go vet ./...
           go vet -tags with_utls,with_external_windivert ./...
           go test -race -tags with_utls,with_external_windivert ./...
+
+      # The Linux proxy controller shells out to gsettings and
+      # kwriteconfig/kreadconfig, which exit 0 even when a write is lost, and
+      # its unit tests use a fake desktop. Run it against the real tools in a
+      # private D-Bus session with a throwaway config directory per desktop,
+      # reading every value back. The directory is set before the session
+      # starts so the bus-activated dconf service writes where the tools read.
+      - name: Linux desktop proxy tools (gsettings + kioslaverc)
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            dbus dconf-service dconf-gsettings-backend gsettings-desktop-schemas \
+            libglib2.0-bin libkf5config-bin
+          go test -c -o "$RUNNER_TEMP/proxymode.test" ./internal/proxymode/
+          for desktop in gnome kde; do
+            config="$(mktemp -d)"
+            XDG_CONFIG_HOME="$config" OPENRUNG_PROXYMODE_SMOKE="$desktop" dbus-run-session -- \
+              "$RUNNER_TEMP/proxymode.test" -test.v -test.run '^TestLinuxRealDesktopTools$'
+          done
 
       # with_external_windivert only alters GOOS=windows compilation, which
       # nothing else in this workflow exercises; without this the tag's

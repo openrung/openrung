@@ -119,6 +119,10 @@ type Service struct {
 	// stays false for an OPENRUNG_SING_BOX external binary, which does not.
 	SingBoxStopsOnStdinClose bool
 
+	// Quit closes the app. Package main assigns it during startup; it is used
+	// when turning TUN mode on restarts the app elevated (see tunnelmode.go).
+	Quit func()
+
 	// RuleSets holds the bundled split-tunnel rule sets (geosite-<cc>.srs and
 	// geoip-<cc>.srs at its root). Startup stages them to disk; nil leaves
 	// the country presets unavailable.
@@ -174,6 +178,8 @@ func New() *Service {
 	engine.Sink = &engineSink{s: s}
 	engine.OSProxy = osProxyAdapter{ctrl: proxymode.New()}
 	engine.OSDNS = osDNSAdapter{ctrl: proxymode.NewDNS()}
+	// TUN mode is gated on this hook; proxy mode never invokes it.
+	engine.Elevation = elevation{s: s}
 	s.engine = engine
 	s.state = engine.State()
 	return s
@@ -197,6 +203,7 @@ func (s *Service) Startup(ctx context.Context) {
 		// is created in the same state directory on first use.
 		s.engine.Key = store.InstallationKey()
 	}
+	s.restoreTunnelMode()
 	if dir, err := ruleSetDirectory(); err != nil {
 		s.appendLog("split tunneling country presets unavailable: " + err.Error())
 	} else if err := stageRuleSets(s.RuleSets, dir); err != nil {

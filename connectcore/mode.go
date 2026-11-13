@@ -52,18 +52,27 @@ func (s *Engine) Mode() Mode {
 }
 
 // SetMode selects the capture mode for subsequent connects. It refuses while a
-// connection is live: the inbound shape, the OS-proxy policy, the readiness
-// and health probes, and the elevation requirement all follow from the mode, so
-// a session keeps the mode it started with. connectMu is held so the check
-// cannot land in ConnectTarget's teardown-then-install window, where s.conn is
-// momentarily nil even though a connect is already under way.
+// session is live: the inbound shape, the OS-proxy policy, the readiness and
+// health probes, and the elevation requirement all follow from the mode, so a
+// session keeps the mode it started with.
+//
+// A session stops being live when its terminal status (disconnected or
+// failed) is published, not when its connection is cleared: by then the
+// tunnel is down and the OS setting restored, and what remains is the
+// terminal telemetry flush, which can outlast the status by its whole budget
+// and reads no mode. A host that enables its mode control on the terminal
+// status can therefore use it at once.
+//
+// connectMu is held so the check cannot land in ConnectTarget's
+// teardown-then-install window, where s.conn is momentarily nil even though a
+// connect is already under way.
 func (s *Engine) SetMode(mode Mode) error {
 	s.connectMu.Lock()
 	defer s.connectMu.Unlock()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.conn != nil {
+	if s.conn != nil && !s.conn.ended {
 		return errors.New("disconnect before changing the capture mode")
 	}
 	s.mode = mode
@@ -72,7 +81,7 @@ func (s *Engine) SetMode(mode Mode) error {
 
 // tunMode reports whether the engine is running full-device TUN capture. Every
 // mode-dependent branch in the connect flow reads it, which is safe mid-session
-// because SetMode cannot land while a connection is live.
+// because SetMode cannot land before the session's terminal status.
 func (s *Engine) tunMode() bool { return s.Mode() == ModeTUN }
 
 // prepare is the OS-consent step: proxy mode needs none, while TUN mode must

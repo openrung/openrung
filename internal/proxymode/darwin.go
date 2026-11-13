@@ -41,6 +41,10 @@ func (c *darwinController) Snapshot() (Snapshot, error) {
 		if err != nil {
 			return Snapshot{}, err
 		}
+		auto, err := c.getAutoProxy(name)
+		if err != nil {
+			return Snapshot{}, err
+		}
 		snap.Services = append(snap.Services, ServiceProxyState{
 			Name:          name,
 			WebEnabled:    web.enabled,
@@ -49,6 +53,7 @@ func (c *darwinController) Snapshot() (Snapshot, error) {
 			SecureEnabled: secure.enabled,
 			SecureHost:    secure.host,
 			SecurePort:    secure.port,
+			AutoProxy:     &auto,
 		})
 	}
 	return snap, nil
@@ -68,6 +73,17 @@ func (c *darwinController) Set(host string, port int) error {
 		if _, err := c.run("-setsecurewebproxy", name, host, portStr); err != nil {
 			return fmt.Errorf("set secure proxy on %q: %w", name, err)
 		}
+		// An automatic proxy configuration takes precedence over the proxies
+		// set above and would silently route around them: a PAC URL, or a PAC
+		// file the network supplies to automatic proxy discovery (WPAD). Turn
+		// both off; their prior state is in the snapshot and restored on
+		// disconnect.
+		if _, err := c.run("-setautoproxystate", name, "off"); err != nil {
+			return fmt.Errorf("disable automatic proxy on %q: %w", name, err)
+		}
+		if _, err := c.run("-setproxyautodiscovery", name, "off"); err != nil {
+			return fmt.Errorf("disable automatic proxy discovery on %q: %w", name, err)
+		}
 	}
 	return nil
 }
@@ -82,6 +98,30 @@ func (c *darwinController) Restore(snap Snapshot) error {
 		}
 		if err := c.restoreOne("-setsecurewebproxy", "-setsecurewebproxystate", svc.Name, svc.SecureEnabled, svc.SecureHost, svc.SecurePort); err != nil {
 			return err
+		}
+		if err := c.restoreAutoProxy(svc.Name, svc.AutoProxy); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// restoreAutoProxy puts back a service's PAC and automatic proxy discovery
+// settings. Set always turns both off, so only those captured on need
+// writing; a nil capture predates their handling, whose Set never touched them.
+func (c *darwinController) restoreAutoProxy(name string, auto *AutoProxyState) error {
+	if auto == nil {
+		return nil
+	}
+	if auto.Enabled && auto.URL != "" {
+		// -setautoproxyurl sets the URL and turns the setting on.
+		if _, err := c.run("-setautoproxyurl", name, auto.URL); err != nil {
+			return fmt.Errorf("restore automatic proxy on %q: %w", name, err)
+		}
+	}
+	if auto.Discovery {
+		if _, err := c.run("-setproxyautodiscovery", name, "on"); err != nil {
+			return fmt.Errorf("restore automatic proxy discovery on %q: %w", name, err)
 		}
 	}
 	return nil
@@ -125,6 +165,47 @@ func listServices(run func(args ...string) ([]byte, error)) ([]string, error) {
 		services = append(services, line)
 	}
 	return services, scanner.Err()
+}
+
+// getAutoProxy reads a service's automatic proxy configuration, parsing
+// `networksetup -getautoproxyurl <service>` output:
+//
+//	URL: http://wpad.example/proxy.pac
+//	Enabled: Yes
+//
+// (an unset URL prints as "(null)") and `-getproxyautodiscovery <service>`:
+//
+//	Auto Proxy Discovery: On
+func (c *darwinController) getAutoProxy(name string) (AutoProxyState, error) {
+	out, err := c.run("-getautoproxyurl", name)
+	if err != nil {
+		return AutoProxyState{}, fmt.Errorf("-getautoproxyurl %q: %w", name, err)
+	}
+	discovery, err := c.run("-getproxyautodiscovery", name)
+	if err != nil {
+		return AutoProxyState{}, fmt.Errorf("-getproxyautodiscovery %q: %w", name, err)
+	}
+	out = append(append(out, '\n'), discovery...)
+	var state AutoProxyState
+	scanner := bufio.NewScanner(strings.NewReader(string(out)))
+	for scanner.Scan() {
+		key, value, ok := strings.Cut(scanner.Text(), ":")
+		if !ok {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		switch strings.TrimSpace(key) {
+		case "URL":
+			if value != "(null)" {
+				state.URL = value
+			}
+		case "Enabled":
+			state.Enabled = strings.EqualFold(value, "Yes")
+		case "Auto Proxy Discovery":
+			state.Discovery = strings.EqualFold(value, "On")
+		}
+	}
+	return state, scanner.Err()
 }
 
 type proxyReading struct {

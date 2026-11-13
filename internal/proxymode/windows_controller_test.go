@@ -1,6 +1,7 @@
 package proxymode
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -140,5 +141,51 @@ func TestWindowsSnapshotPropagatesReadError(t *testing.T) {
 	c := &windowsController{backend: &fakeBackend{readErr: sentinel}}
 	if _, err := c.Snapshot(); !errors.Is(err, sentinel) {
 		t.Fatalf("Snapshot err = %v, want %v", err, sentinel)
+	}
+}
+
+func TestWindowsAutoDetectIsCapturedDisabledAndRestored(t *testing.T) {
+	on := true
+	backend := &fakeBackend{state: WindowsProxyState{AutoDetect: &on}}
+	c := &windowsController{backend: backend}
+
+	snap, err := c.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	snap = roundTripJSON(t, snap)
+	if err := c.Set("127.0.0.1", 7890); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if got := backend.state.AutoDetect; got == nil || *got {
+		t.Fatalf("auto-detect after Set = %v, want off", got)
+	}
+	if err := c.Restore(snap); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if got := backend.state.AutoDetect; got == nil || !*got {
+		t.Fatalf("auto-detect after Restore = %v, want on", got)
+	}
+}
+
+// A snapshot from before auto-detect was captured came from a Set that left it
+// alone, so restoring it must keep whatever is current.
+func TestWindowsRestoreOfSnapshotWithoutAutoDetectLeavesItAlone(t *testing.T) {
+	var snap Snapshot
+	if err := json.Unmarshal([]byte(`{"platform":"windows","windows":{"proxy_enable":false,"proxy_server":"","proxy_override":"","auto_config_url":""}}`), &snap); err != nil {
+		t.Fatal(err)
+	}
+	on := true
+	backend := &fakeBackend{state: WindowsProxyState{ProxyEnable: true, AutoDetect: &on}}
+	c := &windowsController{backend: backend}
+
+	if err := c.Restore(snap); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if backend.state.ProxyEnable {
+		t.Error("ProxyEnable should be restored to false")
+	}
+	if got := backend.state.AutoDetect; got == nil || !*got {
+		t.Fatalf("auto-detect = %v, want left on", got)
 	}
 }

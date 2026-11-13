@@ -1,113 +1,166 @@
 //go:build windows
 
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 package proxymode
 
 import (
-	"errors"
 	"fmt"
+	"runtime"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
-	"golang.org/x/sys/windows/registry"
 )
 
 // New returns the Windows proxy controller. It drives the current user's WinInet
-// proxy values under HKCU\...\Internet Settings and signals WinInet so already
-// running apps (Edge, Chrome, and anything else on WinInet) pick up the change
-// live rather than only on restart.
+// proxy settings for the default (LAN) connection through the per-connection
+// options of InternetQueryOption and InternetSetOption, then signals WinInet so
+// already running apps (Edge, Chrome, and anything else on WinInet) pick up the
+// change live rather than only on restart.
 func New() Controller {
-	return &windowsController{backend: registryBackend{}}
-}
-
-const internetSettingsPath = `Software\Microsoft\Windows\CurrentVersion\Internet Settings`
-
-// registryBackend is the real winProxyBackend: it reads and writes the WinInet
-// proxy values in the current user's registry and notifies WinInet of changes.
-type registryBackend struct{}
-
-func (registryBackend) read() (WindowsProxyState, error) {
-	key, err := registry.OpenKey(registry.CURRENT_USER, internetSettingsPath, registry.QUERY_VALUE)
-	if err != nil {
-		return WindowsProxyState{}, fmt.Errorf("open internet settings: %w", err)
-	}
-	defer key.Close()
-
-	enable, _, err := key.GetIntegerValue("ProxyEnable")
-	if err != nil && !errors.Is(err, registry.ErrNotExist) {
-		return WindowsProxyState{}, fmt.Errorf("read ProxyEnable: %w", err)
-	}
-	return WindowsProxyState{
-		ProxyEnable:   enable != 0,
-		ProxyServer:   readString(key, "ProxyServer"),
-		ProxyOverride: readString(key, "ProxyOverride"),
-		AutoConfigURL: readString(key, "AutoConfigURL"),
-	}, nil
-}
-
-// readString returns a string value, treating a missing value as empty so a
-// snapshot can capture "unset" without a special case.
-func readString(key registry.Key, name string) string {
-	v, _, err := key.GetStringValue(name)
-	if err != nil {
-		return ""
-	}
-	return v
-}
-
-func (registryBackend) write(state WindowsProxyState) error {
-	key, err := registry.OpenKey(registry.CURRENT_USER, internetSettingsPath, registry.SET_VALUE)
-	if err != nil {
-		return fmt.Errorf("open internet settings: %w", err)
-	}
-	defer key.Close()
-
-	var enable uint32
-	if state.ProxyEnable {
-		enable = 1
-	}
-	if err := key.SetDWordValue("ProxyEnable", enable); err != nil {
-		return fmt.Errorf("write ProxyEnable: %w", err)
-	}
-	if err := writeString(key, "ProxyServer", state.ProxyServer); err != nil {
-		return err
-	}
-	if err := writeString(key, "ProxyOverride", state.ProxyOverride); err != nil {
-		return err
-	}
-	if err := writeString(key, "AutoConfigURL", state.AutoConfigURL); err != nil {
-		return err
-	}
-	return nil
-}
-
-// writeString sets a string value, or deletes it when empty so restoring an
-// absent value (e.g. no PAC URL) leaves the registry clean rather than holding a
-// stray empty string.
-func writeString(key registry.Key, name, value string) error {
-	if value == "" {
-		if err := key.DeleteValue(name); err != nil && !errors.Is(err, registry.ErrNotExist) {
-			return fmt.Errorf("delete %s: %w", name, err)
-		}
-		return nil
-	}
-	if err := key.SetStringValue(name, value); err != nil {
-		return fmt.Errorf("write %s: %w", name, err)
-	}
-	return nil
+	return &windowsController{backend: wininetBackend{}}
 }
 
 var (
-	wininet                = windows.NewLazySystemDLL("wininet.dll")
-	procInternetSetOptionW = wininet.NewProc("InternetSetOptionW")
+	wininet                  = windows.NewLazySystemDLL("wininet.dll")
+	procInternetSetOptionW   = wininet.NewProc("InternetSetOptionW")
+	procInternetQueryOptionW = wininet.NewProc("InternetQueryOptionW")
+	procGlobalFree           = windows.NewLazySystemDLL("kernel32.dll").NewProc("GlobalFree")
 )
 
-// WinInet options (wininet.h): announce that the settings changed, then force a
-// refresh so running processes reread them.
+// WinInet options and values (wininet.h).
 const (
-	internetOptionSettingsChanged = 39
-	internetOptionRefresh         = 37
+	internetOptionRefresh             = 37
+	internetOptionSettingsChanged     = 39
+	internetOptionPerConnectionOption = 75
+
+	perConnFlags         = 1
+	perConnProxyServer   = 2
+	perConnProxyBypass   = 3
+	perConnAutoconfigURL = 4
+
+	proxyTypeDirect       = 0x1
+	proxyTypeProxy        = 0x2
+	proxyTypeAutoProxyURL = 0x4
+	proxyTypeAutoDetect   = 0x8
 )
 
-func (registryBackend) notify() error {
+// perConnOption is INTERNET_PER_CONN_OPTIONW. Its value is a union of a DWORD,
+// a string pointer and a FILETIME; uint64 gives the union's size and alignment
+// on every Windows architecture, and the DWORD or pointer sits at its start.
+type perConnOption struct {
+	option uint32
+	value  uint64
+}
+
+func (o *perConnOption) dword() uint32 { return uint32(o.value) }
+
+func (o *perConnOption) setDword(v uint32) { o.value = uint64(v) }
+
+func (o *perConnOption) str() **uint16 { return (**uint16)(unsafe.Pointer(&o.value)) }
+
+// perConnOptionList is INTERNET_PER_CONN_OPTION_LISTW. A nil connection names
+// the default (LAN) connection.
+type perConnOptionList struct {
+	size        uint32
+	connection  *uint16
+	optionCount uint32
+	optionError uint32
+	options     *perConnOption
+}
+
+func newOptionList(opts []perConnOption) perConnOptionList {
+	return perConnOptionList{
+		size:        uint32(unsafe.Sizeof(perConnOptionList{})),
+		optionCount: uint32(len(opts)),
+		options:     &opts[0],
+	}
+}
+
+// wininetBackend is the real winProxyBackend.
+type wininetBackend struct{}
+
+func (wininetBackend) read() (WindowsProxyState, error) {
+	opts := []perConnOption{
+		{option: perConnFlags},
+		{option: perConnProxyServer},
+		{option: perConnProxyBypass},
+		{option: perConnAutoconfigURL},
+	}
+	list := newOptionList(opts)
+	size := list.size
+	ret, _, err := procInternetQueryOptionW.Call(0, internetOptionPerConnectionOption,
+		uintptr(unsafe.Pointer(&list)), uintptr(unsafe.Pointer(&size)))
+	if ret == 0 {
+		return WindowsProxyState{}, fmt.Errorf("InternetQueryOption: %w", err)
+	}
+	// WinInet allocates each returned string; the caller frees it.
+	strs := make([]string, len(opts))
+	for i := 1; i < len(opts); i++ {
+		if p := *opts[i].str(); p != nil {
+			strs[i] = windows.UTF16PtrToString(p)
+			procGlobalFree.Call(uintptr(unsafe.Pointer(p)))
+		}
+	}
+	flags := opts[0].dword()
+	autoDetect := flags&proxyTypeAutoDetect != 0
+	state := WindowsProxyState{
+		ProxyEnable:   flags&proxyTypeProxy != 0,
+		ProxyServer:   strs[1],
+		ProxyOverride: strs[2],
+		AutoDetect:    &autoDetect,
+	}
+	// The URL is kept while "Use setup script" is off; only an enabled one
+	// counts, matching the AutoConfigURL registry value earlier captures read.
+	if flags&proxyTypeAutoProxyURL != 0 {
+		state.AutoConfigURL = strs[3]
+	}
+	return state, nil
+}
+
+func (wininetBackend) write(state WindowsProxyState) error {
+	flags := uint32(proxyTypeDirect)
+	if state.ProxyEnable {
+		flags |= proxyTypeProxy
+	}
+	if state.AutoConfigURL != "" {
+		flags |= proxyTypeAutoProxyURL
+	}
+	if state.AutoDetect != nil && *state.AutoDetect {
+		flags |= proxyTypeAutoDetect
+	}
+	opts := []perConnOption{
+		{option: perConnFlags},
+		{option: perConnProxyServer},
+		{option: perConnProxyBypass},
+		{option: perConnAutoconfigURL},
+	}
+	opts[0].setDword(flags)
+	// The pointers live in uint64 fields the garbage collector does not
+	// scan, so strs keeps the strings alive until the call returns.
+	strs := make([]*uint16, len(opts))
+	for i, s := range []string{"", state.ProxyServer, state.ProxyOverride, state.AutoConfigURL} {
+		if s == "" {
+			continue
+		}
+		p, err := windows.UTF16PtrFromString(s)
+		if err != nil {
+			return fmt.Errorf("encode proxy option %d: %w", opts[i].option, err)
+		}
+		strs[i] = p
+		*opts[i].str() = p
+	}
+	list := newOptionList(opts)
+	ret, _, err := procInternetSetOptionW.Call(0, internetOptionPerConnectionOption,
+		uintptr(unsafe.Pointer(&list)), uintptr(list.size))
+	runtime.KeepAlive(strs)
+	if ret == 0 {
+		return fmt.Errorf("InternetSetOption: %w", err)
+	}
+	return nil
+}
+
+func (wininetBackend) notify() error {
 	if err := internetSetOption(internetOptionSettingsChanged); err != nil {
 		return err
 	}
