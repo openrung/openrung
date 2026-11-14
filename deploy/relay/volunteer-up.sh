@@ -1260,11 +1260,14 @@ main() {
     # --security-opt no-new-privileges, which would make the kernel ignore file
     # capabilities and break that bind. Read-only rootfs; the only writable
     # path the relay needs is the generated xray config under the /tmp tmpfs.
+    # Logs rotate at three 10 MB files: Docker's default json-file driver
+    # never does, and a relay left running for months would fill its disk.
     # Create and capture the candidate ID before starting it. Unlike inferring
     # ownership from a name after `docker run` fails, this cannot claim or
     # remove a container concurrently created by another process.
     if ! CANDIDATE_ID="$(docker create --name "$NEW_CONTAINER" --restart unless-stopped \
         --network host --cap-drop ALL --cap-add NET_BIND_SERVICE --read-only --tmpfs /tmp \
+        --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 \
         --label org.openrung.managed-by=volunteer-up \
         --env-file "$ENV_FILE" \
         "$IMAGE")"; then
