@@ -274,7 +274,8 @@ CREATE TABLE IF NOT EXISTS relay_lease_state (
 `
 
 type PostgresStore struct {
-	pool *pgxpool.Pool
+	pool    *pgxpool.Pool
+	ranking rankingCache
 }
 
 func NewPostgresStore(ctx context.Context, databaseURL string) (*PostgresStore, error) {
@@ -285,7 +286,7 @@ func NewPostgresStore(ctx context.Context, databaseURL string) (*PostgresStore, 
 	if err != nil {
 		return nil, fmt.Errorf("open relay database: %w", err)
 	}
-	store := &PostgresStore{pool: pool}
+	store := &PostgresStore{pool: pool, ranking: rankingCache{ttl: rankingCacheTTL}}
 	if err := store.Ping(ctx); err != nil {
 		pool.Close()
 		return nil, err
@@ -547,6 +548,7 @@ func (s *PostgresStore) Register(req relay.RegisterRequest, now time.Time, ttl t
 			return relay.Descriptor{}, fmt.Errorf("commit relay registration: %w", err)
 		}
 	}
+	s.ranking.invalidate()
 	return desc, nil
 }
 
@@ -594,6 +596,12 @@ func (s *PostgresStore) Heartbeat(id, leaseToken, maxClass, clientID string, now
 			maxClass,
 		)
 	}
+	if err == nil {
+		// Renewals keep the cache; a rotated credential must not be served stale.
+		s.ranking.invalidateIfChanged(id, func(cached relay.Descriptor) bool {
+			return cached.ClientID != desc.ClientID
+		})
+	}
 	return desc, err
 }
 
@@ -624,6 +632,7 @@ func (s *PostgresStore) UpdateGeo(id, leaseToken string, geo relay.GeoLocation) 
 	if tag.RowsAffected() == 0 {
 		return ErrRelayNotFound
 	}
+	s.ranking.invalidate()
 	return nil
 }
 
@@ -643,6 +652,11 @@ func (s *PostgresStore) UpdateReachability(id, leaseToken string, reachable bool
 	if tag.RowsAffected() == 0 {
 		return ErrRelayNotFound
 	}
+	// Re-probes repeat on every relay's interval; only a changed outcome
+	// changes what is listed.
+	s.ranking.invalidateIfChanged(id, func(cached relay.Descriptor) bool {
+		return cached.ReachabilityCheckedAt.IsZero() || cached.Reachable != reachable
+	})
 	return nil
 }
 
@@ -662,6 +676,9 @@ func (s *PostgresStore) UpdateAccessReachability(id, leaseToken string, reachabl
 	if tag.RowsAffected() == 0 {
 		return ErrRelayNotFound
 	}
+	s.ranking.invalidateIfChanged(id, func(cached relay.Descriptor) bool {
+		return cached.AccessReachabilityCheckedAt.IsZero() || cached.AccessReachable != reachable
+	})
 	return nil
 }
 
@@ -670,7 +687,21 @@ func (s *PostgresStore) List(now time.Time, limit int) ([]relay.Descriptor, erro
 	return relays, err
 }
 
+// ListRanked serves from the ranking cache: descriptors and ranking inputs are
+// reused for up to rankingCacheTTL, while every call draws its own order.
 func (s *PostgresStore) ListRanked(now time.Time, limit int) ([]relay.Descriptor, RankingInputs, error) {
+	relays, inputs, err := s.ranking.get(now, s.loadRankingInputs)
+	if err != nil {
+		return nil, RankingInputs{}, err
+	}
+	sortRelayCandidates(relays, inputs.Snapshots, inputs.Weights, rankingUniform)
+	if limit > 0 && len(relays) > limit {
+		return relays[:limit], inputs, nil
+	}
+	return relays, inputs, nil
+}
+
+func (s *PostgresStore) loadRankingInputs(now time.Time) ([]relay.Descriptor, RankingInputs, error) {
 	ctx, cancel := postgresOperationContext()
 	defer cancel()
 
@@ -696,12 +727,7 @@ func (s *PostgresStore) ListRanked(now time.Time, limit int) ([]relay.Descriptor
 	if err != nil {
 		return nil, RankingInputs{}, err
 	}
-	sortRelayCandidates(relays, snapshots, weights, rankingUniform)
-	inputs := RankingInputs{Weights: weights, Snapshots: snapshots}
-	if limit > 0 && len(relays) > limit {
-		return relays[:limit], inputs, nil
-	}
-	return relays, inputs, nil
+	return relays, RankingInputs{Weights: weights, Snapshots: snapshots}, nil
 }
 
 func (s *PostgresStore) RelayByID(id string, now time.Time) (relay.Descriptor, error) {
@@ -889,6 +915,7 @@ func (s *PostgresStore) updateRankingWeight(parent context.Context, id string, m
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("commit relay ranking weight update: %w", err)
 	}
+	s.ranking.invalidate()
 	return previous, nil
 }
 
