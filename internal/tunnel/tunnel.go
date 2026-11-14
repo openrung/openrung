@@ -22,6 +22,15 @@ import (
 	"github.com/hashicorp/yamux"
 )
 
+// tunnelStreamWindow is each stream's receive window. A stream carries at
+// most one window per round trip, so yamux's 256 KiB default caps a client
+// connection at about 1.3 MB/s over a 200 ms hub ↔ relay path; 1 MiB lifts
+// that fourfold. The receiver grants the window, so each end sets it for the
+// data it receives and peers on the old default interoperate. The cost is
+// buffering: a stream whose reader stalls holds up to one window, bounded per
+// tunnel by maxConcurrentConns.
+const tunnelStreamWindow = 1 << 20
+
 // yamuxConfig returns the shared multiplexer configuration used by both ends.
 // Keepalive lets either side detect a dead CGNAT tunnel without a separate
 // application heartbeat on the wire.
@@ -30,6 +39,7 @@ func yamuxConfig() *yamux.Config {
 	cfg.EnableKeepAlive = true
 	cfg.KeepAliveInterval = 15 * time.Second
 	cfg.ConnectionWriteTimeout = 10 * time.Second
+	cfg.MaxStreamWindowSize = tunnelStreamWindow
 	cfg.LogOutput = io.Discard
 	return cfg
 }
