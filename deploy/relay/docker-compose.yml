@@ -14,6 +14,11 @@ services:
     image: openrung-relay:latest
     container_name: openrung-relay
     restart: unless-stopped
+    # Docker's default json-file driver never rotates: cap each container at
+    # three 10 MB files so its logs cannot fill the disk.
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
     env_file: [.env]
 
     # An exit relay needs a real, reachable public address. Host networking:
@@ -51,6 +56,9 @@ services:
     image: openrung-relay:latest
     container_name: openrung-wss-sidecar
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
     entrypoint: [/usr/local/bin/wss-sidecar]
     depends_on:
       - relay
