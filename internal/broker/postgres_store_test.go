@@ -203,6 +203,45 @@ func TestPostgresStorePrunesAbandonedAndEndedSessions(t *testing.T) {
 	}
 }
 
+// TestPostgresStoreRelayTelemetryUploadIsAtomic pins the batched write: an
+// upload is stored whole or not at all, and an upload carrying no ranking
+// events succeeds without a statement.
+func TestPostgresStoreRelayTelemetryUploadIsAtomic(t *testing.T) {
+	store := newTestPostgresStore(t)
+	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+	relayDesc := registerPostgresRelayForRanking(t, store, now, "atomic.example.com", 8, 20)
+	heartbeat := func(sessionID string) TelemetryRecord {
+		return TelemetryRecord{ReceivedAt: now, Event: TelemetryEvent{
+			EventID:    "heartbeat-" + sessionID,
+			Event:      "session_heartbeat",
+			OccurredAt: now,
+			ClientID:   "client",
+			SessionID:  sessionID,
+			RelayID:    relayDesc.ID,
+		}}
+	}
+
+	// Postgres text cannot hold NUL, so the second statement fails.
+	err := store.RecordRelayTelemetry(context.Background(), []TelemetryRecord{heartbeat("kept-out"), heartbeat("bad\x00")}, now)
+	if err == nil {
+		t.Fatal("expected the upload with an unstorable session ID to fail")
+	}
+	if got := postgresRelaySessionIDs(t, store); len(got) != 0 {
+		t.Fatalf("a failed upload left sessions behind: %v", got)
+	}
+
+	ignored := TelemetryRecord{ReceivedAt: now, Event: TelemetryEvent{EventID: "app", Event: "application_connection", OccurredAt: now}}
+	if err := store.RecordRelayTelemetry(context.Background(), []TelemetryRecord{ignored}, now); err != nil {
+		t.Fatalf("upload without ranking events: %v", err)
+	}
+	if err := store.RecordRelayTelemetry(context.Background(), []TelemetryRecord{heartbeat("a"), ignored, heartbeat("b")}, now); err != nil {
+		t.Fatalf("record relay telemetry: %v", err)
+	}
+	if got, want := postgresRelaySessionIDs(t, store), []string{"a", "b"}; !slices.Equal(got, want) {
+		t.Fatalf("sessions = %v, want %v", got, want)
+	}
+}
+
 // TestPostgresStoreSessionPruneIsBatched pins the cap on one pass: a backlog
 // larger than relaySessionPruneBatch drains over successive prunes.
 func TestPostgresStoreSessionPruneIsBatched(t *testing.T) {

@@ -811,19 +811,19 @@ func (s *PostgresStore) Prune(now time.Time) ([]relay.Descriptor, error) {
 	return expired, nil
 }
 
+// RecordRelayTelemetry stores the ranking-relevant events of one upload as a
+// single pipelined batch: one round trip, run by Postgres as one implicit
+// transaction, so an upload is still all-or-nothing. Uploads without such
+// events (most of them) never touch the database.
 func (s *PostgresStore) RecordRelayTelemetry(ctx context.Context, records []TelemetryRecord, now time.Time) error {
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-
+	batch := &pgx.Batch{}
 	for _, record := range records {
-		if err := s.recordRelayTelemetry(ctx, tx, record, now); err != nil {
-			return err
-		}
+		queueRelayTelemetry(batch, record, now)
 	}
-	return tx.Commit(ctx)
+	if batch.Len() == 0 {
+		return nil
+	}
+	return s.pool.SendBatch(ctx, batch).Close()
 }
 
 func (s *PostgresStore) RelayRankingWeights(parent context.Context) (map[string]float64, error) {
@@ -1012,7 +1012,7 @@ func (s *PostgresStore) metricSnapshots(ctx context.Context, now time.Time) (map
 	return snapshots, weights, metricRows.Err()
 }
 
-func (s *PostgresStore) recordRelayTelemetry(ctx context.Context, tx pgx.Tx, record TelemetryRecord, now time.Time) error {
+func queueRelayTelemetry(batch *pgx.Batch, record TelemetryRecord, now time.Time) {
 	event := record.Event
 	observedAt := record.ReceivedAt
 	if observedAt.IsZero() {
@@ -1025,9 +1025,9 @@ func (s *PostgresStore) recordRelayTelemetry(ctx context.Context, tx pgx.Tx, rec
 	switch event.Event {
 	case "session_heartbeat":
 		if event.SessionID == "" || event.RelayID == "" {
-			return nil
+			return
 		}
-		_, err := tx.Exec(ctx, `
+		batch.Queue(`
 			INSERT INTO relay_sessions (session_id, client_id, relay_id, last_heartbeat_at, terminal_at, updated_at)
 			VALUES ($1, $2, $3, $4, NULL, $5)
 			ON CONFLICT (session_id) DO UPDATE SET
@@ -1042,25 +1042,20 @@ func (s *PostgresStore) recordRelayTelemetry(ctx context.Context, tx pgx.Tx, rec
 				END,
 				updated_at = EXCLUDED.updated_at
 		`, event.SessionID, event.ClientID, event.RelayID, observedAt, now)
-		return err
 	case "connection_succeeded", "relay_failover":
-		if event.RelayID == "" {
-			return nil
+		if event.RelayID != "" {
+			queueMetric(batch, event.EventID, event.RelayID, observedAt, true, false, event.Measurements)
 		}
-		return s.insertMetric(ctx, tx, event.EventID, event.RelayID, observedAt, true, false, event.Measurements)
 	case "relay_attempt_failed":
-		if event.RelayID == "" {
-			return nil
+		if event.RelayID != "" {
+			queueMetric(batch, event.EventID, event.RelayID, observedAt, false, true, event.Measurements)
 		}
-		return s.insertMetric(ctx, tx, event.EventID, event.RelayID, observedAt, false, true, event.Measurements)
 	case "connection_ended", "tunnel_stopped", "connection_failed":
-		return s.markSessionTerminal(ctx, tx, event, observedAt, now)
-	default:
-		return nil
+		queueSessionTerminal(batch, event, observedAt, now)
 	}
 }
 
-func (s *PostgresStore) insertMetric(ctx context.Context, tx pgx.Tx, eventID, relayID string, observedAt time.Time, success, failure bool, measurements map[string]int64) error {
+func queueMetric(batch *pgx.Batch, eventID, relayID string, observedAt time.Time, success, failure bool, measurements map[string]int64) {
 	successCount, failureCount := 0, 0
 	if success {
 		successCount = 1
@@ -1069,7 +1064,7 @@ func (s *PostgresStore) insertMetric(ctx context.Context, tx pgx.Tx, eventID, re
 		failureCount = 1
 	}
 
-	_, err := tx.Exec(ctx, `
+	batch.Queue(`
 		INSERT INTO relay_metrics (
 			event_id,
 			relay_id,
@@ -1091,15 +1086,14 @@ func (s *PostgresStore) insertMetric(ctx context.Context, tx pgx.Tx, eventID, re
 		positiveInt64(measurements["tunnel_start_ms"]),
 		positiveInt64(measurements["internet_probe_ms"]),
 	)
-	return err
 }
 
-func (s *PostgresStore) markSessionTerminal(ctx context.Context, tx pgx.Tx, event TelemetryEvent, observedAt, now time.Time) error {
+func queueSessionTerminal(batch *pgx.Batch, event TelemetryEvent, observedAt, now time.Time) {
 	if event.SessionID == "" {
-		return nil
+		return
 	}
 	if event.RelayID == "" {
-		_, err := tx.Exec(ctx, `
+		batch.Queue(`
 			UPDATE relay_sessions
 			SET terminal_at = CASE
 					WHEN terminal_at IS NULL OR terminal_at < $2 THEN $2
@@ -1108,10 +1102,10 @@ func (s *PostgresStore) markSessionTerminal(ctx context.Context, tx pgx.Tx, even
 				updated_at = $3
 			WHERE session_id = $1
 		`, event.SessionID, observedAt, now)
-		return err
+		return
 	}
 
-	_, err := tx.Exec(ctx, `
+	batch.Queue(`
 		INSERT INTO relay_sessions (session_id, client_id, relay_id, last_heartbeat_at, terminal_at, updated_at)
 		VALUES ($1, $2, $3, $4, $4, $5)
 		ON CONFLICT (session_id) DO UPDATE SET
@@ -1124,7 +1118,6 @@ func (s *PostgresStore) markSessionTerminal(ctx context.Context, tx pgx.Tx, even
 			END,
 			updated_at = EXCLUDED.updated_at
 	`, event.SessionID, event.ClientID, event.RelayID, observedAt, now)
-	return err
 }
 
 func scanDescriptor(row pgx.Row) (relay.Descriptor, error) {
