@@ -166,9 +166,6 @@ ALTER TABLE relay_sessions
 -- on (relay_id, last_heartbeat_at) was never chosen and grew with each one.
 DROP INDEX IF EXISTS relay_sessions_active_by_relay_idx;
 
--- ttfb_ms, download_mbps_milli and speed_test_count are no longer written or
--- read: speed tests stopped feeding the ranking. They stay so that a broker
--- from before that change can still run against this schema.
 CREATE TABLE IF NOT EXISTS relay_metrics (
 	event_id text PRIMARY KEY,
 	relay_id text NOT NULL,
@@ -178,14 +175,18 @@ CREATE TABLE IF NOT EXISTS relay_metrics (
 	tcp_ms bigint,
 	tunnel_start_ms bigint,
 	internet_probe_ms bigint,
-	ttfb_ms bigint,
-	download_mbps_milli bigint,
-	speed_test_count integer NOT NULL DEFAULT 0,
 	measurements jsonb NOT NULL DEFAULT '{}'::jsonb
 );
 
 ALTER TABLE relay_metrics
 	ADD COLUMN IF NOT EXISTS measurements jsonb NOT NULL DEFAULT '{}'::jsonb;
+
+-- Speed tests are gone. A broker from before they stopped feeding the ranking
+-- wrote these columns and cannot run against this schema.
+ALTER TABLE relay_metrics
+	DROP COLUMN IF EXISTS ttfb_ms,
+	DROP COLUMN IF EXISTS download_mbps_milli,
+	DROP COLUMN IF EXISTS speed_test_count;
 
 CREATE INDEX IF NOT EXISTS relay_metrics_recent_by_relay_idx
 	ON relay_metrics (relay_id, observed_at DESC);

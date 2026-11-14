@@ -118,22 +118,3 @@ func AccessURL(baseURL string) (string, error) {
 func HealthURL(baseURL string) (string, error) {
 	return endpointURL(baseURL, "healthz")
 }
-
-// SpeedTestURL resolves GET /api/v1/speed-test for the requested byte count.
-func SpeedTestURL(baseURL string, byteCount int) (string, error) {
-	if byteCount < 1 || byteCount > MaxSpeedTestBytes {
-		return "", fmt.Errorf("speed-test byte count must be between 1 and %d", MaxSpeedTestBytes)
-	}
-	endpoint, err := endpointURL(baseURL, "api/v1/speed-test")
-	if err != nil {
-		return "", err
-	}
-	parsed, err := url.Parse(endpoint)
-	if err != nil {
-		return "", err
-	}
-	query := parsed.Query()
-	query.Set("bytes", strconv.Itoa(byteCount))
-	parsed.RawQuery = query.Encode()
-	return parsed.String(), nil
-}

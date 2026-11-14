@@ -6,8 +6,8 @@ All API paths are currently versioned under `/api/v1`.
 
 The unauthenticated endpoints (`GET /api/v1/relays`, `POST
 /api/v1/wss/tickets`, `POST /api/v1/users/challenge`, `POST
-/api/v1/users/auth`, `POST /api/v1/telemetry/events`, and `GET
-/api/v1/speed-test`) and `POST /api/v1/access` are rate limited. Requests over the budget receive `429
+/api/v1/users/auth`, and `POST /api/v1/telemetry/events`) and `POST
+/api/v1/access` are rate limited. Requests over the budget receive `429
 Too Many Requests` with a `Retry-After` header (seconds); clients should back
 off and retry only within their bounded operation deadline. Most endpoints use
 the real client IP resolved through trusted proxies. WSS ticket requests also
@@ -19,8 +19,8 @@ limits remain mandatory.
 Each of these per-client budgets is broker-host configuration, set as
 `<per-second rate>:<burst>` in `OPENRUNG_RATE_LIMIT_RELAY_LIST`,
 `OPENRUNG_RATE_LIMIT_WSS_TICKET`, `OPENRUNG_RATE_LIMIT_USER_AUTH`,
-`OPENRUNG_RATE_LIMIT_ACCESS`, `OPENRUNG_RATE_LIMIT_TELEMETRY`,
-`OPENRUNG_RATE_LIMIT_SPEED_TEST` and `OPENRUNG_RATE_LIMIT_RELAY_REGISTRATION`
+`OPENRUNG_RATE_LIMIT_ACCESS`, `OPENRUNG_RATE_LIMIT_TELEMETRY` and
+`OPENRUNG_RATE_LIMIT_RELAY_REGISTRATION`
 (registration, heartbeat and lease polling share one budget). Clients must not
 assume any particular budget; they react only to `429` and `Retry-After`.
 
@@ -153,34 +153,10 @@ The JSONL sink updates the dashboard's in-memory records immediately, flushes
 buffered JSONL output every five seconds, syncs it to durable storage every 30
 seconds, and performs a final flush and sync during graceful broker shutdown.
 
-The Settings screen offers a manual relay speed test. It downloads from the
-configured broker, avoiding a dependency on external DNS while the VPN is
-active. It performs a 1 MB warm-up followed by a measured 10 MB download through
-the active tunnel and emits `speed_test_completed` with the active `relay_id`
-and these measurements:
-
-```json
-{
-  "bytes_downloaded": 10000000,
-  "download_duration_ms": 2140,
-  "time_to_first_byte_ms": 182,
-  "download_mbps_milli": 37383
-}
-```
-
-`download_mbps_milli` stores Mbps multiplied by 1,000, so `37383` represents
-37.383 Mbps. Speed-test results are shown to the user and on the operator
-dashboard; they are not a [relay ranking](#ranking-breakdown) input.
-
-```http
-GET /api/v1/speed-test?bytes=10000000
-```
-
-The broker streams the requested number of bytes with caching disabled and
-rejects requests larger than 25 MB. Because each stream is expensive for broker
-egress, only a few speed tests may run concurrently in addition to the per-IP
-rate limit; a busy broker answers `429` with `Retry-After`, and the app should
-retry the measurement later rather than treat it as a failure.
+The broker no longer serves `GET /api/v1/speed-test`, and the apps no longer
+measure speed against it. `speed_test_completed` and `speed_test_failed` events
+from older app versions are still accepted and stored like any other event, but
+nothing reads them.
 
 ### WSS handshake failure taxonomy
 
@@ -348,7 +324,7 @@ top-ISP rankings counted by unique session.
 
 Every view that names a relay colours the name by the relay's broker-attested
 class — bright green for `foundation`, orange for `volunteer` — across the
-top-relay, speed-test, and active-by-relay rankings and the relay column of
+top-relay and active-by-relay rankings and the relay column of
 recent sessions. A visible `FND` or `VOL` marker and accessible label repeat the
 class on every coloured name; the full class also appears in its hover tooltip.
 When an accepted event names an active relay, the broker records that relay's
@@ -388,8 +364,7 @@ public endpoint, access address and operator contact (when the relay registered 
 broker), relay software version, capacity, punch/WSS capability, registration
 and last-heartbeat times — merged with per-relay telemetry for the window:
 currently connected clients and active sessions, unique clients and sessions,
-successful and failed attempts with the modal failure reason, and average
-speed-test results. Relays that appear only in telemetry are listed as offline
+and successful and failed attempts with the modal failure reason. Relays that appear only in telemetry are listed as offline
 rows so a crashed or expired relay stays visible for the retention window; they
 keep the node class retained with their telemetry. Rows order online first,
 busiest first.
@@ -1244,7 +1219,7 @@ latest [inbound reachability probe](#inbound-reachability-probe) failed is
 left out before ranking and page shaping. The broker uses recent
 connection successes/failures, active sessions, observed client latency, and
 the share of TCP handshakes with the relay that needed a retransmission.
-Speed-test telemetry is accepted but does not feed the ranking. The latency it
+The latency it
 scores is the median per measurement (TCP connect, internet probe) and the
 handshake share is one figure per relay, both across all clients, so neither
 can describe any one client's path; each measurement is scored on its own

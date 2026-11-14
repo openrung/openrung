@@ -99,9 +99,7 @@ events AS (
 		NULLIF(e.payload->'attributes'->>'client_ip', '') AS reported_client_ip,
 		(e.payload->'measurements'->>'session_duration_ms')::bigint AS session_duration_ms,
 		(e.payload->'measurements'->>'bytes_sent')::bigint AS bytes_sent,
-		(e.payload->'measurements'->>'bytes_received')::bigint AS bytes_received,
-		(e.payload->'measurements'->>'download_mbps_milli')::bigint AS download_mbps_milli,
-		(e.payload->'measurements'->>'time_to_first_byte_ms')::bigint AS ttfb_ms
+		(e.payload->'measurements'->>'bytes_received')::bigint AS bytes_received
 	` + from + `
 )`
 }
@@ -289,7 +287,6 @@ const (
 //	relay_source k1 = relay_source               n = connection_succeeded events carrying it
 //	relay_ok    k1 = relay_id                    n = connection_succeeded + relay_failover
 //	relay_fail  k1 = relay_id, k2 = reason label n = relay_attempt_failed
-//	speed       k1 = relay_id                    n = tests, s1 = Σ download_mbps_milli, s2 = Σ ttfb_ms
 //	relay_seen  k1 = relay_id                    n = relay-bearing events, last_at = latest
 //	                                             received_at, v = latest non-empty node class,
 //	                                             v_at / v_occurred_at = (received_at, occurred_at)
@@ -321,10 +318,6 @@ event_counts AS (
 	UNION ALL
 	SELECT ` + telemetryOccurredHour + `, 'relay_fail', relay_id, ` + telemetryFailureReasonLabel + `, COUNT(*), 0, 0, NULL, NULL, NULL, NULL
 	FROM events WHERE event = 'relay_attempt_failed' AND relay_id <> '' GROUP BY 1, 3, 4
-	UNION ALL
-	SELECT ` + telemetryOccurredHour + `, 'speed', relay_id, '', COUNT(*),
-		SUM(COALESCE(download_mbps_milli, 0))::bigint, SUM(COALESCE(ttfb_ms, 0))::bigint, NULL, NULL, NULL, NULL
-	FROM events WHERE event = 'speed_test_completed' AND relay_id <> '' GROUP BY 1, 3
 	UNION ALL
 	SELECT ` + telemetryOccurredHour + `, 'relay_seen', relay_id, '', COUNT(*), 0, 0, MAX(received_at),
 		(array_agg(relay_node_class ORDER BY received_at DESC, occurred_at DESC) FILTER (WHERE relay_node_class <> ''))[1],
@@ -377,7 +370,7 @@ const telemetrySessionISPLabel = `
 
 // telemetryOverviewBody collapses the WHOLE overview — headline totals, every
 // session-grain and event-grain count panel, trend, relay failure reasons,
-// retained relay classes, and speed tests — into a single statement over the
+// and retained relay classes — into a single statement over the
 // `sessions` and `event_counts` CTEs, whichever preamble produced them. Rows
 // are discriminated by `kind` and share a generic column shape so
 // heterogeneous panels can travel together:
@@ -385,12 +378,12 @@ const telemetrySessionISPLabel = `
 //	kind  the panel this row feeds
 //	k1    first text key    — count name / relay_id; NULL for trend
 //	k2    second text key   — relay failure reason / retained class; NULL otherwise
-//	v1    first value       — count, tests, or (for trend) the hour as epoch
+//	v1    first value       — count, or (for trend) the hour as epoch
 //	                          seconds in a bigint
-//	v2..v4  extra values    — trend success/failure counts, speed-test sums
+//	v2..v4  extra values    — trend success/failure counts
 //
 // The Go dispatcher feeds each kind through the same helpers the in-memory path
-// uses (trend bucket filling, sortedCounts, topRelaySummaries, sortSpeedTests)
+// uses (trend bucket filling, sortedCounts, topRelaySummaries)
 // so ranking and tiebreaks stay byte-identical.
 const telemetryOverviewBody = `
 -- totals: one row per headline metric. clients counts every distinct client
@@ -491,12 +484,7 @@ UNION ALL
 SELECT 'relay_classes', k1,
 	(array_agg(v ORDER BY v_at DESC, v_occurred_at DESC) FILTER (WHERE v IS NOT NULL))[1],
 	NULL, NULL, NULL, NULL
-FROM event_counts WHERE kind = 'relay_seen' GROUP BY k1
-UNION ALL
--- speed_tests: per-relay test count plus the sums the caller averages. v1=tests,
--- v2=Σ download_mbps_milli, v3=Σ ttfb_ms.
-SELECT 'speed_tests', k1, NULL, SUM(n)::bigint, SUM(s1)::bigint, SUM(s2)::bigint, NULL
-FROM event_counts WHERE kind = 'speed' GROUP BY k1`
+FROM event_counts WHERE kind = 'relay_seen' GROUP BY k1`
 
 var (
 	telemetryOverviewEventsQuery = telemetryEventPathCTEs + telemetryOverviewBody
@@ -572,7 +560,7 @@ WHERE received_at > $1 AND occurred_at >= $2 AND occurred_at <= $3
 const telemetrySessionCountRollupQuery = `SELECT COUNT(*) FROM telemetry_sessions ` + telemetryRollupSessionsWhere
 
 // telemetryRelayStatsBody aggregates the window per relay for the relays
-// page: event-grain counts (successes, failures, speed-test sums, last seen,
+// page: event-grain counts (successes, failures, last seen,
 // retained class), session-grain counts (sessions, distinct clients, active
 // sessions and clients), and the modal relay_attempt_failed reason.
 // relay_events covers every relay any event named (every relay-bearing event
@@ -590,13 +578,10 @@ relay_events AS (
 		k1 AS relay_id,
 		COALESCE(SUM(n) FILTER (WHERE kind = 'relay_ok'), 0)::bigint AS successes,
 		COALESCE(SUM(n) FILTER (WHERE kind = 'relay_fail'), 0)::bigint AS failures,
-		COALESCE(SUM(n) FILTER (WHERE kind = 'speed'), 0)::bigint AS speed_tests,
-		COALESCE(SUM(s1) FILTER (WHERE kind = 'speed'), 0)::bigint AS mbps_milli_sum,
-		COALESCE(SUM(s2) FILTER (WHERE kind = 'speed'), 0)::bigint AS ttfb_ms_sum,
 		MAX(last_at) AS last_seen_at,
 		COALESCE((array_agg(v ORDER BY v_at DESC, v_occurred_at DESC) FILTER (WHERE kind = 'relay_seen' AND v IS NOT NULL))[1], '') AS node_class
 	FROM event_counts
-	WHERE kind IN ('relay_ok', 'relay_fail', 'speed', 'relay_seen')
+	WHERE kind IN ('relay_ok', 'relay_fail', 'relay_seen')
 	GROUP BY k1
 ),
 relay_sessions AS (
@@ -630,7 +615,6 @@ SELECT
 	COALESCE(s.clients, 0) AS clients,
 	COALESCE(s.active_sessions, 0) AS active_sessions,
 	COALESCE(s.active_clients, 0) AS active_clients,
-	e.speed_tests, e.mbps_milli_sum, e.ttfb_ms_sum,
 	e.last_seen_at
 FROM relay_events e
 LEFT JOIN relay_sessions s USING (relay_id)
@@ -643,7 +627,7 @@ WHERE e.node_class <> '' OR e.relay_id = ANY($5)
 UNION ALL
 SELECT '', '', 0, 0, '', 0, 0, 0,
 	COUNT(DISTINCT sessions.client_id) FILTER (WHERE sessions.active)::bigint,
-	0, 0, 0, NULL
+	NULL
 FROM sessions
 JOIN relay_events trusted ON trusted.relay_id = sessions.relay_id
 	AND (trusted.node_class <> '' OR trusted.relay_id = ANY($5))`
@@ -789,7 +773,7 @@ func (s *PostgresTelemetrySink) TelemetryOverview(now time.Time, window time.Dur
 	if s.useRollup(window) {
 		query = telemetryOverviewRollupQuery
 	}
-	trend, counts, relayFailureReasons, relayClasses, speedTests, err := s.queryTelemetryOverviewAggregates(ctx, query, sessionArgs, now, window)
+	trend, counts, relayFailureReasons, relayClasses, err := s.queryTelemetryOverviewAggregates(ctx, query, sessionArgs, now, window)
 	if err != nil {
 		return telemetryOverview{}, err
 	}
@@ -823,7 +807,6 @@ func (s *PostgresTelemetrySink) TelemetryOverview(now time.Time, window time.Dur
 	overview.AccessOutcomes = sortedCounts(counts["access_outcomes"], accessPanelLimit)
 	overview.RelaySources = sortedCounts(counts["relay_sources"], accessPanelLimit)
 	overview.TopRelays = topRelaySummaries(counts["relay_successes"], counts["relay_failures"], relayFailureReasons)
-	overview.SpeedTests = speedTests
 	applyTelemetryRelayClasses(&overview, relayClasses)
 	return overview, nil
 }
@@ -892,11 +875,10 @@ func (s *PostgresTelemetrySink) TelemetryRelayStats(now time.Time, window time.D
 	stats := relayTelemetryStats{}
 	for rows.Next() {
 		var row relayStatRow
-		var successes, failures, sessions, clients, activeSessions, activeClients, speedTests, mbpsMilliSum, ttfbMSSum int64
+		var successes, failures, sessions, clients, activeSessions, activeClients int64
 		var lastSeenAt *time.Time
 		if err := rows.Scan(&row.RelayID, &row.NodeClass, &successes, &failures, &row.TopFailureReason,
-			&sessions, &clients, &activeSessions, &activeClients,
-			&speedTests, &mbpsMilliSum, &ttfbMSSum, &lastSeenAt); err != nil {
+			&sessions, &clients, &activeSessions, &activeClients, &lastSeenAt); err != nil {
 			return relayTelemetryStats{}, fmt.Errorf("scan telemetry relay stats: %w", err)
 		}
 		if row.RelayID == "" {
@@ -907,8 +889,6 @@ func (s *PostgresTelemetrySink) TelemetryRelayStats(now time.Time, window time.D
 		row.Successes, row.Failures = int(successes), int(failures)
 		row.Sessions, row.Clients = int(sessions), int(clients)
 		row.ActiveSessions, row.ActiveClients = int(activeSessions), int(activeClients)
-		row.SpeedTests = int(speedTests)
-		applyRelaySpeedAverages(&row, mbpsMilliSum, ttfbMSSum)
 		if lastSeenAt != nil {
 			row.LastSeenAt = lastSeenAt.UTC()
 		}
@@ -924,9 +904,9 @@ func (s *PostgresTelemetrySink) TelemetryRelayStats(now time.Time, window time.D
 // queryTelemetryOverviewAggregates runs the single overview statement and
 // demultiplexes its kind-tagged rows back into the shapes the overview builder
 // expects: the trend (pre-filled with empty buckets so gaps render as
-// zeros), the totals and count groups, per-relay failure-reason counts and
-// retained classes, and the speed-test summaries.
-func (s *PostgresTelemetrySink) queryTelemetryOverviewAggregates(ctx context.Context, query string, args []any, now time.Time, window time.Duration) (trend []trendPoint, counts, relayFailureReasons map[string]map[string]int, relayClasses map[string]string, speedTests []speedTestSummary, err error) {
+// zeros), the totals and count groups, and per-relay failure-reason counts
+// and retained classes.
+func (s *PostgresTelemetrySink) queryTelemetryOverviewAggregates(ctx context.Context, query string, args []any, now time.Time, window time.Duration) (trend []trendPoint, counts, relayFailureReasons map[string]map[string]int, relayClasses map[string]string, err error) {
 	// Pre-fill every bucket like the in-memory path so the trend spans the
 	// whole window even where no events landed; the hourly rows add into their
 	// bucket by index (one each, or a UTC day's worth on the long windows).
@@ -941,7 +921,7 @@ func (s *PostgresTelemetrySink) queryTelemetryOverviewAggregates(ctx context.Con
 
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
-		return nil, nil, nil, nil, nil, fmt.Errorf("query telemetry overview aggregates: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("query telemetry overview aggregates: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
@@ -951,7 +931,7 @@ func (s *PostgresTelemetrySink) queryTelemetryOverviewAggregates(ctx context.Con
 		var k1, k2 *string
 		var v1, v2, v3, v4 *int64
 		if err := rows.Scan(&kind, &k1, &k2, &v1, &v2, &v3, &v4); err != nil {
-			return nil, nil, nil, nil, nil, fmt.Errorf("scan telemetry overview aggregate: %w", err)
+			return nil, nil, nil, nil, fmt.Errorf("scan telemetry overview aggregate: %w", err)
 		}
 		switch kind {
 		case "trend":
@@ -969,14 +949,6 @@ func (s *PostgresTelemetrySink) queryTelemetryOverviewAggregates(ctx context.Con
 			addCount(relayFailureReasons, stringValue(k1), stringValue(k2), int(int64Value(v1)))
 		case "relay_classes":
 			relayClasses[stringValue(k1)] = stringValue(k2)
-		case "speed_tests":
-			tests := int(int64Value(v1))
-			speedTests = append(speedTests, speedTestSummary{
-				RelayID:       stringValue(k1),
-				Tests:         tests,
-				AverageMbps:   float64(int64Value(v2)) / float64(tests) / 1000,
-				AverageTTFBMS: float64(int64Value(v3)) / float64(tests),
-			})
 		default:
 			// The remaining kinds are (name, count) groups: the totals rows keyed
 			// by metric name plus every session- and event-level count panel.
@@ -984,10 +956,9 @@ func (s *PostgresTelemetrySink) queryTelemetryOverviewAggregates(ctx context.Con
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
-	speedTests = rankSpeedTests(speedTests)
-	return trend, counts, relayFailureReasons, relayClasses, speedTests, nil
+	return trend, counts, relayFailureReasons, relayClasses, nil
 }
 
 // addCount records counts[outer][inner] = count, allocating the inner map on

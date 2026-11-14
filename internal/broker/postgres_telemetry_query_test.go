@@ -14,7 +14,7 @@ import (
 // The parity tests feed one synthetic event set through the in-memory
 // aggregator (the JSONL sink's dashboard path) and the SQL aggregation, then
 // require byte-identical JSON. Only the two orderings that were already
-// nondeterministic in the in-memory path (top-relay and speed-test ties) are
+// nondeterministic in the in-memory path (top-relay ties) are
 // kept tie-free in the fixture.
 
 // parityTelemetryRecords exercises the semantics the SQL path must reproduce:
@@ -120,7 +120,7 @@ func parityTelemetryRecords(now time.Time) []TelemetryRecord {
 		record(50, 65, "client_seen", "client-skew", "session-skew", "", "192.0.2.99",
 			map[string]string{"operating_system": "Linux"}, nil),
 
-		// session-speed: speed tests with tie-free averages per relay.
+		// session-speed: speed tests from older apps, stored but not summarised.
 		record(40, 40, "speed_test_completed", "client-speed", "session-speed", "relay-1", "192.0.2.60",
 			nil, map[string]int64{"download_mbps_milli": 45000, "time_to_first_byte_ms": 120}),
 		record(39, 39, "speed_test_completed", "client-speed", "session-speed", "relay-3", "192.0.2.60",

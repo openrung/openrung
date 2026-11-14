@@ -3,7 +3,7 @@ module openrung/desktop
 go 1.25.5
 
 require (
-	github.com/openrung/openrung/brokerapi v0.10.0
+	github.com/openrung/openrung/brokerapi v0.11.0
 	github.com/openrung/openrung/connectcore v0.0.0
 	github.com/wailsapp/wails/v2 v2.12.0
 	golang.org/x/sys v0.47.0
