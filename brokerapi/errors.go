@@ -3,6 +3,8 @@
 package brokerapi
 
 import (
+	"crypto/x509"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -63,14 +65,45 @@ func (e *WSSTicketStatusError) HTTPStatus() int { return e.StatusCode }
 // freshness check. No non-loopback relay JSON is returned on this error.
 type RelayListVerificationError struct {
 	Reason string
+	// Expired marks a response that passed every check except freshness: its
+	// signature verified, but not_after is past by the local clock.
+	Expired bool
 }
 
 func (e *RelayListVerificationError) Error() string {
 	return "unsigned/invalid relay list: " + e.Reason
 }
 
+// Is lets errors.Is(err, ErrSignedResponseExpired) find an expiry failure.
+func (e *RelayListVerificationError) Is(target error) bool {
+	return target == ErrSignedResponseExpired && e.Expired
+}
+
+// ErrSignedResponseExpired matches a RelayListVerificationError whose only
+// failed check was freshness. The response is genuine, so the usual cause is
+// a local clock that runs ahead; hosts use it to ask the user to check the
+// device's date and time.
+var ErrSignedResponseExpired = errors.New("signed broker response expired by the local clock")
+
+// ClockSkewSuspected reports whether err is a failure that a wrong local
+// clock produces, in either direction: a genuine signed response that is
+// already expired (clock ahead), or a broker certificate outside its validity
+// period (clock far ahead or behind). Hosts use it to ask the user to check
+// the device's date and time; it is a hint, not proof.
+func ClockSkewSuspected(err error) bool {
+	if errors.Is(err, ErrSignedResponseExpired) {
+		return true
+	}
+	var invalid x509.CertificateInvalidError
+	return errors.As(err, &invalid) && invalid.Reason == x509.Expired
+}
+
 func verificationFailure(format string, args ...any) error {
 	return &RelayListVerificationError{Reason: fmt.Sprintf(format, args...)}
+}
+
+func expiredFailure(format string, args ...any) error {
+	return &RelayListVerificationError{Reason: fmt.Sprintf(format, args...), Expired: true}
 }
 
 func parseRetryAfter(value string, now time.Time) time.Duration {

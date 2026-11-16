@@ -3,6 +3,7 @@ package connectcore
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/openrung/openrung/punchcore"
 
 	"github.com/openrung/openrung/connectcore/client"
+	"github.com/openrung/openrung/connectcore/discovery"
 )
 
 // The typed notices exist so host UIs (the TUI) can render failover, WSS
@@ -286,5 +288,35 @@ func TestEngineTelemetryCarriesCLIPlatformLabel(t *testing.T) {
 				t.Fatalf("connection_ended platform attribute = %q, want %q", got, tc.wantLabel)
 			}
 		})
+	}
+}
+
+// A signed relay list that is already expired by the device clock is the
+// signature of a wrong date or time: the engine says so in a typed notice
+// that directly precedes the FAILED state, so hosts can label that failure.
+func TestExpiredRelayListEmitsClockSkewNotice(t *testing.T) {
+	s, sink := newLadderService(t, func() []brokerapi.RelayDescriptor { return nil })
+	s.fetchRelays = func(context.Context, string, int, string, string) (discovery.Fetch, error) {
+		return discovery.Fetch{}, fmt.Errorf("fetch: %w", &brokerapi.RelayListVerificationError{Reason: "list expired", Expired: true})
+	}
+	if err := s.Connect("https://configured.example", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForStatus(t, s, StatusFailed)
+	if !hasNotice(sink, NoticeClockSkew) {
+		t.Fatal("no clock_skew notice for an expired signed relay list")
+	}
+
+	// Any other verification failure is not blamed on the clock.
+	s2, sink2 := newLadderService(t, func() []brokerapi.RelayDescriptor { return nil })
+	s2.fetchRelays = func(context.Context, string, int, string, string) (discovery.Fetch, error) {
+		return discovery.Fetch{}, &brokerapi.RelayListVerificationError{Reason: "signature does not verify"}
+	}
+	if err := s2.Connect("https://configured.example", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForStatus(t, s2, StatusFailed)
+	if hasNotice(sink2, NoticeClockSkew) {
+		t.Fatal("clock_skew notice for a non-expiry verification failure")
 	}
 }

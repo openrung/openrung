@@ -322,6 +322,19 @@ func TestFailedStateCarriesTheNoticeErrorCode(t *testing.T) {
 		t.Fatalf("stale code %q on an unrelated failure", code())
 	}
 
+	// A relay list expired by the local clock: also followed directly by FAILED.
+	state(connectcore.StatusConnecting)
+	sink.Notice(connectcore.Notice{Kind: connectcore.NoticeClockSkew})
+	state(connectcore.StatusFailed)
+	if code() != errorCodeClockSkew {
+		t.Fatalf("code = %q, want %q", code(), errorCodeClockSkew)
+	}
+	state(connectcore.StatusConnecting)
+	state(connectcore.StatusFailed)
+	if code() != "" {
+		t.Fatalf("stale code %q on an unrelated failure", code())
+	}
+
 	// An enrollment refusal survives the rest of its connect attempt…
 	state(connectcore.StatusConnecting)
 	sink.Notice(connectcore.Notice{Kind: connectcore.NoticeEnrollmentRefused})

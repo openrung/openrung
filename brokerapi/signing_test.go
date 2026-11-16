@@ -2,9 +2,13 @@ package brokerapi
 
 import (
 	"crypto/ed25519"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -197,6 +201,10 @@ func TestVerifyRelayListRejectsEveryEnvelopeFailure(t *testing.T) {
 			if !strings.Contains(err.Error(), test.wantReason) {
 				t.Fatalf("error %q does not contain %q", err, test.wantReason)
 			}
+			// Only the freshness failure of a genuine response points at the clock.
+			if got, want := errors.Is(err, ErrSignedResponseExpired), test.name == "expired"; got != want {
+				t.Fatalf("errors.Is(err, ErrSignedResponseExpired) = %v, want %v", got, want)
+			}
 		})
 	}
 }
@@ -238,5 +246,26 @@ func TestVerifyRelayListLoopbackOnlyExemption(t *testing.T) {
 	}
 	if _, err := verifyRelayList(nil, "http://localhost.example/api/v1/relays", 5, "", body, time.Now()); err == nil {
 		t.Fatal("localhost suffix received loopback exemption")
+	}
+}
+
+func TestClockSkewSuspected(t *testing.T) {
+	certDate := &tls.CertificateVerificationError{Err: x509.CertificateInvalidError{Reason: x509.Expired}}
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"expired signed response", fmt.Errorf("fetch: %w", expiredFailure("list expired")), true},
+		{"certificate outside its validity period", fmt.Errorf("dial: %w", certDate), true},
+		{"other verification failure", verificationFailure("signature does not verify"), false},
+		{"other certificate failure", x509.CertificateInvalidError{Reason: x509.NotAuthorizedToSign}, false},
+		{"unknown authority", x509.UnknownAuthorityError{}, false},
+		{"nil", nil, false},
+	}
+	for _, test := range tests {
+		if got := ClockSkewSuspected(test.err); got != test.want {
+			t.Errorf("%s: ClockSkewSuspected = %v, want %v", test.name, got, test.want)
+		}
 	}
 }
