@@ -98,7 +98,7 @@ func main() {
 		Title:            "OpenRung",
 		Width:            phoneWindowWidth,
 		Height:           phoneWindowHeight,
-		DisableResize:    true,
+		DisableResize:    !sizeHeldByHints,
 		BackgroundColour: &options.RGBA{R: 4, G: 12, B: 9, A: 1},
 		AssetServer:      &assetserver.Options{Assets: assets},
 		OnStartup: func(ctx context.Context) {
