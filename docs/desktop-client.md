@@ -21,8 +21,10 @@ itself holds only the web stand-ins for native-only libraries and the adapter
 that backs the app's native bridge contract with the Go service
 (`desktop/vpnservice`).
 
-The window is a fixed, non-resizable phone-sized slab; on a screen too short
-for it, it is shortened at startup. Features the desktop service does not
+The window is an ordinary resizable desktop window, shrunk at startup on a
+screen too small for its default size. The app lays itself out by width: its
+phone layout in a narrow window, and a navigation rail with the controls docked
+beside the map in a wide one. Features the desktop service does not
 implement (per-app split tunneling) are hidden by the app when it runs on the
 desktop, and Settings gains the local proxy endpoint and shell commands in
 their place.

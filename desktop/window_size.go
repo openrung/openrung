@@ -2,27 +2,35 @@
 
 package main
 
-// The app's UI is the mobile app's, laid out for a phone screen, so the window
-// is a fixed, non-resizable slab of phone proportions rather than a freely
-// sized desktop window.
+// The window is an ordinary resizable desktop window. The UI (the mobile
+// app's) lays itself out by width: its phone layout in a narrow window, and a
+// navigation rail with a docked control panel beside the map in a wide one.
 const (
-	phoneWindowWidth     = 390
-	phoneWindowHeight    = 844
-	minPhoneWindowHeight = 600
+	defaultWindowWidth  = 1180
+	defaultWindowHeight = 780
 
-	// screenChromeAllowance is the vertical room left for what surrounds the
-	// window's content: its own title bar plus the system's menu bar, dock or
-	// taskbar.
+	// The smallest window the phone layout still holds the home screen's
+	// controls in.
+	minWindowWidth  = 360
+	minWindowHeight = 560
+
+	// screenChromeAllowance is the room left around the window on a screen
+	// smaller than the default size: its own title bar plus the system's menu
+	// bar, dock or taskbar.
 	screenChromeAllowance = 140
 )
 
-// phoneWindowHeightFor returns the content height to use on a screen of the
-// given logical height: the full phone height where it fits, otherwise as
-// much as the screen allows, down to a floor below which the layout would
-// not hold the home screen's controls. An unknown screen (0) gets the default.
-func phoneWindowHeightFor(screenHeight int) int {
-	if screenHeight <= 0 {
-		return phoneWindowHeight
+// windowSizeFor returns the size to open at on a screen of the given logical
+// size: the default where it fits, otherwise as much as the screen allows,
+// down to the minimum size. An unknown dimension (0) gets the default.
+func windowSizeFor(screenWidth, screenHeight int) (width, height int) {
+	return fitDimension(defaultWindowWidth, minWindowWidth, screenWidth),
+		fitDimension(defaultWindowHeight, minWindowHeight, screenHeight)
+}
+
+func fitDimension(want, floor, screen int) int {
+	if screen <= 0 {
+		return want
 	}
-	return min(phoneWindowHeight, max(minPhoneWindowHeight, screenHeight-screenChromeAllowance))
+	return min(want, max(floor, screen-screenChromeAllowance))
 }

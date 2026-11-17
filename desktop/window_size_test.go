@@ -4,22 +4,24 @@ package main
 
 import "testing"
 
-func TestPhoneWindowHeightFor(t *testing.T) {
+func TestWindowSizeFor(t *testing.T) {
 	for _, tc := range []struct {
-		name         string
-		screenHeight int
-		want         int
+		name                      string
+		screenWidth, screenHeight int
+		wantWidth, wantHeight     int
 	}{
-		{"unknown screen keeps the default", 0, phoneWindowHeight},
-		{"tall screen shows the full phone height", 1440, phoneWindowHeight},
-		{"exactly enough room", phoneWindowHeight + screenChromeAllowance, phoneWindowHeight},
-		{"one pixel short shrinks", phoneWindowHeight + screenChromeAllowance - 1, phoneWindowHeight - 1},
-		{"900-tall laptop", 900, 760},
-		{"768-tall laptop", 768, 628},
-		{"very short screen stops at the floor", 600, minPhoneWindowHeight},
+		{"unknown screen keeps the default", 0, 0, defaultWindowWidth, defaultWindowHeight},
+		{"large screen opens at the default", 2560, 1440, defaultWindowWidth, defaultWindowHeight},
+		{"exactly enough room", defaultWindowWidth + screenChromeAllowance, defaultWindowHeight + screenChromeAllowance, defaultWindowWidth, defaultWindowHeight},
+		{"one pixel short shrinks", defaultWindowWidth + screenChromeAllowance - 1, defaultWindowHeight + screenChromeAllowance - 1, defaultWindowWidth - 1, defaultWindowHeight - 1},
+		{"1366x768 laptop", 1366, 768, defaultWindowWidth, 628},
+		{"1024x768 screen", 1024, 768, 884, 628},
+		{"tiny screen stops at the minimum", 400, 600, minWindowWidth, minWindowHeight},
 	} {
-		if got := phoneWindowHeightFor(tc.screenHeight); got != tc.want {
-			t.Errorf("%s: phoneWindowHeightFor(%d) = %d, want %d", tc.name, tc.screenHeight, got, tc.want)
+		gotWidth, gotHeight := windowSizeFor(tc.screenWidth, tc.screenHeight)
+		if gotWidth != tc.wantWidth || gotHeight != tc.wantHeight {
+			t.Errorf("%s: windowSizeFor(%d, %d) = %dx%d, want %dx%d", tc.name,
+				tc.screenWidth, tc.screenHeight, gotWidth, gotHeight, tc.wantWidth, tc.wantHeight)
 		}
 	}
 }
