@@ -91,11 +91,39 @@ var ErrSignedResponseExpired = errors.New("signed broker response expired by the
 // period (clock far ahead or behind). Hosts use it to ask the user to check
 // the device's date and time; it is a hint, not proof.
 func ClockSkewSuspected(err error) bool {
-	if errors.Is(err, ErrSignedResponseExpired) {
+	if errors.Is(err, ErrSignedResponseExpired) || errors.Is(err, errClockSkewHint) {
 		return true
 	}
 	var invalid x509.CertificateInvalidError
 	return errors.As(err, &invalid) && invalid.Reason == x509.Expired
+}
+
+// errClockSkewHint is matched by clockSkewHintError only.
+var errClockSkewHint = errors.New("another broker candidate failed in a way a wrong clock produces")
+
+// clockSkewHintError is the error discovery reports for a set of failed
+// candidates when a candidate other than the reported one failed in a way a
+// wrong clock produces. Its text and chain are the reported error's, so
+// diagnostics and classification do not change; only ClockSkewSuspected
+// sees the difference.
+type clockSkewHintError struct{ error }
+
+func (e *clockSkewHintError) Unwrap() error { return e.error }
+
+func (e *clockSkewHintError) Is(target error) bool { return target == errClockSkewHint }
+
+// withClockSkewHint returns primary, marked for ClockSkewSuspected when it is
+// not already suspect but one of the other candidates' errors is.
+func withClockSkewHint(primary error, others ...error) error {
+	if primary == nil || ClockSkewSuspected(primary) {
+		return primary
+	}
+	for _, other := range others {
+		if ClockSkewSuspected(other) {
+			return &clockSkewHintError{primary}
+		}
+	}
+	return primary
 }
 
 func verificationFailure(format string, args ...any) error {
