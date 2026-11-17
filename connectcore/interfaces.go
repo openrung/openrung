@@ -84,6 +84,12 @@ const (
 	// server. Not terminal: the connect continues on the public relay list.
 	// Reason is user-presentable and says what to do.
 	NoticeEnrollmentRefused NoticeKind = "enrollment_refused"
+	// NoticeClockSkew: the relay list fetch failed in a way a wrong device
+	// clock produces (brokerapi.ClockSkewSuspected): the signed response is
+	// already expired, or the broker certificate is outside its validity
+	// period. The connect ends FAILED. Reason is user-presentable and says
+	// what to do.
+	NoticeClockSkew NoticeKind = "clock_skew"
 )
 
 // Notice is one typed mid-flow engine event for host status UIs. Only the

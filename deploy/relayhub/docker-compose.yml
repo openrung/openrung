@@ -13,6 +13,11 @@ services:
     image: openrung-relayhub:latest
     container_name: openrung-relayhub
     restart: unless-stopped
+    # Docker's default json-file driver never rotates: cap each container at
+    # three 10 MB files so its logs cannot fill the disk.
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
     env_file: [.env]
 
     # The hub binds the control port plus a whole public port range, and is a

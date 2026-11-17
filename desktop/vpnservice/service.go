@@ -58,6 +58,7 @@ type RecentNode struct {
 const (
 	errorCodeAccessDenied      = "access_denied"
 	errorCodeEnrollmentRefused = "enrollment_refused"
+	errorCodeClockSkew         = "clock_skew"
 )
 
 type NativeVpnState struct {
@@ -146,6 +147,7 @@ type Service struct {
 	// mirrored state. All guarded by mu.
 	accessDenied      bool
 	enrollmentRefused bool
+	clockSkew         bool
 	errorCode         string
 
 	// ruleSetDir is where Startup staged RuleSets, or empty when it could
@@ -355,11 +357,14 @@ func (k *engineSink) StateChanged(state connectcore.State) {
 		switch {
 		case s.accessDenied:
 			s.errorCode = errorCodeAccessDenied
+		case s.clockSkew:
+			s.errorCode = errorCodeClockSkew
 		case s.enrollmentRefused:
 			s.errorCode = errorCodeEnrollmentRefused
 		}
 	}
 	s.accessDenied = false
+	s.clockSkew = false
 	if state.Status != connectcore.StatusConnecting {
 		s.enrollmentRefused = false
 	}
@@ -377,6 +382,8 @@ func (k *engineSink) Notice(notice connectcore.Notice) {
 		s.accessDenied = true
 	case connectcore.NoticeEnrollmentRefused:
 		s.enrollmentRefused = true
+	case connectcore.NoticeClockSkew:
+		s.clockSkew = true
 	}
 	s.mu.Unlock()
 }
