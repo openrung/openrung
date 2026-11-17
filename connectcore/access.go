@@ -307,6 +307,14 @@ func (s *Engine) reportEnrollmentRefused() {
 	s.notify(Notice{Kind: NoticeEnrollmentRefused, Reason: ErrEnrollmentRefused.Error()})
 }
 
+func (s *Engine) reportClockSkew() {
+	s.appendLog(clockSkewReason)
+	s.notify(Notice{Kind: NoticeClockSkew, Reason: clockSkewReason})
+}
+
+// clockSkewReason is the user-presentable text of NoticeClockSkew.
+const clockSkewReason = "this device's date or time looks wrong; check that the date, time and time zone are set correctly, then try again"
+
 // requestAccess runs one access request: it authenticates when no valid
 // token is cached, re-authenticates once on 401, and waits out a bounded
 // number of 503 "issued but not installed yet" answers (the leases persist,

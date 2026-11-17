@@ -101,7 +101,7 @@ func verifyRelayList(
 		return RelayList{}, verificationFailure("signed body carries no not_after freshness bound")
 	}
 	if envelope.NotAfter.Before(now.Add(-notAfterSkewAllowance)) {
-		return RelayList{}, verificationFailure(
+		return RelayList{}, expiredFailure(
 			"list expired: not_after %s is past even with the %s clock-skew allowance (local time %s)",
 			envelope.NotAfter.Format(time.RFC3339),
 			notAfterSkewAllowance,
