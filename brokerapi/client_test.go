@@ -3,6 +3,8 @@ package brokerapi
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -714,5 +716,39 @@ func TestBrokerCandidatesAzureSNIFirst(t *testing.T) {
 	defaults[0] = "mutated"
 	if !slices.Equal(DefaultBrokerURLs(), wantDefaults) {
 		t.Fatal("default order shares mutable storage")
+	}
+}
+
+// Discovery reports one candidate's error. A clock-related failure of any
+// other candidate must still reach ClockSkewSuspected, without changing the
+// reported diagnostic or how it classifies.
+func TestFirstReachableKeepsClockSkewFromAnyFailedCandidate(t *testing.T) {
+	certDate := &tls.CertificateVerificationError{Err: x509.CertificateInvalidError{Reason: x509.Expired}}
+	failing := func(later error) *Client {
+		return NewClient(&http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			if request.URL.Port() == "8001" {
+				return nil, errors.New("network down")
+			}
+			return nil, later
+		})}, Options{})
+	}
+	urls := []string{"http://127.0.0.1:8001", "http://127.0.0.1:8002"}
+	for _, override := range []bool{false, true} {
+		candidates := Candidates{URLs: urls, OverrideFirst: override}
+		options := ListOptions{Stagger: time.Millisecond}
+
+		_, err := failing(certDate).FirstReachable(context.Background(), candidates, options)
+		if !ClockSkewSuspected(err) {
+			t.Fatalf("override=%v: clock skew of the later candidate was lost: %v", override, err)
+		}
+		var invalid x509.CertificateInvalidError
+		if !strings.Contains(err.Error(), "network down") || errors.As(err, &invalid) {
+			t.Fatalf("override=%v: reported error is not the first candidate's: %v", override, err)
+		}
+
+		_, err = failing(errors.New("refused")).FirstReachable(context.Background(), candidates, options)
+		if err == nil || ClockSkewSuspected(err) {
+			t.Fatalf("override=%v: ClockSkewSuspected(%v) without a clock-related failure", override, err)
+		}
 	}
 }

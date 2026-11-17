@@ -1088,6 +1088,9 @@ func (s *Engine) fetchCandidates(ctx context.Context, conn *connection, brokerUR
 	fetch, err := s.relayFetcher()(ctx, brokerURL, limit, managerClientID(conn.mgr), s.SessionID())
 	if err != nil {
 		s.noteDiagnostic("relay list fetch failed after %s: %v", time.Since(started).Round(time.Millisecond), err)
+		if brokerapi.ClockSkewSuspected(err) {
+			s.reportClockSkew()
+		}
 		return discovery.Fetch{}, 0, err
 	}
 	s.diagnostics.learnRelays(fetch.Response.Relays)

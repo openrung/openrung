@@ -325,6 +325,7 @@ docker build -f deploy/relay/Dockerfile -t openrung-relay .   # from repo root
 docker run -d --name openrung-relay --restart unless-stopped \
   --network host --cap-drop ALL --cap-add NET_BIND_SERVICE \
   --read-only --tmpfs /tmp \
+  --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 \
   -e OPENRUNG_BROKER_URL=https://broker.example.com \
   -e OPENRUNG_PUBLIC_HOST=2001:db8::1234 \
   openrung-relay

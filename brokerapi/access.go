@@ -179,7 +179,7 @@ func verifyAccessResponse(keys []pinnedKey, endpoint, signatureHeader string, bo
 			return AccessResponse{}, verificationFailure("signed body carries no not_after freshness bound")
 		}
 		if envelope.NotAfter.Before(now.Add(-notAfterSkewAllowance)) {
-			return AccessResponse{}, verificationFailure(
+			return AccessResponse{}, expiredFailure(
 				"access response expired: not_after %s is past even with the %s clock-skew allowance (local time %s)",
 				envelope.NotAfter.Format(time.RFC3339), notAfterSkewAllowance, now.Format(time.RFC3339),
 			)

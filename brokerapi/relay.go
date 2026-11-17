@@ -115,7 +115,7 @@ func (c *Client) FirstReachable(ctx context.Context, candidates Candidates, opti
 		if ctx.Err() != nil {
 			return Fetch{}, raceErr
 		}
-		return Fetch{}, overrideErr
+		return Fetch{}, withClockSkewHint(overrideErr, raceErr)
 	}
 	return c.race(ctx, candidates.URLs, options, candidates.AzureSNIFirst)
 }
@@ -168,9 +168,9 @@ func (c *Client) race(ctx context.Context, urls []string, options ListOptions, a
 	// candidate failed. Classification can change execution order, but not the
 	// caller-visible error choice.
 	if !azureSNIFirst && EndpointUnboundBrokerFront(urls[0]) {
-		return Fetch{}, unboundErr
+		return Fetch{}, withClockSkewHint(unboundErr, boundErr)
 	}
-	return Fetch{}, boundErr
+	return Fetch{}, withClockSkewHint(boundErr, unboundErr)
 }
 
 func (c *Client) racePhase(ctx context.Context, urls []string, options ListOptions) (Fetch, error) {
@@ -234,7 +234,7 @@ func (c *Client) racePhase(ctx context.Context, urls []string, options ListOptio
 			errs[result.index] = result.err
 			failed++
 			if failed == len(urls) {
-				return Fetch{}, errs[0]
+				return Fetch{}, withClockSkewHint(errs[0], errs[1:]...)
 			}
 		case <-ctx.Done():
 			// Return promptly even if a custom RoundTripper is slow to observe
