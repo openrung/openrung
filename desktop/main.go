@@ -96,9 +96,10 @@ func main() {
 
 	err := wails.Run(&options.App{
 		Title:            "OpenRung",
-		Width:            phoneWindowWidth,
-		Height:           phoneWindowHeight,
-		DisableResize:    !sizeHeldByHints,
+		Width:            defaultWindowWidth,
+		Height:           defaultWindowHeight,
+		MinWidth:         minWindowWidth,
+		MinHeight:        minWindowHeight,
 		BackgroundColour: &options.RGBA{R: 4, G: 12, B: 9, A: 1},
 		AssetServer:      &assetserver.Options{Assets: assets},
 		OnStartup: func(ctx context.Context) {

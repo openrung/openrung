@@ -30,6 +30,23 @@
         -webkit-user-select: text;
         user-select: text;
       }
+      /* Browser surfaces in the app's palette: the window is resizable, so
+         scroll areas, keyboard focus and selected text all show up. */
+      * {
+        scrollbar-width: thin;
+        scrollbar-color: #294f35 transparent;
+      }
+      ::selection {
+        background: rgba(101, 245, 138, 0.3);
+        color: #d8ffe0;
+      }
+      :focus {
+        outline: none;
+      }
+      :focus-visible {
+        outline: 2px solid #65f58a;
+        outline-offset: 2px;
+      }
     </style>
   </head>
   <body>
