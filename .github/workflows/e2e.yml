@@ -12,7 +12,6 @@ name: e2e
 # other shards' run lists.
 
 on:
-  pull_request:
   push:
     branches: [main]
   workflow_dispatch:
