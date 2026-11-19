@@ -73,7 +73,7 @@ Format changed Go files with `gofmt`; check affected modules and consumers.
 - Full Wails builds need frontend assets and native dependencies; service tests alone
   do not validate the GUI. The `desktop/` frontend and app binary need `git submodule update --init`;
   change the app's screens in `openrung-mobile-app`, then move the pin. Relay integration tests need Xray pinned by `deploy/relay/Dockerfile`.
-- `make e2e` (Docker, privileged container, no CI job yet) runs the end-to-end scenarios;
+- `make e2e` (Docker, privileged container; the `e2e` workflow runs it on PRs) runs the end-to-end scenarios;
   use it for changes to discovery, connection lifecycle, failover, relay registration or
   the hub. `E2E_ARGS='-test.short'` skips the slow ones. See [the lab](test/e2e/README.md).
 - Consult the relevant CI workflow for additional checks. Report what ran and any skips.
