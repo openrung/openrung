@@ -27,10 +27,10 @@ is installed on the host, including Go.
                  DNS + web for every name and address
                                  |
    broker  198.51.100.10 ---+    |
-   hub     198.51.100.30 ---+--[core]--+--- gw-user   203.0.113.10 --- user  192.168.10.10
-   relay-a 198.51.100.41 ---+ backbone +--- gw-mobile 203.0.113.40 --- user  10.20.0.10 (2nd uplink)
-   relay-b 198.51.100.42 ---+          +--- gw-vol    203.0.113.20 --- vol   192.168.20.10
-                                       +--- cgn       203.0.113.30 --- gw-vol2 100.64.0.10 --- vol2 192.168.30.10
+   hub     198.51.100.30 ---+    |     +--- gw-user   203.0.113.10 --- user  192.168.10.10
+   relay-a 198.51.100.41 ---+--[core]--+--- gw-mobile 203.0.113.40 --- user  10.20.0.10 (2nd uplink)
+   relay-b 198.51.100.42 ---+ backbone +--- gw-vol    203.0.113.20 --- vol   192.168.20.10
+   relay-f 198.51.100.43 ---+          +--- cgn       203.0.113.30 --- gw-vol2 100.64.0.10 --- vol2 192.168.30.10
 ```
 
 - Every box is a network namespace ("node"). Public nodes hang off the
@@ -38,9 +38,15 @@ is installed on the host, including Go.
   with one private node behind each.
 - `user` runs the client. It has two uplinks: a home router and a mobile one.
 - `relay-a` and `relay-b` are relays with public addresses. `vol` is a
-  volunteer behind a home router, published through the relay hub. `vol2`
-  (started on demand) is a volunteer behind a home router behind a
-  carrier-grade NAT.
+  volunteer behind a home router, published through the relay hub. These
+  three are what the broker lists in a fresh lab.
+- Started on demand: `vol2`, a volunteer behind a home router behind a
+  carrier-grade NAT; and `relay-f`, a Foundation-class relay with a WSS
+  sidecar and a CDN-style front (`relay-f.cdn.example`, played by `inet`).
+- The hub has a second address (198.51.100.31) so its NAT-punch reflector
+  can compare a peer's mapping across two destinations.
+- NAT routers translate like ordinary home routers (one public port per
+  private socket) and refuse unsolicited inbound connections.
 - `inet` stands in for the rest of the internet. Its DNS resolves every
   hostname to itself, it answers on every address the lab does not assign, and
   it serves HTTPS for any hostname with certificates from a lab CA that the
@@ -60,6 +66,8 @@ requirements from the outside:
 | A relay's Reality handshake needs a TLS 1.3 site to borrow. | The default site resolves to `inet`. |
 | Relays refuse to forward to private addresses. | The internet stand-in has a public (documentation) address. |
 | The broker looks up relay locations online. | Switched off with `OPENRUNG_GEOIP_ENDPOINT=off`. |
+| A Foundation-class relay accepts a plain-HTTP broker only on loopback. | The same loopback translation, in `relay-f`. |
+| A WSS front is a CDN in front of a relay-local sidecar. | `inet` terminates TLS for the front's hostname, adds the origin-token and viewer-address headers, and forwards the WebSocket to the sidecar. |
 
 Relays are started through `deploy/relay/entrypoint.sh` with the Xray pinned
 by `deploy/relay/Dockerfile`, so the lab also covers the entrypoint's
@@ -86,6 +94,10 @@ puts a user or a relay in.
 | Slow, lossy or high-latency access link | `TestConnectOverDegradedUserLink` |
 | Rate-limited link bounds tunnel throughput | `TestRateLimitBoundsTunnelThroughput` |
 | Whole-device (TUN) mode | `TestWholeDeviceTunnel` |
+| Direct path to a volunteer by NAT hole punching, also through carrier-grade NAT | `TestPunchDirectPathToVolunteer`, `TestPunchDirectPathThroughCarrierGradeNAT` |
+| Hole punching impossible (symmetric NAT, UDP dropped): falls back to the hub | `TestPunchFailsBehindSymmetricNAT`, `TestPunchFailsWhenUserNetworkBlocksUDP` |
+| Network refuses a Foundation relay's address but not its front: WSS fallback | `TestWSSFallbackThroughFront` |
+| Direct path works: the front is never used | `TestWSSUnusedWhenDirectWorks` |
 | **Relay** | |
 | Crashes and restarts, keeps its identity | `TestRelayCrashAndRestart` |
 | Loses its path to the broker, then regains it | `TestRelayLosesBroker` |

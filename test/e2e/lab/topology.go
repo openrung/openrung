@@ -22,6 +22,10 @@ const (
 	InetAddr   = "192.0.2.1"
 	BrokerAddr = "198.51.100.10"
 	HubAddr    = "198.51.100.30"
+	// HubAltAddr is the relay hub's second public address. Its NAT-type
+	// reflector listens on both, so a peer's mapping can be compared across
+	// two destinations.
+	HubAltAddr = "198.51.100.31"
 	RelayAAddr = "198.51.100.41"
 	RelayBAddr = "198.51.100.42"
 	RelayFAddr = "198.51.100.43" // a Foundation relay with a WSS front
@@ -45,7 +49,9 @@ const (
 // publicHost is a namespace attached straight to the backbone.
 type publicHost struct {
 	name, addr string
-	router     bool
+	// extra are further /32 addresses on the same link.
+	extra  []string
+	router bool
 }
 
 // privateLink joins a router's LAN side to the one host behind it.
@@ -64,7 +70,7 @@ type privateLink struct {
 var publicHosts = []publicHost{
 	{name: "inet", addr: InetAddr},
 	{name: "broker", addr: BrokerAddr},
-	{name: "hub", addr: HubAddr},
+	{name: "hub", addr: HubAddr, extra: []string{HubAltAddr}},
 	{name: "relay-a", addr: RelayAAddr},
 	{name: "relay-b", addr: RelayBAddr},
 	{name: FoundationRelay, addr: RelayFAddr},
@@ -163,6 +169,11 @@ func buildTopology() error {
 			{"ip", "-n", h.name, "route", "add", coreAddr + "/32", "dev", "eth0"},
 			{"ip", "-n", h.name, "route", "add", "default", "via", coreAddr, "dev", "eth0"},
 		}
+		for _, addr := range h.extra {
+			steps = append(steps,
+				[]string{"ip", "-n", "core", "route", "add", addr + "/32", "dev", dev},
+				[]string{"ip", "-n", h.name, "addr", "add", addr + "/32", "dev", "eth0"})
+		}
 		if err := runAll(steps); err != nil {
 			return err
 		}
@@ -195,6 +206,9 @@ func buildTopology() error {
 		if err := SetNAT(router, NATCone); err != nil {
 			return err
 		}
+		if err := refuseUnsolicited(router); err != nil {
+			return err
+		}
 	}
 	for _, node := range Nodes() {
 		if err := installLabChain(node); err != nil {
@@ -211,6 +225,22 @@ func buildTopology() error {
 
 	// The internet stand-in answers for every address and port routed to it.
 	return In("inet", "iptables", "-t", "nat", "-A", "PREROUTING", "-j", "REDIRECT")
+}
+
+// refuseUnsolicited gives a NAT router the inbound firewall home routers
+// have: a new connection arriving on its uplink for the router itself is
+// refused in the firewall, TCP with a reset and anything else with
+// port-unreachable, so it never enters the router's connection tracking.
+func refuseUnsolicited(router string) error {
+	uplink, err := uplinkOf(router)
+	if err != nil {
+		return err
+	}
+	unsolicited := []string{"iptables", "-A", "INPUT", "-i", uplink, "-m", "conntrack", "--ctstate", "NEW"}
+	if err := In(router, append(unsolicited, "-p", "tcp", "-j", "REJECT", "--reject-with", "tcp-reset")...); err != nil {
+		return err
+	}
+	return In(router, append(unsolicited, "-j", "REJECT")...)
 }
 
 // redirectLoopback makes 127.0.0.1:port inside a node reach a remote address

@@ -86,6 +86,8 @@ func HubService() Service {
 		"OPENRUNG_BROKER_URL=" + BrokerURL,
 		"OPENRUNG_VOLUNTEER_TOKEN=" + VolunteerToken,
 		"OPENRUNG_HUB_HTTP_ADDR=:9444",
+		// Reflectors on two addresses switch on the punch coordinator.
+		"OPENRUNG_HUB_REFLECTOR_ADDRS=" + HubReflectorAddrs,
 		"OPENRUNG_HUB_HEARTBEAT_INTERVAL=" + heartbeatInterval,
 	}, Argv: []string{"relayhub"}}
 }

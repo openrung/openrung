@@ -35,11 +35,12 @@ func TestConnectThroughDirectRelay(t *testing.T) {
 }
 
 // A volunteer behind a home router has no reachable port, so it publishes
-// itself through the relay hub. The user's traffic leaves from the
-// volunteer's home connection.
+// itself through the relay hub. The user's traffic reaches it through the
+// hub (no direct path is attempted here) and leaves from the volunteer's
+// home connection.
 func TestConnectThroughVolunteerBehindNAT(t *testing.T) {
 	scenario(t)
-	client, via := connect(t, "-relay-label", "vol")
+	client, via := connect(t, "-relay-label", "vol", "-punch=false")
 	if via != "vol" {
 		t.Fatalf("connected via %q, want vol", via)
 	}
