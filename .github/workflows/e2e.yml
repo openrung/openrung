@@ -45,7 +45,7 @@ jobs:
       # in the Dockerfile's cache mounts. Keep those mounts between runs: the
       # cache is saved once per dependency set and restored into the default
       # builder before `make e2e`, so the build only recompiles OpenRung's
-      # own packages.
+      # own packages. On a miss only one shard extracts and saves the caches.
       - name: Cache the Go module and build caches
         id: go-cache
         uses: actions/cache@v4
@@ -64,7 +64,7 @@ jobs:
               "${{ runner.temp }}/go-build": "/root/.cache/go-build"
             }
           scratch-dir: ${{ runner.temp }}/cache-dance
-          skip-extraction: ${{ steps.go-cache.outputs.cache-hit }}
+          skip-extraction: ${{ steps.go-cache.outputs.cache-hit == 'true' || matrix.shard != 'rest' }}
 
       - name: Build the lab image and run the shard's scenarios
         env:
