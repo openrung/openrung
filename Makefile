@@ -1,11 +1,18 @@
-.PHONY: test fmt broker relay relayhub client docker-build docker-keygen docker-run relayhub-docker-build broker-docker-build
+.PHONY: test fmt broker relay relayhub client docker-build docker-keygen docker-run relayhub-docker-build broker-docker-build e2e e2e-image e2e-lab
 
 RELAY_IMAGE ?= openrung-relay:latest
 RELAYHUB_IMAGE ?= openrung-relayhub:latest
 BROKER_IMAGE ?= openrung-broker:latest
+E2E_IMAGE ?= openrung-e2e:latest
+E2E_XRAY_IMAGE ?= openrung-e2e-xray:latest
+# Extra `docker build` flags for the lab images (a proxy, --network host, ...).
+E2E_BUILD_FLAGS ?=
+# Extra arguments for the scenario suite, e.g. E2E_ARGS='-test.run Volunteer'.
+E2E_ARGS ?=
+E2E_RUN = docker run --rm --init --privileged --network none
 
 fmt:
-	gofmt -w brokerapi cmd connectcore desktop desktop-volunteer internal punchcore wsscore
+	gofmt -w brokerapi cmd connectcore desktop desktop-volunteer internal punchcore test wsscore
 
 # The bundled sing-box runtime's build tags (internal/singboxruntime): every
 # cmd/client build and root-module test run wants them, and the release
@@ -74,3 +81,20 @@ docker-run:
 		--cap-drop ALL --cap-add NET_BIND_SERVICE \
 		--read-only --tmpfs /tmp \
 		--env-file deploy/relay/.env $(RELAY_IMAGE)
+
+# Build the network lab image (test/e2e): every binary under test plus the
+# relay image's pinned Xray stage.
+e2e-image:
+	docker build $(E2E_BUILD_FLAGS) -f deploy/relay/Dockerfile --target xray -t $(E2E_XRAY_IMAGE) .
+	docker build $(E2E_BUILD_FLAGS) -f test/e2e/Dockerfile --build-arg XRAY_IMAGE=$(E2E_XRAY_IMAGE) -t $(E2E_IMAGE) .
+
+# Run the end-to-end scenarios on a simulated internet inside one container.
+# The container has no network of its own; --privileged lets it create the
+# network namespaces the simulation is made of.
+e2e: e2e-image
+	$(E2E_RUN) $(E2E_IMAGE) test $(E2E_ARGS)
+
+# Bring the lab up and leave it running; in another terminal:
+#   docker exec -it openrung-lab sh    then    lab help
+e2e-lab: e2e-image
+	$(E2E_RUN) -it --name openrung-lab $(E2E_IMAGE) up

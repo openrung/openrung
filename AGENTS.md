@@ -33,6 +33,7 @@ Mobile apps live elsewhere and pin shared-module releases.
 | `desktop/` | Client app: `vpnservice/`, `frontend/` (web shims and Go bridge) and `mobile-app/` (submodule: the UI source and split-tunnel rule sets, owned by `openrung-mobile-app`). |
 | `desktop-volunteer/` | Volunteer app: `directsetup/`, `volunteerservice/`, `frontend/`. |
 | `deploy/`, `scripts/` | Container images, compose files, the volunteer bring-up script and release helpers. Foundation provisioning and front tooling live in the private `openrung/ops` repository. |
+| `test/e2e/` | Network lab: the stack on a simulated internet in one container, and the end-to-end scenarios (`make e2e`). |
 | `.github/workflows/` | Authoritative checks and release workflows. |
 
 ## Design and changes
@@ -72,6 +73,9 @@ Format changed Go files with `gofmt`; check affected modules and consumers.
 - Full Wails builds need frontend assets and native dependencies; service tests alone
   do not validate the GUI. The `desktop/` frontend and app binary need `git submodule update --init`;
   change the app's screens in `openrung-mobile-app`, then move the pin. Relay integration tests need Xray pinned by `deploy/relay/Dockerfile`.
+- `make e2e` (Docker, privileged container, no CI job yet) runs the end-to-end scenarios;
+  use it for changes to discovery, connection lifecycle, failover, relay registration or
+  the hub. `E2E_ARGS='-test.short'` skips the slow ones. See [the lab](test/e2e/README.md).
 - Consult the relevant CI workflow for additional checks. Report what ran and any skips.
 
 ## User responses

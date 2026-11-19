@@ -366,6 +366,8 @@ desktop/             Desktop GUI client (Wails v2 + React; own Go module).
 desktop-volunteer/   One-click volunteer relay GUI (Wails v2 + React; own
                      Go module).
 deploy/              Broker proxy, relay hub, and relay deployment assets.
+test/e2e/            Network lab: the whole stack on a simulated internet in
+                     one container, with end-to-end scenarios (make e2e).
 docs/                Architecture, API, client, and operations docs.
 ```
 
@@ -408,6 +410,11 @@ Run `npm ci`, `npm test`, and `npm run build` separately in each app's
 source from the `desktop/mobile-app` submodule, so fetch it first with
 `git submodule update --init`. Full Wails builds additionally require the
 platform's native dependencies.
+
+`make e2e` runs the broker, relay hub, relays and terminal client against each
+other on a simulated internet inside a single container, under scenarios such
+as NAT, unreachable relays, link outages and degraded links. It needs only
+Docker; see [test/e2e](test/e2e/README.md).
 
 `make broker` starts a loopback development broker with a temporary signing
 seed unless `OPENRUNG_RELAY_SIGNING_KEY` is already set. Set that variable to
