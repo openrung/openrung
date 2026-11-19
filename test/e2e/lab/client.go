@@ -14,21 +14,6 @@ import (
 	"time"
 )
 
-// ClientConfig describes one run of the stock command-line client.
-type ClientConfig struct {
-	// Name is the service name; it defaults to "client".
-	Name string
-	// Node is where the client runs; it defaults to "user".
-	Node string
-	// Args are extra `connect` flags, for example -relay-label vol.
-	Args []string
-	// Env adds to the client's environment.
-	Env []string
-	// KeepState reuses the client's state directory from an earlier run
-	// instead of starting as a fresh installation.
-	KeepState bool
-}
-
 // Client is a running headless client.
 type Client struct {
 	Name      string
@@ -40,28 +25,22 @@ type Client struct {
 // clientProxyPort is the local proxy port the lab pins the client to.
 const clientProxyPort = 1080
 
-// StartClient runs `openrung-client connect -headless` against the lab
-// broker. The client trusts the lab CA, so its HTTPS connectivity checks reach
-// the internet stand-in.
-func StartClient(cfg ClientConfig) (*Client, error) {
-	if cfg.Name == "" {
-		cfg.Name = "client"
+// StartClient runs `openrung-client connect -headless` as a fresh
+// installation in the user's node, against the lab broker, with any extra
+// `connect` flags. The client trusts the lab CA, so its HTTPS connectivity
+// checks reach the internet stand-in.
+func StartClient(args ...string) (*Client, error) {
+	client := CurrentClient()
+	if err := os.RemoveAll(StateDir(client.Name)); err != nil {
+		return nil, err
 	}
-	if cfg.Node == "" {
-		cfg.Node = "user"
-	}
-	if !cfg.KeepState {
-		if err := os.RemoveAll(StateDir(cfg.Name)); err != nil {
-			return nil, err
-		}
-	}
-	client := &Client{Name: cfg.Name, Node: cfg.Node, ProxyPort: clientProxyPort, logStart: LogSize(cfg.Name)}
-	argv := append([]string{"openrung-client", "connect", "-headless", "-broker", ClientBrokerURL}, cfg.Args...)
-	env := append([]string{
+	client.logStart = LogSize(client.Name)
+	argv := append([]string{"openrung-client", "connect", "-headless", "-broker", ClientBrokerURL}, args...)
+	env := []string{
 		"OPENRUNG_PROXY_PORT=" + strconv.Itoa(client.ProxyPort),
 		"SSL_CERT_FILE=" + CAPath,
-	}, cfg.Env...)
-	if err := Start(Service{Name: cfg.Name, Node: cfg.Node, Argv: argv, Env: env}); err != nil {
+	}
+	if err := Start(Service{Name: client.Name, Node: client.Node, Argv: argv, Env: env}); err != nil {
 		return nil, err
 	}
 	return client, nil

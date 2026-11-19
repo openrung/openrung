@@ -5,7 +5,6 @@
 package e2e
 
 import (
-	"os"
 	"testing"
 	"time"
 
@@ -18,8 +17,8 @@ import (
 func TestWholeDeviceTunnel(t *testing.T) {
 	// The client gives its tunnel interface an IPv6 address, so the kernel
 	// must have IPv6 enabled.
-	if _, err := os.Stat("/proc/sys/net/ipv6"); err != nil {
-		t.Skip("kernel has IPv6 disabled: the client cannot set up its tunnel interface")
+	if !lab.HasIPv6() {
+		t.Skip("IPv6 is disabled: the client cannot set up its tunnel interface")
 	}
 	scenario(t)
 	client, via := connect(t, "--tun", "-relay-label", "relay-a")

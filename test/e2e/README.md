@@ -102,13 +102,14 @@ puts a user or a relay in.
 | Crashes and restarts, keeps its identity | `TestRelayCrashAndRestart` |
 | Loses its path to the broker, then regains it | `TestRelayLosesBroker` |
 | Volunteer's home link drops and returns | `TestVolunteerLinkOutage` |
-| Volunteer's router reboots and forgets its mappings | `TestVolunteerRouterReboot` |
+| Volunteer's router starts mapping its connections differently | `TestVolunteerRouterChangesMappings` |
 | Volunteer behind carrier-grade NAT | `TestVolunteerBehindCarrierGradeNAT` |
 | Volunteer with a forwarded port, serving directly | `TestVolunteerWithForwardedPort` |
 | Volunteer on a poor uplink | `TestVolunteerOnDegradedUplink` |
 
 Scenarios marked *slow* wait on the client's real health-check timers and take
-one to two minutes each; `-test.short` skips them. Two kinds of scenario skip
+one to two minutes each; `-test.short` skips them. The suite stops after 45
+minutes unless `-test.timeout` says otherwise. Two kinds of scenario skip
 themselves when the kernel cannot support them: added latency needs the
 `netem` qdisc, and TUN mode needs IPv6.
 
@@ -154,12 +155,12 @@ Ways to change the network (`lab net list` shows nodes, links and profiles):
 | --- | --- |
 | A link of a given quality | `lab net shape <link> <profile>` or `lab net shape <link> delay=80ms jitter=20ms loss=2 rate=2mbit` |
 | A node refuses a destination | `lab net block <node> <address>[:port] [tcp\|udp] [drop\|reset\|unreachable]` |
-| A firewall that allows only some ports | `lab net allow-only <node> tcp:80,tcp:443,udp:53` |
+| A firewall that allows only some ports | `lab net allow-only <node> tcp:80,tcp:443,udp:53,tcp:8080` (8080 is the lab broker) |
 | A link goes dead / comes back | `lab net down <link>` / `lab net up <link>` |
 | A router with symmetric NAT | `lab net nat <router> symmetric` (back with `cone`) |
 | A port forwarded on a router | `lab net forward <router> <port> <host:port>` |
 | A relay or the broker crashes | `lab kill <service>`, later `lab start <service>` |
-| Back to a clean network | `lab net clear` |
+| Back to a clean network (also removes port forwards) | `lab net clear` |
 
 A link is named after the node on its far side from the backbone: `user` is
 the user's home LAN, `gw-user` is the home router's uplink, `relay-a` is that
@@ -184,8 +185,10 @@ measurements.
 ## Running elsewhere
 
 The lab needs a privileged container on a Linux kernel with network
-namespaces, veth and iptables NAT; it does not need outbound network access
-at run time, and concurrent labs on one host do not interfere. That makes the
+namespaces, veth, nftables-backed iptables with NAT and connection tracking
+(rootless Docker cannot load those modules on demand); it does not need
+outbound network access at run time, and concurrent labs on one host do not
+interfere. That makes the
 same `make e2e` usable in CI and in sandboxed agent sessions. Building the
 image does need network access (base images, Go modules, the Xray release);
 pass a proxy or other build options with `E2E_BUILD_FLAGS`.

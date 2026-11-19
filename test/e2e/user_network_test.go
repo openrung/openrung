@@ -12,8 +12,9 @@ import (
 	"openrung/test/e2e/lab"
 )
 
-// The user's network refuses one relay's address. The client must move on to
-// another relay, however the refusal looks on the wire.
+// The user's network refuses one relay's address, silently or with an
+// explicit rejection. The client must end up on a relay it can reach rather
+// than on the refused one.
 func TestUserNetworkBlocksOneRelay(t *testing.T) {
 	for _, action := range []lab.Action{lab.Drop, lab.Reset, lab.Unreachable} {
 		t.Run(string(action), func(t *testing.T) {
@@ -78,8 +79,15 @@ func TestUserBehindWebOnlyFirewall(t *testing.T) {
 // than hang, and connect normally once the broker is back.
 func TestBrokerUnreachable(t *testing.T) {
 	scenario(t)
-	unblock, err := lab.Block("gw-user", lab.Match{Dst: lab.BrokerAddr, Proto: "tcp"}, lab.Reset)
-	must(t, err)
+	// The client also knows built-in broker addresses; in the lab their
+	// names resolve to the internet stand-in, so refuse HTTPS to it as well.
+	for _, dst := range []lab.Match{
+		{Dst: lab.BrokerAddr, Proto: "tcp"},
+		{Dst: lab.InetAddr, Proto: "tcp", Port: 443},
+	} {
+		_, err := lab.Block("gw-user", dst, lab.Reset)
+		must(t, err)
+	}
 
 	client := startClient(t)
 	if via, err := client.WaitConnected(120 * time.Second); err == nil {
@@ -87,7 +95,7 @@ func TestBrokerUnreachable(t *testing.T) {
 	}
 	must(t, client.WaitExit(30*time.Second))
 
-	must(t, unblock())
+	must(t, lab.ClearNode("gw-user"))
 	client, via := connect(t)
 	exitIP(t, client, lab.ExitAddr(via))
 }
@@ -139,17 +147,16 @@ func TestUserLinkOutageIsNotARelayFailure(t *testing.T) {
 }
 
 // The user moves from one access network to another (home router to a mobile
-// uplink) while connected. The session must keep working on the new network.
+// uplink) while the client is running. Without a restart, the client's proxy
+// must carry traffic again over the new network.
 func TestUserChangesNetwork(t *testing.T) {
 	scenario(t)
 	client, via := connect(t)
 	exitIP(t, client, lab.ExitAddr(via))
 
-	// Default route moves to the second uplink; the first goes dark.
+	// The default route moves to the second uplink; the first goes dark.
+	// Restoring the lab puts the route back.
 	must(t, lab.In("user", "ip", "route", "replace", "default", "via", "10.20.0.1", "dev", "eth1"))
-	t.Cleanup(func() {
-		_ = lab.In("user", "ip", "route", "replace", "default", "via", "192.168.10.1", "dev", "eth0")
-	})
 	must(t, lab.SetLinkDown("user", true))
 
 	direct, err := lab.FetchDirect("user", "http://exit.example/ip", 10*time.Second)
@@ -163,6 +170,9 @@ func TestUserChangesNetwork(t *testing.T) {
 	})
 	must(t, err)
 	exitIP(t, client, lab.ExitAddr(client.Via()))
+	if !lab.Running(client.Name) {
+		t.Fatalf("client exited after the network change")
+	}
 }
 
 type errStillOn string

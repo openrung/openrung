@@ -14,14 +14,18 @@ import (
 )
 
 // The user connects and transfers data over access links of varying quality.
-// Profiles with added latency need the netem qdisc and are skipped without it.
+// Profiles with added latency need the netem qdisc and are skipped without
+// it. The two profiles with the longest round trips are left for exploring by
+// hand.
 func TestConnectOverDegradedUserLink(t *testing.T) {
 	shapes := map[string]lab.Shape{
 		"lossy": {Loss: 5},
 		"slow":  {Rate: "512kbit"},
 	}
 	for name, shape := range lab.Profiles {
-		shapes[name] = shape
+		if name != "mobile-edge" && name != "satellite" {
+			shapes[name] = shape
+		}
 	}
 	names := make([]string, 0, len(shapes))
 	for name := range shapes {

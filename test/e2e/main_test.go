@@ -81,7 +81,7 @@ func connect(t *testing.T, args ...string) (*lab.Client, string) {
 func startClient(t *testing.T, args ...string) *lab.Client {
 	t.Helper()
 	must(t, lab.Stop("client"))
-	client, err := lab.StartClient(lab.ClientConfig{Args: args})
+	client, err := lab.StartClient(args...)
 	if err != nil {
 		t.Fatal(err)
 	}

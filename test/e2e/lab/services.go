@@ -276,10 +276,15 @@ func waitBroker() error {
 	return nil
 }
 
-// Restore returns a running lab to its fresh state: no impairments, optional
-// services stopped, default services running and their relays listed.
+// Restore returns a running lab to its fresh state: no impairments, the
+// user's routing as built, optional services stopped, default services
+// running and their relays listed and reachable.
 func Restore() error {
-	if err := ClearNetwork(); err != nil {
+	remapped, err := clearNetwork()
+	if err != nil {
+		return err
+	}
+	if err := resetUserRouting(); err != nil {
 		return err
 	}
 	for _, s := range OptionalServices() {
@@ -287,20 +292,59 @@ func Restore() error {
 			return err
 		}
 	}
+	for _, router := range remapped {
+		// The router dropped its mappings, which breaks the hub tunnel of
+		// the volunteer behind it while the broker goes on listing it.
+		// Restart the volunteer so the wait below sees a fresh tunnel.
+		if router == "gw-vol" {
+			if err := Stop("vol"); err != nil {
+				return err
+			}
+		}
+	}
 	for _, s := range DefaultServices() {
 		if Running(s.Name) {
 			continue
 		}
+		from := LogSize(s.Name)
 		if err := Start(s); err != nil {
 			return err
 		}
-		if s.Name == "broker" {
+		switch s.Name {
+		case "broker":
 			if err := waitBroker(); err != nil {
+				return err
+			}
+		case "vol":
+			if err := WaitLog(s.Name, from, "relay published via hub", 60*time.Second); err != nil {
 				return err
 			}
 		}
 	}
 	return WaitListed(90*time.Second, DefaultRelays...)
+}
+
+// resetUserRouting puts the user's default route back on the home uplink and
+// removes any policy rule a client's tunnel interface left behind.
+func resetUserRouting() error {
+	if err := In("user", "ip", "route", "replace", "default", "via", "192.168.10.1", "dev", "eth0"); err != nil {
+		return err
+	}
+	rules, err := OutputIn("user", "ip", "rule", "show")
+	if err != nil {
+		return err
+	}
+	for _, line := range strings.Split(rules, "\n") {
+		priority, _, _ := strings.Cut(line, ":")
+		switch priority {
+		case "", "0", "32766", "32767":
+			continue
+		}
+		if err := In("user", "ip", "rule", "del", "priority", priority); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Down stops every service and removes the network. Logs are kept.

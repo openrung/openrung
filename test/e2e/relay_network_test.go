@@ -71,15 +71,19 @@ func TestVolunteerLinkOutage(t *testing.T) {
 	exitIP(t, client, lab.GwVolAddr)
 }
 
-// A volunteer's home router reboots and comes back with fresh address
-// mappings, silently breaking the tunnel to the relay hub. The volunteer must
-// end up published and usable again.
-func TestVolunteerRouterReboot(t *testing.T) {
+// A volunteer's home router starts mapping its connections to different
+// public ports (as after a replacement or reconfiguration), which silently
+// breaks the established tunnel to the relay hub. The volunteer must notice,
+// publish itself again, and be usable through the hub.
+func TestVolunteerRouterChangesMappings(t *testing.T) {
 	scenario(t)
+	before := lab.LogSize("vol")
 	must(t, lab.SetNAT("gw-vol", lab.NATSymmetric))
+	must(t, lab.WaitLog("vol", before, "relay published via hub", 3*time.Minute))
+
 	var client *lab.Client
-	err := lab.Eventually(3*time.Minute, func() error {
-		client = startClient(t, "-relay-label", "vol")
+	err := lab.Eventually(2*time.Minute, func() error {
+		client = startClient(t, "-relay-label", "vol", "-punch=false")
 		_, err := client.WaitConnected(30 * time.Second)
 		return err
 	})
@@ -105,9 +109,7 @@ func TestVolunteerBehindCarrierGradeNAT(t *testing.T) {
 // directly on the router's public address, with no relay hub in the path.
 func TestVolunteerWithForwardedPort(t *testing.T) {
 	scenario(t)
-	undo, err := lab.PortForward("gw-vol", 443, lab.VolAddr+":443")
-	must(t, err)
-	t.Cleanup(func() { _ = undo() })
+	must(t, lab.PortForward("gw-vol", 443, lab.VolAddr+":443"))
 	must(t, lab.Start(lab.VolDirectService()))
 	must(t, lab.WaitListed(60*time.Second, append([]string{"vol-direct"}, lab.DefaultRelays...)...))
 

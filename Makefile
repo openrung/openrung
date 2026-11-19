@@ -12,7 +12,7 @@ E2E_ARGS ?=
 E2E_RUN = docker run --rm --init --privileged --network none
 
 fmt:
-	gofmt -w brokerapi cmd connectcore desktop desktop-volunteer internal punchcore wsscore
+	gofmt -w brokerapi cmd connectcore desktop desktop-volunteer internal punchcore test wsscore
 
 # The bundled sing-box runtime's build tags (internal/singboxruntime): every
 # cmd/client build and root-module test run wants them, and the release

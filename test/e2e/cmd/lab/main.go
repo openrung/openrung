@@ -71,7 +71,9 @@ func dispatch(command string, args []string) error {
 	switch command {
 	case "test":
 		// Replace this process so the suite's exit code is the container's.
-		argv := append([]string{"e2e.test", "-test.v"}, args...)
+		// A bare test binary has no timeout; give a hung scenario one. A
+		// later -test.timeout among args overrides it.
+		argv := append([]string{"e2e.test", "-test.v", "-test.timeout=45m"}, args...)
 		return syscall.Exec("/usr/local/bin/e2e.test", argv, os.Environ())
 	case "up":
 		return up()
@@ -170,7 +172,7 @@ func service(command, name string) error {
 
 func client(args []string) error {
 	_ = lab.Stop("client")
-	client, err := lab.StartClient(lab.ClientConfig{Args: args})
+	client, err := lab.StartClient(args...)
 	if err != nil {
 		return err
 	}
@@ -243,8 +245,7 @@ func network(command string, args []string) error {
 		if err != nil {
 			return fmt.Errorf("bad port %q", args[1])
 		}
-		_, err = lab.PortForward(args[0], port, args[2])
-		return err
+		return lab.PortForward(args[0], port, args[2])
 	case "clear":
 		if len(args) == 0 {
 			return lab.ClearNetwork()

@@ -36,12 +36,18 @@ const (
 )
 
 // SetNAT switches a router's NAT behaviour. A change of mode drops the
-// router's existing mappings, like a reboot, so flows through it break and
-// must be re-established; asking for the current mode does nothing.
+// router's existing mappings, so flows through it break and must be
+// re-established; asking for the current mode does nothing.
 func SetNAT(router string, mode NATMode) error {
+	_, err := setNAT(router, mode)
+	return err
+}
+
+// setNAT is SetNAT that also reports whether existing mappings were dropped.
+func setNAT(router string, mode NATMode) (changed bool, err error) {
 	uplink, err := uplinkOf(router)
 	if err != nil {
-		return err
+		return false, err
 	}
 	rule := []string{"POSTROUTING", "-o", uplink, "-j", "MASQUERADE"}
 	switch mode {
@@ -49,40 +55,36 @@ func SetNAT(router string, mode NATMode) error {
 	case NATSymmetric:
 		rule = append(rule, "--random-fully")
 	default:
-		return fmt.Errorf("unknown NAT mode %q (want %s or %s)", mode, NATCone, NATSymmetric)
+		return false, fmt.Errorf("unknown NAT mode %q (want %s or %s)", mode, NATCone, NATSymmetric)
 	}
 	current, err := OutputIn(router, "iptables", "-t", "nat", "-S", "POSTROUTING")
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !strings.Contains(current, "MASQUERADE") {
-		return In(router, append([]string{"iptables", "-t", "nat", "-A"}, rule...)...)
+		return false, In(router, append([]string{"iptables", "-t", "nat", "-A"}, rule...)...)
 	}
 	if strings.Contains(current, "--random-fully") == (mode == NATSymmetric) {
-		return nil
+		return false, nil
 	}
 	// Replace in place so no packet leaves untranslated in between.
 	replace := append([]string{"iptables", "-t", "nat", "-R", "POSTROUTING", "1"}, rule[1:]...)
 	if err := In(router, replace...); err != nil {
-		return err
+		return false, err
 	}
-	return In(router, "conntrack", "-F")
+	return true, In(router, "conntrack", "-F")
 }
 
 // PortForward publishes a port of the host behind a router on the router's
-// public address, like a manual port-forward on a home router.
-func PortForward(router string, port int, to string) (undo func() error, err error) {
+// public address, like a manual port-forward on a home router. ClearNode
+// removes it again.
+func PortForward(router string, port int, to string) error {
 	uplink, err := uplinkOf(router)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	spec := []string{"PREROUTING", "-i", uplink, "-p", "tcp", "--dport", strconv.Itoa(port), "-j", "DNAT", "--to-destination", to}
-	if err := In(router, append([]string{"iptables", "-t", "nat", "-A"}, spec...)...); err != nil {
-		return nil, err
-	}
-	return func() error {
-		return In(router, append([]string{"iptables", "-t", "nat", "-D"}, spec...)...)
-	}, nil
+	return In(router, "iptables", "-t", "nat", "-A", "PREROUTING", "-i", uplink, "-p", "tcp",
+		"--dport", strconv.Itoa(port), "-j", "DNAT", "--to-destination", to)
 }
 
 // Shape describes the quality of a link. Zero fields leave that property
@@ -144,6 +146,9 @@ func ShapeLink(link string, shape Shape) error {
 	if !ok {
 		return fmt.Errorf("unknown link %q (want one of %s)", link, strings.Join(LinkNames(), ", "))
 	}
+	if (shape.Delay > 0 || shape.Jitter > 0) && !HasNetem() {
+		return ErrNoNetem
+	}
 	for _, end := range ends {
 		if err := shapeEnd(end, shape); err != nil {
 			return err
@@ -177,11 +182,10 @@ func shapeEnd(end End, shape Shape) error {
 		}
 		return In(end.Node, args...)
 	}
-	if shape.Delay > 0 || shape.Jitter > 0 {
-		return ErrNoNetem
-	}
-	// Without netem, rate comes from a token bucket and loss from a
-	// random-drop firewall rule on the same interface.
+	// Without netem, rate comes from a token bucket on the way out and loss
+	// from a random-drop firewall rule on the way in. Each end of the link
+	// drops what it receives, so both directions lose packets, and a node's
+	// own sockets never see a local send error.
 	if shape.Rate != "" {
 		if err := In(end.Node, "tc", "qdisc", "add", "dev", end.Dev, "root", "tbf", "rate", shape.Rate, "burst", "32kbit", "latency", "400ms"); err != nil {
 			return err
@@ -194,7 +198,7 @@ func shapeEnd(end End, shape Shape) error {
 	return nil
 }
 
-func lossRulePrefix(dev string) []string { return []string{"-o", dev, "-m", "statistic"} }
+func lossRulePrefix(dev string) []string { return []string{"-i", dev, "-m", "statistic"} }
 
 func tcDuration(d time.Duration) string {
 	return strconv.FormatInt(d.Microseconds(), 10) + "us"
@@ -203,6 +207,12 @@ func tcDuration(d time.Duration) string {
 var netem struct {
 	once sync.Once
 	ok   bool
+}
+
+// HasIPv6 reports whether the lab's nodes have a working IPv6 stack.
+func HasIPv6() bool {
+	disabled, err := OutputIn("user", "cat", "/proc/sys/net/ipv6/conf/all/disable_ipv6")
+	return err == nil && disabled == "0"
 }
 
 // HasNetem reports whether the kernel can add delay and jitter.
@@ -357,13 +367,20 @@ func SetLinkDown(link string, down bool) error {
 	return nil
 }
 
-// ClearNode removes every filtering rule and qdisc the lab added to a node.
+// ClearNode removes every filtering rule, qdisc and port forward the lab
+// added to a node.
 func ClearNode(node string) error {
 	if err := knownNode(node); err != nil {
 		return err
 	}
 	if err := In(node, "iptables", "-F", labChain); err != nil {
 		return err
+	}
+	if _, err := uplinkOf(node); err == nil {
+		// On a NAT router the only inbound translations are port forwards.
+		if err := In(node, "iptables", "-t", "nat", "-F", "PREROUTING"); err != nil {
+			return err
+		}
 	}
 	for _, ends := range Links() {
 		for _, end := range ends {
@@ -376,19 +393,30 @@ func ClearNode(node string) error {
 }
 
 // ClearNetwork returns the whole lab to its pristine network: no shaping, no
-// blocks, cone NAT everywhere.
+// blocks, no port forwards, cone NAT everywhere.
 func ClearNetwork() error {
+	_, err := clearNetwork()
+	return err
+}
+
+// clearNetwork is ClearNetwork that also reports the routers whose NAT mode
+// it had to change, and so whose mappings it dropped.
+func clearNetwork() (remapped []string, err error) {
 	for _, node := range Nodes() {
 		if err := ClearNode(node); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	for _, router := range natRouters {
-		if err := SetNAT(router, NATCone); err != nil {
-			return err
+		changed, err := setNAT(router, NATCone)
+		if err != nil {
+			return nil, err
+		}
+		if changed {
+			remapped = append(remapped, router)
 		}
 	}
-	return nil
+	return remapped, nil
 }
 
 // DescribeNetwork lists the active impairments per node, for `lab status`.
@@ -414,8 +442,19 @@ func DescribeNetwork() (string, error) {
 				lines = append(lines, "qdisc "+strings.TrimSpace(line))
 			}
 		}
-		if nat, _ := OutputIn(node, "iptables", "-t", "nat", "-S", "POSTROUTING"); strings.Contains(nat, "--random-fully") {
-			lines = append(lines, "nat   symmetric")
+		if _, err := uplinkOf(node); err == nil {
+			nat, err := OutputIn(node, "iptables", "-t", "nat", "-S")
+			if err != nil {
+				return "", err
+			}
+			if strings.Contains(nat, "--random-fully") {
+				lines = append(lines, "nat   symmetric")
+			}
+			for _, line := range strings.Split(nat, "\n") {
+				if strings.HasPrefix(line, "-A PREROUTING ") {
+					lines = append(lines, "fwd   "+strings.TrimPrefix(line, "-A PREROUTING "))
+				}
+			}
 		}
 		for _, line := range lines {
 			fmt.Fprintf(&b, "%-10s %s\n", node, line)
@@ -434,7 +473,9 @@ func installLabChain(node string) error {
 		return err
 	}
 	for _, hook := range []string{"INPUT", "FORWARD", "OUTPUT"} {
-		if err := In(node, "iptables", "-A", hook, "-j", labChain); err != nil {
+		// First in each hook, so an impairment also silences what the node
+		// would otherwise answer itself.
+		if err := In(node, "iptables", "-I", hook, "1", "-j", labChain); err != nil {
 			return err
 		}
 	}
