@@ -42,13 +42,31 @@ func pipe(a, b net.Conn) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(a, b)
+		_, _ = copyHalf(a, b)
 		_ = a.Close()
 	}()
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(b, a)
+		_, _ = copyHalf(b, a)
 		_ = b.Close()
 	}()
 	wg.Wait()
+}
+
+// copyBuffers recycles the 32 KiB buffers the tunnel copies through. Every
+// forwarded connection has one yamux side, which offers neither ReaderFrom
+// nor WriterTo, so io.Copy would otherwise allocate a fresh buffer for each
+// direction of each connection — most of a short connection's garbage.
+var copyBuffers = sync.Pool{New: func() any {
+	buf := make([]byte, 32<<10)
+	return &buf
+}}
+
+// copyHalf copies src to dst through a pooled buffer. The wrappers hide the
+// TCP side's ReaderFrom/WriterTo: with a yamux stream on the other side they
+// cannot splice, and would fall back to allocating a buffer of their own.
+func copyHalf(dst io.Writer, src io.Reader) (int64, error) {
+	buf := copyBuffers.Get().(*[]byte)
+	defer copyBuffers.Put(buf)
+	return io.CopyBuffer(struct{ io.Writer }{dst}, struct{ io.Reader }{src}, *buf)
 }

@@ -270,13 +270,13 @@ func countedPipe(a, b net.Conn, aBytes, bBytes *atomic.Uint64) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		n, _ := io.Copy(a, b)
+		n, _ := copyHalf(a, b)
 		aBytes.Add(uint64(n))
 		_ = a.Close()
 	}()
 	go func() {
 		defer wg.Done()
-		n, _ := io.Copy(b, a)
+		n, _ := copyHalf(b, a)
 		bBytes.Add(uint64(n))
 		_ = b.Close()
 	}()
