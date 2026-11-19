@@ -41,26 +41,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Most of the image build is downloading Go modules and compiling, both
-      # in the Dockerfile's cache mounts. Keep those mounts between runs: the
-      # cache is saved once per dependency set and restored into the default
-      # builder before `make e2e`, so the build only recompiles OpenRung's
-      # own packages. On a miss only one shard extracts and saves the caches.
-      - name: Cache the Go module and build caches
+      # Most of the image build is compiling, in the Dockerfile's Go build
+      # cache mount. Keep that mount between runs: the cache is saved once per
+      # dependency set and restored into the default builder before
+      # `make e2e`, so the build only recompiles OpenRung's own packages. On a
+      # miss only one shard extracts and saves it. (The module cache is not
+      # kept: loading it into the builder is slower than downloading it.)
+      - name: Cache the Go build cache
         id: go-cache
         uses: actions/cache@v4
         with:
-          path: |
-            ${{ runner.temp }}/go-mod
-            ${{ runner.temp }}/go-build
-          key: e2e-go-${{ hashFiles('go.sum', 'test/e2e/Dockerfile') }}
+          path: ${{ runner.temp }}/go-build
+          key: e2e-go-build-${{ hashFiles('go.sum', 'test/e2e/Dockerfile') }}
 
-      - name: Restore the caches into the image build
+      - name: Restore the cache into the image build
         uses: reproducible-containers/buildkit-cache-dance@5422eac04292c961a382e0f584ea0f03ad9da723 # v3.4.0
         with:
           cache-map: |
             {
-              "${{ runner.temp }}/go-mod": "/go/pkg/mod",
               "${{ runner.temp }}/go-build": "/root/.cache/go-build"
             }
           scratch-dir: ${{ runner.temp }}/cache-dance
