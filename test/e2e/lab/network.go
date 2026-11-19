@@ -414,6 +414,9 @@ func DescribeNetwork() (string, error) {
 				lines = append(lines, "qdisc "+strings.TrimSpace(line))
 			}
 		}
+		if nat, _ := OutputIn(node, "iptables", "-t", "nat", "-S", "POSTROUTING"); strings.Contains(nat, "--random-fully") {
+			lines = append(lines, "nat   symmetric")
+		}
 		for _, line := range lines {
 			fmt.Fprintf(&b, "%-10s %s\n", node, line)
 		}
