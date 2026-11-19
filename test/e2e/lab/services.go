@@ -63,6 +63,8 @@ func BrokerService() Service {
 	env := []string{
 		"OPENRUNG_RELAY_SIGNING_KEY=" + seed("broker relay signing key"),
 		"OPENRUNG_VOLUNTEER_TOKEN=" + VolunteerToken,
+		"OPENRUNG_FOUNDATION_TOKEN=" + FoundationToken,
+		"OPENRUNG_WSS_TICKET_SIGNING_SEED=" + wssTicketSeed,
 		"OPENRUNG_GEOIP_ENDPOINT=off",
 		"OPENRUNG_MAX_NEW_RELAY_IDS_PER_IP_PER_DAY=off",
 		"OPENRUNG_TELEMETRY_FILE=" + TelemetryPath,
@@ -149,13 +151,15 @@ func Vol2Service() Service { return TunnelRelayService("vol2") }
 func VolDirectService() Service { return DirectRelayService("vol-direct", "vol", GwVolAddr) }
 
 // OptionalServices are defined but not started by Up.
-func OptionalServices() []Service { return []Service{Vol2Service(), VolDirectService()} }
+func OptionalServices() []Service {
+	return []Service{Vol2Service(), VolDirectService(), FoundationRelayService(), WSSSidecarService()}
+}
 
 // ExitAddr is the address the internet sees for traffic leaving through the
 // relay with the given label.
 func ExitAddr(label string) string {
 	return map[string]string{
-		"relay-a": RelayAAddr, "relay-b": RelayBAddr,
+		"relay-a": RelayAAddr, "relay-b": RelayBAddr, FoundationRelay: RelayFAddr,
 		"vol": GwVolAddr, "vol-direct": GwVolAddr, "vol2": CGNAddr,
 	}[label]
 }

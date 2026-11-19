@@ -24,6 +24,7 @@ const (
 	HubAddr    = "198.51.100.30"
 	RelayAAddr = "198.51.100.41"
 	RelayBAddr = "198.51.100.42"
+	RelayFAddr = "198.51.100.43" // a Foundation relay with a WSS front
 
 	// Public (WAN) addresses of the access routers.
 	GwUserAddr   = "203.0.113.10" // the user's home router
@@ -66,6 +67,7 @@ var publicHosts = []publicHost{
 	{name: "hub", addr: HubAddr},
 	{name: "relay-a", addr: RelayAAddr},
 	{name: "relay-b", addr: RelayBAddr},
+	{name: FoundationRelay, addr: RelayFAddr},
 	{name: "gw-user", addr: GwUserAddr, router: true},
 	{name: "gw-mobile", addr: GwMobileAddr, router: true},
 	{name: "gw-vol", addr: GwVolAddr, router: true},
@@ -201,6 +203,9 @@ func buildTopology() error {
 	}
 
 	if err := redirectLoopback("user", 8080, BrokerAddr+":8080"); err != nil {
+		return err
+	}
+	if err := buildWSSOrigin(); err != nil {
 		return err
 	}
 

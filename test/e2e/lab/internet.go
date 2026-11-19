@@ -22,6 +22,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"openrung/internal/wssbridge"
 )
 
 // CAPath is the lab certificate authority. The internet stand-in signs a
@@ -36,6 +38,7 @@ const CAPath = RunDir + "/ca.pem"
 //	/ip             the caller's address as this server sees it (the exit IP)
 //	/bytes/<n>      n bytes of payload, for throughput checks
 //	/generate_204   an empty 204, the usual connectivity-check reply
+//	/api/v1/wss-bridge  on the WSS front host, a CDN edge for relay-f
 //	anything else   a short text page naming the requested host
 func ServeInternet(caPath string) error {
 	issuer, err := newCertIssuer()
@@ -71,9 +74,12 @@ func ServeInternet(caPath string) error {
 			n -= size
 		}
 	})
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	page := func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "lab internet: %s%s\n", r.Host, r.URL.Path)
-	})
+	}
+	mux.HandleFunc("/", page)
+	// The WSS front for relay-f (see wss.go).
+	mux.HandleFunc(wssbridge.BridgePath, serveFront(page))
 
 	failed := make(chan error, 2)
 	go func() { failed <- (&http.Server{Addr: ":80", Handler: mux}).ListenAndServe() }()
