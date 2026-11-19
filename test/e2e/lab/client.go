@@ -67,6 +67,12 @@ func StartClient(cfg ClientConfig) (*Client, error) {
 	return client, nil
 }
 
+// CurrentClient is a handle on the client started by an earlier command,
+// for fetching through its proxy.
+func CurrentClient() *Client {
+	return &Client{Name: "client", Node: "user", ProxyPort: clientProxyPort}
+}
+
 var connectedVia = regexp.MustCompile(`(?m)^status: connected(?: via (.+))?$`)
 
 // WaitConnected waits for the client to report a working connection and

@@ -111,7 +111,7 @@ func dispatch(command string, args []string) error {
 		if len(args) > 0 {
 			url = args[0]
 		}
-		body, err := (&lab.Client{Name: "client", Node: "user", ProxyPort: 1080}).Fetch(url, 30*time.Second)
+		body, err := lab.CurrentClient().Fetch(url, 30*time.Second)
 		fmt.Println(body)
 		return err
 	case "net":
