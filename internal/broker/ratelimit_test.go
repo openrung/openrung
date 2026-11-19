@@ -139,36 +139,13 @@ func TestWSSTicketRateLimiterDoesNotCollapseSharedSourceClients(t *testing.T) {
 	}
 }
 
-func TestServerRateLimitsSpeedTest(t *testing.T) {
+// The speed-test download is gone: the route must not be served.
+func TestServerDoesNotServeSpeedTest(t *testing.T) {
 	server := NewServer(NewStore(), Config{SigningSeed: testSigningSeed()})
-
-	for index := 0; index < defaultSpeedTestBurst; index++ {
-		recorder := httptest.NewRecorder()
-		server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/speed-test?bytes=10", nil))
-		if recorder.Code != http.StatusOK {
-			t.Fatalf("request %d inside burst: expected 200, got %d", index+1, recorder.Code)
-		}
-	}
-
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/speed-test?bytes=10", nil))
-	if recorder.Code != http.StatusTooManyRequests {
-		t.Fatalf("expected 429 past the burst, got %d", recorder.Code)
-	}
-	if recorder.Header().Get("Retry-After") == "" {
-		t.Fatal("expected Retry-After header on 429")
-	}
-	if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
-		t.Fatalf("expected no-store cache control on 429, got %q", got)
-	}
-
-	// A different source IP is not affected by the exhausted bucket.
-	otherSource := httptest.NewRequest(http.MethodGet, "/api/v1/speed-test?bytes=10", nil)
-	otherSource.RemoteAddr = "203.0.113.99:4444"
-	recorder = httptest.NewRecorder()
-	server.ServeHTTP(recorder, otherSource)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("expected other source to pass, got %d", recorder.Code)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for the removed speed test, got %d", recorder.Code)
 	}
 }
 

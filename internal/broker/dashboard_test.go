@@ -56,7 +56,6 @@ func TestApplyRelayLabelsCoversAllRelayViews(t *testing.T) {
 	ov := telemetryOverview{
 		TopRelays:    []relaySummary{{RelayID: "relay_a"}, {RelayID: "relay_x"}},
 		ActiveRelays: []countSummary{{Name: "relay_a", Count: 3}, {Name: "relay_x", Count: 1}},
-		SpeedTests:   []speedTestSummary{{RelayID: "relay_a"}},
 	}
 	applyRelayDisplays(&ov, map[string]relayDisplay{"relay_a": {Label: "proud-falcon", NodeClass: relay.NodeClassFoundation}})
 
@@ -68,9 +67,6 @@ func TestApplyRelayLabelsCoversAllRelayViews(t *testing.T) {
 	}
 	if ov.ActiveRelays[0].Name != "relay_a" {
 		t.Errorf("active_by_relay should keep the id in Name, got %q", ov.ActiveRelays[0].Name)
-	}
-	if ov.SpeedTests[0].Label != "proud-falcon" {
-		t.Errorf("speed_tests label = %q, want proud-falcon", ov.SpeedTests[0].Label)
 	}
 	if ov.ActiveRelays[1].Label != "" {
 		t.Errorf("unmatched relay should stay unlabeled, got %q", ov.ActiveRelays[1].Label)
@@ -337,9 +333,6 @@ func TestBuildTelemetryOverview(t *testing.T) {
 	}
 	if len(overview.TopApps) != 1 || overview.TopApps[0].Name != "com.example.app" {
 		t.Fatalf("unexpected app ranking: %+v", overview.TopApps)
-	}
-	if len(overview.SpeedTests) != 1 || overview.SpeedTests[0].AverageMbps != 42.5 {
-		t.Fatalf("unexpected speed summary: %+v", overview.SpeedTests)
 	}
 	var firstSession, secondSession sessionSummary
 	for _, session := range overview.Recent {
@@ -740,7 +733,6 @@ func TestApplyRelayDisplaysCoversNodeClassEverywhere(t *testing.T) {
 	ov := telemetryOverview{
 		TopRelays:    []relaySummary{{RelayID: "relay_f"}, {RelayID: "relay_v"}, {RelayID: "relay_none"}},
 		ActiveRelays: []countSummary{{Name: "relay_f", Count: 3}, {Name: "relay_v", Count: 1}},
-		SpeedTests:   []speedTestSummary{{RelayID: "relay_f"}, {RelayID: "relay_v"}},
 		// Non-relay rankings share countSummary and must stay class-free.
 		TopCities: []countSummary{{Name: "Tokyo", Count: 5}},
 		TopISPs:   []countSummary{{Name: "ExampleNet", Count: 2}},
@@ -757,9 +749,6 @@ func TestApplyRelayDisplaysCoversNodeClassEverywhere(t *testing.T) {
 	}
 	if ov.ActiveRelays[0].NodeClass != relay.NodeClassFoundation || ov.ActiveRelays[1].NodeClass != relay.NodeClassVolunteer {
 		t.Errorf("active_by_relay node_class = %q/%q, want foundation/volunteer", ov.ActiveRelays[0].NodeClass, ov.ActiveRelays[1].NodeClass)
-	}
-	if ov.SpeedTests[0].NodeClass != relay.NodeClassFoundation || ov.SpeedTests[1].NodeClass != relay.NodeClassVolunteer {
-		t.Errorf("speed_tests node_class = %q/%q, want foundation/volunteer", ov.SpeedTests[0].NodeClass, ov.SpeedTests[1].NodeClass)
 	}
 	// An unlabeled relay keeps the ID as its name but still shows the class.
 	if ov.TopRelays[2].Label != "" || ov.TopRelays[2].NodeClass != relay.NodeClassFoundation {
@@ -829,9 +818,6 @@ func TestRecordedRelayClassSurvivesMissingActiveDescriptor(t *testing.T) {
 	}
 	if len(ov.ActiveRelays) != 1 || ov.ActiveRelays[0].NodeClass != relay.NodeClassFoundation {
 		t.Fatalf("active relay lost recorded class: %+v", ov.ActiveRelays)
-	}
-	if len(ov.SpeedTests) != 1 || ov.SpeedTests[0].NodeClass != relay.NodeClassFoundation {
-		t.Fatalf("speed test lost recorded class: %+v", ov.SpeedTests)
 	}
 	if len(ov.Recent) != 1 || ov.Recent[0].RelayNodeClass != relay.NodeClassFoundation {
 		t.Fatalf("session lost recorded class: %+v", ov.Recent)

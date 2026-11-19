@@ -46,7 +46,6 @@ const (
 	DefaultTelemetryTimeout = 15 * time.Second
 	DefaultWSSTicketTimeout = 5 * time.Second
 	DefaultHealthTimeout    = 4 * time.Second
-	DefaultSpeedTestTimeout = 60 * time.Second
 )
 
 // Platform selects the fixed platform-identification header emitted by a

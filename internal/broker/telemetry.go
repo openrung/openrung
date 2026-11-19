@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,7 +22,6 @@ import (
 const (
 	maxTelemetryBodyBytes  = 512 << 10
 	maxTelemetryEvents     = 200
-	maxSpeedTestBytes      = 25_000_000
 	telemetryRetention     = 7 * 24 * time.Hour
 	telemetryFlushInterval = 5 * time.Second
 	telemetrySyncInterval  = 30 * time.Second
@@ -52,53 +50,7 @@ const (
 	// recorded at least once per window.
 	clientSeenDedupWindow     = 4 * time.Minute
 	clientSeenDedupMaxEntries = 10_000
-
-	// speedTestWriteWindow is how long a single speed-test download may take
-	// before the connection is cut. The handler extends its own write deadline
-	// to this because slow links legitimately need minutes for 25 MB, far past
-	// the server-wide write timeout.
-	speedTestWriteWindow = 5 * time.Minute
 )
-
-func speedTestHandler(maxConcurrent int) http.HandlerFunc {
-	slots := make(chan struct{}, maxConcurrent)
-	return func(w http.ResponseWriter, r *http.Request) {
-		requested, err := strconv.Atoi(r.URL.Query().Get("bytes"))
-		if err != nil || requested < 1 || requested > maxSpeedTestBytes {
-			writeError(w, http.StatusBadRequest, "bytes must be between 1 and 25000000")
-			return
-		}
-
-		// Each stream can push up to 25 MB, so the number running at once — not
-		// the per-IP request rate — is what bounds worst-case broker egress.
-		select {
-		case slots <- struct{}{}:
-			defer func() { <-slots }()
-		default:
-			w.Header().Set("Retry-After", "10")
-			writeError(w, http.StatusTooManyRequests, "speed test is busy, retry later")
-			return
-		}
-
-		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(speedTestWriteWindow))
-
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Header().Set("Content-Length", strconv.Itoa(requested))
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.CopyN(w, speedTestReader{}, int64(requested))
-	}
-}
-
-type speedTestReader struct{}
-
-func (speedTestReader) Read(buffer []byte) (int, error) {
-	for index := range buffer {
-		buffer[index] = byte((index*31 + 17) % 251)
-	}
-	return len(buffer), nil
-}
 
 type TelemetryEvent struct {
 	SchemaVersion   int               `json:"schema_version"`

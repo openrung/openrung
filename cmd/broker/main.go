@@ -244,8 +244,7 @@ func run() error {
 		// Bound every phase of a connection so slow-drip (slowloris-style)
 		// clients cannot pin goroutines and file descriptors indefinitely. The
 		// read window still fits a full 512 KiB telemetry upload on a very slow
-		// link; the speed-test handler extends its own write deadline because a
-		// 25 MB download legitimately needs longer than the write timeout.
+		// link.
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       2 * time.Minute,
 		WriteTimeout:      2 * time.Minute,
@@ -398,7 +397,6 @@ func parseRateLimits() (broker.RateLimits, error) {
 		{"OPENRUNG_RATE_LIMIT_USER_AUTH", &limits.UserAuth},
 		{"OPENRUNG_RATE_LIMIT_ACCESS", &limits.Access},
 		{"OPENRUNG_RATE_LIMIT_RELAY_REGISTRATION", &limits.RelayRegistration},
-		{"OPENRUNG_RATE_LIMIT_SPEED_TEST", &limits.SpeedTest},
 	} {
 		limit, err := broker.ParseRateLimit(os.Getenv(entry.name))
 		if err != nil {
