@@ -75,7 +75,8 @@ Format changed Go files with `gofmt`; check affected modules and consumers.
   change the app's screens in `openrung-mobile-app`, then move the pin. Relay integration tests need Xray pinned by `deploy/relay/Dockerfile`.
 - `make e2e` (Docker, privileged container, no CI job yet) runs the end-to-end scenarios;
   use it for changes to discovery, connection lifecycle, failover, relay registration or
-  the hub. `E2E_ARGS='-test.short'` skips the slow ones. See [the lab](test/e2e/README.md).
+  the hub. `E2E_ARGS='-test.short'` skips the slow ones. `make e2e-lab-host` plus
+  `make desktop-lab` runs the desktop app against the lab (Linux). See [the lab](test/e2e/README.md).
 - Consult the relevant CI workflow for additional checks. Report what ran and any skips.
 
 ## User responses

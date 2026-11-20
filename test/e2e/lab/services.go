@@ -26,6 +26,12 @@ const (
 	// so the user's node redirects this loopback port to BrokerAddr.
 	ClientBrokerURL = "http://127.0.0.1:8080"
 
+	// HostBrokerURL is the broker on the container's own loopback, which is
+	// this machine's loopback under `make e2e-lab-host`: an app run on the
+	// machine is pointed here, since the stock clients accept a plain-HTTP,
+	// lab-signed broker only on loopback.
+	HostBrokerURL = "http://" + hostBrokerListen
+
 	// HubControlAddr is where volunteer relays dial the relay hub.
 	HubControlAddr = HubAddr + ":9443"
 
@@ -58,14 +64,15 @@ func DNSService() Service {
 }
 
 // BrokerService is the discovery broker with authentication on, internet
-// lookups off, and limits loose enough for a test loop from one address.
+// lookups off (or answered by the internet stand-in, see RelayLocations), and
+// limits loose enough for a test loop from one address.
 func BrokerService() Service {
 	env := []string{
 		"OPENRUNG_RELAY_SIGNING_KEY=" + seed("broker relay signing key"),
 		"OPENRUNG_VOLUNTEER_TOKEN=" + VolunteerToken,
 		"OPENRUNG_FOUNDATION_TOKEN=" + FoundationToken,
 		"OPENRUNG_WSS_TICKET_SIGNING_SEED=" + wssTicketSeed,
-		"OPENRUNG_GEOIP_ENDPOINT=off",
+		"OPENRUNG_GEOIP_ENDPOINT=" + geoIPEndpoint(),
 		"OPENRUNG_MAX_NEW_RELAY_IDS_PER_IP_PER_DAY=off",
 		"OPENRUNG_TELEMETRY_FILE=" + TelemetryPath,
 	}
@@ -76,8 +83,38 @@ func BrokerService() Service {
 		Argv: []string{"broker", "-addr", ":8080", "-lease-ttl", leaseTTL}}
 }
 
+// relayLocationsMarker records that the lab was brought up with relay
+// locations, so a broker restarted by a later `lab` command keeps them.
+const relayLocationsMarker = RunDir + "/relay-locations"
+
+// RelayLocations reports whether the broker geolocates relays through the
+// internet stand-in (see geoLocations). Apps that list relays by location,
+// such as the desktop app, need it; the scenarios run without it, because a
+// located relay is reported by its city rather than its label.
+func RelayLocations() bool {
+	_, err := os.Stat(relayLocationsMarker)
+	return err == nil
+}
+
+func geoIPEndpoint() string {
+	if RelayLocations() {
+		return GeoIPEndpoint
+	}
+	return "off"
+}
+
 // TelemetryPath is the broker's telemetry log.
 const TelemetryPath = RunDir + "/state/broker/telemetry.jsonl"
+
+const hostBrokerListen = "127.0.0.1:18080"
+
+// HostBrokerService serves the broker on the container's own loopback
+// (HostBrokerURL). It forwards each connection across gw-host to the broker,
+// so blocking or cutting gw-host also cuts an app's broker; a connection the
+// network refuses is reset rather than accepted.
+func HostBrokerService() Service {
+	return Service{Name: "host-broker", Argv: []string{"lab", "forward", hostBrokerListen, BrokerAddr + ":8080"}}
+}
 
 // HubService is the relay hub that publishes volunteers behind NAT.
 func HubService() Service {
@@ -136,6 +173,7 @@ func DefaultServices() []Service {
 		InternetService(),
 		DNSService(),
 		BrokerService(),
+		HostBrokerService(),
 		HubService(),
 		DirectRelayService("relay-a", "relay-a", RelayAAddr),
 		DirectRelayService("relay-b", "relay-b", RelayBAddr),
@@ -230,10 +268,20 @@ func WaitListed(timeout time.Duration, labels ...string) error {
 
 // Up builds the lab from scratch: the network, the internet stand-in and the
 // default services, and waits until the broker lists the default relays.
-func Up() error {
+func Up() error { return up(false) }
+
+// UpWithRelayLocations is Up with RelayLocations switched on.
+func UpWithRelayLocations() error { return up(true) }
+
+func up(relayLocations bool) error {
 	Down()
 	for _, dir := range []string{RunDir, LogDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	if relayLocations {
+		if err := writeFile(relayLocationsMarker, ""); err != nil {
 			return err
 		}
 	}

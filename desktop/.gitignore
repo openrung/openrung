@@ -4,3 +4,4 @@ build/bin/
 frontend/wailsjs/
 frontend/package.json.md5
 *.local
+build/lab/

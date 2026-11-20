@@ -204,6 +204,15 @@ secrets (a fork), ends up with. Such a build runs on the Mac that built it; a
 copy moved to another Mac is blocked by Gatekeeper until it is allowed under
 System Settings → Privacy & Security.
 
+## Desktop App: Development broker
+
+`OPENRUNG_BROKER_URL` points the app at another broker for development, in
+place of the public fronts (the desktop counterpart of the terminal client's
+`-broker` flag). The usual broker rules apply: plain HTTP only on loopback, and
+the default fronts stay the fallback behind it. `make desktop-lab` uses it to
+run the app against the network lab; see
+[`test/e2e/README.md`](../test/e2e/README.md#testing-apps-built-on-this-machine).
+
 ## Desktop App: Local Proxy
 
 The desktop app chooses one local port on first launch and persists it under

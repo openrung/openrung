@@ -55,6 +55,13 @@ func main() {
 	}
 
 	svc := vpnservice.New()
+	// OPENRUNG_BROKER_URL points the app at another broker, such as the test
+	// lab's (test/e2e/README.md) — the desktop counterpart of the client's
+	// -broker flag.
+	if broker := os.Getenv("OPENRUNG_BROKER_URL"); broker != "" {
+		svc.BrokerURL = broker
+		log.Printf("using broker %s (OPENRUNG_BROKER_URL)", broker)
+	}
 	if ruleSets, err := fs.Sub(ruleSetAssets, "mobile-app/rulesets/dist"); err == nil {
 		svc.RuleSets = ruleSets
 	}

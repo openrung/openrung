@@ -35,6 +35,7 @@ const (
 	GwVolAddr    = "203.0.113.20" // the volunteer's home router
 	CGNAddr      = "203.0.113.30" // a carrier-grade NAT in front of vol2
 	GwMobileAddr = "203.0.113.40" // the user's second (mobile) uplink
+	GwHostAddr   = "203.0.113.50" // the router in front of the container's own namespace
 
 	// Private addresses behind those routers.
 	UserAddr       = "192.168.10.10"
@@ -42,9 +43,24 @@ const (
 	VolAddr        = "192.168.20.10"
 	Vol2Addr       = "192.168.30.10"
 
+	// HostDev and HostAddr are the container's own network namespace's link
+	// into the lab, behind gw-host (see attachHost). When the lab runs on the
+	// host's network (make e2e-lab-host) that namespace is this machine's.
+	HostDev  = "or-lab"
+	HostAddr = "192.168.77.2"
+
 	// coreAddr is the backbone router's address on every point-to-point link.
 	coreAddr = "192.0.2.254"
 )
+
+// hostRouterCIDR is gw-host's side of the link to the container's namespace.
+const hostRouterCIDR = "192.168.77.1/30"
+
+// labPrefixes are the public ranges the container's namespace reaches through
+// gw-host: the servers' and the routers' documentation ranges, so a route to
+// them never shadows a real network. The internet stand-in's 192.0.2.0/24 is
+// left out, since tests on the machine count on it going nowhere.
+var labPrefixes = []string{"198.51.100.0/24", "203.0.113.0/24"}
 
 // publicHost is a namespace attached straight to the backbone.
 type publicHost struct {
@@ -78,6 +94,7 @@ var publicHosts = []publicHost{
 	{name: "gw-mobile", addr: GwMobileAddr, router: true},
 	{name: "gw-vol", addr: GwVolAddr, router: true},
 	{name: "cgn", addr: CGNAddr, router: true},
+	{name: "gw-host", addr: GwHostAddr, router: true},
 }
 
 var privateLinks = []privateLink{
@@ -89,7 +106,7 @@ var privateLinks = []privateLink{
 }
 
 // natRouters are the nodes that translate their LAN behind their uplink.
-var natRouters = []string{"gw-user", "gw-mobile", "gw-vol", "cgn", "gw-vol2"}
+var natRouters = []string{"gw-user", "gw-mobile", "gw-vol", "cgn", "gw-vol2", "gw-host"}
 
 // End is one side of a link: an interface inside a node.
 type End struct{ Node, Dev string }
@@ -199,6 +216,10 @@ func buildTopology() error {
 		}
 	}
 
+	if err := attachHost(); err != nil {
+		return err
+	}
+
 	for _, router := range natRouters {
 		if err := sysctl(router, "net.ipv4.ip_forward=1"); err != nil {
 			return err
@@ -225,6 +246,30 @@ func buildTopology() error {
 
 	// The internet stand-in answers for every address and port routed to it.
 	return In("inet", "iptables", "-t", "nat", "-A", "PREROUTING", "-j", "REDIRECT")
+}
+
+// attachHost puts the container's own network namespace behind gw-host, like
+// a computer behind a home router, and routes the lab's public ranges there.
+// Under `make e2e` that namespace has no other network and nothing uses the
+// link. Under `make e2e-lab-host` the container shares this machine's
+// namespace, so apps built and run on the machine (the desktop client) reach
+// the lab through gw-host, where `lab net` can impair their network. The link
+// and its routes vanish with gw-host's namespace when the lab stops.
+func attachHost() error {
+	steps := [][]string{
+		{"ip", "link", "add", HostDev, "type", "veth", "peer", "name", "lan0", "netns", "gw-host"},
+		{"ip", "-n", "gw-host", "addr", "add", hostRouterCIDR, "dev", "lan0"},
+		{"ip", "-n", "gw-host", "link", "set", "lan0", "up"},
+		{"ip", "addr", "add", HostAddr + "/30", "dev", HostDev},
+		{"ip", "link", "set", HostDev, "up"},
+	}
+	for _, prefix := range labPrefixes {
+		steps = append(steps, []string{"ip", "route", "add", prefix, "via", gatewayOf(hostRouterCIDR), "dev", HostDev})
+	}
+	if err := runAll(steps); err != nil {
+		return fmt.Errorf("attach the container's namespace (is another lab already attached to this machine?): %w", err)
+	}
+	return nil
 }
 
 // refuseUnsolicited gives a NAT router the inbound firewall home routers
