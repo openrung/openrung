@@ -142,8 +142,59 @@ set -eu
 # bootstrap user-data.
 { set +x; } 2>/dev/null
 
-die() { echo "volunteer-up: error: $*" >&2; exit 1; }
+die() { spinner_stop; echo "volunteer-up: error: $*" >&2; exit 1; }
 log() { echo "volunteer-up: $*"; }
+
+# Progress for the slow steps (installing packages, pulling the image, waiting
+# on the broker): an animated line with the elapsed time below the step's log
+# line, drawn only when stdout is a terminal so piped and cloud-init output
+# stays plain text. The animation runs in the background and exits by itself
+# once this script is gone, even when Ctrl-C reaches only the script.
+SPINNER_PID=""
+spinner_start() {
+    [ -t 1 ] && [ -z "$SPINNER_PID" ] || return 0
+    (
+        trap - 0 HUP INT TERM
+        sp_start=$(date +%s)
+        sp_i=0
+        while kill -0 "$$" 2>/dev/null; do
+            case $((sp_i % 4)) in 0) sp_c='|' ;; 1) sp_c='/' ;; 2) sp_c='-' ;; *) sp_c='\' ;; esac
+            printf '\r  %s %ss ' "$sp_c" "$(($(date +%s) - sp_start))"
+            sp_i=$((sp_i + 1))
+            sleep 0.25 2>/dev/null || sleep 1
+        done
+    ) &
+    SPINNER_PID=$!
+}
+spinner_stop() {
+    [ -n "$SPINNER_PID" ] || return 0
+    kill "$SPINNER_PID" 2>/dev/null || :
+    wait "$SPINNER_PID" 2>/dev/null || :
+    SPINNER_PID=""
+    printf '\r\033[K'
+}
+
+# Runs a slow, chatty command behind the progress line. Its output is kept
+# out of the way and shown (the last 25 lines) only when it fails.
+run_step() { # message command...
+    rs_message=$1
+    shift
+    log "$rs_message"
+    rs_out="$(mktemp 2>/dev/null)" || rs_out=""
+    if [ -z "$rs_out" ]; then
+        "$@"
+        return
+    fi
+    spinner_start
+    trap 'spinner_stop; rm -f "$rs_out"; exit 130' HUP INT TERM
+    rs_status=0
+    "$@" >"$rs_out" 2>&1 || rs_status=$?
+    trap - HUP INT TERM
+    spinner_stop
+    if [ "$rs_status" -ne 0 ]; then tail -n 25 "$rs_out" >&2; fi
+    rm -f "$rs_out"
+    return "$rs_status"
+}
 
 # Default relay names: the same adjective-noun style the fleet provisioning
 # helpers use, so volunteer relays show up
@@ -418,6 +469,7 @@ rollback_transaction() {
 
 transaction_exit() {
     transaction_status=$1
+    spinner_stop
     trap - 0 HUP INT TERM
     if [ "$TRANSACTION_ACTIVE" = 1 ]; then
         if ! rollback_transaction; then
@@ -777,8 +829,10 @@ apply_egress_limit() {
         # volunteer's step, reported below.
         if command -v apt-get >/dev/null 2>&1; then
             log "installing nftables"
+            spinner_start
             { apt-get -o DPkg::Lock::Timeout=300 update \
                 && apt-get -o DPkg::Lock::Timeout=300 install -y nftables; } </dev/null >/dev/null 2>&1 || :
+            spinner_stop
         fi
         if ! nft --version >/dev/null 2>&1; then
             log "warning: nftables is not installed, so the new-destination limit was not loaded; install nftables and re-run"
@@ -941,17 +995,24 @@ report_reachability() { # container
     fi
     log "waiting up to ${REACHABILITY_WAIT}s for the port to open (Ctrl-C stops waiting; the relay keeps running)"
     rr_waited=0
+    spinner_start
+    trap 'spinner_stop; exit 130' HUP INT TERM
     while [ "$rr_waited" -lt "$REACHABILITY_WAIT" ]; do
         sleep 5
         rr_waited=$((rr_waited + 5))
         if [ "$(reachability_verdict "$rr_container")" = reachable ]; then
+            trap - HUP INT TERM
+            spinner_stop
             log "done — the broker accepted this relay now: this host is serving as a volunteer-class OpenRung relay"
             return 0
         fi
-        if [ $((rr_waited % 60)) -eq 0 ]; then
+        # The progress line already shows the time waited on a terminal.
+        if [ -z "$SPINNER_PID" ] && [ $((rr_waited % 60)) -eq 0 ]; then
             log "still unreachable after ${rr_waited}s; waiting for inbound TCP ${RELAY_PORT} to open"
         fi
     done
+    trap - HUP INT TERM
+    spinner_stop
     echo "volunteer-up: WARNING: still unreachable after ${REACHABILITY_WAIT}s. The relay keeps retrying and registers by itself once the port opens; check with: docker logs $CONTAINER 2>&1 | grep -E 'registered relay|public endpoint'" >&2
     return 0
 }
@@ -966,6 +1027,7 @@ report_reachability() { # container
 verify_candidate() {
     verify_container=$1
     log "waiting for the relay candidate to register with the broker"
+    spinner_start
     verify_i=0
     while :; do
         verify_state="$(container_inspect -f '{{.State.Running}} {{.RestartCount}}' "$verify_container" 2>/dev/null)" \
@@ -973,11 +1035,13 @@ verify_candidate() {
         verify_logs="$(docker logs "$verify_container" 2>&1)" || verify_logs=""
         if [ "$verify_state" = "true 0" ] \
             && printf '%s\n' "$verify_logs" | grep -q 'registered relay'; then
+            spinner_stop
             log "$(printf '%s\n' "$verify_logs" | grep 'registered relay' | tail -1)"
             return 0
         fi
         if [ "$verify_state" = "true 0" ] \
             && printf '%s\n' "$verify_logs" | grep -q 'public endpoint unreachable'; then
+            spinner_stop
             log "the relay candidate is running; the broker refused its registration because its public port is unreachable"
             return 2
         fi
@@ -985,6 +1049,7 @@ verify_candidate() {
         case "$verify_state" in
             true\ 0) ;;
             *)
+                spinner_stop
                 echo "volunteer-up: error: the relay candidate stopped or restarted (state: ${verify_state:-unavailable}); recent logs:" >&2
                 docker logs --tail 25 "$verify_container" >&2 || true
                 return 1
@@ -993,6 +1058,7 @@ verify_candidate() {
 
         verify_i=$((verify_i + 1))
         if [ "$verify_i" -ge 60 ]; then
+            spinner_stop
             echo "volunteer-up: error: the relay candidate did not register within 120s; recent logs:" >&2
             docker logs --tail 25 "$verify_container" >&2 || true
             return 1
@@ -1081,10 +1147,13 @@ main() {
     # user-data). On non-apt distros, installing Docker is the volunteer's step.
     if ! command -v docker >/dev/null 2>&1; then
         if command -v apt-get >/dev/null 2>&1; then
-            log "installing docker.io"
             export DEBIAN_FRONTEND=noninteractive
-            apt-get -o DPkg::Lock::Timeout=300 update </dev/null
-            apt-get -o DPkg::Lock::Timeout=300 install -y docker.io </dev/null
+            run_step "updating package lists to install docker.io" \
+                apt-get -o DPkg::Lock::Timeout=300 update </dev/null \
+                || die "apt-get update failed"
+            run_step "installing docker.io (this can take a few minutes)" \
+                apt-get -o DPkg::Lock::Timeout=300 install -y docker.io </dev/null \
+                || die "could not install docker.io"
             if command -v systemctl >/dev/null 2>&1; then systemctl enable --now docker; fi
         else
             die "docker is not installed and this is not an apt-based system; install Docker (https://docs.docker.com/engine/install/) and re-run"
@@ -1139,8 +1208,8 @@ main() {
 
     # Pull before naming: random_label asks this image for the name, and the
     # env file written below must record whatever it returns.
-    log "pulling $IMAGE"
-    docker pull "$IMAGE" >/dev/null
+    run_step "pulling $IMAGE" docker pull "$IMAGE" \
+        || die "could not pull $IMAGE"
 
     if [ -f "$ENV_FILE" ]; then
         log "reusing existing $ENV_FILE (stable relay identity preserved)"
