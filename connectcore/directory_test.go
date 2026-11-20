@@ -242,3 +242,31 @@ func TestDirectoryCacheSingleFlight(t *testing.T) {
 		t.Fatalf("broker calls = %d, want 1: latecomers must wait for the in-flight fetch", got)
 	}
 }
+
+func TestListRelaysForDirectoryFromPassesTheBrokerOverride(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("AppData", t.TempDir())
+
+	now := time.Now()
+	var urls []string
+	s := New()
+	s.directory.fetcher = func(_ context.Context, brokerURL string, _ discovery.Options) (brokerapi.RelayListResponse, error) {
+		urls = append(urls, brokerURL)
+		return brokerapi.RelayListResponse{Count: 1, NotAfter: now.Add(time.Hour), Relays: []brokerapi.RelayDescriptor{{ID: "from-" + brokerURL}}}, nil
+	}
+
+	resp, err := s.ListRelaysForDirectoryFrom("http://127.0.0.1:18080")
+	if err != nil {
+		t.Fatalf("ListRelaysForDirectoryFrom: %v", err)
+	}
+	if resp.Relays[0].ID != "from-http://127.0.0.1:18080" {
+		t.Fatalf("served %q, want the override broker's list", resp.Relays[0].ID)
+	}
+	if _, err := s.ListRelaysForDirectory(); err != nil {
+		t.Fatalf("ListRelaysForDirectory: %v", err)
+	}
+	if len(urls) != 2 || urls[0] != "http://127.0.0.1:18080" || urls[1] != "" {
+		t.Fatalf("fetcher calls = %q, want the override then the default fronts", urls)
+	}
+}

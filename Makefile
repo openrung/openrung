@@ -1,4 +1,4 @@
-.PHONY: test fmt broker relay relayhub client docker-build docker-keygen docker-run relayhub-docker-build broker-docker-build e2e e2e-image e2e-lab
+.PHONY: test fmt broker relay relayhub client docker-build docker-keygen docker-run relayhub-docker-build broker-docker-build e2e e2e-image e2e-lab e2e-lab-host desktop-lab
 
 RELAY_IMAGE ?= openrung-relay:latest
 RELAYHUB_IMAGE ?= openrung-relayhub:latest
@@ -98,3 +98,15 @@ e2e: e2e-image
 #   docker exec -it openrung-lab sh    then    lab help
 e2e-lab: e2e-image
 	$(E2E_RUN) -it --name openrung-lab $(E2E_IMAGE) up
+
+# The same lab, attached to this machine's network behind the lab router
+# gw-host, so apps built here can use it: the broker answers on
+# http://127.0.0.1:18080 and the lab's public ranges route through gw-host.
+# Linux only; the attachment goes away when the lab stops.
+e2e-lab-host: e2e-image
+	docker run --rm --init --privileged --network host -it --name openrung-lab $(E2E_IMAGE) up -locations
+
+# Build the desktop app from this checkout and run it against the lab that
+# `make e2e-lab-host` left running.
+desktop-lab:
+	desktop/scripts/run-against-lab.sh

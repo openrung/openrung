@@ -69,7 +69,16 @@ func (d *directoryCache) clock() time.Time {
 // failover/429 logic, attaches identity headers, and avoids a webview
 // cross-origin request to the broker.
 func (s *Engine) ListRelaysForDirectory() (brokerapi.RelayListResponse, error) {
-	return s.fetchDirectory(context.Background(), "")
+	return s.ListRelaysForDirectoryFrom("")
+}
+
+// ListRelaysForDirectoryFrom is ListRelaysForDirectory with a broker
+// override: brokerURL narrows the fetch to one endpoint (ahead of the default
+// fronts), as the brokerURL argument of Connect does, and empty races the
+// default fronts. Hosts that let a developer point the app at a local broker
+// pass the same URL here and to Connect.
+func (s *Engine) ListRelaysForDirectoryFrom(brokerURL string) (brokerapi.RelayListResponse, error) {
+	return s.fetchDirectory(context.Background(), brokerURL)
 }
 
 // fetchDirectory is the directory cache fetch with its outcome recorded in

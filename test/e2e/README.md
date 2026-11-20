@@ -15,6 +15,8 @@ make e2e                                    # build the image, run every scenari
 make e2e E2E_ARGS='-test.short'             # skip the scenarios that wait minutes
 make e2e E2E_ARGS='-test.run Volunteer'     # run some scenarios
 make e2e-lab                                # leave a lab running to explore by hand
+make e2e-lab-host                           # the same, attached to this machine (Linux)
+make desktop-lab                            # build the desktop app, run it against that lab
 ```
 
 You need Docker on a Linux kernel (Docker Desktop's VM counts). Nothing else
@@ -31,6 +33,7 @@ is installed on the host, including Go.
    relay-a 198.51.100.41 ---+--[core]--+--- gw-mobile 203.0.113.40 --- user  10.20.0.10 (2nd uplink)
    relay-b 198.51.100.42 ---+ backbone +--- gw-vol    203.0.113.20 --- vol   192.168.20.10
    relay-f 198.51.100.43 ---+          +--- cgn       203.0.113.30 --- gw-vol2 100.64.0.10 --- vol2 192.168.30.10
+                                       +--- gw-host   203.0.113.50 --- the container's own namespace 192.168.77.2
 ```
 
 - Every box is a network namespace ("node"). Public nodes hang off the
@@ -43,6 +46,10 @@ is installed on the host, including Go.
 - Started on demand: `vol2`, a volunteer behind a home router behind a
   carrier-grade NAT; and `relay-f`, a Foundation-class relay with a WSS
   sidecar and a CDN-style front (`relay-f.cdn.example`, played by `inet`).
+- `gw-host` is a home router with the container's own network namespace
+  behind it. Under `make e2e` nothing uses it; under `make e2e-lab-host` that
+  namespace is this machine's, so apps run on the machine reach the lab
+  through it (see [Testing apps built on this machine](#testing-apps-built-on-this-machine)).
 - The hub has a second address (198.51.100.31) so its NAT-punch reflector
   can compare a peer's mapping across two destinations.
 - NAT routers translate like ordinary home routers (one public port per
@@ -65,7 +72,7 @@ requirements from the outside:
 | The client reports "connected" only after an HTTPS check through the tunnel. | `inet` answers the check for any hostname; the client trusts the lab CA through `SSL_CERT_FILE`. |
 | A relay's Reality handshake needs a TLS 1.3 site to borrow. | The default site resolves to `inet`. |
 | Relays refuse to forward to private addresses. | The internet stand-in has a public (documentation) address. |
-| The broker looks up relay locations online. | Switched off with `OPENRUNG_GEOIP_ENDPOINT=off`. |
+| The broker looks up relay locations online. | Switched off with `OPENRUNG_GEOIP_ENDPOINT=off`; `lab up -locations` has `inet` answer it with a made-up city per relay address instead. |
 | A Foundation-class relay accepts a plain-HTTP broker only on loopback. | The same loopback translation, in `relay-f`. |
 | A WSS front is a CDN in front of a relay-local sidecar. | `inet` terminates TLS for the front's hostname, adds the origin-token and viewer-address headers, and forwards the WebSocket to the sidecar. |
 
@@ -173,6 +180,55 @@ The link profiles (`broadband`, `dsl`, `mobile-4g`, `mobile-3g`, `mobile-edge`,
 `satellite`, `lossy-wifi`, `congested`) are round illustrative numbers, not
 measurements.
 
+## Testing apps built on this machine
+
+`make e2e-lab-host` runs the same lab on this machine's network instead of
+none, and attaches the machine behind `gw-host`. Apps built and run on the
+machine, the desktop client foremost, can then be tested against servers built
+from the same checkout:
+
+```sh
+make e2e-lab-host     # terminal 1: build the image from this checkout, bring the lab up
+make desktop-lab      # terminal 2: build the desktop app, run it against the lab
+```
+
+The lab comes up with `lab up -locations`, which gives each relay a made-up
+city, because the app lists relays by location and shows none without one. The
+command-line client then reports the city rather than the relay's label.
+
+While the lab is up:
+
+- The broker answers on `http://127.0.0.1:18080` on the machine (a forwarder
+  across `gw-host`, so blocking or cutting `gw-host` also cuts it), and routes
+  for the servers' and routers' ranges (`198.51.100.0/24`, `203.0.113.0/24`)
+  go to the `or-lab` link. Both disappear when the lab stops.
+- `desktop/scripts/run-against-lab.sh` (behind `make desktop-lab`; pass
+  `--no-build` to rerun the last build) starts the app with
+  `OPENRUNG_BROKER_URL` set to that broker, `SSL_CERT_FILE` set to the lab CA
+  and nothing else, so the public broker fronts fail verification rather than
+  serve production relays, and its state kept in `desktop/build/lab/`. The lab
+  mints a new CA every time it starts, so restart the app after restarting the
+  lab.
+- `lab net` impairs the app's network at `gw-host`: `lab net block gw-host
+  198.51.100.41` is the machine's network refusing relay-a, `lab net shape
+  gw-host mobile-3g` a slow uplink, `lab net down gw-host` an outage.
+- Traffic through the app's local proxy exits in the lab:
+  `curl -x socks5h://127.0.0.1:<port> http://exit.example/ip` prints the
+  relay's address. Settings shows the port.
+
+To pick up a change, rebuild what changed: stop the lab and run
+`make e2e-lab-host` again for the servers, and `make desktop-lab` for the app.
+The command-line client works the same way: `SSL_CERT_FILE=<lab CA>
+openrung-client connect -broker http://127.0.0.1:18080`.
+
+Limits: one attached lab per machine; Linux only, since Docker Desktop's
+`--network host` is the VM's network rather than the machine's; and the WSS
+front (`relay-f.cdn.example`) resolves only inside the lab, so WSS fallback is
+covered by the scenarios, not by an app on the machine. On GNOME or KDE the
+app points the system proxy at itself while connected, as it always does, so
+other applications on the machine reach the lab's internet until you
+disconnect.
+
 ## Layout
 
 | Path | What it holds |
@@ -198,7 +254,8 @@ pass a proxy or other build options with `E2E_BUILD_FLAGS`.
 - The published container images' runtime settings (user, capabilities,
   read-only filesystem): the lab runs the same binaries and entrypoint, not
   the images.
-- The desktop and mobile apps. They share `connectcore` with the command-line
-  client, which is what runs here.
+- The desktop and mobile apps in the scenarios. They share `connectcore` with
+  the command-line client, which is what runs here; the desktop app can be
+  tested by hand against `make e2e-lab-host`.
 - Host-level tooling such as `volunteer-up.sh` and `egress-limit.sh`, which
   have their own tests under `deploy/relay/`.
