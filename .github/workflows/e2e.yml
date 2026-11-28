@@ -1,0 +1,69 @@
+name: e2e
+
+# Run the network-lab scenarios (test/e2e) after each merge to main: the real
+# broker, relay hub, relays and command-line client on a simulated internet
+# inside one privileged container. Same entry point as local runs: `make e2e`.
+# See test/e2e/README.md.
+#
+# The scenarios share one lab, so they run one at a time within a container.
+# To cut wall-clock time they are split across parallel jobs, each with its own
+# lab. The last shard skips everything the others run, so every scenario,
+# including new ones, runs exactly once. Keep its skip list in step with the
+# other shards' run lists.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: e2e (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: outages
+            args: >-
+              -test.run '^(TestUserLinkOutageIsNotARelayFailure|TestVolunteerLinkOutage|TestRelayLosesBroker|TestRelayCrashAndRestart)'
+          - shard: failover
+            args: >-
+              -test.run '^(TestRelayDiesMidSession|TestWSSFallbackThroughFront|TestWSSUnusedWhenDirectWorks|TestPunchDirectPathThroughCarrierGradeNAT)'
+          - shard: rest
+            args: >-
+              -test.skip '^(TestUserLinkOutageIsNotARelayFailure|TestVolunteerLinkOutage|TestRelayLosesBroker|TestRelayCrashAndRestart|TestRelayDiesMidSession|TestWSSFallbackThroughFront|TestWSSUnusedWhenDirectWorks|TestPunchDirectPathThroughCarrierGradeNAT)'
+    steps:
+      - uses: actions/checkout@v4
+
+      # Most of the image build is compiling, in the Dockerfile's Go build
+      # cache mount. Keep that mount between runs: the cache is saved once per
+      # dependency set and restored into the default builder before
+      # `make e2e`, so the build only recompiles OpenRung's own packages. On a
+      # miss only one shard extracts and saves it. (The module cache is not
+      # kept: loading it into the builder is slower than downloading it.)
+      - name: Cache the Go build cache
+        id: go-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/go-build
+          key: e2e-go-build-${{ hashFiles('go.sum', 'test/e2e/Dockerfile') }}
+
+      - name: Restore the cache into the image build
+        uses: reproducible-containers/buildkit-cache-dance@5422eac04292c961a382e0f584ea0f03ad9da723 # v3.4.0
+        with:
+          cache-map: |
+            {
+              "${{ runner.temp }}/go-build": "/root/.cache/go-build"
+            }
+          scratch-dir: ${{ runner.temp }}/cache-dance
+          skip-extraction: ${{ steps.go-cache.outputs.cache-hit == 'true' || matrix.shard != 'rest' }}
+
+      - name: Build the lab image and run the shard's scenarios
+        env:
+          E2E_ARGS: ${{ matrix.args }}
+        run: make e2e
