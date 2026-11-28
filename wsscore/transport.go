@@ -64,7 +64,9 @@ func CopyOpaque(ctx context.Context, a, b net.Conn, idle time.Duration) {
 	wg.Add(2)
 	copyOne := func(dst, src net.Conn) {
 		defer wg.Done()
-		buffer := make([]byte, 32<<10)
+		pooled := copyBuffers.Get().(*[]byte)
+		defer copyBuffers.Put(pooled)
+		buffer := *pooled
 		for {
 			n, readErr := src.Read(buffer)
 			if n > 0 {
@@ -93,6 +95,14 @@ func CopyOpaque(ctx context.Context, a, b net.Conn, idle time.Duration) {
 	_ = a.Close()
 	_ = b.Close()
 }
+
+// copyBuffers recycles CopyOpaque's per-direction 32 KiB buffers. A stream
+// that carries one short connection would otherwise allocate two of them, the
+// bulk of its garbage on a busy relay sidecar or client.
+var copyBuffers = sync.Pool{New: func() any {
+	buf := make([]byte, 32<<10)
+	return &buf
+}}
 
 func writeAll(w io.Writer, data []byte) (int, error) {
 	written := 0
