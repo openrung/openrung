@@ -157,12 +157,12 @@ func (o *ConnectionObserver) handle(ctx context.Context, client net.Conn) {
 
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(&fromClient, client)
+		_, _ = copyPooled(&fromClient, client)
 		_ = target.Close()
 	}()
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(&toClient, target)
+		_, _ = copyPooled(&toClient, target)
 		_ = client.Close()
 	}()
 
@@ -203,6 +203,22 @@ func tcpNetworkForHost(host string) string {
 	default:
 		return "tcp6"
 	}
+}
+
+// copyBuffers recycles the observer's 32 KiB copy buffers: countingWriter
+// hides the TCP side's ReaderFrom, so io.Copy would allocate a fresh buffer
+// for each direction of each observed connection.
+var copyBuffers = sync.Pool{New: func() any {
+	buf := make([]byte, 32<<10)
+	return &buf
+}}
+
+// copyPooled copies src to dst through a pooled buffer. src is wrapped so the
+// TCP connection's WriterTo cannot take over and allocate its own.
+func copyPooled(dst io.Writer, src io.Reader) (int64, error) {
+	buf := copyBuffers.Get().(*[]byte)
+	defer copyBuffers.Put(buf)
+	return io.CopyBuffer(dst, struct{ io.Reader }{src}, *buf)
 }
 
 type countingWriter struct {

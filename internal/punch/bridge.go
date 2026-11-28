@@ -161,13 +161,30 @@ func pipe(a, b net.Conn) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(a, b)
+		_, _ = copyHalf(a, b)
 		_ = a.Close()
 	}()
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(b, a)
+		_, _ = copyHalf(b, a)
 		_ = b.Close()
 	}()
 	wg.Wait()
+}
+
+// copyBuffers recycles pipe's 32 KiB buffers. A QUIC stream offers neither
+// ReaderFrom nor WriterTo, so io.Copy would allocate a fresh buffer for each
+// direction of each bridged connection.
+var copyBuffers = sync.Pool{New: func() any {
+	buf := make([]byte, 32<<10)
+	return &buf
+}}
+
+// copyHalf copies src to dst through a pooled buffer, hiding the TCP side's
+// ReaderFrom/WriterTo: opposite a QUIC stream they cannot splice and would
+// allocate a buffer of their own.
+func copyHalf(dst io.Writer, src io.Reader) (int64, error) {
+	buf := copyBuffers.Get().(*[]byte)
+	defer copyBuffers.Put(buf)
+	return io.CopyBuffer(struct{ io.Writer }{dst}, struct{ io.Reader }{src}, *buf)
 }
