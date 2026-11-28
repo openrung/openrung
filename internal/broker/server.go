@@ -163,7 +163,6 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 	rateLimits := cfg.RateLimits.withDefaults()
 	relayListLimiter := rateLimits.RelayList.limiter()
 	telemetryLimiter := rateLimits.Telemetry.limiter()
-	speedTestLimiter := rateLimits.SpeedTest.limiter()
 	relayRegistrationLimiter := rateLimits.RelayRegistration.limiter()
 	wssTicketLimiter := rateLimits.WSSTicket.limiter()
 	relayLedger := newRelayIDLedger(relayLedgerTTL, relayLedgerMaxEntries)
@@ -252,7 +251,6 @@ func NewServer(store RelayStore, cfg Config) http.Handler {
 		mux.HandleFunc("POST /api/v1/users/auth", rateLimited(userAuthLimiter, clientIP, 10, users.authHandler()))
 	}
 	mux.HandleFunc("POST /api/v1/telemetry/events", rateLimited(telemetryLimiter, clientIP, 10, telemetryHandler(cfg.TelemetrySink, store, clientIP, relayLedger)))
-	mux.HandleFunc("GET /api/v1/speed-test", rateLimited(speedTestLimiter, clientIP, 30, speedTestHandler(speedTestMaxConcurrent)))
 	querier := cfg.TelemetryQuerier
 	if querier == nil && cfg.TelemetryReader != nil {
 		querier = newTelemetryReaderQuerier(cfg.TelemetryReader)

@@ -160,32 +160,6 @@ func TestTelemetryHandlerRejectsMalformedConnectionCount(t *testing.T) {
 	}
 }
 
-func TestSpeedTestHandlerStreamsRequestedBytes(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/speed-test?bytes=10000", nil)
-	recorder := httptest.NewRecorder()
-	speedTestHandler(speedTestMaxConcurrent).ServeHTTP(recorder, req)
-
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
-	}
-	if recorder.Body.Len() != 10000 {
-		t.Fatalf("expected 10000 bytes, got %d", recorder.Body.Len())
-	}
-	if recorder.Header().Get("Cache-Control") != "no-store" {
-		t.Fatalf("expected no-store cache control")
-	}
-}
-
-func TestSpeedTestHandlerRejectsOversizedRequest(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/speed-test?bytes=25000001", nil)
-	recorder := httptest.NewRecorder()
-	speedTestHandler(speedTestMaxConcurrent).ServeHTTP(recorder, req)
-
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", recorder.Code)
-	}
-}
-
 // gatedWriter blocks the handler's first body write until released, keeping a
 // speed-test stream "in flight" so concurrency limits can be observed.
 type gatedWriter struct {
@@ -209,39 +183,6 @@ func (w *gatedWriter) Write(p []byte) (int, error) {
 	})
 	w.written += len(p)
 	return len(p), nil
-}
-
-func TestSpeedTestHandlerLimitsConcurrentStreams(t *testing.T) {
-	handler := speedTestHandler(1)
-
-	blocked := newGatedWriter()
-	firstDone := make(chan struct{})
-	go func() {
-		defer close(firstDone)
-		handler.ServeHTTP(blocked, httptest.NewRequest(http.MethodGet, "/api/v1/speed-test?bytes=100000", nil))
-	}()
-	<-blocked.started
-
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/speed-test?bytes=100000", nil))
-	if recorder.Code != http.StatusTooManyRequests {
-		t.Fatalf("expected 429 while a stream holds the only slot, got %d", recorder.Code)
-	}
-	if recorder.Header().Get("Retry-After") == "" {
-		t.Fatal("expected Retry-After header on busy response")
-	}
-
-	close(blocked.release)
-	<-firstDone
-	if blocked.written != 100000 {
-		t.Fatalf("expected first stream to finish with 100000 bytes, got %d", blocked.written)
-	}
-
-	recorder = httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/speed-test?bytes=10", nil))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("expected freed slot to serve again, got %d", recorder.Code)
-	}
 }
 
 func TestJSONLTelemetrySinkLoadsOnlyRecentRecords(t *testing.T) {

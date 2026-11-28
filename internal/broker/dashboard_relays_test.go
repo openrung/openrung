@@ -24,7 +24,8 @@ func TestBuildRelayTelemetryStats(t *testing.T) {
 		// Outside the 1h window: must not count toward relay-a's successes.
 		relayStatRecord(now.Add(-2*time.Hour), relay.NodeClassFoundation, "old", "connection_succeeded", "c0", "s0", "relay-a", nil, nil),
 		// relay-a: one success, an active heartbeating session, and a
-		// speed-test session (attributed to relay-a by its latest event).
+		// session that only sent speed tests (attributed to relay-a by its
+		// latest event; the tests themselves are not summarised).
 		relayStatRecord(now.Add(-10*time.Minute), relay.NodeClassFoundation, "e1", "connection_succeeded", "c1", "s1", "relay-a", nil, nil),
 		relayStatRecord(now.Add(-time.Minute), relay.NodeClassFoundation, "e2", "session_heartbeat", "c1", "s1", "relay-a", nil, nil),
 		relayStatRecord(now.Add(-4*time.Minute), relay.NodeClassFoundation, "e3", "speed_test_completed", "c4", "s4", "relay-a", nil, map[string]int64{"download_mbps_milli": 45000, "time_to_first_byte_ms": 120}),
@@ -92,9 +93,6 @@ func TestBuildRelayTelemetryStats(t *testing.T) {
 	}
 	if relayA.ActiveSessions != 1 || relayA.ActiveClients != 1 {
 		t.Errorf("relay-a active sessions/clients = %d/%d, want 1/1", relayA.ActiveSessions, relayA.ActiveClients)
-	}
-	if relayA.SpeedTests != 2 || relayA.AverageMbps != 50 || relayA.AverageTTFBMS != 100 {
-		t.Errorf("relay-a speed = %d tests %.1f Mbps %.0f ms, want 2/50.0/100", relayA.SpeedTests, relayA.AverageMbps, relayA.AverageTTFBMS)
 	}
 	if relayA.NodeClass != relay.NodeClassFoundation {
 		t.Errorf("relay-a node class = %q, want foundation", relayA.NodeClass)
@@ -264,35 +262,6 @@ func TestBuildRelaysPanelCapsOfflineRows(t *testing.T) {
 	}
 	if kept["relay-offline-0000"] {
 		t.Errorf("quietest offline relay should be the one the cap hides")
-	}
-}
-
-// rankSpeedTests must truncate like every other relay-keyed panel — anonymous
-// telemetry can name a fresh relay ID per speed test — and break Mbps ties by
-// relay ID so both backends keep the same rows.
-func TestRankSpeedTestsCapsAndBreaksTies(t *testing.T) {
-	var speedTests []speedTestSummary
-	for index := range 12 {
-		speedTests = append(speedTests, speedTestSummary{
-			RelayID:     fmt.Sprintf("relay-%02d", index),
-			Tests:       1,
-			AverageMbps: float64(10 * index),
-		})
-	}
-	speedTests = append(speedTests, speedTestSummary{RelayID: "relay-tie-b", Tests: 1, AverageMbps: 110})
-	speedTests = append(speedTests, speedTestSummary{RelayID: "relay-tie-a", Tests: 1, AverageMbps: 110})
-
-	ranked := rankSpeedTests(speedTests)
-
-	if len(ranked) != 10 {
-		t.Fatalf("ranked length = %d, want 10", len(ranked))
-	}
-	if ranked[0].RelayID != "relay-11" {
-		t.Errorf("fastest relay = %q, want relay-11", ranked[0].RelayID)
-	}
-	// The 110 Mbps tie resolves lexicographically: relay-tie-a then relay-tie-b.
-	if ranked[1].RelayID != "relay-tie-a" || ranked[2].RelayID != "relay-tie-b" {
-		t.Errorf("tie order = %q, %q, want relay-tie-a then relay-tie-b", ranked[1].RelayID, ranked[2].RelayID)
 	}
 }
 
