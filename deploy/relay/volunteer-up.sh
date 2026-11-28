@@ -279,10 +279,18 @@ suggest_contact() {
     done
 }
 
-# Ask for the optional operator contact on the terminal device and print the
-# answer (empty when skipped). Enter confirms a shown suggestion; a typed value
-# replaces it; Enter without a suggestion, end of input, or three invalid
-# answers skip. The caller only asks when a terminal can actually be opened.
+# Ask for the optional operator contact on the terminal device and set
+# OPERATOR_CONTACT to the answer (empty when skipped). Enter confirms a shown
+# suggestion; a typed value replaces it; Enter without a suggestion, end of
+# input, or three invalid answers skip. The caller only asks when a terminal
+# can actually be opened.
+#
+# Call it directly, never inside $(...): the terminal read must happen in the
+# script's own shell. Under curl|sudo sh, sudo runs the script in the
+# background of its pseudo-terminal, so the first read stops it with SIGTTIN
+# until sudo hands it the terminal; some sudo implementations then resume only
+# the process they started, which would leave a reading subshell stopped and
+# the install hung at the question.
 ask_operator_contact() {
     ac_suggestion="$(suggest_contact)" || ac_suggestion=""
     ac_tries=0
@@ -310,7 +318,7 @@ ask_operator_contact() {
         printf 'volunteer-up: that does not look like an email address (no spaces, at most 128 characters); press Enter to skip\n' >>"$TTY_DEVICE"
     done
     exec 3<&-
-    printf '%s' "$ac_answer"
+    OPERATOR_CONTACT=$ac_answer
 }
 
 # A terminal is attached when the terminal device opens; /dev/tty exists even
@@ -1140,7 +1148,7 @@ main() {
     # OPENRUNG_OPERATOR_CONTACT — even an empty one — answers the question.
     OPERATOR_CONTACT="${OPENRUNG_OPERATOR_CONTACT:-}"
     if [ ! -f "$ENV_FILE" ] && [ -z "${OPENRUNG_OPERATOR_CONTACT+set}" ] && have_terminal; then
-        OPERATOR_CONTACT="$(ask_operator_contact)" || OPERATOR_CONTACT=""
+        ask_operator_contact
     fi
 
     # Same package the Foundation fleet bootstrap installs (its user-data

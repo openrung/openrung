@@ -1138,6 +1138,28 @@ test_contact_is_never_asked_again() {
     fi
 }
 
+# Under curl|sudo sh the question's terminal read stops the script with
+# SIGTTIN, and some sudo implementations resume only the process they started.
+# The read must therefore run in the script's own shell, never in a $(...)
+# subshell, so the answer comes back in a variable rather than on stdout.
+test_contact_prompt_reads_in_the_main_shell() {
+    if grep -q '\$(ask_operator_contact' "$SCRIPT"; then
+        fail "contact main shell: ask_operator_contact is called inside a command substitution"
+    else
+        pass
+    fi
+    printf 'ops@example.net\n' >"$TTY_FILE"
+    got=$(HOME="$TEST_TMP/nohome" SUDO_USER='' "$TEST_SHELL" -c \
+        '. "$1"; TTY_DEVICE=$2; CONTACT_QUESTION=$3; OPERATOR_CONTACT=; ask_operator_contact >/dev/null; printf %s "$OPERATOR_CONTACT"' \
+        sh "$LIB_SCRIPT" "$TTY_FILE" "$CONTACT_QUESTION" 2>/dev/null) || got='<fail>'
+    if [ "$got" = ops@example.net ]; then
+        pass
+    else
+        fail "contact main shell: ask_operator_contact did not set OPERATOR_CONTACT in the calling shell (got '$got')"
+    fi
+    rm -f "$TTY_FILE"
+}
+
 test_invalid_contact_is_refused_before_mutation() {
     for bad_contact in 'two words@example.net' 'no-at-sign.example.net' \
         'ops@example' 'ops@.example.net' 'ops@example.net.' 'a@b@example.net' \
@@ -1917,6 +1939,7 @@ test_contact_prompt_gives_up_after_three_invalid_answers
 test_contact_from_env_is_not_asked
 test_contact_without_terminal_is_not_asked
 test_contact_is_never_asked_again
+test_contact_prompt_reads_in_the_main_shell
 test_invalid_contact_is_refused_before_mutation
 test_contact_with_embedded_newline_cannot_inject_settings
 test_special_ipv4_ranges
