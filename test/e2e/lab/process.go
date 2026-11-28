@@ -28,7 +28,7 @@ const (
 // Service is a process the lab runs inside a node.
 type Service struct {
 	Name string
-	Node string
+	Node string // empty for the container's own namespace (see attachHost)
 	Argv []string
 	Env  []string // KEY=value, added to a minimal base environment
 }
@@ -49,9 +49,13 @@ func Start(s Service) error {
 		return err
 	}
 	defer logFile.Close()
-	fmt.Fprintf(logFile, "--- lab: start %s in %s: %s\n", s.Name, s.Node, strings.Join(s.Argv, " "))
+	argv, where := s.Argv, "the container's namespace"
+	if s.Node != "" {
+		argv, where = append([]string{"ip", "netns", "exec", s.Node}, s.Argv...), s.Node
+	}
+	fmt.Fprintf(logFile, "--- lab: start %s in %s: %s\n", s.Name, where, strings.Join(s.Argv, " "))
 
-	cmd := exec.Command("ip", append([]string{"netns", "exec", s.Node}, s.Argv...)...)
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = append([]string{
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"HOME=" + StateDir(s.Name),

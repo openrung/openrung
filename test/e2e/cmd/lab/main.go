@@ -24,7 +24,8 @@ const usage = `usage: lab [-v] <command>
 
 Run the suite or the lab:
   test [go test flags]       run the scenario suite (the image default)
-  up                         build the lab and keep it running
+  up [-locations]            build the lab and keep it running; -locations
+                             gives relays made-up cities (for the desktop app)
   down                       stop every service and remove the network
   status                     services, listed relays, active impairments
 
@@ -76,7 +77,13 @@ func dispatch(command string, args []string) error {
 		argv := append([]string{"e2e.test", "-test.v", "-test.timeout=45m"}, args...)
 		return syscall.Exec("/usr/local/bin/e2e.test", argv, os.Environ())
 	case "up":
-		return up()
+		switch {
+		case len(args) == 0:
+			return up(lab.Up)
+		case len(args) == 1 && args[0] == "-locations":
+			return up(lab.UpWithRelayLocations)
+		}
+		return errors.New("usage: lab up [-locations]")
 	case "down":
 		lab.Down()
 		return nil
@@ -121,6 +128,11 @@ func dispatch(command string, args []string) error {
 			return errors.New("net needs a subcommand")
 		}
 		return network(args[0], args[1:])
+	case "forward":
+		if len(args) != 2 {
+			return errors.New("forward needs a listen address and a target address")
+		}
+		return lab.Forward(args[0], args[1])
 	case "internet":
 		if len(args) != 1 {
 			return errors.New("internet needs a CA output path")
@@ -133,8 +145,8 @@ func dispatch(command string, args []string) error {
 	return fmt.Errorf("unknown command %q\n%s", command, usage)
 }
 
-func up() error {
-	if err := lab.Up(); err != nil {
+func up(start func() error) error {
+	if err := start(); err != nil {
 		return err
 	}
 	status, err := lab.Status()
@@ -143,6 +155,7 @@ func up() error {
 	}
 	fmt.Print(status)
 	fmt.Println("lab is up; open a shell in this container and run `lab help`")
+	fmt.Printf("attached with `make e2e-lab-host`, apps on this machine use broker %s behind gw-host\n", lab.HostBrokerURL)
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	<-signals

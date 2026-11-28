@@ -129,6 +129,13 @@ type Service struct {
 	// the country presets unavailable.
 	RuleSets fs.FS
 
+	// BrokerURL, when set, replaces the broker the app asks for (the public
+	// fronts) in every directory fetch and connect, for development against a
+	// local broker such as the test lab's (OPENRUNG_BROKER_URL, read by
+	// package main). brokerapi's rules still apply: plain HTTP only on
+	// loopback, and the default fronts remain the fallback behind it.
+	BrokerURL string
+
 	engine *connectcore.Engine
 	store  *clientstate.Store
 
@@ -249,6 +256,7 @@ func (s *Service) Prepare() (bool, error) {
 // targetCountry; empty strings stand in for the contract's nulls. It resolves
 // once the start has been dispatched — completion is reported via events.
 func (s *Service) Connect(brokerURL, targetCountry, targetRelayID string) error {
+	brokerURL = s.broker(brokerURL)
 	s.splitMu.Lock()
 	s.lastConnect = &connectRequest{brokerURL: brokerURL, targetCountry: targetCountry, targetRelayID: targetRelayID}
 	s.splitMu.Unlock()
@@ -321,7 +329,16 @@ func (s *Service) GetProxyInfo() (NativeProxyInfo, error) {
 // the frontend to aggregate into map regions (the TS loadExitNodeDirectory,
 // ported from mobile, does the grouping).
 func (s *Service) ListRelaysForDirectory() (brokerapi.RelayListResponse, error) {
-	return s.engine.ListRelaysForDirectory()
+	return s.engine.ListRelaysForDirectoryFrom(s.broker(""))
+}
+
+// broker is the broker to use for a request that asked for requested: the
+// BrokerURL override when one is set, requested otherwise.
+func (s *Service) broker(requested string) string {
+	if s.BrokerURL != "" {
+		return s.BrokerURL
+	}
+	return requested
 }
 
 // GetDiagnostics is Wails-bound. It returns the engine's redacted diagnostic

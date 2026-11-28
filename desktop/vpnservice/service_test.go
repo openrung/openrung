@@ -359,3 +359,19 @@ func (s *Service) nativeStateForTest(state connectcore.State) NativeVpnState {
 	defer s.mu.Unlock()
 	return s.nativeStateLocked(state)
 }
+
+func TestBrokerOverrideReplacesTheRequestedBroker(t *testing.T) {
+	s := &Service{}
+	if got := s.broker("https://broker.example/"); got != "https://broker.example/" {
+		t.Fatalf("without an override broker = %q, want the requested one", got)
+	}
+	if got := s.broker(""); got != "" {
+		t.Fatalf("without an override broker = %q, want the default fronts", got)
+	}
+	s.BrokerURL = "http://127.0.0.1:18080"
+	for _, requested := range []string{"https://broker.example/", ""} {
+		if got := s.broker(requested); got != s.BrokerURL {
+			t.Fatalf("with an override broker(%q) = %q, want %q", requested, got, s.BrokerURL)
+		}
+	}
+}

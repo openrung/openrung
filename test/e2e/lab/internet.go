@@ -11,6 +11,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -38,6 +39,7 @@ const CAPath = RunDir + "/ca.pem"
 //	/ip             the caller's address as this server sees it (the exit IP)
 //	/bytes/<n>      n bytes of payload, for throughput checks
 //	/generate_204   an empty 204, the usual connectivity-check reply
+//	/geoip/<addr>   the location of a lab address, for the broker
 //	/api/v1/wss-bridge  on the WSS front host, a CDN edge for relay-f
 //	anything else   a short text page naming the requested host
 func ServeInternet(caPath string) error {
@@ -56,6 +58,15 @@ func ServeInternet(caPath string) error {
 	})
 	mux.HandleFunc("/generate_204", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("/geoip/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		location, ok := geoLocations[strings.TrimPrefix(r.URL.Path, "/geoip/")]
+		if !ok {
+			fmt.Fprintln(w, `{"success":false,"message":"no location for this address"}`)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(location)
 	})
 	mux.HandleFunc("/bytes/", func(w http.ResponseWriter, r *http.Request) {
 		n, err := strconv.ParseInt(strings.TrimPrefix(r.URL.Path, "/bytes/"), 10, 64)
@@ -92,6 +103,33 @@ func ServeInternet(caPath string) error {
 		failed <- server.ListenAndServeTLS("", "")
 	}()
 	return <-failed
+}
+
+// GeoIPEndpoint is the broker's relay location lookup under RelayLocations,
+// answered by the internet stand-in in the shape of the public service it
+// replaces.
+const GeoIPEndpoint = "http://geoip.lab/geoip/"
+
+// geoLocation is a location lookup answer.
+type geoLocation struct {
+	Success     bool    `json:"success"`
+	City        string  `json:"city"`
+	Country     string  `json:"country"`
+	CountryCode string  `json:"country_code"`
+	Latitude    float64 `json:"latitude"`
+	Longitude   float64 `json:"longitude"`
+}
+
+// geoLocations places the addresses relays publish in made-up but distinct
+// cities, so apps that list relays by location (the desktop app's exit node
+// list) show the lab's relays. A volunteer behind the hub publishes the hub's
+// address.
+var geoLocations = map[string]geoLocation{
+	RelayAAddr: {true, "Amsterdam", "Netherlands", "NL", 52.37, 4.90},
+	RelayBAddr: {true, "Frankfurt", "Germany", "DE", 50.11, 8.68},
+	RelayFAddr: {true, "Tokyo", "Japan", "JP", 35.68, 139.69},
+	HubAddr:    {true, "Helsinki", "Finland", "FI", 60.17, 24.94},
+	GwVolAddr:  {true, "Paris", "France", "FR", 48.86, 2.35},
 }
 
 // certIssuer signs a leaf certificate per requested hostname.
